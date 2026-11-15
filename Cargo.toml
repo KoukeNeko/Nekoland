@@ -1,0 +1,25 @@
+[package]
+name = "nekoland"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80.1"
+
+[dependencies]
+bitflags = "2.2.1"
+smithay-drm-extras = { version = "0.1.0", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+[dependencies.smithay]
+version = "0.7.0"
+default-features = false
+features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+    "backend_winit",
+    "wayland_frontend",
+    "desktop",
+]
