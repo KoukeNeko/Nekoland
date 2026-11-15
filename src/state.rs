@@ -1,8 +1,9 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState},
+    output::Output,
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
         wayland_server::{
@@ -16,7 +17,10 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::{
+            wlr_layer::{Layer, WlrLayerShellState},
+            xdg::XdgShellState,
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -35,6 +39,7 @@ pub struct Nekoland {
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Nekoland>,
@@ -52,6 +57,7 @@ impl Nekoland {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -91,6 +97,7 @@ impl Nekoland {
 
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -142,12 +149,52 @@ impl Nekoland {
         socket_name
     }
 
+    /// The surface at a position: overlay and top layers come before windows, the
+    /// bottom and background layers after them.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space.element_under(pos).and_then(|(window, location)| {
-            window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + location).to_f64()))
-        })
+        let layer_under = |layers: [Layer; 2]| {
+            let output = self.space.output_under(pos).next()?;
+            let output_loc = self.space.output_geometry(output)?.loc;
+            let map = layer_map_for_output(output);
+            let local = pos - output_loc.to_f64();
+            let layer = layers
+                .into_iter()
+                .find_map(|layer| map.layer_under(layer, local))?;
+            let layer_loc = map.layer_geometry(layer)?.loc;
+            layer
+                .surface_under(local - layer_loc.to_f64(), WindowSurfaceType::ALL)
+                .map(|(s, p)| (s, (p + layer_loc + output_loc).to_f64()))
+        };
+        let window_under = || {
+            self.space.element_under(pos).and_then(|(window, location)| {
+                window
+                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                    .map(|(s, p)| (s, (p + location).to_f64()))
+            })
+        };
+
+        layer_under([Layer::Overlay, Layer::Top])
+            .or_else(window_under)
+            .or_else(|| layer_under([Layer::Bottom, Layer::Background]))
+    }
+
+    /// What every backend does once an output has been drawn: tell its surfaces that a
+    /// frame was shown, and drop what has gone away.
+    pub fn finish_frame(&mut self, output: &Output) {
+        let time = self.start_time.elapsed();
+        let throttle = Some(Duration::ZERO);
+        self.space
+            .elements()
+            .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        let mut layers = layer_map_for_output(output);
+        layers
+            .layers()
+            .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        layers.cleanup();
+        drop(layers);
+
+        self.space.refresh();
+        self.popups.cleanup();
     }
 }
 

@@ -276,16 +276,7 @@ fn render(
         }
     }
 
-    state.space.elements().for_each(|window| {
-        window.send_frame(
-            &output,
-            state.start_time.elapsed(),
-            Some(Duration::ZERO),
-            |_, _| Some(output.clone()),
-        )
-    });
-    state.space.refresh();
-    state.popups.cleanup();
+    state.finish_frame(&output);
     let _ = data.display_handle.flush_clients();
 }
 

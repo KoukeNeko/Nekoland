@@ -1,6 +1,9 @@
 use smithay::{
     delegate_xdg_shell,
-    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window},
+    desktop::{
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind, PopupManager,
+        Space, Window,
+    },
     input::{
         pointer::{Focus, GrabStartData as PointerGrabStartData},
         Seat,
@@ -34,7 +37,14 @@ impl XdgShellHandler for Nekoland {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface);
-        self.space.map_element(window, (0, 0), false);
+        // Below a panel rather than under it.
+        let origin = self
+            .space
+            .outputs()
+            .next()
+            .map(|output| layer_map_for_output(output).non_exclusive_zone().loc)
+            .unwrap_or_default();
+        self.space.map_element(window, origin, false);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

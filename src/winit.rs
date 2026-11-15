@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use smithay::{
     backend::{
         renderer::{
@@ -62,6 +60,7 @@ pub fn init_winit(
                     None,
                     None,
                 );
+                smithay::desktop::layer_map_for_output(&output).arrange();
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
@@ -90,17 +89,7 @@ pub fn init_winit(
                 }
                 backend.submit(Some(&[damage])).unwrap();
 
-                state.space.elements().for_each(|window| {
-                    window.send_frame(
-                        &output,
-                        state.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    )
-                });
-
-                state.space.refresh();
-                state.popups.cleanup();
+                state.finish_frame(&output);
                 let _ = display.flush_clients();
 
                 // Ask for redraw to schedule new frame.
