@@ -50,8 +50,8 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   its windows, to go to one or close it. A right click lists its windows and offers a
   new window, keeping it in the Dock, hiding and quitting. Kept icons are dragged to
   reorder them, out of the Dock to take them off, and a running one dragged among them
-  is kept. A minimized window shrinks into its place in the Dock and grows back out of
-  it.
+  is kept. A minimized window goes to the Dock's right end, next to the Trash, drawn in
+  with the Mac's Genie effect, and comes back out the same way.
 - A kept folder shows as its newest items piled up or as its own icon, and opens as a
   fan rising from it, a grid of pages to scroll, or a list with submenus for folders; a
   right click sets its order, how it shows and how it opens. A folder dragged in from a

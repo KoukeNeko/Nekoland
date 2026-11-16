@@ -77,8 +77,9 @@ const DRAG_THRESHOLD: f64 = 6.0;
 /// How far over the Dock a kept application is dragged to be taken off it.
 const REMOVE_DISTANCE: f64 = 56.0;
 const HELD_SCALE: f64 = 1.08;
-/// How long a minimized window takes to shrink into its tile.
-const MINIMIZE_TIME: f64 = 0.24;
+/// How long a window takes to be drawn into its tile, or back out of it, as the Mac's
+/// Genie effect does it.
+const MINIMIZE_TIME: f64 = 0.5;
 /// How long names and window pictures take to fade in, and an icon let go off the Dock
 /// to fade away.
 const FADE_IN_TIME: f64 = 0.14;
@@ -228,6 +229,15 @@ enum Opened {
     },
     /// A page of the items at a time, `scroll` rows down.
     Grid { grid: Grid, scroll: usize },
+}
+
+/// A window on its way into the Dock or back out: where it is when it is not minimized,
+/// where its picture is in its tile, and how far in it is, 0 to 1.
+pub struct Genie {
+    pub window: Window,
+    pub from: Rectangle<i32, Logical>,
+    pub into: Rectangle<i32, Logical>,
+    pub progress: f64,
 }
 
 /// Where a tile is drawn now, on its way to where it goes.
@@ -1474,16 +1484,6 @@ impl Nekoland {
             return Vec::new();
         }
         let mut thumbnails = Vec::new();
-        // A window brought back grows from its tile to where it was, drawn here in its place.
-        for (window, from, at) in &self.dock.restoring {
-            if let Some(location) = self.space.element_location(window) {
-                let to = Rectangle::new(location, window.geometry().size);
-                thumbnails.push((
-                    window.clone(),
-                    mix_rect(*from, to, ease_out(at.elapsed().as_secs_f64() / MINIMIZE_TIME)),
-                ));
-            }
-        }
         if let Some(preview) = &self.dock.preview {
             for (window, card) in preview.windows.iter().zip(&preview.cards) {
                 thumbnails.push((window.clone(), Preview::shot(*card)));
@@ -1491,24 +1491,55 @@ impl Nekoland {
         }
         for (index, tile) in self.dock.tiles.iter().enumerate() {
             if let (Tile::Window { window, .. }, Some(rect)) = (tile, self.tile_rect(index)) {
-                let inset = 3;
-                let mut rect = Rectangle::new(
-                    rect.loc + Point::from((inset, inset)),
-                    rect.size - Size::from((inset * 2, inset * 2)),
-                );
-                // A window just minimized shrinks from where it was into its tile.
-                if let Some((_, from, at)) = self
+                // A window on its way in is drawn by its Genie until it is there.
+                if self
                     .dock
                     .minimizing
                     .iter()
-                    .find(|(minimizing, ..)| minimizing == window)
+                    .any(|(minimizing, ..)| minimizing == window)
                 {
-                    rect = mix_rect(*from, rect, ease_out(at.elapsed().as_secs_f64() / MINIMIZE_TIME));
+                    continue;
                 }
-                thumbnails.push((window.clone(), rect));
+                thumbnails.push((window.clone(), tile_picture(rect)));
             }
         }
         thumbnails
+    }
+
+    /// The windows on their way into the Dock or out of it: each with where it is when it
+    /// is not minimized, where its picture is in its tile, and how far it has gone in.
+    pub fn dock_genies(&self) -> Vec<Genie> {
+        let mut genies = Vec::new();
+        for (window, from, at) in &self.dock.minimizing {
+            let tile = self
+                .dock
+                .tiles
+                .iter()
+                .position(|tile| tile.key() == Key::Window(window.clone()))
+                .and_then(|index| self.tile_rect(index));
+            if let Some(tile) = tile {
+                let progress = at.elapsed().as_secs_f64() / MINIMIZE_TIME;
+                genies.push(Genie {
+                    window: window.clone(),
+                    from: *from,
+                    into: fit_window(window, tile_picture(tile)),
+                    progress,
+                });
+            }
+        }
+        for (window, into, at) in &self.dock.restoring {
+            if let Some(location) = self.space.element_location(window) {
+                let rect = Rectangle::new(location, window.geometry().size);
+                let progress = 1.0 - at.elapsed().as_secs_f64() / MINIMIZE_TIME;
+                genies.push(Genie {
+                    window: window.clone(),
+                    from: rect,
+                    into: *into,
+                    progress,
+                });
+            }
+        }
+        genies
     }
 
     /// The application's icon at the corner of each minimized window's tile, drawn over
@@ -1875,8 +1906,9 @@ impl Nekoland {
                     .position(|tile| tile.key() == Key::Window(window.clone()))
                 {
                     if let Some(rect) = self.tile_rect(index) {
+                        let into = fit_window(&window, tile_picture(rect));
                         self.dock.restoring.retain(|(restoring, ..)| *restoring != window);
-                        self.dock.restoring.push((window.clone(), rect, Instant::now()));
+                        self.dock.restoring.push((window.clone(), into, Instant::now()));
                     }
                 }
                 self.reveal_window(&window);
@@ -2428,11 +2460,29 @@ impl Nekoland {
     }
 }
 
-fn mix_rect(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
-    let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
+/// Where a minimized window's picture goes in its tile, inside its rounded backing.
+fn tile_picture(tile: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let inset = 3;
     Rectangle::new(
-        (mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y)).into(),
-        (mix(from.size.w, to.size.w), mix(from.size.h, to.size.h)).into(),
+        tile.loc + Point::from((inset, inset)),
+        tile.size - Size::from((inset * 2, inset * 2)),
+    )
+}
+
+/// The part of `rect` a window fills when fitted to it, in the middle.
+fn fit_window(window: &Window, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let size = window.geometry().size;
+    if size.w <= 0 || size.h <= 0 {
+        return rect;
+    }
+    let scale = (f64::from(rect.size.w) / f64::from(size.w)).min(f64::from(rect.size.h) / f64::from(size.h));
+    let fitted = Size::from((
+        (f64::from(size.w) * scale).round() as i32,
+        (f64::from(size.h) * scale).round() as i32,
+    ));
+    Rectangle::new(
+        rect.loc + Point::from(((rect.size.w - fitted.w) / 2, (rect.size.h - fitted.h) / 2)),
+        fitted,
     )
 }
 

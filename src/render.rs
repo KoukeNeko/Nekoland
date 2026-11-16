@@ -312,24 +312,117 @@ fn dock_front(
     output_loc: Point<i32, Logical>,
 ) -> Vec<SceneElement> {
     let mut elements: Vec<SceneElement> = state
-        .dock_badge_pictures()
+        .dock_genies()
         .into_iter()
-        .filter_map(|(badge, at)| {
-            MemoryRenderBufferRenderElement::from_buffer(
+        .flat_map(|genie| {
+            draw_genie(
                 renderer,
-                (at - output_loc).to_physical(1).to_f64(),
-                &badge.buffer,
-                None,
-                None,
-                None,
-                Kind::Unspecified,
+                &genie.window,
+                genie.from,
+                genie.into,
+                genie.progress,
+                output_loc,
             )
-            .ok()
-            .map(SceneElement::Picture)
         })
         .collect();
+    elements.extend(state.dock_badge_pictures().into_iter().filter_map(|(badge, at)| {
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (at - output_loc).to_physical(1).to_f64(),
+            &badge.buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .ok()
+        .map(SceneElement::Picture)
+    }));
     for (window, rect) in state.dock_thumbnails() {
         elements.extend(window_fitted(renderer, &window, rect, output_loc));
+    }
+    elements
+}
+
+/// How tall the bands a window is cut into for its Genie are, about: thin enough that its
+/// sides look curved.
+const GENIE_BAND: f64 = 5.0;
+/// Of a Genie's time, how much goes to bending the window toward the Dock before it is
+/// drawn in.
+const GENIE_BEND: f64 = 0.4;
+
+/// A window `progress` of the way into the Dock, as the Mac's Genie draws it: first its
+/// lower part bends toward `into`, the place of its picture in the Dock, then it slides
+/// down the funnel that makes and into it. It is cut into bands across, each squeezed to
+/// the funnel's width where it is.
+fn draw_genie(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    from: Rectangle<i32, Logical>,
+    into: Rectangle<i32, Logical>,
+    progress: f64,
+    output_loc: Point<i32, Logical>,
+) -> Vec<SceneElement> {
+    let geometry = window.geometry();
+    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+        return Vec::new();
+    }
+    let progress = progress.clamp(0.0, 1.0);
+    let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
+    let (bend, slide) = if progress < GENIE_BEND {
+        (smooth(progress / GENIE_BEND), 0.0)
+    } else {
+        (1.0, smooth((progress - GENIE_BEND) / (1.0 - GENIE_BEND)))
+    };
+    let (from, into) = (from.to_f64(), into.to_f64());
+    let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    // How far a height on screen is down the funnel, from the window's top to its picture's.
+    let depth = (into.loc.y - from.loc.y).max(1.0);
+    let funnel = |y: f64| smooth(((y - from.loc.y) / depth).clamp(0.0, 1.0)) * bend;
+    let row_y = |v: f64| lerp(from.loc.y + v * from.size.h, into.loc.y + v * into.size.h, slide);
+    let bands = (from.size.h / GENIE_BAND).ceil().clamp(16.0, 240.0) as usize;
+    let mut elements = Vec::new();
+    for band in 0..bands {
+        let (v0, v1) = (band as f64 / bands as f64, (band + 1) as f64 / bands as f64);
+        let (y0, y1) = (row_y(v0), row_y(v1));
+        if y1 - y0 < 0.25 {
+            continue;
+        }
+        let f = funnel((y0 + y1) / 2.0);
+        let left = lerp(from.loc.x, into.loc.x, f);
+        let right = lerp(from.loc.x + from.size.w, into.loc.x + into.size.w, f);
+        let scale = Scale::from((
+            (right - left) / f64::from(geometry.size.w),
+            (y1 - y0) / ((v1 - v0) * f64::from(geometry.size.h)),
+        ));
+        let offset = Point::<f64, Logical>::from((
+            left - f64::from(output_loc.x),
+            y0 - v0 * f64::from(geometry.size.h) * scale.y - f64::from(output_loc.y),
+        ));
+        // One pixel taller, so that the bands meet without a seam.
+        let crop = Rectangle::<f64, Logical>::new(
+            (left - f64::from(output_loc.x), y0 - f64::from(output_loc.y)).into(),
+            (right - left, y1 - y0 + 1.0).into(),
+        )
+        .to_i32_round()
+        .to_physical(1);
+        // Each band draws the window anew; its surfaces' elements are not copied.
+        let surfaces = AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+            window,
+            renderer,
+            Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1),
+            Scale::from(1.0),
+            1.0,
+        );
+        for surface in surfaces {
+            let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
+            let placed = RelocateRenderElement::from_element(
+                scaled,
+                offset.to_i32_round().to_physical(1),
+                Relocate::Relative,
+            );
+            elements.extend(CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop));
+        }
     }
     elements
 }
