@@ -28,6 +28,54 @@ export component Icon inherits Path {
         : "";
 }
 
+// A rectangle with corners smooth as the Mac's: a quarter superellipse that starts 1.5
+// radii along each edge and bends gradually, where a quarter circle's curvature jumps at
+// the edge. The same shape as Nekoland's text::rounded_rectangle and its glass, so a
+// surface on glass lines up with it; the numbers come from there. Too short for them, it
+// has round ends.
+export component SmoothRect {
+    in property <length> radius;
+    in property <brush> background;
+    in property <brush> border-color;
+    in property <length> border-width;
+
+    property <float> w: root.width / 1px;
+    property <float> h: root.height / 1px;
+    property <float> e: root.radius / 1px * 1.5;
+    property <float> k: root.radius / 1px * 1.036;
+    property <float> n: root.radius / 1px * 0.5858;
+    property <float> m: root.radius / 1px * 0.2929;
+
+    if e > min(w, h) / 2: Rectangle {
+        border-radius: min(root.radius, min(root.width, root.height) / 2);
+        background: root.background;
+        border-width: root.border-width;
+        border-color: root.border-color;
+    }
+    if e <= min(w, h) / 2: Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: w;
+        viewbox-height: h;
+        fill: root.background;
+        stroke: root.border-color;
+        stroke-width: root.border-width;
+        commands: "M " + e + " 0 L " + (w - e) + " 0"
+            + " C " + (w - k) + " 0 " + (w - n) + " 0 " + (w - m) + " " + m
+            + " C " + w + " " + n + " " + w + " " + k + " " + w + " " + e
+            + " L " + w + " " + (h - e)
+            + " C " + w + " " + (h - k) + " " + w + " " + (h - n) + " " + (w - m) + " " + (h - m)
+            + " C " + (w - n) + " " + h + " " + (w - k) + " " + h + " " + (w - e) + " " + h
+            + " L " + e + " " + h
+            + " C " + k + " " + h + " " + n + " " + h + " " + m + " " + (h - m)
+            + " C 0 " + (h - n) + " 0 " + (h - k) + " 0 " + (h - e)
+            + " L 0 " + e
+            + " C 0 " + k + " 0 " + n + " " + m + " " + m
+            + " C " + n + " 0 " + k + " 0 " + e + " 0 Z";
+    }
+    @children
+}
+
 // kind: "primary" (one per screen), "secondary", "plain", "danger", or "inverse" on ink.
 export component Button {
     in property <string> text;

@@ -2,7 +2,7 @@
 // section for each part of it; a click on a part goes to its section. Every control here
 // takes effect at once.
 
-import { Theme, IconButton, Button, Switch, Segmented, Slider, TextField, Rows, Row, NavItem } from "widgets.slint";
+import { Theme, IconButton, Button, Switch, Segmented, Slider, TextField, Rows, Row, NavItem, SmoothRect } from "widgets.slint";
 
 export struct Fact {
     title: string,
@@ -312,9 +312,8 @@ export component Settings inherits Window {
     default-font-family: Theme.font;
     default-font-size: Theme.text-body;
 
-    Rectangle {
-        border-radius: root.maximized ? 0 : Theme.radius-l;
-        clip: true;
+    SmoothRect {
+        radius: root.maximized ? 0 : Theme.radius-l;
         background: Theme.paper;
 
         HorizontalLayout {

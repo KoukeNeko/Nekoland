@@ -86,7 +86,8 @@ void main() {
 }
 "#;
 
-// The glass itself: the blur, cut to a rounded rectangle, with the line of light.
+// The glass itself: the blur, cut to a rounded rectangle, with the line of light. The
+// corners' shape comes in as CORNER_EXTENT and CORNER_EXPONENT.
 const PANE: &str = r#"
 uniform vec2 uv_origin;
 uniform vec2 uv_size;
@@ -95,8 +96,14 @@ uniform float radius;
 uniform float edge;
 void main() {
     vec2 local = (v_coords - uv_origin) / uv_size * size;
-    vec2 q = abs(local - size * 0.5) - (size * 0.5 - vec2(radius));
-    float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    // Corners smooth as the Mac's, as text::rounded_rectangle draws them; one too short for
+    // them has round ends instead.
+    bool capsule = radius * CORNER_EXTENT > min(size.x, size.y) * 0.5;
+    float corner = capsule ? radius : radius * CORNER_EXTENT;
+    float power = capsule ? 2.0 : CORNER_EXPONENT;
+    vec2 q = abs(local - size * 0.5) - (size * 0.5 - vec2(corner));
+    vec2 c = max(q, 0.0);
+    float distance = pow(pow(c.x, power) + pow(c.y, power), 1.0 / power) + min(max(q.x, q.y), 0.0) - corner;
     float inside = clamp(0.5 - distance, 0.0, 1.0);
 
     vec3 color = texture2D(tex, v_coords).rgb;
@@ -138,7 +145,14 @@ impl Glass {
         Ok(Self {
             down: renderer.compile_custom_texture_shader(format!("{SAMPLER}{DOWN}"), &pass_uniforms)?,
             up: renderer.compile_custom_texture_shader(format!("{SAMPLER}{UP}"), &pass_uniforms)?,
-            pane: renderer.compile_custom_texture_shader(format!("{SAMPLER}{PANE}"), &pane_uniforms)?,
+            pane: renderer.compile_custom_texture_shader(
+                format!(
+                    "{SAMPLER}#define CORNER_EXTENT {:?}\n#define CORNER_EXPONENT {:?}\n{PANE}",
+                    crate::text::CORNER_EXTENT,
+                    crate::text::CORNER_EXPONENT
+                ),
+                &pane_uniforms,
+            )?,
             levels: Vec::new(),
             tracker: None,
             areas: Vec::new(),

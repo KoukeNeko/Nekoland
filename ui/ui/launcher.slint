@@ -1,7 +1,7 @@
 // Finds an application by name and starts it, after Spotlight: a search field over the
 // applications that match, on glass. The arrows move, Return starts, Escape closes.
 
-import { Theme, Icon } from "widgets.slint";
+import { Theme, Icon, SmoothRect } from "widgets.slint";
 
 export struct AppRow {
     name: string,
@@ -27,8 +27,8 @@ export component Launcher inherits Window {
     forward-focus: field;
 
     // The glass under it is the compositor's; this is its tint.
-    Rectangle {
-        border-radius: 16px;
+    SmoothRect {
+        radius: 16px;
         background: Theme.dark ? #222226b8 : #fbfaf8c8;
         border-width: 1px;
         border-color: Theme.dark ? #ffffff29 : #ffffff59;

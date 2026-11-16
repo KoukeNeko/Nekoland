@@ -34,13 +34,54 @@ pub fn picture(mut surface: ImageSurface) -> Option<Picture> {
     })
 }
 
+/// Corners as the Mac draws them since Big Sur: rather than a quarter circle, whose
+/// curvature jumps from nothing to all of it where it meets the edge, a quarter of a
+/// superellipse that starts further along the edge and bends gradually, passing through
+/// the middle of the circle of the same radius. It runs `CORNER_EXTENT` radii along each
+/// edge; `CORNER_EXPONENT` is its exponent, which the glass's shader draws it with.
+pub const CORNER_EXTENT: f64 = 1.5;
+pub const CORNER_EXPONENT: f64 = 3.19;
+/// Two cubic curves to each half of a corner follow that superellipse within 0.002 of
+/// the radius: from the edge, through `CORNER_HANDLE` and twice `CORNER_MIDDLE` along
+/// it, to `CORNER_MIDDLE` in from both edges.
+const CORNER_HANDLE: f64 = 1.036;
+const CORNER_MIDDLE: f64 = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
+
+/// A rectangle with corners of `radius`, smooth as the Mac's; one too short for them has
+/// round ends instead, as a capsule.
 pub fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
     use std::f64::consts::{FRAC_PI_2, PI};
     cr.new_sub_path();
-    cr.arc(x + width - radius, y + radius, radius, -FRAC_PI_2, 0.0);
-    cr.arc(x + width - radius, y + height - radius, radius, 0.0, FRAC_PI_2);
-    cr.arc(x + radius, y + height - radius, radius, FRAC_PI_2, PI);
-    cr.arc(x + radius, y + radius, radius, PI, 3.0 * FRAC_PI_2);
+    if radius * CORNER_EXTENT > width.min(height) / 2.0 {
+        let radius = radius.min(width.min(height) / 2.0);
+        cr.arc(x + width - radius, y + radius, radius, -FRAC_PI_2, 0.0);
+        cr.arc(x + width - radius, y + height - radius, radius, 0.0, FRAC_PI_2);
+        cr.arc(x + radius, y + height - radius, radius, FRAC_PI_2, PI);
+        cr.arc(x + radius, y + radius, radius, PI, 3.0 * FRAC_PI_2);
+        cr.close_path();
+        return;
+    }
+    let (extent, handle) = (radius * CORNER_EXTENT, radius * CORNER_HANDLE);
+    let (middle, near) = (radius * CORNER_MIDDLE, radius * CORNER_MIDDLE * 2.0);
+    // Each corner from the edge before it to the edge after it, turning clockwise; `ax`
+    // and `ay` step along the edge before and `bx` and `by` along the one after.
+    let corner = |cx: f64, cy: f64, (ax, ay): (f64, f64), (bx, by): (f64, f64)| {
+        let at = |along: f64, across: f64| (cx - ax * along + bx * across, cy - ay * along + by * across);
+        let (p0, p1, p2, p3) = (
+            at(extent, 0.0),
+            at(handle, 0.0),
+            at(near, 0.0),
+            at(middle, middle),
+        );
+        let (q1, q2, q3) = (at(0.0, near), at(0.0, handle), at(0.0, extent));
+        cr.line_to(p0.0, p0.1);
+        cr.curve_to(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1);
+        cr.curve_to(q1.0, q1.1, q2.0, q2.1, q3.0, q3.1);
+    };
+    corner(x + width, y, (1.0, 0.0), (0.0, 1.0));
+    corner(x + width, y + height, (0.0, 1.0), (-1.0, 0.0));
+    corner(x, y + height, (-1.0, 0.0), (0.0, -1.0));
+    corner(x, y, (0.0, -1.0), (1.0, 0.0));
     cr.close_path();
 }
 
@@ -408,6 +449,39 @@ fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The curves cairo draws a corner with keep to the superellipse the glass is cut to.
+    #[test]
+    fn corners_follow_the_superellipse_the_glass_is_cut_to() {
+        let (extent, n) = (CORNER_EXTENT, CORNER_EXPONENT);
+        let bezier = |t: f64| {
+            let p = [
+                (extent, 0.0),
+                (CORNER_HANDLE, 0.0),
+                (CORNER_MIDDLE * 2.0, 0.0),
+                (CORNER_MIDDLE, CORNER_MIDDLE),
+            ];
+            let w = [
+                (1.0 - t).powi(3),
+                3.0 * (1.0 - t).powi(2) * t,
+                3.0 * (1.0 - t) * t * t,
+                t.powi(3),
+            ];
+            (0..4).fold((0.0, 0.0), |(x, y), i| (x + w[i] * p[i].0, y + w[i] * p[i].1))
+        };
+        let curve: Vec<(f64, f64)> = (0..=400).map(|i| bezier(f64::from(i) / 400.0)).collect();
+        let last = 2f64.powf(-1.0 / n);
+        for i in 0..=50 {
+            let u = last * f64::from(i) / 50.0;
+            let v = (1.0 - u.powf(n)).powf(1.0 / n);
+            let (x, y) = (extent - extent * u, extent - extent * v);
+            let gap = curve
+                .iter()
+                .map(|(cx, cy)| (cx - x).hypot(cy - y))
+                .fold(f64::MAX, f64::min);
+            assert!(gap < 0.003, "{gap} off at {u}");
+        }
+    }
 
     #[test]
     fn field_codes_are_left_out_of_commands() {
