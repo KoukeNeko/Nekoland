@@ -37,7 +37,7 @@ use crate::{
     menubar::{close, Command, Entry, Overlay},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
-    windows::{is_managed, window_names, LAUNCHER_APP_ID},
+    windows::{is_managed, window_names, CONFIRM_APP_ID, LAUNCHER_APP_ID},
     Nekoland,
 };
 
@@ -108,7 +108,6 @@ const CLOSE: i32 = 20;
 const LABEL_HEIGHT: i32 = 26;
 const LABEL_RADIUS: i32 = 8;
 const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
-const CONFIRM_APP_ID: &str = "nekoland-confirm";
 
 #[derive(Clone, PartialEq)]
 enum Tile {

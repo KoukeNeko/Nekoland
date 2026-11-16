@@ -16,6 +16,9 @@ use crate::{dock::DOCK_SPACE, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekolan
 
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
+/// The application ID of Nekoland's confirmation dialog, which draws its own opaque card
+/// and shadow, so it needs no glass.
+pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
 
 /// Whether a window is drawn with square corners: one maximized, fullscreen or tiled, as
 /// GTK draws them, or an X11 window, which draws none.
