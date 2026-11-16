@@ -512,10 +512,12 @@ fn clock(config: &config::Config) -> (i64, String) {
     } else {
         String::new()
     };
-    (
-        key,
-        format!("{}月{}日 {weekday}{time}{seconds}", tm.tm_mon + 1, tm.tm_mday),
-    )
+    let date = if config.clock_date {
+        format!("{}月{}日 ", tm.tm_mon + 1, tm.tm_mday)
+    } else {
+        String::new()
+    };
+    (key, format!("{date}{weekday}{time}{seconds}"))
 }
 
 fn is_help(label: &str) -> bool {

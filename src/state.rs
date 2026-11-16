@@ -75,6 +75,8 @@ pub struct Nekoland {
     pub night_shift_available: bool,
     /// What the setting and schedule last said, for Night Shift to follow when it changes.
     pub night_shift_wanted: Option<bool>,
+    /// Which corner the pointer is in, for a hot corner to act only as it comes in.
+    pub in_hot_corner: Option<u8>,
     /// When a recorder last took a frame of the screen.
     pub screen_shared_at: Option<std::time::Instant>,
     /// Surfaces of programs that keep the screen from locking while it is idle.
@@ -191,6 +193,7 @@ impl Nekoland {
             night_shift: false,
             night_shift_available: false,
             night_shift_wanted: None,
+            in_hot_corner: None,
             screen_shared_at: None,
             idle_inhibitors: Vec::new(),
             screencopy: Vec::new(),
@@ -392,13 +395,14 @@ impl Nekoland {
         let old_keyboard = self.config.keyboard();
         let old_font = std::mem::take(&mut self.config.font);
         self.config = Config::load();
+        // What the bar and the Dock show may have changed with it.
+        self.dock.drawn = None;
+        self.menu_bar.drawn = None;
         crate::text::set_icon_theme(&self.config.icon_theme);
         if self.config.font != old_font {
+            // shortcut: other text than the bar's and the Dock's keeps the old font until it is
+            // next drawn.
             crate::text::set_family(&self.config.font);
-            // shortcut: the bar and the Dock are drawn again; other text keeps the old font
-            // until it is next drawn.
-            self.dock.drawn = None;
-            self.menu_bar.drawn = None;
         }
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.change_repeat_info(self.config.repeat_rate, self.config.repeat_delay);
@@ -408,12 +412,8 @@ impl Nekoland {
                 tracing::warn!("keyboard layout {:?}: {err}", self.config.keyboard_layout);
             }
         }
-        // What is drawn on glass with its tint is drawn again; menus and the like are as
-        // they next open.
-        if self.config.set_glass_look() {
-            self.dock.drawn = None;
-            self.menu_bar.drawn = None;
-        }
+        // Menus and the like take the glass's new look as they next open.
+        self.config.set_glass_look();
         if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
             if let Some(mut swaybg) = self.wallpaper.take() {
                 if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {

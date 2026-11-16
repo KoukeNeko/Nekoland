@@ -1430,7 +1430,7 @@ impl Nekoland {
                             None => draw_initial(&cr, ax, ay, size, name, dark),
                         }
                         let _ = cr.restore();
-                        if *running {
+                        if *running && self.config.dock_indicators {
                             let dot = if *active { ACTIVE_DOT } else { DOT };
                             text::rounded_rectangle(
                                 &cr,
@@ -2380,7 +2380,9 @@ impl Nekoland {
         if !here {
             return;
         }
-        self.dock.bounce = Some((press.key, Instant::now()));
+        if self.config.dock_bounce {
+            self.dock.bounce = Some((press.key, Instant::now()));
+        }
         match press.tile {
             Tile::Apps => self.show_apps(""),
             Tile::App { app_id, running, .. } => {

@@ -41,6 +41,11 @@ pub struct Config {
     pub sleep_after: u64,
     /// How many seconds a notification's banner stays when its program leaves it to Nekoland.
     pub notification_seconds: u64,
+    /// What pointing into each corner of a display does, as the Mac's hot corners.
+    pub hot_corner_top_left: HotCorner,
+    pub hot_corner_top_right: HotCorner,
+    pub hot_corner_bottom_left: HotCorner,
+    pub hot_corner_bottom_right: HotCorner,
     /// What the power button does, and what closing the lid does with no other display.
     pub power_button: PowerAction,
     pub lid_close: PowerAction,
@@ -59,6 +64,7 @@ pub struct Config {
     pub clock_24h: bool,
     pub clock_weekday: bool,
     pub clock_seconds: bool,
+    pub clock_date: bool,
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
@@ -74,6 +80,10 @@ pub struct Config {
     /// how big the one under it grows, as a multiple of their size.
     pub dock_magnify: bool,
     pub dock_magnify_scale: f64,
+    /// Whether a dot under an icon says its application runs, and whether an icon bounces
+    /// when clicked.
+    pub dock_indicators: bool,
+    pub dock_bounce: bool,
     /// How solid the glass's tint is, from 0 to 1, and how strong its blur, from 0, none, to
     /// 1: of the menu bar and the Dock themselves, and of all other glass, menus,
     /// notifications and what shows behind windows, as through GTK's sidebars, whose tint
@@ -153,6 +163,16 @@ impl From<TimeOfDay> for String {
     fn from(time: TimeOfDay) -> String {
         format!("{:02}:{:02}", time.0 / 60, time.0 % 60)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HotCorner {
+    None,
+    /// The windows spread apart, as Super does.
+    Overview,
+    Apps,
+    Lock,
 }
 
 /// What the power button or closing the lid does.
@@ -357,6 +377,10 @@ impl Default for Config {
             // logind's own: it powers off, which Nekoland asks about first.
             power_button: PowerAction::ShutDown,
             lid_close: PowerAction::Sleep,
+            hot_corner_top_left: HotCorner::None,
+            hot_corner_top_right: HotCorner::None,
+            hot_corner_bottom_left: HotCorner::None,
+            hot_corner_bottom_right: HotCorner::None,
             notification_seconds: 5,
             night_shift: NightShift::Off,
             // The Mac's custom schedule.
@@ -379,6 +403,7 @@ impl Default for Config {
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,
+            clock_date: true,
             menu_bar_background: true,
             dock_glass: true,
             dock_size: 40,
@@ -386,6 +411,8 @@ impl Default for Config {
             dock_position: DockPosition::Bottom,
             dock_magnify: true,
             dock_magnify_scale: 1.6,
+            dock_indicators: true,
+            dock_bounce: true,
             bar_opacity: 0.5,
             bar_blur: 0.5,
             glass_opacity: 0.8,

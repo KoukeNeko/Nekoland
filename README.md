@@ -40,7 +40,7 @@ wallpaper and an input method. Every key is optional:
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
-| `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
+| `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `bar_opacity`, `bar_blur`, `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar and the Dock themselves, and of all other glass, menus, notifications, the Dock's popups, the overview, and behind windows, as GTK's menus and sidebars show it. 0.5 and 0.8, each blurred 0.5, unless set |
@@ -48,6 +48,7 @@ wallpaper and an input method. Every key is optional:
 | `dock_position` | The edge the Dock is at: `left`, `bottom` or `right`; at the bottom unless set |
 | `dock_autohide` | Whether the Dock slides off its edge until the pointer reaches that edge, leaving windows the room; off unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
+| `dock_indicators`, `dock_bounce` | Whether a dot under an icon says its application runs, and whether an icon bounces when clicked: both on unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `cursor_size` | How many points across Nekoland draws the cursor: 24 unless set |
 | `cursor_theme`, `icon_theme` | The cursor and icon themes Nekoland draws with, by folder name; a common one, as `$XCURSOR_THEME`, Adwaita or Yaru, unless set. Icons already drawn change when drawn again |
@@ -58,6 +59,7 @@ wallpaper and an input method. Every key is optional:
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
+| `hot_corner_top_left`, `hot_corner_top_right`, `hot_corner_bottom_left`, `hot_corner_bottom_right` | What pointing into that corner of a display does: `none` (the default), `overview`, `apps` or `lock` |
 
 The Settings application changes most of these while Nekoland runs (see below);
 `nekoland msg reload` reads a file changed by hand.
@@ -97,7 +99,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar, how long notifications stay, what double-clicking a
-  GTK title bar does, and the wallpaper; its other pages set light or dark, the icon and
+  GTK title bar does, the hot corners and the wallpaper; its other pages set light or dark, the icon and
   cursor themes, the display's resolution, refresh rate, scale and Night Shift, the
   fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'

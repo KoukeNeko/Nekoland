@@ -3,6 +3,7 @@
 mod appgrid;
 mod config;
 mod control;
+mod corners;
 mod cursor;
 mod dbus;
 mod dock;

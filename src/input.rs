@@ -105,6 +105,7 @@ impl Nekoland {
                     self.dock_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
+                    self.corner_motion(pos);
                 }
                 let under = self.surface_under(pos);
                 pointer.motion(
@@ -143,6 +144,7 @@ impl Nekoland {
                     self.dock_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
+                    self.corner_motion(pos);
                 }
                 let under = self.surface_under(pos);
 

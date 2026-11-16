@@ -501,6 +501,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         .build();
     hours.connect_selected_notify(|row| set(&format!("clock_24h = {}", row.selected() == 0)));
     bar.add(&hours);
+    bar.add(&switch_row(config, "日期", "clock_date"));
     bar.add(&switch_row(config, "星期", "clock_weekday"));
     bar.add(&switch_row(config, "秒數", "clock_seconds"));
     page.add(&bar);
@@ -538,6 +539,17 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     });
     windows.add(&titlebar);
     page.add(&windows);
+
+    let corners = group("熱點");
+    for (title, key) in [
+        ("左上角", "hot_corner_top_left"),
+        ("右上角", "hot_corner_top_right"),
+        ("左下角", "hot_corner_bottom_left"),
+        ("右下角", "hot_corner_bottom_right"),
+    ] {
+        corners.add(&choice_row(config, title, key, &HOT_CORNERS, &["無", "所有視窗", "應用程式", "鎖定螢幕"]));
+    }
+    page.add(&corners);
 
     let wall = group("桌布");
     // Without a wallpaper of Nekoland's own, the one swaybg is started with at login.
@@ -651,6 +663,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
 
 /// A wallpaper as the 桌布 group shows it to be chosen.
 const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
+const HOT_CORNERS: [&str; 4] = ["none", "overview", "apps", "lock"];
 const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
 /// What double-clicking a GTK title bar does, as GNOME names it.
 const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
