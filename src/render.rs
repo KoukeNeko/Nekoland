@@ -13,16 +13,14 @@ use smithay::{
         gles::GlesRenderer,
         utils::CommitCounter,
     },
-    desktop::{
-        layer_map_for_output,
-        space::{space_render_elements, SpaceRenderElements},
-    },
+    desktop::{layer_map_for_output, LayerSurface},
     output::Output,
     utils::{Logical, Point, Rectangle, Scale, Size},
     wayland::shell::wlr_layer::Layer,
 };
 
 use crate::{
+    glass::{Glass, Pane},
     overview::{BAR_HEIGHT, ICON_SIZE},
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
@@ -40,8 +38,8 @@ type SurfaceElement = WaylandSurfaceRenderElement<GlesRenderer>;
 
 render_elements! {
     pub SceneElement<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, SurfaceElement>,
     Surface=SurfaceElement,
+    Glass=Pane,
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
     Solid=SolidColorRenderElement,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
@@ -52,6 +50,7 @@ pub fn scene_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
+    glass: Option<&mut Glass>,
 ) -> Result<Vec<SceneElement>, Box<dyn std::error::Error>> {
     let Some(overview) = &state.overview else {
         // A fullscreen window is all there is to see, under the overlay layer.
@@ -76,10 +75,20 @@ pub fn scene_elements(
             );
             return Ok(elements);
         }
-        return Ok(space_render_elements(renderer, [&state.space], output, 1.0)?
+        let output_geometry = state
+            .space
+            .output_geometry(output)
+            .ok_or("output is not mapped")?;
+        let mut under: Vec<SceneElement> = state
+            .space
+            .render_elements_for_region(renderer, &output_geometry, 1.0, 1.0)
             .into_iter()
-            .map(SceneElement::Space)
-            .collect());
+            .map(SceneElement::Surface)
+            .collect();
+        under.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+        let mut elements = floating_elements(state, renderer, output, glass, &under, false);
+        elements.extend(under);
+        return Ok(elements);
     };
 
     // The overview: the desktops' bar and the dock, then the windows spread apart, named, over a dimmed wallpaper.
@@ -104,7 +113,8 @@ pub fn scene_elements(
         .map(SceneElement::Picture)
     };
 
-    let mut elements = layer_elements(renderer, output, ABOVE_WINDOWS, true);
+    // Everything under the dock and other floating layers, which their glass shows blurred.
+    let mut elements = Vec::new();
 
     // The bar slides down from the top edge.
     let slide = Point::from((0, ((progress - 1.0) * f64::from(BAR_HEIGHT)).round() as i32));
@@ -192,7 +202,81 @@ pub fn scene_elements(
         Kind::Unspecified,
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-    Ok(elements)
+    let mut scene = floating_elements(state, renderer, output, glass, &elements, true);
+    scene.extend(elements);
+    Ok(scene)
+}
+
+/// The layers above the windows, each surface the configuration names on glass over `under`.
+fn floating_elements(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    mut glass: Option<&mut Glass>,
+    under: &[SceneElement],
+    without_top_panel: bool,
+) -> Vec<SceneElement> {
+    let output_width = state
+        .space
+        .output_geometry(output)
+        .map_or(i32::MAX, |geometry| geometry.size.w);
+    let map = layer_map_for_output(output);
+    let radius_of = |surface: &LayerSurface| state.config.glass.get(surface.namespace()).copied();
+    let surfaces: Vec<LayerSurface> = ABOVE_WINDOWS
+        .into_iter()
+        .flat_map(|layer| map.layers_on(layer).rev())
+        .filter(|surface| !(without_top_panel && is_top_panel(&map, surface)))
+        .cloned()
+        .collect();
+
+    let areas: Vec<_> = surfaces
+        .iter()
+        .filter(|surface| radius_of(surface).is_some())
+        .map(|surface| map.layer_geometry(surface).unwrap_or_default().to_physical(1))
+        .collect();
+    if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
+        if !areas.is_empty() {
+            if let Err(err) = glass.update(renderer, mode.size, &areas, under) {
+                tracing::warn!("glass: {err}");
+            }
+        }
+    }
+
+    let mut elements = Vec::new();
+    for surface in &surfaces {
+        let geometry = map.layer_geometry(surface).unwrap_or_default();
+        elements.extend(
+            AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+                surface,
+                renderer,
+                geometry.loc.to_physical(1),
+                Scale::from(1.0),
+                1.0,
+            )
+            .into_iter()
+            .map(SceneElement::Surface),
+        );
+        if let Some(radius) = radius_of(surface) {
+            // A bar across the whole output has no corners to round.
+            let radius = if geometry.size.w >= output_width {
+                0
+            } else {
+                radius
+            };
+            elements.extend(
+                glass
+                    .as_deref_mut()
+                    .and_then(|glass| glass.pane(surface.wl_surface(), geometry.to_physical(1), radius))
+                    .map(SceneElement::Glass),
+            );
+        }
+    }
+    elements
+}
+
+fn is_top_panel(map: &smithay::desktop::LayerMap, surface: &LayerSurface) -> bool {
+    let geometry = map.layer_geometry(surface).unwrap_or_default();
+    geometry.loc.y == 0 && geometry.size.h <= TOP_PANEL_MAX_HEIGHT
 }
 
 /// The surfaces of some layers. In the overview the desktops' bar takes the place of
@@ -207,10 +291,7 @@ fn layer_elements(
     layers
         .into_iter()
         .flat_map(|layer| map.layers_on(layer).rev())
-        .filter(|surface| {
-            let geometry = map.layer_geometry(surface).unwrap_or_default();
-            !(without_top_panel && geometry.loc.y == 0 && geometry.size.h <= TOP_PANEL_MAX_HEIGHT)
-        })
+        .filter(|surface| !(without_top_panel && is_top_panel(&map, surface)))
         .flat_map(|surface| {
             let location = map.layer_geometry(surface).unwrap_or_default().loc;
             AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(

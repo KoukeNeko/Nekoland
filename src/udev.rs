@@ -48,6 +48,7 @@ use tracing::{info, warn};
 
 use crate::{
     cursor::Cursors,
+    glass::Glass,
     render::{scene_elements, SceneElement, CLEAR_COLOR},
     CalloopData, Nekoland,
 };
@@ -64,6 +65,8 @@ struct Udev {
     manager: OutputManager,
     surfaces: HashMap<crtc::Handle, (Surface, Output)>,
     cursors: Cursors,
+    /// None when the GPU could not build the glass shaders.
+    glass: Option<Glass>,
 }
 
 type SharedUdev = Rc<RefCell<Udev>>;
@@ -177,6 +180,9 @@ pub fn init_udev(
     }
 
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
+        glass: Glass::new(&mut renderer)
+            .inspect_err(|err| warn!("no glass: {err}"))
+            .ok(),
         renderer,
         manager,
         surfaces,
@@ -286,13 +292,14 @@ fn render(
         renderer,
         surfaces,
         cursors,
+        glass,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
         return;
     };
 
-    let queued = draw(state, renderer, surface, output, cursors).unwrap_or_else(|err| {
+    let queued = draw(state, renderer, surface, output, cursors, glass).unwrap_or_else(|err| {
         warn!("render: {err}");
         false
     });
@@ -322,6 +329,7 @@ fn draw(
     surface: &mut Surface,
     output: &Output,
     cursors: &mut Cursors,
+    glass: &mut Option<Glass>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let output_origin = state
         .space
@@ -337,7 +345,7 @@ fn draw(
 
     // Front to back: the cursor is above everything else.
     let mut elements = cursor_elements(state, renderer, cursors, pointer);
-    elements.extend(scene_elements(state, renderer, output)?);
+    elements.extend(scene_elements(state, renderer, output, glass.as_mut())?);
 
     let is_empty = surface
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)

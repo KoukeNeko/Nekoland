@@ -1,6 +1,6 @@
 //! Settings read once at startup from `$XDG_CONFIG_HOME/nekoland/config.toml`.
 
-use std::{path::PathBuf, process::Command};
+use std::{collections::HashMap, path::PathBuf, process::Command};
 
 use serde::Deserialize;
 
@@ -20,6 +20,9 @@ pub struct Config {
     pub volume_mute: String,
     pub brightness_up: String,
     pub brightness_down: String,
+    /// Layer surfaces drawn on glass, by the namespace they give, with the corner radius
+    /// they draw themselves with.
+    pub glass: HashMap<String, i32>,
 }
 
 impl Default for Config {
@@ -35,6 +38,11 @@ impl Default for Config {
             volume_mute: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
             brightness_up: "brightnessctl set 5%+".into(),
             brightness_down: "brightnessctl set 5%-".into(),
+            glass: HashMap::from([
+                ("waybar".into(), 18),
+                ("notifications".into(), 14),
+                ("launcher".into(), 16),
+            ]),
         }
     }
 }
@@ -101,6 +109,15 @@ mod tests {
             };
             assert_eq!(config.mode_size(), None, "{mode}");
         }
+    }
+
+    #[test]
+    fn glass_names_layers_with_their_corner_radius() {
+        let config: Config = toml::from_str("[glass]\npanel = 0\ndock = 18").unwrap();
+        assert_eq!(
+            config.glass,
+            HashMap::from([("panel".into(), 0), ("dock".into(), 18)])
+        );
     }
 
     #[test]

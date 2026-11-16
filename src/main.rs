@@ -3,6 +3,7 @@
 mod config;
 mod cursor;
 mod focus;
+mod glass;
 mod handlers;
 
 mod grabs;

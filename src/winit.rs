@@ -9,6 +9,7 @@ use smithay::{
 };
 
 use crate::{
+    glass::Glass,
     render::{scene_elements, CLEAR_COLOR},
     CalloopData, Nekoland,
 };
@@ -43,6 +44,9 @@ pub fn init_winit(
     state.space.map_output(&output, (0, 0));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    let mut glass = Glass::new(backend.renderer())
+        .inspect_err(|err| tracing::warn!("no glass: {err}"))
+        .ok();
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
 
@@ -71,7 +75,7 @@ pub fn init_winit(
                 state.tick_overview();
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    let elements = scene_elements(state, renderer, &output).unwrap();
+                    let elements = scene_elements(state, renderer, &output, glass.as_mut()).unwrap();
                     damage_tracker
                         .render_output(renderer, &mut framebuffer, 0, &elements, CLEAR_COLOR)
                         .unwrap();
