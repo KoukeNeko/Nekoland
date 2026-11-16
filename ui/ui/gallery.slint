@@ -200,13 +200,9 @@ component MockWindow inherits Rectangle {
     }
 }
 
-// The design language, each part of it shown and to be tried: in the gallery window,
-// and in Settings.
+// The design language of Nekoland's own Slint windows, each part of it shown and to be
+// tried.
 export component DesignLanguage {
-    // The title and the light or dark switch, which only the gallery shows.
-    in property <bool> heading: true;
-    in property <length> margin: 40px;
-
     property <int> dock-side: 1;
     property <int> placement: 0;
     property <float> volume: 60;
@@ -217,7 +213,7 @@ export component DesignLanguage {
     preferred-height: content.preferred-height;
 
     content := VerticalLayout {
-        padding: margin;
+        padding: 40px;
         padding-bottom: 80px;
         spacing: 56px;
 
@@ -226,7 +222,7 @@ export component DesignLanguage {
             VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: 8px;
-                if heading: Text {
+                Text {
                     text: "Nekoland 元件";
                     font-size: Theme.text-title;
                     font-weight: 700;
@@ -238,7 +234,7 @@ export component DesignLanguage {
                     wrap: word-wrap;
                 }
             }
-            if heading: VerticalLayout {
+            VerticalLayout {
                 alignment: end;
                 Segmented {
                     options: ["淺色", "深色"];

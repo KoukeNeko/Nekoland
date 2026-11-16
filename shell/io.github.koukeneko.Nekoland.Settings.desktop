@@ -7,4 +7,3 @@ Comment[zh_TW]=Nekoland 的桌面、外觀、滑鼠、聲音與啟動項目設�
 Exec=nekoland-settings
 Icon=preferences-system
 Categories=Settings;System;
-StartupWMClass=nekoland-settings

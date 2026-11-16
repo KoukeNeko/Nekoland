@@ -15,8 +15,8 @@ cargo run
 ```
 
 It needs the development files of Wayland, libinput, libseat, libudev, GBM, EGL,
-xkbcommon, Cairo, Pango and gdk-pixbuf, and at run time `Xwayland` for X11 programs
-and a D-Bus session bus for the menu bar.
+xkbcommon, Cairo, Pango and gdk-pixbuf, GTK 4 and libadwaita for the settings, and at
+run time `Xwayland` for X11 programs and a D-Bus session bus for the menu bar.
 
 With no configuration it starts a terminal. `-c COMMAND` starts something else.
 
@@ -71,13 +71,14 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 - Notifications are shown by Nekoland, which serves `org.freedesktop.Notifications`:
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.
-- Settings, `nekoland-settings` from `ui/`, opened from the system menu, draws the
-  desktop small over a section for each part of it: the applications, with their four
-  ways to be shown, the Dock, the menu bar and the wallpaper; a click on a part goes to
-  its section. Its other pages set light or dark, the mouse and touchpad, the sound, what
-  starts at login, and show what the computer is. Each change takes effect at once.
-  Copy `shell/nekoland-settings.desktop` to `~/.local/share/applications/` to find it
-  among the applications.
+- Settings, `nekoland-settings` from `ui/`, opened from the system menu, is a GTK and
+  libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
+  says. Its desktop page has a group each for the applications, with their four ways to
+  be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
+  the mouse and touchpad, the sound and what starts at login, show what the computer is,
+  and show GTK's own widgets as the system style draws them. Each change takes effect at
+  once. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
   user's language too, and takes an input method. Clicking the search field of the
   overview's applications opens it with what was typed there. It closes when anything
