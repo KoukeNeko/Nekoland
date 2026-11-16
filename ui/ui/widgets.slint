@@ -1105,8 +1105,9 @@ export component Dialog inherits Rectangle {
     background: Theme.sheet;
     border-width: 1px;
     border-color: Theme.line;
-    drop-shadow-blur: 60px;
-    drop-shadow-offset-y: 30px;
+    // Within the 40px a window around it leaves; more is cut off at the window's edge.
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 10px;
     drop-shadow-color: #00000080;
     accessible-role: groupbox;
     accessible-label: title;
