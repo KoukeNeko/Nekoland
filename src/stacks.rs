@@ -220,17 +220,17 @@ pub fn count_text(count: usize) -> String {
     out
 }
 
-/// Where each item of a fan goes from the top middle of the stack's icon: rising, curving
-/// away a little more each time, and turning with it. The last place is for the line that
-/// opens the folder.
+/// Where each item of a fan goes from the bottom middle of where it starts: rising, curving
+/// right a little more each time, as the Mac's does, and turning with it. The last place is
+/// for the line that opens the folder.
 pub fn fan_places(count: usize) -> Vec<(f64, f64, f64)> {
     (0..count)
         .map(|index| {
             let i = index as f64;
             (
-                -FAN_CURVE * i * i,
-                -(FAN_ICON / 2.0 + 14.0) - i * FAN_STEP,
-                -FAN_TURN * i,
+                FAN_CURVE * i * i,
+                -FAN_ICON / 2.0 - i * FAN_STEP,
+                FAN_TURN * i,
             )
         })
         .collect()
@@ -247,8 +247,7 @@ pub struct Fan {
 }
 
 impl Fan {
-    /// `labels` bottom first; the last one is the line that opens the folder, drawn without
-    /// an icon.
+    /// `labels` bottom first; the last one is the line that opens the folder.
     pub fn new(labels: &[String]) -> Self {
         let places = fan_places(labels.len());
         let widths: Vec<f64> = labels

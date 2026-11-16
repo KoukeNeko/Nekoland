@@ -2648,7 +2648,7 @@ impl Nekoland {
         else {
             return;
         };
-        let Some(anchor) = self.dock_anchor(tile, false) else {
+        let Some(anchor) = self.dock_anchor(tile, true) else {
             return;
         };
         self.dock.preview = None;
@@ -2661,7 +2661,6 @@ impl Nekoland {
             View::Auto => View::Grid,
             view => view,
         };
-        let center = anchor.loc.x + anchor.size.w / 2;
         let (opened, rect) = match view {
             View::List => {
                 let entries = self.list_entries(&items, &folder, &name, stack.sort);
@@ -2680,8 +2679,11 @@ impl Nekoland {
                     "在檔案中打開".to_string()
                 });
                 let fan = Fan::new(&labels);
-                let anchor =
-                    Point::from((f64::from(center), f64::from(anchor.loc.y + self.dock_sizes().pad)));
+                // As high as the tile's name stands: over the fully magnified icon.
+                let anchor = Point::from((
+                    f64::from(anchor.loc.x + anchor.size.w / 2),
+                    f64::from(anchor.loc.y - POPUP_GAP),
+                ));
                 let rect = Rectangle::new((anchor + fan.origin).to_i32_round(), fan.size);
                 (Opened::Fan { fan, anchor, labels }, rect)
             }
@@ -2795,6 +2797,7 @@ impl Nekoland {
             return;
         }
         stack.drawn = Some(key);
+        let fan_folder = matches!(stack.view, Opened::Fan { .. }).then(|| stack.folder.clone());
         let shown: Vec<Item> = match &stack.view {
             Opened::Fan { labels, .. } => stack.items.iter().take(labels.len() - 1).cloned().collect(),
             Opened::Grid { grid, scroll } => stack
@@ -2805,7 +2808,11 @@ impl Nekoland {
                 .cloned()
                 .collect(),
         };
-        let icons: Vec<Option<ImageSurface>> = shown.iter().map(|item| self.file_icon(item, dark)).collect();
+        let mut icons: Vec<Option<ImageSurface>> = shown.iter().map(|item| self.file_icon(item, dark)).collect();
+        // The fan's last line opens the folder, beside the folder's own icon.
+        if let Some(folder) = fan_folder {
+            icons.push(self.folder_icon(&folder, 64, dark));
+        }
         let Some(stack) = self.dock.stack.as_mut() else {
             return;
         };
