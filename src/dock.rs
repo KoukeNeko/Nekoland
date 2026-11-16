@@ -628,6 +628,8 @@ pub struct Dock {
     recents: Vec<String>,
     /// Pictures of files and folders, by path.
     file_icons: Vec<(PathBuf, bool, Option<ImageSurface>)>,
+    /// The pictures being read for them on a thread, as a large photo would hold the screen.
+    file_icon_reads: Vec<(PathBuf, bool, stacks::Reading)>,
     /// What a file manager is dragging, once it has said: the paths of the files.
     dnd: Option<Arc<Mutex<Option<Vec<PathBuf>>>>>,
     /// Where the pointer last moved to.
@@ -1050,9 +1052,44 @@ impl Nekoland {
         if self.dock.file_icons.len() > 400 {
             self.dock.file_icons.clear();
         }
-        let icon = stacks::item_icon(item, 64, ink(dark));
+        // Its kind's icon until its picture is read.
+        let icon = stacks::kind_icon(item, 64, ink(dark));
         self.dock.file_icons.push((item.path.clone(), dark, icon.clone()));
+        if let Some(picture) = stacks::picture_path(item) {
+            let size = 64 * text::picture_scale();
+            let read = stacks::read_on_a_thread(picture, Size::from((size, size)));
+            self.dock.file_icon_reads.push((item.path.clone(), dark, read));
+        }
         icon
+    }
+
+    /// Pictures read since the last frame take the place of their kinds' icons, and what
+    /// shows them is drawn again.
+    fn take_read_file_icons(&mut self) {
+        let mut read = Vec::new();
+        self.dock.file_icon_reads.retain(|(path, dark, reading)| {
+            match reading.lock().ok().and_then(|mut reading| reading.take()) {
+                Some(pixels) => {
+                    read.push((path.clone(), *dark, pixels));
+                    false
+                }
+                None => true,
+            }
+        });
+        for (path, dark, pixels) in read {
+            let Some(icon) = pixels.and_then(stacks::pixels_surface) else {
+                continue;
+            };
+            for (known, known_dark, cached) in &mut self.dock.file_icons {
+                if *known == path && *known_dark == dark {
+                    *cached = Some(icon.clone());
+                }
+            }
+            self.dock.drawn = None;
+            if let Some(stack) = self.dock.stack.as_mut() {
+                stack.drawn = None;
+            }
+        }
     }
 
     /// A folder's own icon, as its file manager shows it, trimmed as an application's is.
@@ -1324,6 +1361,7 @@ impl Nekoland {
     /// Brings the Dock up to date before a frame: what it shows, where everything is on
     /// its way, and what opens over it.
     pub fn refresh_dock(&mut self) {
+        self.take_read_file_icons();
         let now = Instant::now();
         let dt = self
             .dock

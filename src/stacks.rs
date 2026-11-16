@@ -4,6 +4,7 @@
 use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::UNIX_EPOCH,
 };
 
@@ -178,6 +179,52 @@ pub fn kind_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageS
     icon_names(&item.path)
         .iter()
         .find_map(|name| text::named_icon(name, "", size, tint))
+}
+
+/// A picture's pixels as gdk-pixbuf gives them, which, unlike its pixbuf, may cross threads:
+/// the bytes, whether they have alpha, width, height and row stride.
+pub type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
+
+/// Pixels read on a thread: `None` until it is done, then what it read, if anything.
+pub type Reading = Arc<Mutex<Option<Option<Pixels>>>>;
+
+/// Reads the picture at `path`, at most `pixels` big, on a thread.
+pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
+    let read = Arc::new(Mutex::new(None));
+    let into = read.clone();
+    std::thread::spawn(move || {
+        let found = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true)
+            .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
+            .ok()
+            .map(|pixbuf| {
+                let stride = pixbuf.rowstride();
+                (
+                    pixbuf.read_pixel_bytes(),
+                    pixbuf.has_alpha(),
+                    pixbuf.width(),
+                    pixbuf.height(),
+                    stride,
+                )
+            });
+        if let Ok(mut read) = into.lock() {
+            *read = Some(found);
+        }
+    });
+    read
+}
+
+/// A picture's surface from pixels read on a thread.
+pub fn pixels_surface((bytes, alpha, width, height, stride): Pixels) -> Option<ImageSurface> {
+    let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
+        &bytes,
+        gdk_pixbuf::Colorspace::Rgb,
+        alpha,
+        8,
+        width,
+        height,
+        stride,
+    );
+    text::pixbuf_surface(&pixbuf, None)
 }
 
 /// Draws `icon` fitted to a square of `size` at the origin, in the middle of it.

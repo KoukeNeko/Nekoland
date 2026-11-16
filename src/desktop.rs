@@ -9,7 +9,6 @@ use std::{
     io::{Read, Write},
     os::fd::{FromRawFd, OwnedFd},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -131,11 +130,11 @@ pub struct Desktop {
     quick_look: Option<(Looked, Picture)>,
     /// A picture being read for Quick Look away from the compositor's thread, which a
     /// camera's largest photos would hold up for half a second.
-    reading: Option<(Looked, Reading)>,
+    reading: Option<(Looked, stacks::Reading)>,
     /// Each item's icon as drawn, and the pictures being read for them on a thread, which
     /// would otherwise be read again at every click, holding the screen.
     icons: Vec<(Item, ImageSurface)>,
-    icon_reads: Vec<(Item, Reading)>,
+    icon_reads: Vec<(Item, stacks::Reading)>,
     /// Where the items were put, read once the desktop keeps them there.
     places: Option<Places>,
     /// Where the pointer was when the drag off the desktop started.
@@ -143,13 +142,6 @@ pub struct Desktop {
 }
 
 type Looked = (PathBuf, bool, Size<i32, Logical>);
-
-/// A picture's pixels as gdk-pixbuf gives them, which, unlike its pixbuf, may cross threads:
-/// the bytes, whether they have alpha, width, height and row stride.
-type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
-
-/// Pixels read on a thread: `None` until it is done, then what it read, if anything.
-type Reading = Arc<Mutex<Option<Option<Pixels>>>>;
 
 /// The cell each item was put in, by name, as column from the right and row from the top.
 type Places = std::collections::BTreeMap<String, [i32; 2]>;
@@ -1157,7 +1149,7 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
         return;
     }
     let room = look_room(size) * text::picture_scale();
-    desktop.reading = Some((wanted, read_on_a_thread(item.path.clone(), room)));
+    desktop.reading = Some((wanted, stacks::read_on_a_thread(item.path.clone(), room)));
     desktop.quick_look = None;
 }
 
@@ -1177,7 +1169,7 @@ fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
         },
     );
     for (item, pixels) in done {
-        if let Some(icon) = pixels.and_then(pixels_surface) {
+        if let Some(icon) = pixels.and_then(stacks::pixels_surface) {
             desktop.icons.retain(|(known, _)| *known != item);
             desktop.icons.push((item, icon));
             desktop.drawn = None;
@@ -1194,48 +1186,10 @@ fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
         }
         if let Some(path) = stacks::picture_path(item) {
             let size = ICON * text::picture_scale();
-            let read = read_on_a_thread(path, Size::from((size, size)));
+            let read = stacks::read_on_a_thread(path, Size::from((size, size)));
             desktop.icon_reads.push((item.clone(), read));
         }
     }
-}
-
-/// Reads the picture at `path`, at most `pixels` big, on a thread.
-fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
-    let read = Arc::new(Mutex::new(None));
-    let into = read.clone();
-    std::thread::spawn(move || {
-        let found = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true)
-            .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
-            .ok()
-            .map(|pixbuf| {
-                let stride = pixbuf.rowstride();
-                (
-                    pixbuf.read_pixel_bytes(),
-                    pixbuf.has_alpha(),
-                    pixbuf.width(),
-                    pixbuf.height(),
-                    stride,
-                )
-            });
-        if let Ok(mut read) = into.lock() {
-            *read = Some(found);
-        }
-    });
-    read
-}
-
-fn pixels_surface((bytes, alpha, width, height, stride): Pixels) -> Option<ImageSurface> {
-    let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
-        &bytes,
-        gdk_pixbuf::Colorspace::Rgb,
-        alpha,
-        8,
-        width,
-        height,
-        stride,
-    );
-    text::pixbuf_surface(&pixbuf, None)
 }
 
 /// The most of the output Quick Look's picture or text takes, under its title.
@@ -1247,14 +1201,14 @@ fn look_room(output: Size<i32, Logical>) -> Size<i32, Logical> {
 /// picture it is, the start of the text it holds, or else its icon, kind, size and date.
 fn draw_quick_look(
     item: &Item,
-    pixels: Option<Pixels>,
+    pixels: Option<stacks::Pixels>,
     output: Size<i32, Logical>,
     dark: bool,
 ) -> Option<Picture> {
     let colors = menubar::colors(dark);
     let room = look_room(output);
     let scale = text::picture_scale();
-    let image = pixels.and_then(pixels_surface);
+    let image = pixels.and_then(stacks::pixels_surface);
     let shown = (!item.is_dir && gio::content_type_is_a(&item.kind, "text/plain"))
         .then(|| {
             let mut start = Vec::new();
