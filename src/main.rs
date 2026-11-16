@@ -41,6 +41,10 @@ use smithay::reexports::{
 };
 pub use state::Nekoland;
 
+/// Where a nested Nekoland keeps the outer session's X display, which XWayland's replaces;
+/// `shell/xrdp-clipboard.sh` reads it.
+const HOST_DISPLAY: &str = "NEKOLAND_HOST_DISPLAY";
+
 pub struct CalloopData {
     state: Nekoland,
     display_handle: DisplayHandle,
@@ -103,11 +107,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Inside another session, be a window in it; on a bare console, drive the display.
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
-    if nested {
-        crate::winit::init_winit(&mut event_loop, &mut data)?;
-    } else {
+    // An xrdp session is Nekoland's own, though it is drawn in the X server xrdp started.
+    let owns_session = !nested || data.state.remote;
+    if owns_session {
         // Portals pick their backends by the desktop's name.
         std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
+    }
+    if nested {
+        // XWayland takes DISPLAY; the clipboard of xrdp's client is on this one.
+        if let Some(host) = std::env::var_os("DISPLAY") {
+            std::env::set_var(HOST_DISPLAY, host);
+        }
+        crate::winit::init_winit(&mut event_loop, &mut data)?;
+    } else {
         crate::udev::init_udev(&mut event_loop, &mut data)?;
     }
 
@@ -147,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     x11::start(&event_loop.handle(), &mut data, move |data| {
         // Services D-Bus starts, such as the portal that tells programs whether to be dark,
         // have to find this display; a nested compositor leaves the outer session's alone.
-        if !nested {
+        if owns_session {
             let updated = std::process::Command::new("dbus-update-activation-environment")
                 .args([
                     "--systemd",
@@ -161,6 +173,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");
             }
+        }
+        if data.state.remote {
+            // shortcut: text only, and xrdp's side is looked at twice a second; bridge the
+            // selections in the compositor once other kinds of content are wanted across.
+            config::spawn(include_str!("../shell/xrdp-clipboard.sh"));
         }
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));

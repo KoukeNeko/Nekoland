@@ -10,10 +10,13 @@ use crate::{
 };
 
 impl Nekoland {
-    /// Locked as it wakes: the locker is given a moment to take the screen first.
+    /// Locked as it wakes: the locker is given a moment to take the screen first. From an
+    /// xrdp session the computer is elsewhere, and asleep would end the session: it locks only.
     pub fn sleep(&mut self) {
         self.lock_screen();
-        config::spawn("sleep 1; systemctl suspend");
+        if !self.remote {
+            config::spawn("sleep 1; systemctl suspend");
+        }
     }
 
     pub fn power_action(&mut self, action: PowerAction) {

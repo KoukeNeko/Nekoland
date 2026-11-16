@@ -1569,7 +1569,8 @@ impl Nekoland {
             Source::System => vec![
                 Entry::item("系統設定⋯", Command::Settings),
                 Entry::separator(),
-                Entry::item("睡眠", Command::Sleep),
+                // From an xrdp session, asleep would end the session; see Nekoland::sleep.
+                Entry::item("睡眠", Command::Sleep).enabled(!self.remote),
                 Entry::item("重新開機⋯", Command::Restart),
                 Entry::item("關機⋯", Command::ShutDown),
                 Entry::separator(),

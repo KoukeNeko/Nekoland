@@ -6,7 +6,8 @@ overview of windows and desktops, notifications and a launcher, all of them its 
 
 Started on a bare console it drives the display itself through DRM/KMS, with input
 from libinput. Started inside another Wayland or X11 session it runs as a window
-there, which is handy while working on it.
+there, which is handy while working on it; in an xrdp session it is the whole session,
+for another computer to use over RDP.
 
 ## Build and run
 
@@ -114,7 +115,8 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   permission store, the cursor size, high contrast and reduced motion, the applications
   that open links and each kind of file, through GIO's defaults, and the terminal,
   whether GTK pastes with the middle button, blinks its text cursor and remembers recent
-  files, and what starts at login, show what the computer is and how worn its batteries are, and
+  files, what starts at login, and whether other computers may come in over RDP and
+  which session they get, show what the computer is and how worn its batteries are, and
   show GTK's own widgets as the system style draws them.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
@@ -276,6 +278,31 @@ left of the clock, as on the Mac: orange, green and purple.
 Programs in a sandbox such as Flatpak's connect through `security-context-v1` and are
 kept from what reaches other programs: input methods, virtual keyboards, the clipboard
 manager protocol, other programs' windows, screen capture and the lock.
+
+## Remote desktop
+
+Other computers come in over RDP through xrdp and xorgxrdp, whose X server Nekoland
+covers as a window without a frame, following its size as the client's window changes.
+Settings' 遠端桌面 page turns the `xrdp` service on and off, through `sudo -A` and
+`nekoland-askpass` (not from inside an xrdp session, which would end it), shows the
+address and port to connect to, and gives xrdp sessions Nekoland by writing `~/.xsession`, which
+xrdp's session script runs; one already there is kept in `~/.config/nekoland/xsession`
+and put back when the session is set to the system's again.
+
+Nekoland knows the session by xrdp's `XRDP_SESSION` and, as on a console, names itself
+to the portals and to the services D-Bus starts. Sleep, from the menu, the power button
+or idleness, only locks the screen there, since the computer is elsewhere. Frames are
+drawn only when something in them changed, and only that is sent to the X server, so
+that xrdp encodes no more. The cursor is xrdp's, drawn by the client: the cursors
+programs name show as they are, and one a program draws itself as the arrow. With
+`wl-clipboard` and `xclip` installed, text copied on either side can be pasted on the
+other; other kinds of content stay where they were copied. Sound needs xrdp's PipeWire
+module, `pipewire-module-xrdp`.
+
+xrdp draws in software, so glass is slower than on a console. All of the client's
+monitors are one display to Nekoland. The user's D-Bus services serve one session at a
+time: logged in on the console and over RDP at once, the services started last follow the
+session that started last.
 
 ## GTK applications
 

@@ -69,6 +69,9 @@ pub struct Nekoland {
     pub last_input: std::time::Instant,
     /// Whether the displays are turned off, until there is input.
     pub screens_off: bool,
+    /// Whether this is an xrdp session: drawn in the X server xrdp started, for a computer
+    /// elsewhere, so this one is not put to sleep from it.
+    pub remote: bool,
     /// Night Shift, as its setting, its schedule or the control center last said, and
     /// whether a display can show it.
     pub night_shift: bool,
@@ -191,6 +194,7 @@ impl Nekoland {
             locker_started: None,
             last_input: start_time,
             screens_off: false,
+            remote: std::env::var_os("XRDP_SESSION").is_some(),
             night_shift: false,
             night_shift_available: false,
             night_shift_wanted: None,

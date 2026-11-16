@@ -288,6 +288,7 @@ fn build(app: &adw::Application) {
                 "滑鼠與觸控板" => mouse_page(config).upcast(),
                 "預設應用程式" => default_apps_page(config).upcast(),
                 "啟動項目" => startup_page(&autostart).upcast(),
+                "遠端桌面" => remote_page().upcast(),
                 "關於" => about_page().upcast(),
                 "設計語言" => design_page().upcast(),
                 _ => unreachable!("no page named {name}"),
@@ -315,6 +316,7 @@ fn build(app: &adw::Application) {
         vec![
             ("預設應用程式", "preferences-desktop-apps-symbolic"),
             ("啟動項目", "system-run-symbolic"),
+            ("遠端桌面", "preferences-desktop-remote-desktop-symbolic"),
             ("關於", "help-about-symbolic"),
         ],
         vec![("設計語言", "applications-graphics-symbolic")],
@@ -2621,6 +2623,167 @@ fn power_page(config: &Config) -> adw::PreferencesPage {
     page
 }
 
+/// Where Settings keeps the `~/.xsession` there was before it gave xrdp sessions Nekoland.
+const SAVED_XSESSION_FILE: &str = "nekoland/xsession";
+/// How an `~/.xsession` Settings wrote begins, to tell it from one written by hand.
+const XSESSION_HEAD: &str = "# Written by Nekoland's Settings, for xrdp sessions.\n";
+const XRDP_INI: &str = "/etc/xrdp/xrdp.ini";
+const RDP_PORT: u16 = 3389;
+
+/// xrdp, which lets other computers in over RDP, and the session they get.
+fn remote_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let rows = group("");
+    let service = adw::SwitchRow::builder().title("遠端桌面").build();
+    let address = fact_row("位址", &remote_address());
+    let port = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
+    let port = fact_row("連接埠", &port.to_string());
+    let session = adw::ComboRow::builder()
+        .title("遠端工作階段")
+        .model(&gtk::StringList::new(&["Nekoland", "系統預設"]))
+        .selected(if xsession_is_nekoland() { 0 } else { 1 })
+        .build();
+    rows.add(&service);
+    rows.add(&address);
+    rows.add(&port);
+    rows.add(&session);
+    page.add(&rows);
+
+    // Set while the switch is made to show xrdp as it is, not turned by the person.
+    let showing = Rc::new(Cell::new(false));
+    let show = Rc::new(glib::clone!(
+        #[weak]
+        service,
+        #[weak]
+        address,
+        #[weak]
+        port,
+        #[strong]
+        showing,
+        move || {
+            let running = xrdp_running();
+            showing.set(true);
+            service.set_active(running == Some(true));
+            showing.set(false);
+            // Turned off from an xrdp session, it would end the connection it is changed over.
+            let remote = std::env::var_os("XRDP_SESSION").is_some();
+            service.set_sensitive(running.is_some() && !remote);
+            service.set_subtitle(match running {
+                None => "未安裝 xrdp",
+                Some(_) if remote => "遠端連線中",
+                Some(_) => "",
+            });
+            address.set_visible(running == Some(true));
+            port.set_visible(running == Some(true));
+        }
+    ));
+    show();
+    service.connect_active_notify(move |row| {
+        if showing.get() {
+            return;
+        }
+        let (verb, reason) = if row.is_active() {
+            ("enable", "開啟遠端桌面")
+        } else {
+            ("disable", "關閉遠端桌面")
+        };
+        row.set_sensitive(false);
+        let askpass = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
+            .filter(|path| path.exists())
+            .unwrap_or_else(|| PathBuf::from("nekoland-askpass"));
+        let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+        launcher.setenv("SUDO_ASKPASS", askpass, true);
+        launcher.setenv("NEKOLAND_ASKPASS_REASON", reason, true);
+        let show = show.clone();
+        match launcher.spawn(&["sudo", "-A", "--", "systemctl", verb, "--now", "xrdp"].map(std::ffi::OsStr::new)) {
+            // Turned down or failed, the switch goes back to what xrdp is.
+            Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
+                if let Err(err) = result {
+                    eprintln!("systemctl {verb} xrdp: {err}");
+                }
+                show();
+            }),
+            Err(err) => {
+                eprintln!("sudo: {err}");
+                show();
+            }
+        }
+    });
+    session.connect_selected_notify(|row| {
+        if let Err(err) = set_xsession(row.selected() == 0) {
+            eprintln!("~/.xsession: {err}");
+        }
+    });
+    page
+}
+
+/// Whether xrdp is running, or None when it is not installed.
+fn xrdp_running() -> Option<bool> {
+    let shown = output("systemctl", &["show", "xrdp", "--property=LoadState,ActiveState"])?;
+    let value = |key: &str| field(&shown, key, '=');
+    (value("LoadState").as_deref() == Some("loaded"))
+        .then(|| value("ActiveState").as_deref() == Some("active"))
+}
+
+/// The computer's IPv4 addresses, or its name when it has none.
+fn remote_address() -> String {
+    let mut hosts: Vec<String> = output("hostname", &["-I"])
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|address| address.contains('.'))
+        .map(String::from)
+        .collect();
+    if hosts.is_empty() {
+        hosts.extend(output("hostname", &[]).map(|name| name.trim().to_string()));
+    }
+    hosts.join("、")
+}
+
+/// The port xrdp listens on, from its `[Globals]`, which come first in its file.
+fn xrdp_port(ini: &str) -> u16 {
+    ini.lines()
+        .take_while(|line| !line.trim().starts_with('[') || line.trim() == "[Globals]")
+        .find_map(|line| line.trim().strip_prefix("port=")?.trim().parse().ok())
+        .unwrap_or(RDP_PORT)
+}
+
+fn xsession_is_nekoland() -> bool {
+    std::fs::read_to_string(home().join(".xsession")).is_ok_and(|text| text.starts_with(XSESSION_HEAD))
+}
+
+/// Gives xrdp sessions Nekoland through `~/.xsession`, which xrdp's session script runs,
+/// keeping one written by hand to put back when they are given the system's again.
+fn set_xsession(nekoland: bool) -> std::io::Result<()> {
+    let path = home().join(".xsession");
+    let saved = glib::user_config_dir().join(SAVED_XSESSION_FILE);
+    if nekoland == xsession_is_nekoland() {
+        return Ok(());
+    }
+    if !nekoland {
+        return if saved.exists() {
+            std::fs::rename(&saved, &path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+    if path.exists() {
+        std::fs::create_dir_all(saved.parent().unwrap_or(Path::new("/")))?;
+        std::fs::rename(&path, &saved)?;
+    }
+    // The compositor that started Settings put itself first on the PATH.
+    let program = std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join("nekoland"))
+                .find(|program| program.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from("nekoland"));
+    let program = program.to_string_lossy().replace('\'', "'\\''");
+    write_atomic(&path, &format!("{XSESSION_HEAD}exec '{program}'\n"))
+}
+
 #[derive(Debug, PartialEq)]
 struct Battery {
     model: String,
@@ -3823,6 +3986,16 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xrdp_port_is_read_from_its_globals_only() {
+        let ini = "[Globals]\nport=3390\n\n[Xvnc]\nport=-1\n";
+        assert_eq!(xrdp_port(ini), 3390);
+        assert_eq!(
+            xrdp_port("[Globals]\nport=tcp://:3391\n[vnc-any]\nport=5900\n"),
+            RDP_PORT
+        );
+    }
 
     #[test]
     fn only_settings_changed_elsewhere_count() {
