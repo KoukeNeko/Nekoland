@@ -5,6 +5,7 @@ use std::borrow::Cow;
 
 use smithay::{
     backend::input::KeyState,
+    desktop::PopupKind,
     input::{
         keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
         Seat,
@@ -26,6 +27,25 @@ pub enum KeyFocus {
 impl From<WlSurface> for KeyFocus {
     fn from(surface: WlSurface) -> Self {
         Self::Wayland(surface)
+    }
+}
+
+impl From<PopupKind> for KeyFocus {
+    fn from(popup: PopupKind) -> Self {
+        Self::Wayland(popup.wl_surface().clone())
+    }
+}
+
+/// Popup grabs hand the keyboard's focus to the pointer; their focus is always a Wayland
+/// surface, since a popup's root is a Wayland toplevel or layer surface.
+impl From<KeyFocus> for WlSurface {
+    fn from(focus: KeyFocus) -> Self {
+        match focus {
+            KeyFocus::Wayland(surface) => surface,
+            KeyFocus::X11(surface) => surface
+                .wl_surface()
+                .expect("an X11 window holding the keyboard has its Wayland surface"),
+        }
     }
 }
 

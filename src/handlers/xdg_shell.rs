@@ -1,6 +1,9 @@
 use smithay::{
     delegate_xdg_shell,
-    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window},
+    desktop::{
+        find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind, PopupManager,
+        PopupPointerGrab, PopupUngrabStrategy, Space, Window,
+    },
     input::{
         pointer::{Focus, GrabStartData as PointerGrabStartData},
         Seat,
@@ -23,6 +26,7 @@ use smithay::{
 };
 
 use crate::{
+    focus::KeyFocus,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
     Nekoland,
 };
@@ -167,8 +171,43 @@ impl XdgShellHandler for Nekoland {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+        let mut grab = match self.popups.grab_popup(KeyFocus::from(root), popup, &seat, serial) {
+            Ok(grab) => grab,
+            Err(err) => {
+                tracing::warn!("popup grab: {err:?}");
+                return;
+            }
+        };
+
+        // A grab is only taken over from the click that opened the menu, or from the menu's
+        // parent; any other grab already running wins and the menu closes.
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
     }
 }
 
