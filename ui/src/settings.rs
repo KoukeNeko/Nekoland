@@ -918,6 +918,12 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
         }
     });
     style.add(&look);
+    let scroll_bars = adw::SwitchRow::builder()
+        .title("一律顯示捲軸")
+        .active(interface_setting("overlay-scrolling") == "false")
+        .build();
+    scroll_bars.connect_active_notify(|row| set_interface("overlay-scrolling", &(!row.is_active()).to_string()));
+    style.add(&scroll_bars);
     page.add(&style);
 
     let themes = group("");
