@@ -27,6 +27,8 @@ pub struct Config {
     pub dock: Vec<String>,
     /// The folders kept at the Dock's right end, before the Trash.
     pub stacks: Vec<Stack>,
+    /// How the applications are shown: Super+A and the Dock's first button.
+    pub apps_view: AppsView,
     /// The picture on the desktop, drawn by swaybg, and how it fills the output.
     pub wallpaper: Option<String>,
     pub wallpaper_mode: WallpaperMode,
@@ -39,6 +41,28 @@ pub struct Config {
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
     pub pointer_speed: f64,
+}
+
+/// The ways the applications can be shown.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppsView {
+    /// In the overview, under the desktops' bar, as GNOME does.
+    #[default]
+    Overview,
+    /// Full screen pages of icons, as the Mac's Launchpad.
+    Launchpad,
+    /// Grouped by kind on one long page.
+    Shelf,
+    /// A list of kinds beside the icons of the one chosen.
+    Sidebar,
+}
+
+impl AppsView {
+    /// Whether the applications are on one long page, not pages of a grid.
+    pub fn is_list(self) -> bool {
+        matches!(self, AppsView::Shelf | AppsView::Sidebar)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
@@ -195,6 +219,7 @@ impl Default for Config {
             .map(String::from)
             .to_vec(),
             stacks: vec![Stack::new(downloads())],
+            apps_view: AppsView::default(),
             wallpaper: None,
             wallpaper_mode: WallpaperMode::default(),
             clock_24h: true,

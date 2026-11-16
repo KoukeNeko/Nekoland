@@ -35,6 +35,7 @@ wallpaper and an input method. Every key is optional:
 | `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw: `{ nekoland-launcher = 16 }` unless set |
 | `dock` | The applications kept in the Dock, by desktop entry name; the Dock writes it back when they are rearranged |
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
+| `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
 | `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
@@ -120,6 +121,13 @@ field under it, and every application a page at a time, turned with the wheel, t
 arrows or the dots. Typing narrows them down by name, keyword or command, and Return
 starts the first. A click starts one on the desktop shown; one dragged onto a desktop
 starts there, onto the add button on a new desktop, and onto the Dock is kept in it.
+
+`apps_view` shows them other ways instead, without the desktops' bar: `launchpad`,
+pages of icons over the whole screen with the search field above; `shelf`, one long
+page, the latest started first and the rest under the name of their kind; `sidebar`,
+the kinds in a list on glass at the left, with the latest started, and the icons of
+the one chosen beside it. On the long page the wheel scrolls, the arrows move from one
+application to the next and Return starts it.
 
 The applications are arranged by dragging, as on the Mac's Launchpad: one dropped
 between others goes there, the others making room; onto another, the two make a folder

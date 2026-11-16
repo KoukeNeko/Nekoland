@@ -20,8 +20,10 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size},
 };
 
+mod list;
+
 use crate::{
-    config,
+    config::{self, AppsView},
     dock::paint_pane,
     menubar::Overlay,
     overview::{expanded_height, BarAction},
@@ -96,6 +98,9 @@ struct Arrangement {
     order: Vec<String>,
     #[serde(default)]
     folders: Vec<SavedFolder>,
+    /// The applications last started from here, the latest first.
+    #[serde(default)]
+    recent: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,9 +114,12 @@ struct SavedFolder {
 #[derive(Clone, Copy, PartialEq)]
 struct Layout {
     search: Rectangle<i32, Logical>,
+    /// The pages' grid; for the long page, the part of it in view.
     grid: Rectangle<i32, Logical>,
     columns: usize,
     rows: usize,
+    /// The list of kinds beside the icons, in the sidebar style.
+    sidebar: Option<Rectangle<i32, Logical>>,
 }
 
 impl Layout {
@@ -182,6 +190,8 @@ enum Target {
 enum Pressed {
     Cell(usize),
     FolderCell(usize),
+    /// An application on the long page.
+    App(usize),
 }
 
 /// What a folder was drawn with: its name, its applications, where room was kept,
@@ -209,7 +219,18 @@ struct OpenFolder {
 }
 
 pub struct AppGrid {
+    style: AppsView,
     apps: Vec<GridApp>,
+    /// The latest started, by ID.
+    recent: Vec<String>,
+    /// How far down the long page is scrolled, and the kind chosen in the sidebar.
+    scroll: f64,
+    category: usize,
+    /// The application the arrow keys have come to on the long page.
+    focus: Option<usize>,
+    list_picture: Option<Picture>,
+    list_drawn: Option<list::ListDrawn>,
+    sidebar_picture: Option<(list::SidebarDrawn, Picture)>,
     entries: Vec<Entry>,
     folders: Vec<Folder>,
     query: String,
@@ -235,7 +256,7 @@ pub struct AppGrid {
     search: Option<(String, Picture)>,
     held_picture: Option<Picture>,
     backdrop: Option<(Size<i32, Logical>, Picture)>,
-    ids: [Id; 5],
+    ids: [Id; 6],
 }
 
 /// The kind of application a desktop entry says it is, as a folder of it is named.
@@ -366,7 +387,11 @@ fn arrange(ids: &[String], kept: &Arrangement) -> (Vec<Entry>, Vec<Folder>) {
 }
 
 impl AppGrid {
-    fn new(query: &str) -> Self {
+    pub fn style(&self) -> AppsView {
+        self.style
+    }
+
+    fn new(query: &str, style: AppsView) -> Self {
         let apps = installed();
         let kept: Arrangement = config::config_file(ARRANGEMENT)
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -379,6 +404,14 @@ impl AppGrid {
         let ids: Vec<String> = apps.iter().map(|app| app.id.clone()).collect();
         let (entries, folders) = arrange(&ids, &kept);
         Self {
+            style,
+            recent: kept.recent.clone(),
+            scroll: 0.0,
+            category: 0,
+            focus: None,
+            list_picture: None,
+            list_drawn: None,
+            sidebar_picture: None,
             apps,
             entries,
             folders,
@@ -401,7 +434,7 @@ impl AppGrid {
             search: None,
             held_picture: None,
             backdrop: None,
-            ids: [Id::new(), Id::new(), Id::new(), Id::new(), Id::new()],
+            ids: [Id::new(), Id::new(), Id::new(), Id::new(), Id::new(), Id::new()],
         }
     }
 
@@ -426,6 +459,7 @@ impl AppGrid {
                     apps: folder.apps.iter().map(|&app| self.apps[app].id.clone()).collect(),
                 })
                 .collect(),
+            recent: self.recent.clone(),
         };
         let Some(path) = config::config_file(ARRANGEMENT) else {
             return;
@@ -514,6 +548,29 @@ impl AppGrid {
             columns,
             rows,
         })
+    }
+
+    /// The glass under it all, a darker tint over the blurred desktop, and the search field.
+    fn refresh_chrome(&mut self, layout: &Layout, output_size: Option<Size<i32, Logical>>) {
+        if self.backdrop.as_ref().map(|(size, _)| Some(*size)) != Some(output_size) {
+            self.backdrop = output_size.and_then(|size| {
+                let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+                {
+                    let cr = Context::new(&surface).ok()?;
+                    cr.set_source_rgba(0.08, 0.08, 0.1, 0.42);
+                    cr.paint().ok()?;
+                }
+                Some((size, text::picture(surface)?))
+            });
+        }
+        let stale = self
+            .search
+            .as_ref()
+            .is_none_or(|(query, picture)| *query != self.query || picture.size != layout.search.size);
+        if stale {
+            self.search =
+                draw_search(&self.query, layout.search.size).map(|picture| (self.query.clone(), picture));
+        }
     }
 
     /// Lets a dragged icon go where it is aimed, and keeps the new arrangement.
@@ -612,9 +669,14 @@ impl Nekoland {
                     apps.page = 0;
                     apps.open = None;
                 }
-                None => overview.apps = Some(AppGrid::new(query)),
+                None => overview.apps = Some(AppGrid::new(query, self.config.apps_view)),
             }
         }
+    }
+
+    /// How the applications are shown, while they are.
+    pub fn apps_style(&self) -> Option<AppsView> {
+        Some(self.overview.as_ref()?.apps.as_ref()?.style)
     }
 
     pub fn apps_shown(&self) -> bool {
@@ -626,7 +688,15 @@ impl Nekoland {
     fn apps_layout(&self) -> Option<Layout> {
         let output = self.space.outputs().next()?;
         let area = self.space.output_geometry(output)?;
-        let top = area.loc.y + expanded_height(area) + 24;
+        let style = self.overview.as_ref()?.apps.as_ref()?.style;
+        if style.is_list() {
+            return Some(list::layout(style, area));
+        }
+        // Launchpad has the whole output; in the overview, the desktops' bar is above.
+        let top = match style {
+            AppsView::Launchpad => area.loc.y + 56,
+            _ => area.loc.y + expanded_height(area) + 24,
+        };
         let search = Rectangle::new(
             (area.loc.x + (area.size.w - SEARCH_WIDTH) / 2, top).into(),
             (SEARCH_WIDTH, SEARCH_HEIGHT).into(),
@@ -642,6 +712,7 @@ impl Nekoland {
             grid,
             columns,
             rows,
+            sidebar: None,
         })
     }
 
@@ -704,6 +775,11 @@ impl Nekoland {
         let now = Instant::now();
         let dt = now.duration_since(apps.last_tick).as_secs_f64().min(0.1);
         apps.last_tick = now;
+        apps.refresh_chrome(&layout, output_size);
+        if apps.style.is_list() {
+            self.refresh_list(&layout, pointer);
+            return;
+        }
 
         // A dragged icon resting at the grid's side turns the page that way.
         let mut pages = apps.pages(&layout);
@@ -748,21 +824,6 @@ impl Nekoland {
             .map(|(cell, _)| first + cell)
             .filter(|&index| index < cells.len());
 
-        if apps.backdrop.as_ref().map(|(size, _)| Some(*size)) != Some(output_size) {
-            apps.backdrop = output_size.and_then(|size| {
-                let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
-                {
-                    let cr = Context::new(&surface).ok()?;
-                    cr.set_source_rgba(0.08, 0.08, 0.1, 0.42);
-                    cr.paint().ok()?;
-                }
-                Some((size, text::picture(surface)?))
-            });
-        }
-        if apps.search.as_ref().map(|(query, _)| query) != Some(&apps.query) {
-            apps.search =
-                draw_search(&apps.query, layout.search.size).map(|picture| (apps.query.clone(), picture));
-        }
         let dimmed = apps.open.is_some();
         let key = (
             apps.query.clone(),
@@ -897,6 +958,16 @@ impl Nekoland {
                 picture,
             });
         }
+        if let (true, Some(picture)) = (apps.style.is_list(), &apps.list_picture) {
+            front.push(Overlay {
+                fade,
+                id: &apps.ids[1],
+                rect: Rectangle::new(layout.grid.loc, picture.size),
+                glass: None,
+                alpha: 1.0,
+                picture,
+            });
+        }
         if let (Some(open), Some(FolderPlace { panel, .. })) = (&apps.open, apps.folder_layout(&layout)) {
             if let Some(picture) = &open.picture {
                 front.push(Overlay {
@@ -909,7 +980,7 @@ impl Nekoland {
                 });
             }
         }
-        if let Some(picture) = &apps.picture {
+        if let (false, Some(picture)) = (apps.style.is_list(), &apps.picture) {
             front.push(Overlay {
                 fade,
                 id: &apps.ids[1],
@@ -925,6 +996,17 @@ impl Nekoland {
                 id: &apps.ids[2],
                 rect: layout.search,
                 glass: Some(SEARCH_HEIGHT / 2),
+                alpha: 1.0,
+                picture,
+            });
+        }
+        // Behind its search field.
+        if let (Some(sidebar), Some((_, picture))) = (layout.sidebar, &apps.sidebar_picture) {
+            front.push(Overlay {
+                fade,
+                id: &apps.ids[5],
+                rect: sidebar,
+                glass: Some(list::SIDEBAR_RADIUS),
                 alpha: 1.0,
                 picture,
             });
@@ -949,6 +1031,9 @@ impl Nekoland {
     /// or dragged; the search field, which opens the launcher, which takes an input
     /// method; the pages' dots; anywhere else leaves.
     pub fn apps_press(&mut self, pos: Point<f64, Logical>) {
+        if self.apps_style().is_some_and(AppsView::is_list) {
+            return self.list_press(pos);
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1022,6 +1107,9 @@ impl Nekoland {
     /// The pointer moved: a press far enough becomes a drag, and a dragged icon is aimed
     /// where the pointer is.
     pub fn apps_motion(&mut self, pos: Point<f64, Logical>) {
+        if self.apps_style().is_some_and(AppsView::is_list) {
+            return self.list_motion(pos);
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1040,6 +1128,8 @@ impl Nekoland {
                         let app = *apps.folders[open.folder].apps.get(index)?;
                         Some((Entry::App(app), Source::Folder(open.folder)))
                     }),
+                    // The long page's are handled by its own motion.
+                    Pressed::App(_) => None,
                 };
                 if let Some((entry, from)) = held {
                     apps.gap = match from {
@@ -1112,6 +1202,9 @@ impl Nekoland {
     /// opens the folder; a dragged one goes where it is aimed, or starts on a desktop it
     /// was dropped on, or is kept in the Dock.
     pub fn apps_release(&mut self, pos: Point<f64, Logical>) {
+        if self.apps_style().is_some_and(AppsView::is_list) {
+            return self.list_release(pos);
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1147,6 +1240,7 @@ impl Nekoland {
                         self.start_grid_app(app, None);
                     }
                 }
+                Pressed::App(app) => self.start_grid_app(app, None),
             }
             return;
         }
@@ -1191,6 +1285,12 @@ impl Nekoland {
             return;
         };
         let (info, id) = (app.info.clone(), app.id.clone());
+        if let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) {
+            apps.recent.retain(|recent| *recent != id);
+            apps.recent.insert(0, id.clone());
+            apps.recent.truncate(list::RECENT);
+            apps.save();
+        }
         if let Some(desktop) = desktop {
             self.switch_workspace(desktop);
         }
@@ -1206,6 +1306,9 @@ impl Nekoland {
     /// closes the folder, clears what was typed, or leaves. Returns whether it was taken.
     pub fn apps_key(&mut self, sym: smithay::input::keyboard::Keysym, typed: Option<char>) -> bool {
         use smithay::input::keyboard::Keysym;
+        if self.apps_style().is_some_and(AppsView::is_list) {
+            return self.list_key(sym, typed);
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return false;
         };
@@ -1269,6 +1372,9 @@ impl Nekoland {
 
     /// The wheel turns the pages. Returns whether it was taken.
     pub fn apps_scroll(&mut self, amount: f64) -> bool {
+        if self.apps_style().is_some_and(AppsView::is_list) {
+            return self.list_scroll(amount);
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return false;
         };
@@ -1353,25 +1459,30 @@ fn paint_folder(cr: &Context, x: f64, y: f64, size: f64, minis: &[Option<ImageSu
 
 /// An application's icon or a folder's square at the top of a place, its name under it.
 fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile) -> Option<()> {
-    let left = x + f64::from(CELL_WIDTH - ICON) / 2.0;
+    paint_tile_in(cr, x, y, tile, CELL_WIDTH, ICON)
+}
+
+/// The same in a place `width` wide, with icons of `icon`.
+fn paint_tile_in(cr: &Context, x: f64, y: f64, tile: &Tile, width: i32, icon_size: i32) -> Option<()> {
+    let left = x + f64::from(width - icon_size) / 2.0;
     match &tile.icon {
         Some(icon) => {
             cr.save().ok()?;
             cr.translate(left, y + 12.0);
-            crate::stacks::paint_fitted(cr, icon, f64::from(ICON), 1.0);
+            crate::stacks::paint_fitted(cr, icon, f64::from(icon_size), 1.0);
             cr.restore().ok()?;
         }
-        None if !tile.minis.is_empty() => paint_folder(cr, left, y + 12.0, f64::from(ICON), &tile.minis),
+        None if !tile.minis.is_empty() => paint_folder(cr, left, y + 12.0, f64::from(icon_size), &tile.minis),
         None => {}
     }
-    let label = text_layout(cr, &tile.name, 10.0);
-    label.set_width((CELL_WIDTH - 14) * pango::SCALE);
+    let label = text_layout(cr, &tile.name, if icon_size < ICON { 9.0 } else { 10.0 });
+    label.set_width((width - 14) * pango::SCALE);
     label.set_ellipsize(pango::EllipsizeMode::End);
-    let (width, _) = label.pixel_size();
+    let (text_width, _) = label.pixel_size();
     cr.set_source_rgb(1.0, 1.0, 1.0);
     cr.move_to(
-        x + f64::from(CELL_WIDTH - width.min(CELL_WIDTH - 14)) / 2.0,
-        y + f64::from(ICON) + 22.0,
+        x + f64::from(width - text_width.min(width - 14)) / 2.0,
+        y + f64::from(icon_size) + 20.0,
     );
     pangocairo::functions::show_layout(cr, &label);
     Some(())

@@ -685,6 +685,14 @@ impl Nekoland {
         let (Some(overview), Some(panel)) = (&self.overview, self.overview_panel()) else {
             return Vec::new();
         };
+        // The applications shown other than in the overview cover it whole.
+        if overview
+            .apps
+            .as_ref()
+            .is_some_and(|apps| apps.style() != crate::config::AppsView::Overview)
+        {
+            return Vec::new();
+        }
         let expansion = ease(overview.expansion);
         let mut overlays = Vec::new();
         if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| expansion > 0.0) {
@@ -786,8 +794,12 @@ impl Nekoland {
         // closes when the pointer leaves the opened-up bar.
         if let (Some(pos), Some(output)) = (pointer, output) {
             let y = pos.y - f64::from(output.loc.y);
-            // With the applications shown, the bar stays open over them.
-            if dragging || overview.apps.is_some() || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
+            // With the applications shown in the overview, the bar stays open over them; shown
+            // any other way, it is not there.
+            let apps = overview.apps.as_ref().map(|apps| apps.style());
+            if apps.is_some_and(|style| style != crate::config::AppsView::Overview) {
+                overview.expanding = false;
+            } else if dragging || apps.is_some() || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
                 overview.expanding = true;
             } else if y > f64::from(expanded_height(output) + 8) || !settled {
                 overview.expanding = false;
@@ -874,8 +886,12 @@ impl Nekoland {
         } else {
             &overview.bar.strip_items
         };
-        // Off the bar, the applications take what they are shown over.
-        if overview.apps.is_some() && !items.iter().any(|item| item.rect.to_f64().contains(pos)) {
+        // Off the bar, or with no bar, the applications take what they are shown over.
+        let bar = overview
+            .apps
+            .as_ref()
+            .is_none_or(|apps| apps.style() == crate::config::AppsView::Overview);
+        if overview.apps.is_some() && !(bar && items.iter().any(|item| item.rect.to_f64().contains(pos))) {
             self.apps_press(pos);
             return;
         }
