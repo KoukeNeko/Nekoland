@@ -120,7 +120,8 @@ place of the windows, as GNOME does: the desktops' bar stays open above them, a 
 field under it, and every application a page at a time, turned with the wheel, the
 arrows or the dots. Typing narrows them down by name, keyword or command, and Return
 starts the first. A click starts one on the desktop shown; one dragged onto a desktop
-starts there, onto the add button on a new desktop, and onto the Dock is kept in it.
+starts there, onto the add button on a new desktop, and onto the Dock is kept in it,
+where the Dock makes room for it.
 
 The search field and a folder's name take an input method: with Fcitx5 running, what
 is being composed shows underlined in the field and its candidates in a row under it,

@@ -347,6 +347,9 @@ pub struct Dock {
     press: Option<Press>,
     bounce: Option<(Key, Instant)>,
     drag: Option<Drag>,
+    /// An application dragged from the applications' grid, and among the kept ones where
+    /// it would go if let go now; none when it is not over the Dock.
+    pub incoming: Option<(String, Option<usize>)>,
     /// Applications started from the Dock that have no window yet.
     launching: Vec<(String, Instant)>,
     /// Windows on their way into the Dock, from where they were.
@@ -808,13 +811,23 @@ impl Nekoland {
         // A dragged icon leaves its place, and the others of its kind make room where it
         // would go: kept applications after the button for all of them, folders after the
         // line at the right end.
+        // One dragged from the grid leaves its place only to take a new one.
         let mut gap = None;
-        if let Some(drag) = &self.dock.drag {
-            let key = drag.what.key();
+        let dragged = match &self.dock.drag {
+            Some(drag) => Some((drag.what.key(), matches!(drag.what, Dragged::Stack { .. }), true)),
+            None => self
+                .dock
+                .incoming
+                .as_ref()
+                .filter(|_| self.apps_shown())
+                .map(|(app_id, _)| (Key::App(app_id.clone()), false, false)),
+        };
+        if let Some((key, stack, leaves)) = dragged {
+            let kept = tiles.clone();
             tiles.retain(|tile| tile.key() != key);
-            let (start, alike): (usize, fn(&Tile) -> bool) = match drag.what {
-                Dragged::App { .. } => (1, |tile| matches!(tile, Tile::App { kept: true, .. })),
-                Dragged::Stack { .. } => (
+            let (start, alike): (usize, fn(&Tile) -> bool) = match stack {
+                false => (1, |tile| matches!(tile, Tile::App { kept: true, .. })),
+                true => (
                     tiles
                         .iter()
                         .position(|tile| *tile == Tile::Separator("right"))
@@ -839,6 +852,12 @@ impl Nekoland {
             gap = slot.map(|slot| slot + start);
             if let Some(drag) = self.dock.drag.as_mut() {
                 drag.slot = slot;
+            }
+            if let Some((_, incoming)) = self.dock.incoming.as_mut() {
+                *incoming = slot;
+            }
+            if !leaves && slot.is_none() {
+                tiles = kept;
             }
         }
         if self

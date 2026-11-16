@@ -397,6 +397,17 @@ impl Nekoland {
                 apps.held_picture = None;
             }
         }
+        if let Some(Held {
+            entry: Entry::App(app),
+            ..
+        }) = apps.held
+        {
+            let id = apps.apps[app].id.clone();
+            self.offer_to_dock(id);
+        }
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
         if apps.held.is_some() && apps.held_picture.is_none() {
             let entry = apps.held.as_ref().map(|held| held.entry);
             let tile = entry.and_then(|entry| self.grid_tile(entry, HELD_SIZE));
@@ -425,10 +436,7 @@ impl Nekoland {
             return;
         };
         let id = apps.apps[app].id.clone();
-        if self.dock_covers(pos) && !self.config.dock.iter().any(|kept| kept.eq_ignore_ascii_case(&id)) {
-            self.config.dock.push(id);
-            config::save_dock(&self.config.dock);
-        }
+        self.drop_on_dock(id, pos);
     }
 
     /// The arrows move from one application to the next, Return starts it, Page Up and

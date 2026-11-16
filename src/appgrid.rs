@@ -1139,6 +1139,25 @@ impl Nekoland {
         }
     }
 
+    /// While an application is dragged, the Dock makes room for it as for its own icons.
+    fn offer_to_dock(&mut self, id: String) {
+        self.dock.incoming = Some((id, self.dock.incoming.take().and_then(|(_, slot)| slot)));
+    }
+
+    /// An application let go over the Dock is kept there, where the Dock made room for it;
+    /// one kept already moves there. Returns whether it was over the Dock.
+    fn drop_on_dock(&mut self, id: String, pos: Point<f64, Logical>) -> bool {
+        let slot = self.dock.incoming.take().and_then(|(_, slot)| slot);
+        if !self.dock_covers(pos) {
+            return false;
+        }
+        self.config.dock.retain(|kept| !kept.eq_ignore_ascii_case(&id));
+        let at = slot.unwrap_or(self.config.dock.len()).min(self.config.dock.len());
+        self.config.dock.insert(at, id);
+        config::save_dock(&self.config.dock);
+        true
+    }
+
     /// The pointer moved: a press far enough becomes a drag, and a dragged icon is aimed
     /// where the pointer is.
     pub fn apps_motion(&mut self, pos: Point<f64, Logical>) {
@@ -1185,6 +1204,13 @@ impl Nekoland {
             return;
         };
         let (entry, from) = (held.entry, held.from);
+        if let Entry::App(app) = entry {
+            let id = apps.apps[app].id.clone();
+            self.offer_to_dock(id);
+        }
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
         // Inside the open folder, it moves among the folder's; out of it, the folder closes
         // and it goes back to the grid.
         if let Some(FolderPlace {
@@ -1286,11 +1312,7 @@ impl Nekoland {
         apps.gap = None;
         if let Entry::App(app) = held.entry {
             let id = apps.apps[app].id.clone();
-            if self.dock_covers(pos) {
-                if !self.config.dock.iter().any(|kept| kept.eq_ignore_ascii_case(&id)) {
-                    self.config.dock.push(id);
-                    config::save_dock(&self.config.dock);
-                }
+            if self.drop_on_dock(id, pos) {
                 return;
             }
             match self.overview_bar_action(pos) {
