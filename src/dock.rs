@@ -26,6 +26,7 @@ use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
     desktop::Window,
+    input::pointer::{CursorIcon, CursorImageStatus},
     reexports::wayland_server::protocol::wl_data_source::WlDataSource,
     utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::selection::data_device::with_source_metadata,
@@ -43,32 +44,58 @@ use crate::{
 
 /// Every icon's art is trimmed of the margin its theme drew around it and fitted to this,
 /// as the Mac's icon template makes every icon the same size; icon themes on Linux leave
-/// different margins, and the same padding then looks cramped around some.
+/// different margins, and the same padding then looks cramped around some. The measures
+/// below are those at this size, and grow and shrink with `dock_size`.
 const ART: i32 = 40;
-const GAP: i32 = 12;
-/// The same all around the art, the dot of a running application sitting in the bottom.
-const SIDE: i32 = 12;
-const TOP: i32 = 12;
-const BOTTOM: i32 = 12;
-const HEIGHT: i32 = TOP + ART + BOTTOM;
-const RADIUS: i32 = 20;
+/// How small and big `dock_size` makes the art.
+pub const MIN_ART: i32 = 24;
+pub const MAX_ART: i32 = 96;
 const MARGIN: i32 = 8;
 /// How far over the Dock what opens from it stands: names, window pictures and menus.
 const POPUP_GAP: i32 = 10;
 const LIFT: f64 = 4.0;
 const DOT: f64 = 4.0;
 const ACTIVE_DOT: f64 = 14.0;
-const SEPARATOR_HEIGHT: f64 = 32.0;
 /// A round icon looks bigger than a square one of the same width.
 const ROUND_SCALE: f64 = 0.94;
 const BADGE: i32 = 18;
+
+/// The Dock's measures with its art `art` big: the padding grows with it, as on the Mac.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Sizes {
+    art: i32,
+    gap: i32,
+    /// The same all around the art, the dot of a running application sitting in the bottom.
+    pad: i32,
+    height: i32,
+    radius: i32,
+}
+
+impl Sizes {
+    fn of(art: i32) -> Self {
+        let art = art.clamp(MIN_ART, MAX_ART);
+        let part = |at_art: i32| (f64::from(at_art * art) / f64::from(ART)).round() as i32;
+        // Room under the art for the running dot however small it is.
+        let pad = part(12).max(8);
+        Sizes {
+            art,
+            gap: part(12),
+            pad,
+            height: pad + art + pad,
+            radius: part(20),
+        }
+    }
+}
+
 /// The height the Dock keeps at the bottom of the output for itself.
-pub const DOCK_SPACE: i32 = HEIGHT + MARGIN;
+pub fn dock_space(dock_size: i32) -> i32 {
+    Sizes::of(dock_size).height + MARGIN
+}
 
 const LIFT_TIME: f64 = 0.12;
 /// How far from the pointer icons still grow, how fast they follow it, and how big the
 /// one under it may grow at most.
-const MAGNIFY_RANGE: f64 = 2.5 * (ART + GAP) as f64;
+const MAGNIFY_RANGE: f64 = 2.5;
 const MAGNIFY_TIME: f64 = 0.05;
 const MAX_MAGNIFY: f64 = 2.0;
 const MOVE_TIME: f64 = 0.18;
@@ -163,11 +190,11 @@ impl Tile {
         }
     }
 
-    fn width(&self) -> i32 {
+    fn width(&self, art: i32) -> i32 {
         if matches!(self, Tile::Separator(_)) {
             1
         } else {
-            ART
+            art
         }
     }
 
@@ -198,6 +225,7 @@ pub enum DockCommand {
     RevealStack(usize),
     OpenTrash,
     EmptyTrash,
+    ToggleMagnify,
 }
 
 /// What is in a kept folder, as last read.
@@ -327,6 +355,7 @@ impl Preview {
 pub(crate) struct Drawn {
     dark: bool,
     glass: bool,
+    art: i32,
     width: i32,
     rise: i32,
     /// Each tile, where it is, how lifted, pressed, solid and magnified.
@@ -357,6 +386,11 @@ pub struct Dock {
     press: Option<Press>,
     bounce: Option<(Key, Instant)>,
     drag: Option<Drag>,
+    /// The line between the icons dragged to size the Dock: where the pointer was pressed,
+    /// and the size then.
+    resizing: Option<(f64, i32)>,
+    /// Whether the pointer is on such a line, showing it can be dragged.
+    on_divider: bool,
     /// An application dragged from the applications' grid, and among the kept ones where
     /// it would go if let go now; none when it is not over the Dock.
     pub incoming: Option<(String, Option<usize>)>,
@@ -743,13 +777,14 @@ impl Nekoland {
     /// Where the Dock is on the output, `width` wide.
     fn dock_rect_of(&self, width: i32) -> Option<Rectangle<i32, Logical>> {
         let area = self.output_rect()?;
+        let height = self.dock_sizes().height;
         Some(Rectangle::new(
             (
                 area.loc.x + (area.size.w - width) / 2,
-                area.loc.y + area.size.h - MARGIN - HEIGHT,
+                area.loc.y + area.size.h - MARGIN - height,
             )
                 .into(),
-            (width, HEIGHT).into(),
+            (width, height).into(),
         ))
     }
 
@@ -757,6 +792,10 @@ impl Nekoland {
     fn dock_rect(&self) -> Option<Rectangle<i32, Logical>> {
         let (_, extra) = self.magnified_offsets();
         self.dock_rect_of((self.dock.shown_width + extra).round() as i32)
+    }
+
+    fn dock_sizes(&self) -> Sizes {
+        Sizes::of(self.config.dock_size)
     }
 
     /// How much bigger the icon under the pointer grows; 1 when they do not.
@@ -773,9 +812,10 @@ impl Nekoland {
     fn magnified_offsets(&self) -> (Vec<f64>, f64) {
         let mut offsets = Vec::with_capacity(self.dock.motions.len());
         let mut extra = 0.0;
+        let s = self.dock_sizes();
         for (tile, motion) in self.dock.tiles.iter().zip(&self.dock.motions) {
             offsets.push(extra);
-            extra += f64::from(tile.width() + GAP) * (motion.zoom - 1.0);
+            extra += f64::from(tile.width(s.art) + s.gap) * (motion.zoom - 1.0);
         }
         (offsets, extra)
     }
@@ -788,7 +828,7 @@ impl Nekoland {
             .iter()
             .map(|motion| motion.zoom)
             .fold(1.0, f64::max);
-        (f64::from(ART) * (zoom - 1.0)).ceil() as i32
+        (f64::from(self.dock_sizes().art) * (zoom - 1.0)).ceil() as i32
     }
 
     /// Where a tile is drawn now, art and all, lifted or magnified if it is: a magnified
@@ -796,13 +836,14 @@ impl Nekoland {
     fn tile_rect(&self, index: usize) -> Option<Rectangle<i32, Logical>> {
         let dock = self.dock_rect()?;
         let motion = self.dock.motions.get(index)?;
-        let width = f64::from(self.dock.tiles.get(index)?.width()) * motion.zoom;
-        let art = f64::from(ART) * motion.zoom;
+        let s = self.dock_sizes();
+        let width = f64::from(self.dock.tiles.get(index)?.width(s.art)) * motion.zoom;
+        let art = f64::from(s.art) * motion.zoom;
         let offset = self.magnified_offsets().0.get(index).copied().unwrap_or(0.0);
         Some(Rectangle::new(
             (
                 dock.loc.x + (motion.x + offset).round() as i32,
-                dock.loc.y + TOP + ART - art.round() as i32 - (motion.lift * LIFT).round() as i32,
+                dock.loc.y + s.pad + s.art - art.round() as i32 - (motion.lift * LIFT).round() as i32,
             )
                 .into(),
             (width.round() as i32, art.round() as i32).into(),
@@ -826,20 +867,20 @@ impl Nekoland {
     }
 
     /// Lays the tiles out across the Dock, with room left at `gap` for a dragged icon.
-    fn lay_out(tiles: &[Tile], gap: Option<usize>) -> (Vec<(i32, i32)>, i32) {
+    fn lay_out(tiles: &[Tile], gap: Option<usize>, s: Sizes) -> (Vec<(i32, i32)>, i32) {
         let mut spans = Vec::with_capacity(tiles.len());
-        let mut x = SIDE;
+        let mut x = s.pad;
         for (index, tile) in tiles.iter().enumerate() {
             if gap == Some(index) {
-                x += ART + GAP;
+                x += s.art + s.gap;
             }
-            spans.push((x, tile.width()));
-            x += tile.width() + GAP;
+            spans.push((x, tile.width(s.art)));
+            x += tile.width(s.art) + s.gap;
         }
         if gap == Some(tiles.len()) {
-            x += ART + GAP;
+            x += s.art + s.gap;
         }
-        (spans, x - GAP + SIDE)
+        (spans, x - s.gap + s.pad)
     }
 
     /// Brings the Dock up to date before a frame: what it shows, where everything is on
@@ -899,7 +940,7 @@ impl Nekoland {
                 ),
             };
             let count = tiles[start..].iter().take_while(|tile| alike(tile)).count();
-            let (spans, width) = Self::lay_out(&tiles, None);
+            let (spans, width) = Self::lay_out(&tiles, None, self.dock_sizes());
             let slot = match (pointer, self.dock_rect_of(width)) {
                 (Some(pos), Some(rect)) if pos.y >= f64::from(rect.loc.y) - REMOVE_DISTANCE => {
                     let x = pos.x - f64::from(rect.loc.x);
@@ -933,7 +974,7 @@ impl Nekoland {
             self.dock.hovered = None;
             self.dock.press = None;
         }
-        let (spans, width) = Self::lay_out(&tiles, gap);
+        let (spans, width) = Self::lay_out(&tiles, gap, self.dock_sizes());
 
         // Everything moves toward where it goes.
         let approach = 1.0 - (-dt / (MOVE_TIME / 3.0)).exp();
@@ -958,6 +999,7 @@ impl Nekoland {
             magnify > 1.0
                 && !menu_open
                 && self.dock.drag.is_none()
+                && self.dock.resizing.is_none()
                 && self.dock.stack.is_none()
                 && self.dock_shown()
                 && self.dock_rect().is_some_and(|rect| {
@@ -969,10 +1011,12 @@ impl Nekoland {
                 })
         });
         let base = self.dock_rect_of(width).map(|rect| f64::from(rect.loc.x));
+        let s = self.dock_sizes();
+        let range = MAGNIFY_RANGE * f64::from(s.art + s.gap);
         let zoom_to = |start: i32, tile_width: i32| match (pointed, base) {
             (Some(pos), Some(left)) => {
                 let distance = (pos.x - (left + f64::from(start) + f64::from(tile_width) / 2.0)).abs();
-                magnification(distance / MAGNIFY_RANGE, magnify)
+                magnification(distance / range, magnify)
             }
             _ => 1.0,
         };
@@ -1075,11 +1119,13 @@ impl Nekoland {
         }
         let width = self.dock_rect().map_or(0, |rect| rect.size.w);
         let glass = self.config.dock_glass;
+        let s = self.dock_sizes();
         let rise = self.dock_rise();
         let offsets = self.magnified_offsets().0;
         let drawn = Drawn {
             dark,
             glass,
+            art: s.art,
             width,
             rise,
             tiles: self
@@ -1105,7 +1151,7 @@ impl Nekoland {
             return;
         }
 
-        let Ok(pane) = text::canvas(width.max(1), HEIGHT) else {
+        let Ok(pane) = text::canvas(width.max(1), s.height) else {
             return;
         };
         if let Ok(cr) = Context::new(&pane) {
@@ -1113,15 +1159,15 @@ impl Nekoland {
             paint_pane(
                 &cr,
                 f64::from(width),
-                f64::from(HEIGHT),
-                f64::from(RADIUS),
+                f64::from(s.height),
+                f64::from(s.radius),
                 dark,
                 if glass { Tier::Bar } else { Tier::Menu },
             );
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
-        let big = (f64::from(ART) * self.magnify_scale()).ceil() as i32;
-        let Ok(surface) = text::canvas(width.max(1), HEIGHT + rise) else {
+        let big = (f64::from(s.art) * self.magnify_scale()).ceil() as i32;
+        let Ok(surface) = text::canvas(width.max(1), s.height + rise) else {
             return;
         };
         {
@@ -1132,8 +1178,8 @@ impl Nekoland {
             for (tile, x, lift, scale, alpha, zoom) in &drawn.tiles {
                 let x = f64::from(*x) / 2.0;
                 let zoom = f64::from(*zoom) / 1000.0;
-                let art = f64::from(ART) * zoom;
-                let y = f64::from(rise + TOP + ART) - art - f64::from(*lift) / 32.0 * LIFT;
+                let art = f64::from(s.art) * zoom;
+                let y = f64::from(rise + s.pad + s.art) - art - f64::from(*lift) / 32.0 * LIFT;
                 let (scale, alpha) = (f64::from(*scale) / 200.0, f64::from(*alpha) / 100.0);
                 // Pressed and breathing icons shrink around their middle.
                 let inset = art * (1.0 - scale) / 2.0;
@@ -1144,9 +1190,9 @@ impl Nekoland {
                         for row in -1..=1 {
                             for column in -1..=1 {
                                 cr.arc(
-                                    x + art / 2.0 + f64::from(column) * 12.0 * scale * zoom,
-                                    y + art / 2.0 + f64::from(row) * 12.0 * scale * zoom,
-                                    3.0 * scale * zoom,
+                                    x + art / 2.0 + f64::from(column) * art * 0.3 * scale,
+                                    y + art / 2.0 + f64::from(row) * art * 0.3 * scale,
+                                    art * 0.075 * scale,
                                     0.0,
                                     std::f64::consts::TAU,
                                 );
@@ -1155,12 +1201,13 @@ impl Nekoland {
                         }
                     }
                     Tile::Separator(_) => {
+                        let line = f64::from(s.art) * 0.8;
                         cr.set_source_rgba(r, g, b, 0.18);
                         cr.rectangle(
                             x,
-                            f64::from(rise + TOP) + (f64::from(ART) - SEPARATOR_HEIGHT) / 2.0,
+                            f64::from(rise + s.pad) + (f64::from(s.art) - line) / 2.0,
                             1.0,
-                            SEPARATOR_HEIGHT,
+                            line,
                         );
                         let _ = cr.fill();
                     }
@@ -1181,7 +1228,7 @@ impl Nekoland {
                             text::rounded_rectangle(
                                 &cr,
                                 x + art / 2.0 - dot / 2.0,
-                                f64::from(rise + HEIGHT) - 4.0 - DOT,
+                                f64::from(rise + s.height) - 4.0 - DOT,
                                 dot,
                                 DOT,
                                 DOT / 2.0,
@@ -1192,7 +1239,7 @@ impl Nekoland {
                     }
                     // Behind the window's picture, which is drawn over it.
                     Tile::Window { .. } => {
-                        text::rounded_rectangle(&cr, ax, ay, size, size, 6.0 * zoom);
+                        text::rounded_rectangle(&cr, ax, ay, size, size, art * 0.15);
                         cr.set_source_rgba(r, g, b, 0.10);
                         let _ = cr.fill();
                     }
@@ -1353,7 +1400,7 @@ impl Nekoland {
         let x = (center - size.w / 2)
             .min(output.loc.x + output.size.w - 12 - size.w)
             .max(output.loc.x + 12);
-        let top = dock.loc.y.min(tile.loc.y - TOP);
+        let top = dock.loc.y.min(tile.loc.y - self.dock_sizes().pad);
         let rect = Rectangle::new((x, top - POPUP_GAP - size.h).into(), size);
         let cards: Vec<Rectangle<i32, Logical>> = (0..count)
             .map(|i| {
@@ -1451,7 +1498,7 @@ impl Nekoland {
         };
         let removing = drag.slot.is_none() && drag.kept;
         if self.dock.held.is_none() {
-            let size = (f64::from(ART) * HELD_SCALE).round() as i32;
+            let size = (f64::from(self.dock_sizes().art) * HELD_SCALE).round() as i32;
             let (image, name) = match &drag.what {
                 Dragged::App { app_id, icon } => {
                     let (icon, name) = (icon.clone(), app_id.clone());
@@ -1569,7 +1616,7 @@ impl Nekoland {
                     rect: Rectangle::new(
                         (
                             tile.loc.x + tile.size.w / 2 - label.size.w / 2,
-                            rect.loc.y.min(tile.loc.y - TOP) - POPUP_GAP - label.size.h,
+                            rect.loc.y.min(tile.loc.y - self.dock_sizes().pad) - POPUP_GAP - label.size.h,
                         )
                             .into(),
                         label.size,
@@ -1612,7 +1659,7 @@ impl Nekoland {
             fade: 1.0,
             id: &ids.dock,
             rect,
-            glass: self.config.dock_glass.then_some((Tier::Bar, RADIUS)),
+            glass: self.config.dock_glass.then_some((Tier::Bar, self.dock_sizes().radius)),
             alpha: 1.0,
             picture,
         });
@@ -1801,25 +1848,50 @@ impl Nekoland {
 
     /// The tile drawn where the pointer is, with half the gap on each side of it.
     fn dock_tile_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
+        self.dock_hit(pos)
+            .filter(|&index| !matches!(self.dock.tiles[index], Tile::Separator(_)))
+    }
+
+    /// Whether a position is on a line between the Dock's icons.
+    fn dock_divider_at(&self, pos: Point<f64, Logical>) -> bool {
+        self.dock_hit(pos)
+            .is_some_and(|index| matches!(self.dock.tiles[index], Tile::Separator(_)))
+    }
+
+    fn dock_hit(&self, pos: Point<f64, Logical>) -> Option<usize> {
         if !self.dock_area()?.to_f64().contains(pos) {
             return None;
         }
-        (0..self.dock.tiles.len())
-            .find(|&index| {
-                let (Some(rect), Some(motion)) = (self.tile_rect(index), self.dock.motions.get(index)) else {
-                    return false;
-                };
-                let half_gap = f64::from(GAP) * motion.zoom / 2.0;
-                pos.x >= f64::from(rect.loc.x) - half_gap
-                    && pos.x < f64::from(rect.loc.x + rect.size.w) + half_gap
-            })
-            .filter(|&index| !matches!(self.dock.tiles[index], Tile::Separator(_)))
+        (0..self.dock.tiles.len()).find(|&index| {
+            let (Some(rect), Some(motion)) = (self.tile_rect(index), self.dock.motions.get(index)) else {
+                return false;
+            };
+            let half_gap = f64::from(self.dock_sizes().gap) * motion.zoom / 2.0;
+            pos.x >= f64::from(rect.loc.x) - half_gap
+                && pos.x < f64::from(rect.loc.x + rect.size.w) + half_gap
+        })
     }
 
     /// The pointer moved: the icon under it lifts and is named, a press far enough becomes
     /// a drag.
     pub fn dock_motion(&mut self, pos: Point<f64, Logical>) {
         self.dock.pointer = Some(pos);
+        if let Some((start_y, start)) = self.dock.resizing {
+            // The line stays under the pointer: the Dock is as tall as its art times this.
+            let s = Sizes::of(start);
+            let grown = (start_y - pos.y) * f64::from(s.art) / f64::from(s.height);
+            self.config.dock_size = (start + grown.round() as i32).clamp(MIN_ART, MAX_ART);
+            return;
+        }
+        let on_divider = self.dock_shown() && self.menu_bar.open.is_none() && self.dock_divider_at(pos);
+        if on_divider != self.dock.on_divider {
+            self.dock.on_divider = on_divider;
+            self.cursor_status = if on_divider {
+                CursorImageStatus::Named(CursorIcon::NsResize)
+            } else {
+                CursorImageStatus::default_named()
+            };
+        }
         let hovered = if self.dock_shown() && self.menu_bar.open.is_none() {
             self.dock_tile_at(pos)
         } else {
@@ -1861,7 +1933,10 @@ impl Nekoland {
                 .position(|tile| tile.key() == press.key)
                 .and_then(|index| self.tile_rect(index))
                 .map_or(
-                    Point::from((f64::from(ART) / 2.0, f64::from(ART) / 2.0)),
+                    Point::from((
+                        f64::from(self.dock_sizes().art) / 2.0,
+                        f64::from(self.dock_sizes().art) / 2.0,
+                    )),
                     |rect| press.start - rect.loc.to_f64(),
                 );
             self.dock.drag = Some(Drag {
@@ -1948,6 +2023,22 @@ impl Nekoland {
         if !self.dock_covers(pos) {
             return false;
         }
+        if self.dock_divider_at(pos) {
+            if right {
+                let entries = vec![
+                    Entry::item("放大", Command::Dock(DockCommand::ToggleMagnify))
+                        .checked(self.config.dock_magnify),
+                    Entry::separator(),
+                    Entry::item("Dock 設定⋯", Command::Settings),
+                ];
+                if let Some(index) = self.dock_hit(pos) {
+                    self.open_tile_menu(index, entries);
+                }
+            } else {
+                self.dock.resizing = Some((pos.y, self.dock_sizes().art));
+            }
+            return true;
+        }
         let Some(index) = self.dock_tile_at(pos) else {
             return true;
         };
@@ -1990,6 +2081,12 @@ impl Nekoland {
     /// A button came up: a press let go where it went down is a click; a dragged icon is
     /// put where it was let go, or taken off the Dock.
     pub fn dock_release(&mut self, pos: Point<f64, Logical>) {
+        if self.dock.resizing.take().is_some() {
+            if let Err(err) = config::set(&format!("dock_size = {}", self.config.dock_size)) {
+                tracing::warn!("{err}");
+            }
+            return;
+        }
         if let Some(drag) = self.dock.drag.take() {
             // Let go away from the Dock: a kept one comes off it, fading where it was let go;
             // another stays as it was.
@@ -2166,6 +2263,12 @@ impl Nekoland {
             DockCommand::OpenTrash => open_uri("trash:///"),
             // Asked first, in a dialog of its own: what is in the Trash cannot come back.
             DockCommand::EmptyTrash => config::spawn("nekoland-confirm empty-trash"),
+            DockCommand::ToggleMagnify => {
+                self.config.dock_magnify = !self.config.dock_magnify;
+                if let Err(err) = config::set(&format!("dock_magnify = {}", self.config.dock_magnify)) {
+                    tracing::warn!("{err}");
+                }
+            }
         }
     }
 
@@ -2201,7 +2304,10 @@ impl Nekoland {
     /// Opens a menu over a tile of the Dock, from the Dock's top edge.
     fn open_tile_menu(&mut self, index: usize, entries: Vec<Entry>) {
         if let (Some(tile), Some(dock)) = (self.tile_rect(index), self.dock_rect()) {
-            let anchor = Rectangle::new((tile.loc.x, dock.loc.y).into(), (tile.size.w, HEIGHT).into());
+            let anchor = Rectangle::new(
+                (tile.loc.x, dock.loc.y).into(),
+                (tile.size.w, self.dock_sizes().height).into(),
+            );
             self.open_menu_above(entries, anchor, POPUP_GAP);
         }
     }
@@ -2317,7 +2423,7 @@ impl Nekoland {
                     "在檔案中打開".to_string()
                 });
                 let fan = Fan::new(&labels);
-                let anchor = Point::from((f64::from(center), f64::from(dock.loc.y + TOP)));
+                let anchor = Point::from((f64::from(center), f64::from(dock.loc.y + self.dock_sizes().pad)));
                 let rect = Rectangle::new((anchor + fan.origin).to_i32_round(), fan.size);
                 (Opened::Fan { fan, anchor, labels }, rect)
             }
@@ -2783,19 +2889,26 @@ mod tests {
     #[test]
     fn tiles_are_laid_out_with_room_for_a_dragged_icon() {
         let tiles = [Tile::Apps, Tile::Separator("running"), Tile::Apps];
-        let (spans, width) = Nekoland::lay_out(&tiles, None);
+        let s = Sizes::of(ART);
+        let (spans, width) = Nekoland::lay_out(&tiles, None, s);
+        assert_eq!(spans, [(12, 40), (64, 1), (77, 40)]);
+        assert_eq!(width, 129);
+        let (spans, width_with_gap) = Nekoland::lay_out(&tiles, Some(1), s);
+        assert_eq!(spans[1].0, 12 + (40 + 12) * 2);
+        assert_eq!(width_with_gap, width + 40 + 12);
+    }
+
+    #[test]
+    fn the_dock_grows_with_its_art_within_its_range() {
+        assert_eq!(Sizes::of(ART).height, 64);
+        let big = Sizes::of(80);
         assert_eq!(
-            spans,
-            [
-                (SIDE, ART),
-                (SIDE + ART + GAP, 1),
-                (SIDE + ART + GAP * 2 + 1, ART)
-            ]
+            (big.art, big.gap, big.pad, big.height, big.radius),
+            (80, 24, 24, 128, 40)
         );
-        assert_eq!(width, SIDE * 2 + ART * 2 + 1 + GAP * 2);
-        let (spans, width_with_gap) = Nekoland::lay_out(&tiles, Some(1));
-        assert_eq!(spans[1].0, SIDE + (ART + GAP) * 2);
-        assert_eq!(width_with_gap, width + ART + GAP);
+        let small = Sizes::of(10);
+        assert_eq!((small.art, small.pad, small.height), (MIN_ART, 8, 40));
+        assert_eq!(Sizes::of(500).art, MAX_ART);
     }
 
     #[test]

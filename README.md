@@ -43,6 +43,7 @@ wallpaper and an input method. Every key is optional:
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `menu_bar_opacity`, `menu_bar_blur`, `menu_opacity`, `menu_blur`, `sidebar_opacity`, `sidebar_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar, the Dock and the overview's bar; of menus, notifications and the Dock's popups, GTK's among them; and of windows' glass, which GTK's sidebars show. 0.5, 0.8 and 0.8, each blurred 0.5, unless set |
+| `dock_size` | How big the Dock's icons are, from 24 to 96, the rest of it growing with them; 40 unless set, written back when the line between its icons is dragged |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
@@ -70,6 +71,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   reorder them, out of the Dock to take them off, and a running one dragged among them
   is kept. A minimized window goes to the Dock's right end, next to the Trash, drawn in
   with the Mac's Genie effect, and comes back out the same way.
+- The line before the kept folders, and the one before the running applications, is
+  dragged up or down to size the Dock, as on the Mac; its right click turns
+  magnification on or off and opens Settings.
 - A kept folder shows as its newest items piled up or as its own icon, and opens as a
   fan rising from it, a grid of pages to scroll, or a list with submenus for folders; a
   right click sets its order, how it shows and how it opens. A folder dragged in from a

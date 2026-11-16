@@ -12,7 +12,7 @@ use smithay::{
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use crate::{dock::DOCK_SPACE, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
+use crate::{dock::dock_space, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
 
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
@@ -109,7 +109,7 @@ impl Nekoland {
             area.size.h -= below_bar - area.loc.y;
             area.loc.y = below_bar;
         }
-        let above_dock = geometry.loc.y + geometry.size.h - DOCK_SPACE;
+        let above_dock = geometry.loc.y + geometry.size.h - dock_space(self.config.dock_size);
         if area.loc.y + area.size.h > above_dock {
             area.size.h = above_dock - area.loc.y;
         }

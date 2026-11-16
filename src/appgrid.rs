@@ -706,7 +706,11 @@ impl Nekoland {
         let area = self.space.output_geometry(output)?;
         let style = self.overview.as_ref()?.apps.as_ref()?.style;
         if style.is_list() {
-            return Some(list::layout(style, area));
+            return Some(list::layout(
+                style,
+                area,
+                crate::dock::dock_space(self.config.dock_size),
+            ));
         }
         // Launchpad has the whole output; in the overview, the desktops' bar is above.
         let top = match style {
@@ -718,7 +722,7 @@ impl Nekoland {
             (SEARCH_WIDTH, SEARCH_HEIGHT).into(),
         );
         let grid_top = top + SEARCH_HEIGHT + 32;
-        let bottom = area.loc.y + area.size.h - crate::dock::DOCK_SPACE - DOTS - 8;
+        let bottom = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size) - DOTS - 8;
         let columns = ((area.size.w - 160) / CELL_WIDTH).clamp(4, 8) as usize;
         let rows = ((bottom - grid_top) / CELL_HEIGHT).clamp(2, 5) as usize;
         let size = Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT));

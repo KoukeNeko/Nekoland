@@ -53,6 +53,8 @@ pub struct Config {
     pub menu_bar_background: bool,
     /// Whether the Dock is drawn on glass, or on its tint alone.
     pub dock_glass: bool,
+    /// How big the Dock's icons are, in logical pixels; the rest of the Dock grows with them.
+    pub dock_size: i32,
     /// Whether the Dock's icons grow as the pointer passes over them, as the Mac's do, and
     /// how big the one under it grows, as a multiple of their size.
     pub dock_magnify: bool,
@@ -295,6 +297,7 @@ impl Default for Config {
             clock_seconds: false,
             menu_bar_background: true,
             dock_glass: true,
+            dock_size: 40,
             dock_magnify: true,
             dock_magnify_scale: 1.6,
             menu_bar_opacity: 0.5,

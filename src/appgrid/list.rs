@@ -79,8 +79,8 @@ fn icon(style: AppsView) -> i32 {
 }
 
 /// Where the long page, its search field and the sidebar go on the output.
-pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>) -> Layout {
-    let bottom = area.loc.y + area.size.h - crate::dock::DOCK_SPACE - 12;
+pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>, dock_space: i32) -> Layout {
+    let bottom = area.loc.y + area.size.h - dock_space - 12;
     let (cell_width, _) = cell(style);
     if style == AppsView::Sidebar {
         let sidebar = Rectangle::new(
@@ -657,11 +657,11 @@ mod tests {
     #[test]
     fn the_sidebar_leaves_room_for_the_page() {
         let area = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        let side = layout(AppsView::Sidebar, area);
+        let side = layout(AppsView::Sidebar, area, 72);
         let sidebar = side.sidebar.unwrap();
         assert!(side.grid.loc.x >= sidebar.loc.x + sidebar.size.w);
         assert!(side.grid.loc.x + side.grid.size.w <= 1920);
-        let shelf = layout(AppsView::Shelf, area);
+        let shelf = layout(AppsView::Shelf, area, 72);
         assert!(shelf.sidebar.is_none());
         assert_eq!(shelf.grid.size.w, shelf.columns as i32 * SHELF_CELL.0);
     }
