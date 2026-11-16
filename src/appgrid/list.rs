@@ -614,7 +614,7 @@ fn draw_sidebar(
             f64::from(size.h),
             f64::from(SIDEBAR_RADIUS),
             true,
-            true,
+            Tier::Menu,
         );
         let (ink, paper) = ((0.945, 0.937, 0.918), (0.090, 0.090, 0.102));
         for (index, (name, count)) in items.iter().enumerate() {

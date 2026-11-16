@@ -12,6 +12,7 @@ use smithay::{
 
 use crate::{
     dbus::{Event, Notification, Request},
+    glass::Tier,
     menubar::{Overlay, MENU_BAR_HEIGHT},
     text::{self, Picture},
     Nekoland,
@@ -52,13 +53,13 @@ fn colors(dark: bool) -> (Rgb, Rgb, (f64, f64, f64, f64)) {
         (
             (0.945, 0.937, 0.918),
             (0.663, 0.655, 0.671),
-            crate::glass::tint(dark, true),
+            crate::glass::tint(dark, Tier::Menu),
         )
     } else {
         (
             (0.090, 0.090, 0.102),
             (0.365, 0.361, 0.380),
-            crate::glass::tint(dark, true),
+            crate::glass::tint(dark, Tier::Menu),
         )
     }
 }
@@ -302,7 +303,7 @@ impl Nekoland {
                     fade: 1.0,
                     id: &banner.id,
                     rect,
-                    glass: Some(RADIUS),
+                    glass: Some((Tier::Menu, RADIUS)),
                     alpha: 1.0,
                     picture: banner.picture.as_ref()?,
                 })

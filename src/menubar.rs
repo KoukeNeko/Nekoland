@@ -35,6 +35,7 @@ use crate::{
     config,
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
     dock::DockCommand,
+    glass::Tier,
     system::{self, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, Side, LAUNCHER_APP_ID},
@@ -326,8 +327,8 @@ impl Default for MenuBar {
 pub struct Overlay<'a> {
     pub id: &'a Id,
     pub rect: Rectangle<i32, Logical>,
-    /// The corner radius of the glass under it, or None for none.
-    pub glass: Option<i32>,
+    /// The glass under it and its corner radius, or None for none.
+    pub glass: Option<(Tier, i32)>,
     /// How opaque the picture is drawn.
     pub alpha: f32,
     /// How far it has come in, glass and all, as while it fades in or out.
@@ -565,7 +566,7 @@ impl MenuBar {
         let Ok(cr) = Context::new(&surface) else {
             return;
         };
-        let (r, g, b, a) = crate::glass::tint(self.dark, false);
+        let (r, g, b, a) = crate::glass::tint(self.dark, Tier::Bar);
         cr.set_source_rgba(r, g, b, a);
         let _ = cr.paint();
 
@@ -768,7 +769,7 @@ impl MenuBar {
             f64::from(size.h) - 1.0,
             radius,
         );
-        let (r, g, b, a) = crate::glass::tint(dark, true);
+        let (r, g, b, a) = crate::glass::tint(dark, Tier::Menu);
         cr.set_source_rgba(r, g, b, a);
         let _ = cr.fill_preserve();
         cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
@@ -1061,7 +1062,7 @@ impl Nekoland {
                         fade: 1.0,
                         id,
                         rect: Rectangle::new(level.rect.loc + output.loc, level.rect.size),
-                        glass: Some(MENU_RADIUS),
+                        glass: Some((Tier::Menu, MENU_RADIUS)),
                         alpha: 1.0,
                         picture,
                     });
@@ -1073,7 +1074,7 @@ impl Nekoland {
                 fade: 1.0,
                 id: &bar.bar_id,
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
-                glass: Some(0),
+                glass: Some((Tier::Bar, 0)),
                 alpha: 1.0,
                 picture,
             });

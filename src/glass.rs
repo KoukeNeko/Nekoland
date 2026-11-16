@@ -4,7 +4,8 @@
 //! screen, as the menu bar does, has no edge there to light.
 //!
 //! Once a frame, everything under the floating layers is drawn into a texture, which is
-//! blurred by halving it a few times and doubling it back (dual Kawase). Each glass surface
+//! blurred by halving it a few times and doubling it back (dual Kawase): once for bars and
+//! once for menus, as each tier of glass has a blur of its own strength. Each glass surface
 //! then gets an element right behind it that shows its part of the blur, cut to its corners.
 //!
 //! Windows have glass behind them too, as Windows' Acrylic is: what a window leaves
@@ -42,33 +43,36 @@ const LEVELS: usize = 4;
 /// How far apart the samples of a pass are, in texels of the smaller texture, with the
 /// blur as strong as the configuration can make it.
 const MAX_SPREAD: f32 = 4.0;
-/// How much more see-through the glass of a bar is than that of what opens over things.
-const BAR_CLEARER: f64 = 0.30;
 
-/// The look the configuration gives all glass, in thousandths: how solid the tint over the
-/// blur is, and how strong the blur.
-static OPACITY: AtomicU32 = AtomicU32::new(800);
-static BLUR: AtomicU32 = AtomicU32::new(500);
+/// The kinds of glass, each with a look of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// The menu bar, the Dock, the overview's bar and what else spans the screen.
+    Bar,
+    /// What opens over things: menus, notifications, the Dock's popups.
+    Menu,
+    /// Behind windows, which shows where they are see-through, as GTK's sidebars.
+    Window,
+}
 
-/// Takes how solid the glass's tint is and how strong its blur, each from 0 to 1, and says
+/// The look the configuration gives each tier's glass, in thousandths: how solid the tint
+/// over the blur is, and how strong the blur.
+static OPACITY: [AtomicU32; 3] = [AtomicU32::new(500), AtomicU32::new(800), AtomicU32::new(800)];
+static BLUR: [AtomicU32; 3] = [const { AtomicU32::new(500) }; 3];
+
+/// Takes how solid a tier's tint is and how strong its blur, each from 0 to 1, and says
 /// whether either changed.
-pub fn set_look(opacity: f64, blur: f64) -> bool {
+pub fn set_look(tier: Tier, opacity: f64, blur: f64) -> bool {
     let thousandths = |value: f64| (value.clamp(0.0, 1.0) * 1000.0).round() as u32;
-    let opacity = OPACITY.swap(thousandths(opacity), Ordering::Relaxed) != thousandths(opacity);
-    let blur = BLUR.swap(thousandths(blur), Ordering::Relaxed) != thousandths(blur);
+    let opacity = OPACITY[tier as usize].swap(thousandths(opacity), Ordering::Relaxed) != thousandths(opacity);
+    let blur = BLUR[tier as usize].swap(thousandths(blur), Ordering::Relaxed) != thousandths(blur);
     opacity || blur
 }
 
-/// The tint drawn over the blur, the design language's sheet: as solid as the configuration
-/// says for what opens over things, as menus, notifications and the Dock's popups do, and
-/// clearer for a bar, as the menu bar and the Dock.
-pub fn tint(dark: bool, solid: bool) -> (f64, f64, f64, f64) {
-    let opacity = f64::from(OPACITY.load(Ordering::Relaxed)) / 1000.0;
-    let alpha = if solid {
-        opacity
-    } else {
-        (opacity - BAR_CLEARER).max(0.0)
-    };
+/// The tint drawn over the blur, the design language's sheet, as solid as the configuration
+/// says for the tier.
+pub fn tint(dark: bool, tier: Tier) -> (f64, f64, f64, f64) {
+    let alpha = f64::from(OPACITY[tier as usize].load(Ordering::Relaxed)) / 1000.0;
     if dark {
         (0.133, 0.133, 0.149, alpha)
     } else {
@@ -76,14 +80,14 @@ pub fn tint(dark: bool, solid: bool) -> (f64, f64, f64, f64) {
     }
 }
 
-/// How far apart the samples of a pass are now, in texels of the smaller texture.
-fn spread() -> f32 {
-    BLUR.load(Ordering::Relaxed) as f32 / 1000.0 * MAX_SPREAD
+/// How far apart the samples of a tier's passes are now, in texels of the smaller texture.
+fn spread(tier: Tier) -> f32 {
+    BLUR[tier as usize].load(Ordering::Relaxed) as f32 / 1000.0 * MAX_SPREAD
 }
 
-/// How far from a pane a change behind it still shows in its blur, in pixels.
-fn reach() -> i32 {
-    (spread().ceil() as i32).max(1) << (LEVELS + 1)
+/// How far from a pane a change behind it still shows in a blur of `spread`, in pixels.
+fn reach(spread: f32) -> i32 {
+    (spread.ceil() as i32).max(1) << (LEVELS + 1)
 }
 /// Offscreen targets are drawn top row first, the way textures are read back.
 const OFFSCREEN: Transform = Transform::Flipped180;
@@ -172,8 +176,9 @@ pub struct Glass {
     down: GlesTexProgram,
     up: GlesTexProgram,
     pane: GlesTexProgram,
-    /// What is under the floating surfaces, blurred.
-    scene: Blur,
+    /// What is under the floating surfaces, blurred, for bars and for menus.
+    bars: Blur,
+    menus: Blur,
     /// What is under each window, blurred, by the window's id.
     windows: HashMap<Id, Blur>,
     ids: HashMap<WlSurface, Id>,
@@ -220,28 +225,42 @@ impl Glass {
                 ),
                 &pane_uniforms,
             )?,
-            scene: Blur::default(),
+            bars: Blur::default(),
+            menus: Blur::default(),
             windows: HashMap::new(),
             ids: HashMap::new(),
         })
     }
 
     /// Draws what is behind the floating glass and blurs it again, when what changed since
-    /// the last frame is near enough to one of the `areas` the panes cover to show in it.
+    /// the last frame is near enough to one of the `areas` the panes cover to show in it;
+    /// bars and menus each have a blur of their own strength.
     pub fn update<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
         (size, scale): (Size<i32, Physical>, f64),
-        areas: &[Rectangle<i32, Physical>],
+        areas: &[(Tier, Rectangle<i32, Physical>)],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.scene.update(
-            renderer,
-            (&self.down, &self.up),
-            (Rectangle::from_size(size), scale),
-            areas,
-            behind,
-        )
+        for tier in [Tier::Bar, Tier::Menu] {
+            let of_tier: Vec<_> = areas
+                .iter()
+                .filter(|(of, _)| *of == tier)
+                .map(|(_, area)| *area)
+                .collect();
+            if of_tier.is_empty() {
+                continue;
+            }
+            let blur = if tier == Tier::Bar { &mut self.bars } else { &mut self.menus };
+            blur.update(
+                renderer,
+                (&self.down, &self.up, spread(tier)),
+                (Rectangle::from_size(size), scale),
+                &of_tier,
+                behind,
+            )?;
+        }
+        Ok(())
     }
 
     /// The same for what is `behind` the window named `id`, over `area` of the `output`.
@@ -253,16 +272,18 @@ impl Glass {
         area: Rectangle<i32, Physical>,
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let spread = spread(Tier::Window);
+        let reach = reach(spread);
         let reach = Rectangle::new(
-            area.loc - Point::from((reach(), reach())),
-            area.size + Size::from((reach() * 2, reach() * 2)),
+            area.loc - Point::from((reach, reach)),
+            area.size + Size::from((reach * 2, reach * 2)),
         );
         let Some(canvas) = reach.intersection(Rectangle::from_size(output)) else {
             return Ok(());
         };
         self.windows.entry(id).or_default().update(
             renderer,
-            (&self.down, &self.up),
+            (&self.down, &self.up, spread),
             (canvas, scale),
             &[area],
             behind,
@@ -274,16 +295,24 @@ impl Glass {
         self.windows.retain(|id, _| kept.contains(id));
     }
 
-    /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
-    pub fn pane(&mut self, surface: &WlSurface, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+    /// The glass of `tier` behind a surface, over `rect` of the output, with corners of
+    /// `radius`.
+    pub fn pane(
+        &mut self,
+        surface: &WlSurface,
+        tier: Tier,
+        rect: Rectangle<i32, Physical>,
+        radius: i32,
+    ) -> Option<Pane> {
         self.ids.retain(|surface, _| surface.alive());
         let id = self.ids.entry(surface.clone()).or_insert_with(Id::new).clone();
-        self.pane_with(id, rect, radius)
+        self.pane_with(id, tier, rect, radius)
     }
 
     /// The glass behind something the compositor draws itself, which names it with `id`.
-    pub fn pane_with(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
-        self.scene.pane(&self.pane, id, rect, radius)
+    pub fn pane_with(&self, id: Id, tier: Tier, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+        let blur = if tier == Tier::Bar { &self.bars } else { &self.menus };
+        blur.pane(&self.pane, id, rect, radius)
     }
 
     /// The glass behind the window named `id`, of what is under it.
@@ -296,7 +325,7 @@ impl Blur {
     fn update<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
-        (down, up): (&GlesTexProgram, &GlesTexProgram),
+        (down, up, spread): (&GlesTexProgram, &GlesTexProgram, f32),
         (canvas, scale): (Rectangle<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
@@ -317,12 +346,11 @@ impl Blur {
             self.areas.clear();
         }
         // A blur of another strength is drawn again, all of it.
-        let spread = spread();
         if self.spread != spread {
             self.spread = spread;
             self.areas.clear();
         }
-        let reach = reach();
+        let reach = reach(spread);
         let full = Size::<i32, Buffer>::from((size.w, size.h));
         if self.levels.first().map(Texture::size) != Some(full) || self.scale != scale {
             self.levels = (0..=LEVELS)

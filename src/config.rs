@@ -47,11 +47,16 @@ pub struct Config {
     /// how big the one under it grows, as a multiple of their size.
     pub dock_magnify: bool,
     pub dock_magnify_scale: f64,
-    /// How solid the glass's tint is over menus, notifications and the Dock's popups, from 0
-    /// to 1; that of bars, as the menu bar and the Dock, is 0.3 less.
-    pub glass_opacity: f64,
-    /// How strong the glass's blur is, from 0, none, to 1.
-    pub glass_blur: f64,
+    /// How solid each glass's tint is, from 0 to 1, and how strong its blur, from 0, none,
+    /// to 1: of the menu bar, the Dock and the overview's bar; of menus, notifications and
+    /// the Dock's popups; and behind windows, which shows through GTK's sidebars. Settings
+    /// gives the sidebars' tint to GTK's look, and the menus' to its menus.
+    pub menu_bar_opacity: f64,
+    pub menu_bar_blur: f64,
+    pub menu_opacity: f64,
+    pub menu_blur: f64,
+    pub sidebar_opacity: f64,
+    pub sidebar_blur: f64,
     pub natural_scroll: bool,
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
@@ -265,8 +270,12 @@ impl Default for Config {
             dock_glass: true,
             dock_magnify: true,
             dock_magnify_scale: 1.6,
-            glass_opacity: 0.8,
-            glass_blur: 0.5,
+            menu_bar_opacity: 0.5,
+            menu_bar_blur: 0.5,
+            menu_opacity: 0.8,
+            menu_blur: 0.5,
+            sidebar_opacity: 0.8,
+            sidebar_blur: 0.5,
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
@@ -296,6 +305,15 @@ impl Config {
             tracing::warn!("{}: {err}", path.display());
             Self::default()
         })
+    }
+
+    /// Gives each glass the look the configuration says, and says whether any changed.
+    pub fn set_glass_look(&self) -> bool {
+        use crate::glass::{set_look, Tier};
+        // Not `||`: every tier is set, whichever changed.
+        set_look(Tier::Bar, self.menu_bar_opacity, self.menu_bar_blur)
+            | set_look(Tier::Menu, self.menu_opacity, self.menu_blur)
+            | set_look(Tier::Window, self.sidebar_opacity, self.sidebar_blur)
     }
 
     /// The keyboard's layout, variant and options, as XKB is given them.

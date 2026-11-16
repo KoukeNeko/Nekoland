@@ -11,6 +11,7 @@ use smithay::{
 
 use crate::{
     appgrid::AppGrid,
+    glass::Tier,
     menubar::{Overlay, MENU_BAR_HEIGHT},
     text::{self, Picture},
     windows::{is_managed, window_names},
@@ -107,13 +108,13 @@ impl BarColors {
             Self {
                 ink: (0.945, 0.937, 0.918),
                 on_ink: (0.090, 0.090, 0.102),
-                tint: crate::glass::tint(dark, false),
+                tint: crate::glass::tint(dark, Tier::Bar),
             }
         } else {
             Self {
                 ink: (0.090, 0.090, 0.102),
                 on_ink: (0.984, 0.980, 0.973),
-                tint: crate::glass::tint(dark, false),
+                tint: crate::glass::tint(dark, Tier::Bar),
             }
         }
     }
@@ -710,7 +711,7 @@ impl Nekoland {
                 fade: 1.0,
                 id: &overview.strip_id,
                 rect: panel,
-                glass: Some(0),
+                glass: Some((Tier::Bar, 0)),
                 alpha: (1.0 - expansion) as f32,
                 picture,
             });

@@ -14,6 +14,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use crate::{
     config::Sort,
     dock::{ink, paint_pane},
+    glass::Tier,
     text::{self, Picture},
 };
 
@@ -420,7 +421,7 @@ impl Grid {
                 f64::from(self.size.h),
                 f64::from(GRID_RADIUS),
                 dark,
-                true,
+                Tier::Menu,
             );
             let (r, g, b) = ink(dark);
             let heading = layout(&cr, title, 11.0);

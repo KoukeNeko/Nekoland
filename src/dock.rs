@@ -33,6 +33,7 @@ use smithay::{
 
 use crate::{
     config::{self, Show, Sort, Stack, View},
+    glass::Tier,
     menubar::{close, Command, Entry, Overlay},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
@@ -410,8 +411,8 @@ fn ink_2(dark: bool) -> Rgb {
 }
 
 /// A rounded pane of tinted glass with its thin rim, the size of the surface.
-pub(crate) fn paint_pane(cr: &Context, width: f64, height: f64, radius: f64, dark: bool, solid: bool) {
-    let (r, g, b, a) = crate::glass::tint(dark, solid);
+pub(crate) fn paint_pane(cr: &Context, width: f64, height: f64, radius: f64, dark: bool, tier: Tier) {
+    let (r, g, b, a) = crate::glass::tint(dark, tier);
     text::rounded_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0, radius);
     cr.set_source_rgba(r, g, b, a);
     let _ = cr.fill_preserve();
@@ -556,7 +557,7 @@ fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) 
             f64::from(height),
             f64::from(radius),
             dark,
-            true,
+            Tier::Menu,
         );
         let layout = text::new_layout(&cr);
         layout.set_font_description(Some(&font));
@@ -1116,7 +1117,7 @@ impl Nekoland {
                 f64::from(HEIGHT),
                 f64::from(RADIUS),
                 dark,
-                !glass,
+                if glass { Tier::Bar } else { Tier::Menu },
             );
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
@@ -1511,7 +1512,7 @@ impl Nekoland {
                 },
                 id: &ids.stack,
                 rect: stack.rect,
-                glass: grid.then_some(stacks::GRID_RADIUS),
+                glass: grid.then_some((Tier::Menu, stacks::GRID_RADIUS)),
                 alpha: 1.0,
                 picture,
             });
@@ -1530,7 +1531,7 @@ impl Nekoland {
                         (at.x + held.size.w / 2 - tag.size.w / 2, at.y - 8 - tag.size.h).into(),
                         tag.size,
                     ),
-                    glass: Some(6),
+                    glass: Some((Tier::Menu, 6)),
                     alpha: 1.0,
                     picture: tag,
                 });
@@ -1574,7 +1575,7 @@ impl Nekoland {
                             .into(),
                         label.size,
                     ),
-                    glass: Some(LABEL_RADIUS),
+                    glass: Some((Tier::Menu, LABEL_RADIUS)),
                     alpha: 1.0,
                     picture: label,
                 });
@@ -1590,7 +1591,7 @@ impl Nekoland {
                 fade: fade_in(&preview.opened),
                 id: &ids.preview,
                 rect: preview.rect,
-                glass: Some(PREVIEW_RADIUS),
+                glass: Some((Tier::Menu, PREVIEW_RADIUS)),
                 alpha: 1.0,
                 picture,
             });
@@ -1612,7 +1613,7 @@ impl Nekoland {
             fade: 1.0,
             id: &ids.dock,
             rect,
-            glass: self.config.dock_glass.then_some(RADIUS),
+            glass: self.config.dock_glass.then_some((Tier::Bar, RADIUS)),
             alpha: 1.0,
             picture,
         });
@@ -2699,7 +2700,7 @@ fn draw_preview(
             f64::from(size.h),
             f64::from(PREVIEW_RADIUS),
             dark,
-            true,
+            Tier::Menu,
         );
         let (r, g, b) = ink(dark);
         let font = text::font(&format!("{FONT} 9.75"));

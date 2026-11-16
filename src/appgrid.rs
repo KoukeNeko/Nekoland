@@ -25,6 +25,7 @@ mod list;
 use crate::{
     config::{self, AppsView},
     dock::paint_pane,
+    glass::Tier,
     menubar::Overlay,
     overview::{expanded_height, BarAction},
     text::{self, Picture},
@@ -989,7 +990,7 @@ impl Nekoland {
                     fade: fade_since(open.opened),
                     id: &apps.ids[4],
                     rect: panel,
-                    glass: Some(FOLDER_RADIUS),
+                    glass: Some((Tier::Menu, FOLDER_RADIUS)),
                     alpha: 1.0,
                     picture,
                 });
@@ -1010,7 +1011,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[2],
                 rect: layout.search,
-                glass: Some(SEARCH_HEIGHT / 2),
+                glass: Some((Tier::Bar, SEARCH_HEIGHT / 2)),
                 alpha: 1.0,
                 picture,
             });
@@ -1028,7 +1029,7 @@ impl Nekoland {
                         .into(),
                     picture.size,
                 ),
-                glass: Some(CANDIDATES_RADIUS),
+                glass: Some((Tier::Bar, CANDIDATES_RADIUS)),
                 alpha: 1.0,
                 picture,
             });
@@ -1039,7 +1040,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[5],
                 rect: sidebar,
-                glass: Some(list::SIDEBAR_RADIUS),
+                glass: Some((Tier::Menu, list::SIDEBAR_RADIUS)),
                 alpha: 1.0,
                 picture,
             });
@@ -1051,7 +1052,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[3],
                 rect: area,
-                glass: Some(0),
+                glass: Some((Tier::Bar, 0)),
                 alpha: 1.0,
                 picture,
             })
@@ -1462,7 +1463,7 @@ fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<P
             f64::from(size.h),
             f64::from(size.h) / 2.0,
             true,
-            false,
+            Tier::Bar,
         );
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
         cr.set_line_width(1.6);
@@ -1537,7 +1538,7 @@ fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<P
             f64::from(HEIGHT),
             f64::from(CANDIDATES_RADIUS),
             true,
-            false,
+            Tier::Bar,
         );
         let mut x = PAD;
         for (index, label) in labels.iter().enumerate() {
@@ -1705,7 +1706,7 @@ fn draw_folder(
             f64::from(size.h),
             f64::from(FOLDER_RADIUS),
             true,
-            true,
+            Tier::Menu,
         );
         let title = text_layout(&cr, name, 14.0);
         title.set_font_description(Some(&text::font(&format!("{FONT} Bold 14"))));

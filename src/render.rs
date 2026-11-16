@@ -23,7 +23,7 @@ use smithay::{
 };
 
 use crate::{
-    glass::{Glass, Pane},
+    glass::{Glass, Pane, Tier},
     menubar::Overlay,
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
@@ -554,32 +554,41 @@ fn floating_elements(
         .iter()
         .flat_map(|window| window_popups(state, window, output_loc))
         .collect();
+    // A layer surface across the whole output is a bar; anything smaller opens over things.
+    let layer_tier = |geometry: Rectangle<i32, Logical>| {
+        if geometry.size.w >= output_width {
+            Tier::Bar
+        } else {
+            Tier::Menu
+        }
+    };
     let areas: Vec<_> = overlays
         .iter()
-        .filter(|overlay| overlay.glass.is_some())
-        .map(|overlay| {
-            Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical_precise_round(scale)
+        .filter_map(|overlay| {
+            let (tier, _) = overlay.glass?;
+            let rect = Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size);
+            Some((tier, rect.to_physical_precise_round(scale)))
         })
         .chain(
             surfaces
                 .iter()
                 .filter(|surface| radius_of(surface).is_some())
                 .map(|surface| {
-                    map.layer_geometry(surface)
-                        .unwrap_or_default()
-                        .to_physical_precise_round(scale)
+                    let geometry = map.layer_geometry(surface).unwrap_or_default();
+                    (layer_tier(geometry), geometry.to_physical_precise_round(scale))
                 }),
         )
         .chain(
             windows
                 .iter()
-                .filter_map(|window| window_area(state, window, output_loc, scale)),
+                .filter_map(|window| window_area(state, window, output_loc, scale))
+                .map(|area| (Tier::Menu, area)),
         )
         .chain(
             popups
                 .iter()
                 .filter_map(|(popup, origin)| popup_glass_area(popup, *origin))
-                .map(|area| area.to_physical_precise_round(scale)),
+                .map(|area| (Tier::Menu, area.to_physical_precise_round(scale))),
         )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
@@ -617,7 +626,7 @@ fn floating_elements(
             glass
                 .as_deref_mut()
                 .zip(overlay.glass)
-                .and_then(|(glass, radius)| glass.pane_with(overlay.id.clone(), rect, pixels(radius)))
+                .and_then(|(glass, (tier, radius))| glass.pane_with(overlay.id.clone(), tier, rect, pixels(radius)))
                 .map(|pane| SceneElement::Glass(pane.faded(overlay.fade))),
         );
     }
@@ -633,7 +642,7 @@ fn floating_elements(
             elements.extend(
                 glass
                     .as_deref_mut()
-                    .and_then(|glass| glass.pane_with(window_glass_id(window), area, pixels(radius)))
+                    .and_then(|glass| glass.pane_with(window_glass_id(window), Tier::Menu, area, pixels(radius)))
                     .map(SceneElement::Glass),
             );
         }
@@ -658,6 +667,7 @@ fn floating_elements(
                     .and_then(|glass| {
                         glass.pane(
                             popup.wl_surface(),
+                            Tier::Menu,
                             area.to_physical_precise_round(scale),
                             pixels(POPUP_RADIUS),
                         )
@@ -692,6 +702,7 @@ fn floating_elements(
                     .and_then(|glass| {
                         glass.pane(
                             surface.wl_surface(),
+                            layer_tier(geometry),
                             geometry.to_physical_precise_round(scale),
                             pixels(radius),
                         )

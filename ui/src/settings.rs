@@ -197,8 +197,10 @@ const PAGE_ENV: &str = "NEKOLAND_SETTINGS_PAGE";
 thread_local! {
     /// Set when Settings is to start again once it has closed, on the page named.
     static RESTART: RefCell<Option<&'static str>> = const { RefCell::new(None) };
-    /// Nekoland's `glass_opacity`, which the look gives GTK's menus too.
-    static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
+    /// Nekoland's `menu_opacity` and `sidebar_opacity`, which the look gives GTK's menus and
+    /// sidebars.
+    static MENU_OPACITY: Cell<f64> = const { Cell::new(0.8) };
+    static SIDEBAR_OPACITY: Cell<f64> = const { Cell::new(0.8) };
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -228,7 +230,8 @@ fn build(app: &adw::Application) {
         return;
     }
     let config = Config::load();
-    GLASS_OPACITY.set(config.number("glass_opacity", 0.8));
+    MENU_OPACITY.set(config.number("menu_opacity", 0.8));
+    SIDEBAR_OPACITY.set(config.number("sidebar_opacity", 0.8));
     // A look turned on before keeps up with this version of it.
     if gtk_look_on() {
         if let Err(err) = set_gtk_look(true) {
@@ -581,6 +584,10 @@ fn appearance_page(config: &Config) -> adw::PreferencesPage {
         move |styles| provider.load_from_string(&look_for(styles.is_dark()))
     ));
     let read_at_start = gtk_look_on();
+    // On already, it is over what GTK read at start, so the glass's opacities show at once.
+    if let Some(display) = gdk::Display::default().filter(|_| read_at_start) {
+        gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_USER);
+    }
     let glass_look = provider.clone();
     look.connect_active_notify(move |row| {
         let on = row.is_active();
@@ -614,30 +621,52 @@ fn appearance_page(config: &Config) -> adw::PreferencesPage {
     style.add(&look);
     page.add(&style);
 
-    let glass = group("毛玻璃");
-    glass.add(&scale_row(
-        "不透明度",
-        config.number("glass_opacity", 0.8),
-        (0.3, 1.0, 0.05),
-        move |opacity| {
-            set(&format!("glass_opacity = {opacity:.2}"));
-            GLASS_OPACITY.set(opacity);
+    // GTK's menus and sidebars take their tint from the look, written again as it changes.
+    let gtk_opacity = move |opacity: &'static std::thread::LocalKey<Cell<f64>>| {
+        let glass_look = glass_look.clone();
+        move |value: f64| {
+            opacity.set(value);
             if gtk_look_on() {
                 if let Err(err) = set_gtk_look(true) {
                     eprintln!("GTK look: {err}");
                 }
                 glass_look.load_from_string(&look_for(adw::StyleManager::default().is_dark()));
             }
-        },
-    ));
-    glass.add(&scale_row(
-        "模糊程度",
-        config.number("glass_blur", 0.5),
-        (0.0, 1.0, 0.05),
-        |blur| set(&format!("glass_blur = {blur:.2}")),
-    ));
-    page.add(&glass);
+        }
+    };
+    page.add(&glass_group(config, "選單列", ("menu_bar", 0.5), |_| {}));
+    page.add(&glass_group(config, "側邊欄", ("sidebar", 0.8), gtk_opacity(&SIDEBAR_OPACITY)));
+    page.add(&glass_group(config, "選單", ("menu", 0.8), gtk_opacity(&MENU_OPACITY)));
     page
+}
+
+/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
+/// `opacity_changed` is told each new opacity once Nekoland has it.
+fn glass_group(
+    config: &Config,
+    title: &str,
+    (key, opacity): (&'static str, f64),
+    opacity_changed: impl Fn(f64) + 'static,
+) -> adw::PreferencesGroup {
+    let glass = group(title);
+    let opacity_row = scale_row(
+        "不透明度",
+        config.number(&format!("{key}_opacity"), opacity),
+        (0.0, 1.0, 0.05),
+        move |opacity| {
+            set(&format!("{key}_opacity = {opacity:.2}"));
+            opacity_changed(opacity);
+        },
+    );
+    let blur_row = scale_row(
+        "模糊程度",
+        config.number(&format!("{key}_blur"), 0.5),
+        (0.0, 1.0, 0.05),
+        move |blur| set(&format!("{key}_blur = {blur:.2}")),
+    );
+    glass.add(&opacity_row);
+    glass.add(&blur_row);
+    glass
 }
 
 /// Nekoland's design language for GTK 4 and libadwaita applications, as libadwaita's
@@ -652,10 +681,12 @@ const OLD_GTK_IMPORT: &str = "@import url(\"nekoland.css\");";
 /// The first GTK whose stylesheets read the look's variables and its dark media query.
 const GTK_LOOK_MINOR: u32 = 20;
 
-/// The look as GTK's user stylesheet takes it, with Nekoland's glass opacity.
+/// The look as GTK's user stylesheet takes it, with Nekoland's glass opacities.
 fn gtk_look() -> String {
-    let opacity = GLASS_OPACITY.get() * 100.0;
-    format!("{GTK_LOOK}\n:root {{ --nekoland-glass-opacity: {opacity:.0}%; }}\n")
+    let (menu, sidebar) = (MENU_OPACITY.get() * 100.0, SIDEBAR_OPACITY.get() * 100.0);
+    format!(
+        "{GTK_LOOK}\n:root {{ --nekoland-menu-opacity: {menu:.0}%; --nekoland-sidebar-opacity: {sidebar:.0}%; }}\n"
+    )
 }
 
 /// The look for a stylesheet Settings loads itself, which GTK reads light whatever the
