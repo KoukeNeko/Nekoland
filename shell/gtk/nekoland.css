@@ -285,6 +285,32 @@ tooltip.background {
   font-weight: 500;
 }
 
+/* Window buttons: minimize, maximize and close at the right of the title bar, as the
+ * design language's title bar has them: 24px circles of the button fill, 8px apart, the
+ * glyph in ink, grey in a window that is not active. libadwaita draws the circle on the
+ * icon; the button around it is only made as big as the circle. */
+windowcontrols {
+  border-spacing: 8px;
+}
+windowcontrols > button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+windowcontrols > button:backdrop {
+  color: var(--nekoland-ink-3);
+}
+/* The header bar sets the buttons 5px nearer the window's side than its top; the outer
+ * side gets the difference, so the circles sit as far from both edges. */
+windowcontrols.end:dir(ltr),
+windowcontrols.start:dir(rtl) {
+  margin-right: 5px;
+}
+windowcontrols.start:dir(ltr),
+windowcontrols.end:dir(rtl) {
+  margin-left: 5px;
+}
+
 /* Motion. What is pressed gives a little and springs back: 150ms for a state, 260ms to
  * settle, on one curve that starts fast and ends slow; the spring overshoots a little.
  * Each rule keeps the transitions libadwaita gives the widget, and adds the transform. */

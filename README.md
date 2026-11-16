@@ -206,7 +206,9 @@ selection, dialogs, toasts and tooltips as the design language has them; and lea
 draws behind every window. Settings' 設計語言 page shows all of it, after the design,
 in this look whether or not it is turned on. Settings' 外觀 page
 turns it on: it puts the file in `~/.config/gtk-4.0/nekoland/` and imports it from
-`~/.config/gtk-4.0/gtk.css`, keeping what else that file has, and keeps it up to date with Settings. GTK reads
+`~/.config/gtk-4.0/gtk.css`, keeping what else that file has, and keeps it up to date with Settings.
+It also gives windows minimize, maximize and close at the right of the title bar, through
+GNOME's `button-layout`, and puts back the buttons they had when it is turned off. GTK reads
 that file as an application starts, so others take the change when opened again;
 Settings shows it at once, and turned off it opens again without it. It needs GTK 4.20
 or later, the first to read CSS variables and `prefers-color-scheme` in a stylesheet.
