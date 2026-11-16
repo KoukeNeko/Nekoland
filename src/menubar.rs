@@ -249,7 +249,7 @@ struct Level {
 
 pub struct OpenMenu {
     /// The bar's title it opened from; none for one opened elsewhere, as the Dock's.
-    title: Option<usize>,
+    pub(crate) title: Option<usize>,
     levels: Vec<Level>,
     /// For a Help menu: what has been typed into its search field, and what it shows
     /// when nothing has.

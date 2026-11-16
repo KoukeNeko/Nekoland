@@ -980,7 +980,17 @@ impl Nekoland {
             }
             _ => 1.0,
         };
-        let follow = 1.0 - (-dt / MAGNIFY_TIME).exp();
+        // While a menu opened from the Dock is open, its icons stay as they were, as on the Mac.
+        let held = self
+            .menu_bar
+            .open
+            .as_ref()
+            .is_some_and(|open| open.title.is_none());
+        let follow = if held {
+            0.0
+        } else {
+            1.0 - (-dt / MAGNIFY_TIME).exp()
+        };
         let old = std::mem::take(&mut self.dock.motions);
         self.dock.motions = tiles
             .iter()
