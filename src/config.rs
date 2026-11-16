@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// The display mode to ask for, as `WIDTHxHEIGHT`; the display's preferred one otherwise.
     pub mode: Option<String>,
+    /// How many pixels a point is drawn with; worked out from the display's density otherwise.
+    pub scale: Option<f64>,
     /// Shell commands started once the compositor is up: the panel, the wallpaper, and so on.
     pub autostart: Vec<String>,
     pub terminal: String,
@@ -208,6 +210,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             mode: None,
+            scale: None,
             autostart: Vec::new(),
             terminal: "foot".into(),
             launcher: "nekoland-launcher".into(),

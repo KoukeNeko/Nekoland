@@ -565,7 +565,7 @@ impl AppGrid {
     fn refresh_chrome(&mut self, layout: &Layout, output_size: Option<Size<i32, Logical>>) {
         if self.backdrop.as_ref().map(|(size, _)| Some(*size)) != Some(output_size) {
             self.backdrop = output_size.and_then(|size| {
-                let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+                let surface = text::canvas(size.w, size.h).ok()?;
                 {
                     let cr = Context::new(&surface).ok()?;
                     cr.set_source_rgba(0.08, 0.08, 0.1, 0.42);
@@ -651,7 +651,7 @@ fn fade_since(at: Instant) -> f32 {
 }
 
 fn text_layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
         "{FONT} {points}"
     ))));
@@ -1455,7 +1455,7 @@ impl Nekoland {
 /// The search field's text on its pane: what was typed and what is being composed, which
 /// is underlined, with the caret after them; or what the field is for.
 fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<Picture> {
-    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    let surface = text::canvas(size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(
@@ -1530,7 +1530,7 @@ fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<P
             .collect()
     };
     let width = (widths.iter().sum::<f64>() + PAD * 2.0).ceil() as i32;
-    let surface = ImageSurface::create(Format::ARgb32, width, HEIGHT).ok()?;
+    let surface = text::canvas(width, HEIGHT).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(
@@ -1638,7 +1638,7 @@ fn draw_grid(
 ) -> Option<Picture> {
     let (width, height) = (layout.grid.size.w, layout.grid.size.h + DOTS);
     let per_page = layout.per_page();
-    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let surface = text::canvas(width, height).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         cr.rectangle(0.0, 0.0, f64::from(width), f64::from(layout.grid.size.h));
@@ -1698,7 +1698,7 @@ fn draw_folder(
     gap: Option<usize>,
     hovered: Option<usize>,
 ) -> Option<Picture> {
-    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    let surface = text::canvas(size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(
@@ -1769,7 +1769,7 @@ fn draw_folder(
 
 /// The dragged entry's icon, a little bigger, as it follows the pointer.
 fn draw_held(tile: &Tile) -> Option<Picture> {
-    let surface = ImageSurface::create(Format::ARgb32, HELD_SIZE, HELD_SIZE).ok()?;
+    let surface = text::canvas(HELD_SIZE, HELD_SIZE).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         match &tile.icon {

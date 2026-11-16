@@ -29,6 +29,7 @@ wallpaper and an input method. Every key is optional:
 | Key | Meaning |
 | --- | --- |
 | `mode` | Display mode as `WIDTHxHEIGHT`; the display's preferred one otherwise |
+| `scale` | How many pixels each point is drawn with: 2 on a display dense enough to be Retina (4K desktop displays, high-resolution laptop panels), 1 otherwise, and the host's own scale when running in a window |
 | `autostart` | Shell commands started once the compositor is up |
 | `terminal`, `launcher` | Commands behind the shortcuts below |
 | `launcher_search` | What the launcher takes before the text to search for |
@@ -259,8 +260,9 @@ it in effect, or says why not.
 - Settings does not change the display's mode or the keyboard. A wallpaper started by
   `autostart` stays under one chosen in Settings until the session ends.
 - One GPU. A second display takes the pointer and windows, but the menu bar, Dock and
-  overview stay on the first, no display is scaled, and displays are
-  not hot-plugged.
+  overview stay on the first, and displays are not hot-plugged.
+- X11 programs are drawn at one pixel a point and enlarged on a scaled display, so
+  they look soft there.
 - Screen capture copies through the CPU, not dmabufs, and the screen does not turn off
   when idle.
 - X11 windows have no title bars.

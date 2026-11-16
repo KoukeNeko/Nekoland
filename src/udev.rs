@@ -31,7 +31,7 @@ use smithay::{
         udev::{all_gpus, primary_gpu},
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
-    output::{Mode, Output, PhysicalProperties},
+    output::{Mode, Output, PhysicalProperties, Scale},
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
@@ -154,13 +154,25 @@ pub fn init_udev(
         // The global lives as long as the compositor does.
         let _global = output.create_global::<Nekoland>(&data.display_handle);
 
+        // Side by side, each as wide as it is in points.
         let x = state
             .space
             .outputs()
             .map(|o| state.space.output_geometry(o).unwrap().size.w)
             .sum::<i32>();
+        let scale = state
+            .config
+            .scale
+            .unwrap_or_else(|| density_scale(mode.size.w, mode.size.h, width_mm, height_mm));
+        info!("{name}: scale {scale}");
         output.set_preferred(mode);
-        output.change_current_state(Some(mode), None, None, Some((x, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            None,
+            Some(Scale::Fractional(scale)),
+            Some((x, 0).into()),
+        );
+        crate::text::set_picture_scale(scale);
         state.space.map_output(&output, (x, 0));
 
         let surface = manager
@@ -359,10 +371,13 @@ fn draw(
         .get_pointer()
         .ok_or("seat has no pointer")?
         .current_location();
-    let pointer = (pointer - output_origin.to_f64()).to_physical(1.0).to_i32_round();
+    let scale = output.current_scale().fractional_scale();
+    let pointer = (pointer - output_origin.to_f64())
+        .to_physical(scale)
+        .to_i32_round();
 
     // Front to back: the cursor is above everything else.
-    let mut elements = cursor_elements(state, renderer, cursors, pointer);
+    let mut elements = cursor_elements(state, renderer, cursors, pointer, scale);
     let cursor = elements.len();
     elements.extend(scene_elements(state, renderer, output, glass)?);
 
@@ -386,6 +401,7 @@ fn cursor_elements(
     renderer: &mut GlesRenderer,
     cursors: &mut Cursors,
     pointer: Point<i32, Physical>,
+    scale: f64,
 ) -> Vec<SceneElement> {
     let icon = match &state.cursor_status {
         CursorImageStatus::Hidden => return Vec::new(),
@@ -397,18 +413,18 @@ fn cursor_elements(
                     .map(|attributes| attributes.lock().unwrap().hotspot)
                     .unwrap_or_default()
             });
-            let location = pointer - hotspot.to_physical(1);
-            return render_elements_from_surface_tree(renderer, surface, location, 1.0, 1.0, Kind::Cursor);
+            let location = pointer - hotspot.to_physical_precise_round(scale);
+            return render_elements_from_surface_tree(renderer, surface, location, scale, 1.0, Kind::Cursor);
         }
         // A client that went away leaves its cursor behind; fall back to the arrow.
         CursorImageStatus::Surface(_) => CursorIcon::Default,
         CursorImageStatus::Named(icon) => *icon,
     };
 
-    let Some(image) = cursors.get(icon) else {
+    let Some(image) = cursors.get(icon, scale) else {
         return Vec::new();
     };
-    let location = (pointer - image.hotspot).to_f64();
+    let location = pointer.to_f64() - image.hotspot.to_physical(scale);
     MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         location,
@@ -423,4 +439,47 @@ fn cursor_elements(
         warn!("cursor: {err}");
         Vec::new()
     })
+}
+
+/// The scale the Mac would give a display: twice for one dense enough to be Retina,
+/// which a 4K desktop display and a laptop's high-resolution panel are, and none for one
+/// as coarse as a 1080p or 1440p monitor, whose points would then be too big.
+fn density_scale(width: i32, height: i32, width_mm: u32, height_mm: u32) -> f64 {
+    const RETINA_PPI: f64 = 130.0;
+    const RETINA_ROWS: i32 = 1600;
+    // 4K and up is drawn at twice whatever size it claims: virtual displays, QEMU's
+    // among them, claim 100 dpi at any resolution.
+    const FOUR_K_ROWS: i32 = 2000;
+    let ppi = (width_mm > 0 && height_mm > 0).then(|| {
+        let diagonal_px = f64::from(width).hypot(f64::from(height));
+        let diagonal_in = f64::from(width_mm).hypot(f64::from(height_mm)) / 25.4;
+        diagonal_px / diagonal_in
+    });
+    let dense = height >= FOUR_K_ROWS || (height >= RETINA_ROWS && ppi.is_some_and(|ppi| ppi >= RETINA_PPI));
+    if dense {
+        2.0
+    } else {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::density_scale;
+
+    #[test]
+    fn dense_displays_are_drawn_at_twice() {
+        // 27-inch and 32-inch 4K, a 13-inch 2560x1600 laptop, and a 4K of unknown size.
+        assert_eq!(density_scale(3840, 2160, 597, 336), 2.0);
+        assert_eq!(density_scale(3840, 2160, 708, 398), 2.0);
+        assert_eq!(density_scale(2560, 1600, 286, 179), 2.0);
+        assert_eq!(density_scale(3840, 2160, 0, 0), 2.0);
+        // QEMU's virtual display at 4K, which it says is 100 dpi.
+        assert_eq!(density_scale(3840, 2160, 975, 549), 2.0);
+        // 27-inch 1440p, 24-inch 1080p, a 13-inch 1080p laptop, and a 1080p of unknown size.
+        assert_eq!(density_scale(2560, 1440, 597, 336), 1.0);
+        assert_eq!(density_scale(1920, 1080, 527, 296), 1.0);
+        assert_eq!(density_scale(1920, 1080, 294, 165), 1.0);
+        assert_eq!(density_scale(1920, 1080, 0, 0), 1.0);
+    }
 }

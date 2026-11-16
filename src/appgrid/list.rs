@@ -530,7 +530,7 @@ fn draw_list(
 ) -> Option<Picture> {
     let size = layout.grid.size;
     let cell = cell(style);
-    let surface = ImageSurface::create(Format::ARgb32, size.w.max(1), size.h.max(1)).ok()?;
+    let surface = text::canvas(size.w.max(1), size.h.max(1)).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         let mut top = -scroll;
@@ -607,7 +607,7 @@ fn draw_sidebar(
     chosen: usize,
     hovered: Option<usize>,
 ) -> Option<Picture> {
-    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    let surface = text::canvas(size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(

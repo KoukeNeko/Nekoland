@@ -378,7 +378,7 @@ fn mono_font() -> pango::FontDescription {
 }
 
 fn text_layout(cr: &Context, text: &str, font: &pango::FontDescription) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(font));
     layout.set_text(text);
     layout
@@ -565,7 +565,7 @@ impl MenuBar {
         let title_font = font("Medium", 10.0);
         let app_font = font("Bold", 10.0);
 
-        let Ok(surface) = ImageSurface::create(Format::ARgb32, width.max(1), MENU_BAR_HEIGHT) else {
+        let Ok(surface) = text::canvas(width.max(1), MENU_BAR_HEIGHT) else {
             return;
         };
         let Ok(cr) = Context::new(&surface) else {
@@ -666,7 +666,8 @@ impl MenuBar {
             }
             let tint = if lit { colors.on_ink } else { colors.ink };
             if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
-                let scale = f64::from(STATUS_ICON) / f64::from(icon.width().max(icon.height()).max(1));
+                let (w, h) = text::points(&icon);
+                let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);
                 cr.save().ok();
                 cr.translate(
                     f64::from(rect.loc.x + (rect.size.w - STATUS_ICON) / 2),
@@ -757,7 +758,7 @@ impl MenuBar {
         }
         level.drawn = Some(key);
         let size: Size<i32, Logical> = level.rect.size;
-        let Ok(surface) = ImageSurface::create(Format::ARgb32, size.w, size.h) else {
+        let Ok(surface) = text::canvas(size.w, size.h) else {
             return;
         };
         let Ok(cr) = Context::new(&surface) else {

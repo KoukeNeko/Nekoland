@@ -116,9 +116,9 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Nekoland {
             .map(|mode| mode.size)
             .unwrap_or_default();
         let whole = Rectangle::from_size(size);
-        // Outputs are not scaled: their logical points are their pixels.
+        let scale = output.as_ref().map_or(1.0, |output| output.current_scale().fractional_scale());
         let region = region
-            .map(|region| region.to_physical(1))
+            .map(|region| region.to_physical_precise_round(scale))
             .map_or(Some(whole), |region| region.intersection(whole))
             .filter(|region| !region.is_empty());
         let (Some(output), Some(region)) = (output, region) else {
@@ -226,7 +226,7 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
     for frame in frames {
         let data = frame.data();
         let elements = if data.cursor { elements } else { &elements[cursor.min(elements.len())..] };
-        match copy_frame(renderer, size, elements, &frame) {
+        match copy_frame(renderer, size, output.current_scale().fractional_scale(), elements, &frame) {
             Ok(()) => {
                 if frame.with_damage {
                     let region = data.region.size;
@@ -247,6 +247,7 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
 fn copy_frame<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     size: Size<i32, Physical>,
+    scale: f64,
     elements: &[E],
     frame: &Frame,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -257,7 +258,7 @@ fn copy_frame<E: RenderElement<GlesRenderer>>(
         size.to_logical(1).to_buffer(1, Transform::Normal),
     )?;
     let mut target = renderer.bind(&mut texture)?;
-    OutputDamageTracker::new(size, 1.0, Transform::Normal).render_output(
+    OutputDamageTracker::new(size, scale, Transform::Normal).render_output(
         renderer,
         &mut target,
         0,

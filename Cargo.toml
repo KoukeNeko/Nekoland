@@ -10,7 +10,7 @@ cairo-rs = { version = "0.20", features = ["png"] }
 gdk-pixbuf = "0.20"
 gio = "0.20"
 libc = "0.2"
-pango = "0.20"
+pango = { version = "0.20", features = ["v1_44"] }
 pangocairo = "0.20"
 serde = { version = "1", features = ["derive"] }
 smithay-drm-extras = { version = "0.1.0", default-features = false }

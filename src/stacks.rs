@@ -160,9 +160,15 @@ pub fn item_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageS
         let small = || std::fs::metadata(&item.path).is_ok_and(|meta| meta.len() <= MAX_PICTURE_BYTES);
         let picture =
             thumbnail.or_else(|| (item.kind.starts_with("image/") && small()).then(|| item.path.clone()));
-        if let Some(pixbuf) =
-            picture.and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true).ok())
-        {
+        if let Some(pixbuf) = picture.and_then(|path| {
+            gdk_pixbuf::Pixbuf::from_file_at_scale(
+                path,
+                size * text::picture_scale(),
+                size * text::picture_scale(),
+                true,
+            )
+            .ok()
+        }) {
             return text::pixbuf_surface(&pixbuf, None);
         }
     }
@@ -173,12 +179,10 @@ pub fn item_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageS
 
 /// Draws `icon` fitted to a square of `size` at the origin, in the middle of it.
 pub fn paint_fitted(cr: &Context, icon: &ImageSurface, size: f64, alpha: f64) {
-    let scale = size / f64::from(icon.width().max(icon.height()).max(1));
+    let (w, h) = text::points(icon);
+    let scale = size / w.max(h).max(1.0);
     let _ = cr.save();
-    cr.translate(
-        (size - f64::from(icon.width()) * scale) / 2.0,
-        (size - f64::from(icon.height()) * scale) / 2.0,
-    );
+    cr.translate((size - w * scale) / 2.0, (size - h * scale) / 2.0);
     cr.scale(scale, scale);
     let _ = cr.set_source_surface(icon, 0.0, 0.0);
     cr.source().set_filter(cairo::Filter::Good);
@@ -187,7 +191,7 @@ pub fn paint_fitted(cr: &Context, icon: &ImageSurface, size: f64, alpha: f64) {
 }
 
 fn layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
         "{FONT} {points}"
     ))));
@@ -305,7 +309,7 @@ impl Fan {
         hovered: Option<usize>,
         dark: bool,
     ) -> Option<Picture> {
-        let surface = ImageSurface::create(Format::ARgb32, self.size.w.max(1), self.size.h.max(1)).ok()?;
+        let surface = text::canvas(self.size.w.max(1), self.size.h.max(1)).ok()?;
         {
             let cr = Context::new(&surface).ok()?;
             let (r, g, b) = ink(dark);
@@ -409,7 +413,7 @@ impl Grid {
         button_hovered: bool,
         dark: bool,
     ) -> Option<Picture> {
-        let surface = ImageSurface::create(Format::ARgb32, self.size.w, self.size.h).ok()?;
+        let surface = text::canvas(self.size.w, self.size.h).ok()?;
         {
             let cr = Context::new(&surface).ok()?;
             paint_pane(

@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicI32, Ordering},
 };
 
 use cairo::{Context, Format, ImageSurface};
@@ -16,6 +17,44 @@ const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
 // Largest first: icons are drawn smaller than this more often than larger.
 const ICON_SIZES: [&str; 6] = ["256x256", "128x128", "96x96", "64x64", "48x48", "32x32"];
 
+/// How many pixels a point of the compositor's own pictures is drawn with: the output's
+/// scale, rounded up, so that a fractionally scaled output shrinks them rather than
+/// enlarging them, and they stay as sharp as its clients.
+static PICTURE_SCALE: AtomicI32 = AtomicI32::new(1);
+
+// shortcut: one scale for all outputs, the last one set up, as the menu bar and Dock are on
+// the first only; pictures drawn before a scale change keep their old density until redrawn.
+pub fn set_picture_scale(scale: f64) {
+    PICTURE_SCALE.store((scale.ceil() as i32).max(1), Ordering::Relaxed);
+}
+
+pub fn picture_scale() -> i32 {
+    PICTURE_SCALE.load(Ordering::Relaxed)
+}
+
+/// A surface to draw a picture on, `width` by `height` points, with as many pixels to each
+/// point as the outputs show; cairo, and the text on it, work in points.
+pub fn canvas(width: i32, height: i32) -> Result<ImageSurface, cairo::Error> {
+    let scale = picture_scale();
+    let surface = ImageSurface::create(Format::ARgb32, width * scale, height * scale)?;
+    surface.set_device_scale(f64::from(scale), f64::from(scale));
+    Ok(surface)
+}
+
+/// A text layout for `cr`, drawn as the Mac draws text: unhinted outlines, grey
+/// antialiasing and glyphs placed at fractions of a pixel, so that a word keeps its
+/// shape and spacing at any size rather than being snapped to the pixel grid.
+pub fn new_layout(cr: &Context) -> pango::Layout {
+    let context = pangocairo::functions::create_context(cr);
+    let mut options = cairo::FontOptions::new().expect("cairo font options");
+    options.set_antialias(cairo::Antialias::Gray);
+    options.set_hint_style(cairo::HintStyle::None);
+    options.set_hint_metrics(cairo::HintMetrics::Off);
+    pangocairo::functions::context_set_font_options(&context, Some(&options));
+    context.set_round_glyph_positions(false);
+    pango::Layout::new(&context)
+}
+
 /// Something drawn once and shown many times.
 #[derive(Clone)]
 pub struct Picture {
@@ -24,13 +63,21 @@ pub struct Picture {
 }
 
 pub fn picture(mut surface: ImageSurface) -> Option<Picture> {
-    let size = Size::from((surface.width(), surface.height()));
+    let pixels = Size::from((surface.width(), surface.height()));
+    let scale = (surface.device_scale().0.round() as i32).max(1);
     surface.flush();
     let data = surface.data().ok()?;
     Some(Picture {
         // Cairo's ARGB32 is premultiplied and in native byte order, which is this format.
-        buffer: MemoryRenderBuffer::from_slice(&data, Fourcc::Argb8888, size, 1, Transform::Normal, None),
-        size: Size::from((size.w, size.h)),
+        buffer: MemoryRenderBuffer::from_slice(
+            &data,
+            Fourcc::Argb8888,
+            pixels,
+            scale,
+            Transform::Normal,
+            None,
+        ),
+        size: Size::from((pixels.w / scale, pixels.h / scale)),
     })
 }
 
@@ -86,7 +133,7 @@ pub fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, 
 }
 
 fn layout(cr: &Context, text: &str, points: i32, bold: bool, max_width: i32) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = new_layout(cr);
     let weight = if bold { " Semi-Bold" } else { "" };
     let font = pango::FontDescription::from_string(&format!("{FONT}{weight} {points}"));
     layout.set_font_description(Some(&font));
@@ -112,7 +159,7 @@ fn label_surface(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> 
 
     let width = text_width + PAD_X * 2;
     let height = text_height + PAD_Y * 2;
-    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let surface = canvas(width, height).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         if let Some(opacity) = pill {
@@ -168,9 +215,10 @@ impl Apps {
         let name = label_surface(name, 13, 360, None)?;
 
         const GAP: i32 = 4;
-        let width = name.width().max(icon_size);
-        let height = icon_size + GAP + name.height();
-        let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+        let name_size = (name.width() / picture_scale(), name.height() / picture_scale());
+        let width = name_size.0.max(icon_size);
+        let height = icon_size + GAP + name_size.1;
+        let surface = canvas(width, height).ok()?;
         {
             let cr = Context::new(&surface).ok()?;
             let icon_x = f64::from(width - icon_size) / 2.0;
@@ -180,7 +228,8 @@ impl Apps {
                 .as_deref()
                 .and_then(|name| named_icon(name, "", icon_size, (1.0, 1.0, 1.0)))
                 .and_then(|icon| {
-                    let scale = f64::from(icon_size) / f64::from(icon.width().max(icon.height()).max(1));
+                    let (w, h) = points(&icon);
+                    let scale = f64::from(icon_size) / w.max(h).max(1.0);
                     cr.save().ok()?;
                     cr.translate(icon_x, 0.0);
                     cr.scale(scale, scale);
@@ -204,7 +253,7 @@ impl Apps {
 
             cr.set_source_surface(
                 &name,
-                f64::from(width - name.width()) / 2.0,
+                f64::from(width - name_size.0) / 2.0,
                 f64::from(icon_size + GAP),
             )
             .ok()?;
@@ -226,12 +275,22 @@ fn draw_icon(cr: &Context, path: &Path, x: f64, y: f64, size: i32) -> Option<()>
 }
 
 /// An icon by name from the icon themes, or from `extra_dir` first, `size` pixels square.
-/// Symbolic icons are drawn in `tint` instead of their own grey.
+/// Symbolic icons are drawn in `tint` instead of their own grey. It is `size` points
+/// square, with as many pixels as a canvas has.
 pub fn named_icon(name: &str, extra_dir: &str, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
     let path = find_named_icon(name, extra_dir)?;
-    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size, size).ok()?;
+    let scale = picture_scale();
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size * scale, size * scale).ok()?;
     let symbolic = name.ends_with("-symbolic") || path.to_string_lossy().contains("symbolic");
-    pixbuf_surface(&pixbuf, symbolic.then_some(tint))
+    let surface = pixbuf_surface(&pixbuf, symbolic.then_some(tint))?;
+    surface.set_device_scale(f64::from(scale), f64::from(scale));
+    Some(surface)
+}
+
+/// How big a surface is drawn, in points: its pixels over its device scale.
+pub fn points(surface: &ImageSurface) -> (f64, f64) {
+    let (x, y) = surface.device_scale();
+    (f64::from(surface.width()) / x, f64::from(surface.height()) / y)
 }
 
 /// An icon a program drew itself: ARGB, in network byte order, not premultiplied.

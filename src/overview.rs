@@ -211,7 +211,7 @@ fn text_width(text: &str, font: &pango::FontDescription) -> i32 {
     let Ok(cr) = cairo::Context::new(&surface) else {
         return 0;
     };
-    let layout = pangocairo::functions::create_layout(&cr);
+    let layout = text::new_layout(&cr);
     layout.set_font_description(Some(font));
     layout.set_text(text);
     layout.pixel_size().0
@@ -224,7 +224,7 @@ fn show_centered(
     rect: Rectangle<i32, Logical>,
     color: (f64, f64, f64),
 ) {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(font));
     layout.set_text(text);
     let (width, height) = layout.pixel_size();
@@ -238,7 +238,7 @@ fn show_centered(
 
 /// A picture drawn by `paint` on a surface of that size.
 fn draw(width: i32, height: i32, paint: impl FnOnce(&cairo::Context)) -> Option<Picture> {
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width.max(1), height.max(1)).ok()?;
+    let surface = text::canvas(width.max(1), height.max(1)).ok()?;
     {
         let cr = cairo::Context::new(&surface).ok()?;
         paint(&cr);

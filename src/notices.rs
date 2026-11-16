@@ -64,7 +64,7 @@ fn colors(dark: bool) -> (Rgb, Rgb, (f64, f64, f64, f64)) {
 }
 
 fn layout(cr: &Context, text: &str, font: &str, width: i32, lines: i32) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(&pango::FontDescription::from_string(font)));
     layout.set_text(text);
     layout.set_width(width * pango::SCALE);
@@ -98,7 +98,7 @@ fn draw_banner(notification: &Notification, icon: Option<ImageSurface>, dark: bo
     };
     let height = (PADDING * 2 + title_height + 2 + body_height).max(PADDING * 2 + ICON);
 
-    let surface = ImageSurface::create(Format::ARgb32, WIDTH, height).ok()?;
+    let surface = text::canvas(WIDTH, height).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         text::rounded_rectangle(
@@ -117,7 +117,8 @@ fn draw_banner(notification: &Notification, icon: Option<ImageSurface>, dark: bo
 
         match icon {
             Some(icon) => {
-                let scale = f64::from(ICON) / f64::from(icon.width().max(icon.height()).max(1));
+                let (w, h) = text::points(&icon);
+                let scale = f64::from(ICON) / w.max(h).max(1.0);
                 cr.save().ok()?;
                 cr.translate(f64::from(PADDING), f64::from(PADDING));
                 cr.scale(scale, scale);

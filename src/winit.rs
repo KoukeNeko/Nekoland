@@ -3,7 +3,7 @@ use smithay::{
         renderer::damage::OutputDamageTracker,
         winit::{self, WinitEvent},
     },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
+    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
 };
@@ -38,7 +38,16 @@ pub fn init_winit(
         },
     );
     let _global = output.create_global::<Nekoland>(display_handle);
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    // As the host scales its own windows, unless the configuration says otherwise.
+    let scale = |host: f64| Scale::Fractional(state.config.scale.unwrap_or(host));
+    let initial = scale(backend.scale_factor());
+    crate::text::set_picture_scale(initial.fractional_scale());
+    output.change_current_state(
+        Some(mode),
+        Some(Transform::Flipped180),
+        Some(initial),
+        Some((0, 0).into()),
+    );
     output.set_preferred(mode);
 
     state.space.map_output(&output, (0, 0));
@@ -55,14 +64,16 @@ pub fn init_winit(
         let state = &mut data.state;
 
         match event {
-            WinitEvent::Resized { size, .. } => {
+            WinitEvent::Resized { size, scale_factor } => {
+                let scale = Scale::Fractional(state.config.scale.unwrap_or(scale_factor));
+                crate::text::set_picture_scale(scale.fractional_scale());
                 output.change_current_state(
                     Some(Mode {
                         size,
                         refresh: 60_000,
                     }),
                     None,
-                    None,
+                    Some(scale),
                     None,
                 );
                 smithay::desktop::layer_map_for_output(&output).arrange();

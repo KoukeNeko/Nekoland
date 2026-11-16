@@ -498,18 +498,25 @@ fn trimmed(mut surface: ImageSurface, size: i32) -> Option<ImageSurface> {
         ((left, top, w, h), round)
     };
     let (left, top, w, h) = bounds;
+    // The bounds are in the icon's pixels; it is drawn in its points.
+    let pixels = surface.device_scale().0;
+    let (left, top, w, h) = (
+        f64::from(left) / pixels,
+        f64::from(top) / pixels,
+        f64::from(w) / pixels,
+        f64::from(h) / pixels,
+    );
     let fit = f64::from(size) * if round { ROUND_SCALE } else { 1.0 };
-    let scale = fit / f64::from(w.max(h));
-    let out = ImageSurface::create(Format::ARgb32, size, size).ok()?;
+    let scale = fit / w.max(h);
+    let out = text::canvas(size, size).ok()?;
     {
         let cr = Context::new(&out).ok()?;
         cr.translate(
-            (f64::from(size) - f64::from(w) * scale) / 2.0,
-            (f64::from(size) - f64::from(h) * scale) / 2.0,
+            (f64::from(size) - w * scale) / 2.0,
+            (f64::from(size) - h * scale) / 2.0,
         );
         cr.scale(scale, scale);
-        cr.set_source_surface(&surface, -f64::from(left), -f64::from(top))
-            .ok()?;
+        cr.set_source_surface(&surface, -left, -top).ok()?;
         cr.source().set_filter(cairo::Filter::Good);
         cr.paint().ok()?;
     }
@@ -527,7 +534,7 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
         .next()
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
-    let layout = pangocairo::functions::create_layout(cr);
+    let layout = text::new_layout(cr);
     layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
         "{FONT} Bold {}",
         (size * 0.36).round()
@@ -546,12 +553,12 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
 fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) -> Option<Picture> {
     let font = pango::FontDescription::from_string(&format!("{FONT} {points}"));
     let probe = Context::new(ImageSurface::create(Format::ARgb32, 1, 1).ok()?).ok()?;
-    let layout = pangocairo::functions::create_layout(&probe);
+    let layout = text::new_layout(&probe);
     layout.set_font_description(Some(&font));
     layout.set_text(name);
     let (text_width, text_height) = layout.pixel_size();
     let width = text_width + 20;
-    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let surface = text::canvas(width, height).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(
@@ -562,7 +569,7 @@ fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) 
             dark,
             true,
         );
-        let layout = pangocairo::functions::create_layout(&cr);
+        let layout = text::new_layout(&cr);
         layout.set_font_description(Some(&font));
         layout.set_text(name);
         let (r, g, b) = ink(dark);
@@ -1109,7 +1116,7 @@ impl Nekoland {
             return;
         }
 
-        let Ok(pane) = ImageSurface::create(Format::ARgb32, width.max(1), HEIGHT) else {
+        let Ok(pane) = text::canvas(width.max(1), HEIGHT) else {
             return;
         };
         if let Ok(cr) = Context::new(&pane) {
@@ -1125,7 +1132,7 @@ impl Nekoland {
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
         let big = (f64::from(ART) * self.magnify_scale()).ceil() as i32;
-        let Ok(surface) = ImageSurface::create(Format::ARgb32, width.max(1), HEIGHT + rise) else {
+        let Ok(surface) = text::canvas(width.max(1), HEIGHT + rise) else {
             return;
         };
         {
@@ -1469,21 +1476,19 @@ impl Nekoland {
                     (self.folder_icon(&path, size, dark), stacks::folder_name(&path))
                 }
             };
-            self.dock.held = ImageSurface::create(Format::ARgb32, size, size)
-                .ok()
-                .and_then(|surface| {
-                    {
-                        let cr = Context::new(&surface).ok()?;
-                        match &image {
-                            Some(image) => {
-                                cr.set_source_surface(image, 0.0, 0.0).ok()?;
-                                cr.paint_with_alpha(0.9).ok()?;
-                            }
-                            None => draw_initial(&cr, 0.0, 0.0, f64::from(size), &name, dark),
+            self.dock.held = text::canvas(size, size).ok().and_then(|surface| {
+                {
+                    let cr = Context::new(&surface).ok()?;
+                    match &image {
+                        Some(image) => {
+                            cr.set_source_surface(image, 0.0, 0.0).ok()?;
+                            cr.paint_with_alpha(0.9).ok()?;
                         }
+                        None => draw_initial(&cr, 0.0, 0.0, f64::from(size), &name, dark),
                     }
-                    text::picture(surface)
-                });
+                }
+                text::picture(surface)
+            });
         }
         self.dock.tag = match self.dock.tag.take() {
             Some(tag) if removing && tag.0 == dark => Some(tag),
@@ -1719,6 +1724,8 @@ impl Nekoland {
                 .and_then(|icon| self.dock_icon(icon, BADGE, dark))
                 .and_then(|icon| {
                     let copy = ImageSurface::create(Format::ARgb32, icon.width(), icon.height()).ok()?;
+                    let (x, y) = icon.device_scale();
+                    copy.set_device_scale(x, y);
                     {
                         let cr = Context::new(&copy).ok()?;
                         cr.set_source_surface(&icon, 0.0, 0.0).ok()?;
@@ -2694,7 +2701,7 @@ fn draw_preview(
     close_hovered: bool,
     dark: bool,
 ) -> Option<Picture> {
-    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    let surface = text::canvas(size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
         paint_pane(
@@ -2722,7 +2729,7 @@ fn draw_preview(
                     .ok()?;
                 cr.paint().ok()?;
             }
-            let layout = pangocairo::functions::create_layout(&cr);
+            let layout = text::new_layout(&cr);
             layout.set_font_description(Some(&font));
             layout.set_text(title);
             layout.set_width((CARD_WIDTH - CARD_PADDING * 2 - 16 - 12 - CLOSE - 6) * pango::SCALE);

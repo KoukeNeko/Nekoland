@@ -137,6 +137,8 @@ struct Blur {
     /// What is behind the glass, then copies of it at half, a quarter, and so on.
     levels: Vec<GlesTexture>,
     tracker: Option<OutputDamageTracker>,
+    /// The output scale the tracker draws at.
+    scale: f64,
     /// Where the panes were when it was last blurred.
     areas: Vec<Rectangle<i32, Physical>>,
     commit: CommitCounter,
@@ -177,12 +179,12 @@ impl Glass {
     pub fn update<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
-        size: Size<i32, Physical>,
+        (size, scale): (Size<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.scene
-            .update(renderer, (&self.down, &self.up), size, areas, behind)
+            .update(renderer, (&self.down, &self.up), (size, scale), areas, behind)
     }
 
     /// The same for the wallpaper behind windows, `wallpaper` its surfaces, `areas` the
@@ -190,12 +192,12 @@ impl Glass {
     pub fn update_wallpaper<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
-        size: Size<i32, Physical>,
+        (size, scale): (Size<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
         wallpaper: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.wallpaper
-            .update(renderer, (&self.down, &self.up), size, areas, wallpaper)
+            .update(renderer, (&self.down, &self.up), (size, scale), areas, wallpaper)
     }
 
     /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
@@ -221,12 +223,12 @@ impl Blur {
         &mut self,
         renderer: &mut GlesRenderer,
         (down, up): (&GlesTexProgram, &GlesTexProgram),
-        size: Size<i32, Physical>,
+        (size, scale): (Size<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let full = Size::<i32, Buffer>::from((size.w, size.h));
-        if self.levels.first().map(Texture::size) != Some(full) {
+        if self.levels.first().map(Texture::size) != Some(full) || self.scale != scale {
             self.levels = (0..=LEVELS)
                 .map(|level| {
                     let scaled = Size::from(((full.w >> level).max(1), (full.h >> level).max(1)));
@@ -255,7 +257,8 @@ impl Blur {
                 frame.clear(Color32F::TRANSPARENT, &[area])?;
                 let _ = frame.finish()?;
             }
-            self.tracker = Some(OutputDamageTracker::new(size, 1.0, OFFSCREEN));
+            self.tracker = Some(OutputDamageTracker::new(size, scale, OFFSCREEN));
+            self.scale = scale;
             self.areas.clear();
         }
         let Some(tracker) = self.tracker.as_mut() else {

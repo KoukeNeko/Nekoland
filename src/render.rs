@@ -55,15 +55,23 @@ pub fn scene_elements(
     output: &Output,
     mut glass: Option<&mut Glass>,
 ) -> Result<Vec<SceneElement>, Box<dyn std::error::Error>> {
+    let scale = output.current_scale().fractional_scale();
     // Locked, the locker's surface is all there is; until it has one, the clear colour.
     if state.lock.is_some() {
         return Ok(state
             .lock_surface(output)
             .map(|surface| {
-                render_elements_from_surface_tree(renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified)
-                    .into_iter()
-                    .map(SceneElement::Surface)
-                    .collect()
+                render_elements_from_surface_tree(
+                    renderer,
+                    surface.wl_surface(),
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                )
+                .into_iter()
+                .map(SceneElement::Surface)
+                .collect()
             })
             .unwrap_or_default());
     }
@@ -76,7 +84,7 @@ pub fn scene_elements(
                 .ok_or("output is not mapped")?
                 .loc;
             let mut elements = layer_elements(renderer, output, [Layer::Overlay, Layer::Overlay], false);
-            elements.extend(window_elements(state, renderer, &window, output_loc));
+            elements.extend(window_elements(state, renderer, &window, output_loc, scale));
             return Ok(elements);
         }
         let output_geometry = state
@@ -103,7 +111,7 @@ pub fn scene_elements(
             .iter()
             .zip(backdrops)
             .flat_map(|(window, backdrop)| {
-                let mut elements = window_elements(state, renderer, window, output_geometry.loc);
+                let mut elements = window_elements(state, renderer, window, output_geometry.loc, scale);
                 elements.extend(backdrop);
                 elements
             })
@@ -117,7 +125,7 @@ pub fn scene_elements(
             windows: &floating,
             without_top_panel: false,
         };
-        let mut elements = dock_front(state, renderer, output_geometry.loc);
+        let mut elements = dock_front(state, renderer, output_geometry.loc, scale);
         elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
         return Ok(elements);
@@ -130,7 +138,7 @@ pub fn scene_elements(
         .ok_or("output is not mapped")?;
     let progress = overview.progress();
     let fade = progress as f32;
-    let to_output = |point: Point<i32, Logical>| (point - output_geometry.loc).to_f64().to_physical(1.0);
+    let to_output = |point: Point<i32, Logical>| (point - output_geometry.loc).to_f64().to_physical(scale);
     let picture = |renderer: &mut GlesRenderer, picture: &Picture, at: Point<i32, Logical>| {
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -174,7 +182,7 @@ pub fn scene_elements(
         for (id, side) in overview.outline.iter().zip(sides) {
             elements.push(SceneElement::Solid(SolidColorRenderElement::new(
                 id.clone(),
-                side.to_physical(1),
+                side.to_physical_precise_round(scale),
                 CommitCounter::default(),
                 OUTLINE_COLOR,
                 Kind::Unspecified,
@@ -186,20 +194,20 @@ pub fn scene_elements(
     let dragged = overview.dragged();
     let window_thumbnail = |renderer: &mut GlesRenderer, slot: &crate::overview::Slot| {
         let geometry = slot.window.geometry();
-        let natural = (slot.from.loc - geometry.loc - output_geometry.loc).to_physical(1);
-        let origin = (slot.from.loc - output_geometry.loc).to_physical(1);
-        let offset = (slot.now.loc - slot.from.loc).to_physical(1);
-        let scale = f64::from(slot.now.size.w) / f64::from(slot.from.size.w.max(1));
+        let natural = (slot.from.loc - geometry.loc - output_geometry.loc).to_physical_precise_round(scale);
+        let origin = (slot.from.loc - output_geometry.loc).to_physical_precise_round(scale);
+        let offset = (slot.now.loc - slot.from.loc).to_physical_precise_round(scale);
+        let factor = f64::from(slot.now.size.w) / f64::from(slot.from.size.w.max(1));
         AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
             &slot.window,
             renderer,
             natural,
-            Scale::from(1.0),
+            Scale::from(scale),
             1.0,
         )
         .into_iter()
         .map(move |element| {
-            let scaled = RescaleRenderElement::from_element(element, origin, scale);
+            let scaled = RescaleRenderElement::from_element(element, origin, factor);
             SceneElement::Thumbnail(RelocateRenderElement::from_element(
                 scaled,
                 offset,
@@ -241,7 +249,7 @@ pub fn scene_elements(
     elements.push(SceneElement::Solid(SolidColorRenderElement::from_buffer(
         &overview.dim,
         (0, 0),
-        1.0,
+        scale,
         1.0,
         Kind::Unspecified,
     )));
@@ -266,7 +274,7 @@ pub fn scene_elements(
             .and_then(|(rect, button)| picture(renderer, button, rect.loc)),
     );
     scene.extend(desktop_thumbnails(state, renderer, output, output_geometry.loc));
-    scene.extend(dock_front(state, renderer, output_geometry.loc));
+    scene.extend(dock_front(state, renderer, output_geometry.loc, scale));
     scene.extend(floating);
     scene.extend(elements);
     Ok(scene)
@@ -284,7 +292,8 @@ fn desktop_thumbnails(
     let Some(panel) = state.overview_panel().filter(|_| expansion > 0.0) else {
         return Vec::new();
     };
-    let crop = Rectangle::new(panel.loc - output_loc, panel.size).to_physical(1);
+    let scale = output.current_scale().fractional_scale();
+    let crop = Rectangle::new(panel.loc - output_loc, panel.size).to_physical_precise_round(scale);
     let output_width = state
         .space
         .output_geometry(output)
@@ -292,8 +301,8 @@ fn desktop_thumbnails(
     let map = layer_map_for_output(output);
     let mut elements = Vec::new();
     for (index, rect) in state.overview_thumbnails() {
-        let scale = f64::from(rect.size.w) / f64::from(output_width);
-        let offset = (rect.loc - output_loc).to_physical(1);
+        let factor = f64::from(rect.size.w) / f64::from(output_width);
+        let offset = (rect.loc - output_loc).to_physical_precise_round(scale);
         let mut surfaces: Vec<SurfaceElement> = Vec::new();
         // Front to back: the windows, top of the stack first, then the wallpaper.
         for (window, location) in state.desktop_windows(index).into_iter().rev() {
@@ -301,8 +310,8 @@ fn desktop_thumbnails(
                 AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
                     &window,
                     renderer,
-                    (location - window.geometry().loc - output_loc).to_physical(1),
-                    Scale::from(1.0),
+                    (location - window.geometry().loc - output_loc).to_physical_precise_round(scale),
+                    Scale::from(scale),
                     expansion,
                 ),
             );
@@ -316,16 +325,16 @@ fn desktop_thumbnails(
                 AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
                     surface,
                     renderer,
-                    location.to_physical(1),
-                    Scale::from(1.0),
+                    location.to_physical_precise_round(scale),
+                    Scale::from(scale),
                     expansion,
                 ),
             );
         }
         elements.extend(surfaces.into_iter().filter_map(|surface| {
-            let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
+            let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), factor);
             let placed = RelocateRenderElement::from_element(scaled, offset, Relocate::Relative);
-            CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop)
+            CropRenderElement::from_element(placed, scale, crop).map(SceneElement::Desktop)
         }));
     }
     elements
@@ -337,6 +346,7 @@ fn dock_front(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output_loc: Point<i32, Logical>,
+    scale: f64,
 ) -> Vec<SceneElement> {
     let mut elements: Vec<SceneElement> = state
         .dock_genies()
@@ -349,13 +359,14 @@ fn dock_front(
                 genie.into,
                 genie.progress,
                 output_loc,
+                scale,
             )
         })
         .collect();
     elements.extend(state.dock_badge_pictures().into_iter().filter_map(|(badge, at)| {
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (at - output_loc).to_physical(1).to_f64(),
+            (at - output_loc).to_f64().to_physical(scale),
             &badge.buffer,
             None,
             None,
@@ -366,7 +377,7 @@ fn dock_front(
         .map(SceneElement::Picture)
     }));
     for (window, rect) in state.dock_thumbnails() {
-        elements.extend(window_fitted(renderer, &window, rect, output_loc));
+        elements.extend(window_fitted(renderer, &window, rect, output_loc, scale));
     }
     elements
 }
@@ -389,6 +400,7 @@ fn draw_genie(
     into: Rectangle<i32, Logical>,
     progress: f64,
     output_loc: Point<i32, Logical>,
+    output_scale: f64,
 ) -> Vec<SceneElement> {
     let geometry = window.geometry();
     if geometry.size.w <= 0 || geometry.size.h <= 0 {
@@ -431,24 +443,26 @@ fn draw_genie(
             (left - f64::from(output_loc.x), y0 - f64::from(output_loc.y)).into(),
             (right - left, y1 - y0 + 1.0).into(),
         )
-        .to_i32_round()
-        .to_physical(1);
+        .to_physical(output_scale)
+        .to_i32_round();
         // Each band draws the window anew; its surfaces' elements are not copied.
         let surfaces = AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
             window,
             renderer,
-            Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1),
-            Scale::from(1.0),
+            Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical_precise_round(output_scale),
+            Scale::from(output_scale),
             1.0,
         );
         for surface in surfaces {
             let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
             let placed = RelocateRenderElement::from_element(
                 scaled,
-                offset.to_i32_round().to_physical(1),
+                offset.to_physical(output_scale).to_i32_round(),
                 Relocate::Relative,
             );
-            elements.extend(CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop));
+            elements.extend(
+                CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::Desktop),
+            );
         }
     }
     elements
@@ -460,31 +474,36 @@ fn window_fitted(
     window: &Window,
     rect: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
+    scale: f64,
 ) -> Vec<SceneElement> {
     let geometry = window.geometry();
     if geometry.size.w <= 0 || geometry.size.h <= 0 {
         return Vec::new();
     }
-    let scale = (f64::from(rect.size.w) / f64::from(geometry.size.w))
+    let factor = (f64::from(rect.size.w) / f64::from(geometry.size.w))
         .min(f64::from(rect.size.h) / f64::from(geometry.size.h));
     let size = Size::from((
-        (f64::from(geometry.size.w) * scale).round() as i32,
-        (f64::from(geometry.size.h) * scale).round() as i32,
+        (f64::from(geometry.size.w) * factor).round() as i32,
+        (f64::from(geometry.size.h) * factor).round() as i32,
     ));
     let at = rect.loc + Point::from(((rect.size.w - size.w) / 2, (rect.size.h - size.h) / 2)) - output_loc;
-    let crop = Rectangle::new(at, size).to_physical(1);
+    let crop = Rectangle::new(at, size).to_physical_precise_round(scale);
     AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
         window,
         renderer,
-        Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1),
-        Scale::from(1.0),
+        Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical_precise_round(scale),
+        Scale::from(scale),
         1.0,
     )
     .into_iter()
     .filter_map(|surface| {
-        let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
-        let placed = RelocateRenderElement::from_element(scaled, at.to_physical(1), Relocate::Relative);
-        CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop)
+        let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), factor);
+        let placed = RelocateRenderElement::from_element(
+            scaled,
+            at.to_physical_precise_round(scale),
+            Relocate::Relative,
+        );
+        CropRenderElement::from_element(placed, scale, crop).map(SceneElement::Desktop)
     })
     .collect()
 }
@@ -516,6 +535,9 @@ fn floating_elements(
         .space
         .output_geometry(output)
         .map_or(i32::MAX, |geometry| geometry.size.w);
+    let scale = output.current_scale().fractional_scale();
+    // Glass corners are drawn in pixels.
+    let pixels = |radius: i32| (f64::from(radius) * scale).round() as i32;
     let map = layer_map_for_output(output);
     let radius_of = |surface: &LayerSurface| state.config.glass.get(surface.namespace()).copied();
     let surfaces: Vec<LayerSurface> = ABOVE_WINDOWS
@@ -533,22 +555,28 @@ fn floating_elements(
     let areas: Vec<_> = overlays
         .iter()
         .filter(|overlay| overlay.glass.is_some())
-        .map(|overlay| Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1))
+        .map(|overlay| {
+            Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical_precise_round(scale)
+        })
         .chain(
             surfaces
                 .iter()
                 .filter(|surface| radius_of(surface).is_some())
-                .map(|surface| map.layer_geometry(surface).unwrap_or_default().to_physical(1)),
+                .map(|surface| {
+                    map.layer_geometry(surface)
+                        .unwrap_or_default()
+                        .to_physical_precise_round(scale)
+                }),
         )
         .chain(
             windows
                 .iter()
-                .filter_map(|window| window_area(state, window, output_loc)),
+                .filter_map(|window| window_area(state, window, output_loc, scale)),
         )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
         if !areas.is_empty() {
-            if let Err(err) = glass.update(renderer, mode.size, &areas, under) {
+            if let Err(err) = glass.update(renderer, (mode.size, scale), &areas, under) {
                 tracing::warn!("glass: {err}");
             }
         }
@@ -556,7 +584,8 @@ fn floating_elements(
 
     let mut elements = Vec::new();
     for overlay in overlays {
-        let rect = Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1);
+        let rect =
+            Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical_precise_round(scale);
         // An overlay smaller than its picture shows as much of it as fits, from the top left.
         let fits = Size::from((
             overlay.rect.size.w.min(overlay.picture.size.w),
@@ -580,23 +609,23 @@ fn floating_elements(
             glass
                 .as_deref_mut()
                 .zip(overlay.glass)
-                .and_then(|(glass, radius)| glass.pane_with(overlay.id.clone(), rect, radius))
+                .and_then(|(glass, radius)| glass.pane_with(overlay.id.clone(), rect, pixels(radius)))
                 .map(|pane| SceneElement::Glass(pane.faded(overlay.fade))),
         );
     }
     for window in windows {
-        elements.extend(window_elements(state, renderer, window, output_loc));
+        elements.extend(window_elements(state, renderer, window, output_loc, scale));
         let radius = state
             .config
             .glass
             .get(&window_names(window).1)
             .copied()
             .unwrap_or_default();
-        if let Some(area) = window_area(state, window, output_loc) {
+        if let Some(area) = window_area(state, window, output_loc, scale) {
             elements.extend(
                 glass
                     .as_deref_mut()
-                    .and_then(|glass| glass.pane_with(window_glass_id(window), area, radius))
+                    .and_then(|glass| glass.pane_with(window_glass_id(window), area, pixels(radius)))
                     .map(SceneElement::Glass),
             );
         }
@@ -607,8 +636,8 @@ fn floating_elements(
             AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
                 surface,
                 renderer,
-                geometry.loc.to_physical(1),
-                Scale::from(1.0),
+                geometry.loc.to_physical_precise_round(scale),
+                Scale::from(scale),
                 1.0,
             )
             .into_iter()
@@ -624,7 +653,13 @@ fn floating_elements(
             elements.extend(
                 glass
                     .as_deref_mut()
-                    .and_then(|glass| glass.pane(surface.wl_surface(), geometry.to_physical(1), radius))
+                    .and_then(|glass| {
+                        glass.pane(
+                            surface.wl_surface(),
+                            geometry.to_physical_precise_round(scale),
+                            pixels(radius),
+                        )
+                    })
                     .map(SceneElement::Glass),
             );
         }
@@ -638,13 +673,14 @@ fn window_elements(
     renderer: &mut GlesRenderer,
     window: &Window,
     output_loc: Point<i32, Logical>,
+    scale: f64,
 ) -> Vec<SceneElement> {
     let location = state.space.element_location(window).unwrap_or_default();
     AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
         window,
         renderer,
-        (location - window.geometry().loc - output_loc).to_physical(1),
-        Scale::from(1.0),
+        (location - window.geometry().loc - output_loc).to_physical_precise_round(scale),
+        Scale::from(scale),
         1.0,
     )
     .into_iter()
@@ -671,24 +707,25 @@ fn window_backdrops(
         .output_geometry(output)
         .map(|geometry| geometry.loc)
         .unwrap_or_default();
+    let scale = output.current_scale().fractional_scale();
     let areas: Vec<_> = windows
         .iter()
-        .filter_map(|window| window_area(state, window, output_loc))
+        .filter_map(|window| window_area(state, window, output_loc, scale))
         .collect();
     if let (false, Some(mode)) = (areas.is_empty(), output.current_mode()) {
         let wallpaper = layer_elements(renderer, output, BELOW_WINDOWS, false);
-        if let Err(err) = glass.update_wallpaper(renderer, mode.size, &areas, &wallpaper) {
+        if let Err(err) = glass.update_wallpaper(renderer, (mode.size, scale), &areas, &wallpaper) {
             tracing::warn!("glass: {err}");
         }
     }
     windows
         .iter()
         .map(|window| {
-            let area = window_area(state, window, output_loc)?;
+            let area = window_area(state, window, output_loc, scale)?;
             let radius = if has_square_corners(window) {
                 0
             } else {
-                WINDOW_RADIUS
+                (f64::from(WINDOW_RADIUS) * scale).round() as i32
             };
             glass
                 .window_pane(window_glass_id(window), area, radius)
@@ -702,9 +739,10 @@ fn window_area(
     state: &Nekoland,
     window: &Window,
     output_loc: Point<i32, Logical>,
+    scale: f64,
 ) -> Option<Rectangle<i32, Physical>> {
     let location = state.space.element_location(window)?;
-    Some(Rectangle::new(location - output_loc, window.geometry().size).to_physical(1))
+    Some(Rectangle::new(location - output_loc, window.geometry().size).to_physical_precise_round(scale))
 }
 
 /// What a window's glass goes by from frame to frame: the window keeps it.
@@ -725,6 +763,7 @@ fn layer_elements(
     layers: [Layer; 2],
     without_top_panel: bool,
 ) -> Vec<SceneElement> {
+    let scale = output.current_scale().fractional_scale();
     let map = layer_map_for_output(output);
     layers
         .into_iter()
@@ -735,8 +774,8 @@ fn layer_elements(
             AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
                 surface,
                 renderer,
-                location.to_physical(1),
-                Scale::from(1.0),
+                location.to_physical_precise_round(scale),
+                Scale::from(scale),
                 1.0,
             )
         })
