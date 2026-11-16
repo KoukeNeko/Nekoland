@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// The display mode to ask for, as `WIDTHxHEIGHT`; the display's preferred one otherwise.
+    /// The display mode to ask for, as `WIDTHxHEIGHT`, at its fastest rate, or as
+    /// `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise.
     pub mode: Option<String>,
     /// How many pixels a point is drawn with; worked out from the display's density otherwise.
     pub scale: Option<f64>,
@@ -375,10 +376,15 @@ impl Config {
         [&self.keyboard_layout, &self.keyboard_variant, &self.keyboard_options].map(String::clone)
     }
 
-    /// The size `mode` asks for.
-    pub fn mode_size(&self) -> Option<(u16, u16)> {
-        let (width, height) = self.mode.as_deref()?.split_once('x')?;
-        Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+    /// The size `mode` asks for, and the rate in hertz if it names one.
+    pub fn wanted_mode(&self) -> Option<((u16, u16), Option<u32>)> {
+        let mode = self.mode.as_deref()?;
+        let (size, rate) = match mode.split_once('@') {
+            Some((size, rate)) => (size, Some(rate.trim().parse().ok()?)),
+            None => (mode, None),
+        };
+        let (width, height) = size.split_once('x')?;
+        Some(((width.trim().parse().ok()?, height.trim().parse().ok()?), rate))
     }
 }
 
@@ -443,6 +449,11 @@ pub fn set(line: &str) -> Result<(), String> {
     }
 }
 
+/// Takes the setting `key` out of the configuration file, back to its default.
+pub fn unset(key: &str) -> Result<(), String> {
+    save_setting(key.trim(), "")
+}
+
 /// Puts `line` in the configuration file in place of the setting `key`, or before its
 /// first table, if the file still reads as a configuration with it.
 // shortcut: edits the file as text, so a setting written across several lines other than
@@ -462,15 +473,17 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
         .map_err(failed)
 }
 
-/// The configuration text with its `key = [...]` setting, on one line or several, replaced.
+/// The configuration text with its `key = [...]` setting, on one line or several, replaced,
+/// or taken out for an empty `line`.
 fn with_setting(text: &str, key: &str, line: &str) -> String {
+    let new = (!line.is_empty()).then(|| line.to_string());
     let mut out = Vec::new();
     let mut lines = text.lines();
     let mut replaced = false;
     while let Some(current) = lines.next() {
         // Top-level settings end where the first table starts.
         if !replaced && current.trim_start().starts_with('[') {
-            out.push(line.to_string());
+            out.extend(new.clone());
             replaced = true;
         }
         let (name, value) = current.split_once('=').unwrap_or((current, ""));
@@ -483,14 +496,14 @@ fn with_setting(text: &str, key: &str, line: &str) -> String {
                     None => break,
                 }
             }
-            out.push(line.to_string());
+            out.extend(new.clone());
             replaced = true;
         } else {
             out.push(current.to_string());
         }
     }
     if !replaced {
-        out.push(line.to_string());
+        out.extend(new.clone());
     }
     out.join("\n") + "\n"
 }
@@ -550,6 +563,16 @@ mod tests {
     }
 
     #[test]
+    fn an_unset_setting_is_taken_out() {
+        let text = "scale = 1.5\ndock = [\n    \"a\",\n]\n[glass]\nwaybar = 12\n";
+        assert_eq!(
+            with_setting(text, "dock", ""),
+            "scale = 1.5\n[glass]\nwaybar = 12\n"
+        );
+        assert_eq!(with_setting(text, "mode", ""), text);
+    }
+
+    #[test]
     fn stacks_are_written_back_as_they_are_read() {
         let stack = Stack {
             path: "~/下載".into(),
@@ -563,22 +586,26 @@ mod tests {
     }
 
     #[test]
-    fn mode_size_parses_width_and_height() {
-        let config = Config {
-            mode: Some("1920x1080".into()),
-            ..Config::default()
+    fn wanted_mode_parses_width_height_and_rate() {
+        let wanted = |mode: &str| {
+            Config {
+                mode: Some(mode.into()),
+                ..Config::default()
+            }
+            .wanted_mode()
         };
-        assert_eq!(config.mode_size(), Some((1920, 1080)));
+        assert_eq!(wanted("1920x1080"), Some(((1920, 1080), None)));
+        assert_eq!(wanted("2560x1440@144"), Some(((2560, 1440), Some(144))));
     }
 
     #[test]
-    fn mode_size_rejects_malformed_values() {
-        for mode in ["1920", "x1080", "widexhigh"] {
+    fn wanted_mode_rejects_malformed_values() {
+        for mode in ["1920", "x1080", "widexhigh", "1920x1080@", "1920x1080@fast"] {
             let config = Config {
                 mode: Some(mode.into()),
                 ..Config::default()
             };
-            assert_eq!(config.mode_size(), None, "{mode}");
+            assert_eq!(config.wanted_mode(), None, "{mode}");
         }
     }
 

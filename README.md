@@ -28,7 +28,7 @@ wallpaper and an input method. Every key is optional:
 
 | Key | Meaning |
 | --- | --- |
-| `mode` | Display mode as `WIDTHxHEIGHT`; the display's preferred one otherwise |
+| `mode` | Display mode as `WIDTHxHEIGHT`, at its fastest rate, or `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise |
 | `scale` | How many pixels each point is drawn with: 2 on a display dense enough to be Retina (4K desktop displays, high-resolution laptop panels), 1 otherwise, and the host's own scale when running in a window |
 | `autostart` | Shell commands started once the compositor is up |
 | `terminal`, `launcher` | Commands behind the shortcuts below |
@@ -92,10 +92,11 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed
-  applications, as Flatpak's, may use the camera, the microphone and the location, through
-  the portals' permission store, and what starts at login, show what the computer is and
-  how worn its batteries are, and show GTK's own widgets as the system style draws them.
+  the display's resolution, refresh rate and scale, the fonts, the keyboard, the mouse
+  and touchpad, the sound, the power, which sandboxed applications, as Flatpak's, may use
+  the camera, the microphone and the location, through the portals' permission store,
+  and what starts at login, show what the computer is and how worn its batteries are,
+  and show GTK's own widgets as the system style draws them.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
   others. The sound page picks the output and input, and the sample rate and
@@ -307,7 +308,7 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 `workspace-next`, `workspace-previous`, `quit`; `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
-it in effect, or says why not.
+it in effect, or says why not; `'unset KEY'` puts one back at its default.
 
 ## Not there yet
 
@@ -315,8 +316,9 @@ it in effect, or says why not.
   typed letters but not an input method's, the sound menu steps the volume instead of
   sliding it, and the network menu shows the connection without choosing one.
   GNOME's own programs export no menus, so they get the menus Nekoland makes.
-- Settings does not change the display's mode. A wallpaper started by
-  `autostart` stays under one chosen in Settings until the session ends.
+- Settings gives every display the same mode and scale, and windows keep their size
+  when a display's changes. A wallpaper started by `autostart` stays under one chosen
+  in Settings until the session ends.
 - One GPU. A second display takes the pointer and windows, but the menu bar, Dock and
   overview stay on the first, and displays are not hot-plugged.
 - X11 programs are drawn at one pixel a point and enlarged on a scaled display, so

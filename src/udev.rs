@@ -43,7 +43,7 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle,
         },
-        drm::control::{crtc, ModeTypeFlags},
+        drm::control::{crtc, Mode as DrmMode, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
     },
@@ -54,6 +54,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
 
 use crate::{
+    config::Config,
     cursor::Cursors,
     glass::Glass,
     render::{scene_elements, SceneElement, CLEAR_COLOR},
@@ -77,6 +78,10 @@ struct Udev {
     glass: HashMap<crtc::Handle, Glass>,
     /// The outputs turned off while the screens are, to be drawn afresh when they come back.
     dark: HashSet<crtc::Handle>,
+    /// Each output's modes and size in millimetres, to choose from again as the settings change.
+    displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
+    /// The `mode` and `scale` settings the outputs were last set up with.
+    applied: (Option<String>, Option<f64>),
     /// While it is open, the power button and the lid are Nekoland's.
     _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
@@ -120,6 +125,7 @@ pub fn init_udev(
     );
 
     let mut surfaces = HashMap::new();
+    let mut displays = HashMap::new();
     for event in <DrmScanner>::new().scan_connectors(manager.device())? {
         let DrmScanEvent::Connected {
             connector,
@@ -131,24 +137,7 @@ pub fn init_udev(
 
         let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
         let modes = connector.modes();
-        let configured = state.config.mode_size().and_then(|size| {
-            let found = modes
-                .iter()
-                .filter(|mode| mode.size() == size)
-                .max_by_key(|mode| mode.vrefresh());
-            if found.is_none() {
-                warn!("{name} has no {}x{} mode", size.0, size.1);
-            }
-            found
-        });
-        let drm_mode = *configured
-            .or_else(|| {
-                modes
-                    .iter()
-                    .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-            })
-            .or(modes.first())
-            .ok_or("connector has no modes")?;
+        let drm_mode = choose_mode(&name, modes, &state.config).ok_or("connector has no modes")?;
         let mode = Mode::from(drm_mode);
         let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
 
@@ -161,6 +150,9 @@ pub fn init_udev(
                 model: "Unknown".into(),
             },
         );
+        for mode in modes {
+            output.add_mode(Mode::from(*mode));
+        }
         // The global lives as long as the compositor does.
         let _global = output.create_global::<Nekoland>(&data.display_handle);
 
@@ -170,10 +162,7 @@ pub fn init_udev(
             .outputs()
             .map(|o| state.space.output_geometry(o).unwrap().size.w)
             .sum::<i32>();
-        let scale = state
-            .config
-            .scale
-            .unwrap_or_else(|| density_scale(mode.size.w, mode.size.h, width_mm, height_mm));
+        let scale = chosen_scale(&state.config, mode, (width_mm, height_mm));
         info!("{name}: scale {scale}");
         output.set_preferred(mode);
         output.change_current_state(
@@ -198,6 +187,7 @@ pub fn init_udev(
             .map_err(|err| format!("could not set up {name}: {err}"))?;
         info!("{name}: {}x{}", mode.size.w, mode.size.h);
         surfaces.insert(crtc, (surface, output));
+        displays.insert(crtc, (modes.to_vec(), (width_mm, height_mm)));
     }
     if surfaces.is_empty() {
         return Err("no connected display".into());
@@ -208,6 +198,8 @@ pub fn init_udev(
         .ok();
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
         dark: HashSet::new(),
+        displays,
+        applied: (state.config.mode.clone(), state.config.scale),
         _power_keys: power_keys,
         glass: surfaces
             .keys()
@@ -331,6 +323,9 @@ fn render(
     state.refresh_apps();
     state.refresh_notices();
     let mut guard = udev.borrow_mut();
+    if guard.applied.0 != state.config.mode || guard.applied.1 != state.config.scale {
+        apply_display_settings(&mut guard, state);
+    }
     let Udev {
         renderer,
         surfaces,
@@ -378,6 +373,72 @@ fn render(
 
     state.finish_frame(&output);
     let _ = data.display_handle.flush_clients();
+}
+
+/// The mode the settings ask for, at its fastest rate unless they name one; the display's
+/// preferred one otherwise.
+fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode> {
+    let configured = config.wanted_mode().and_then(|(size, rate)| {
+        let found = modes
+            .iter()
+            .filter(|mode| mode.size() == size && rate.is_none_or(|rate| mode.vrefresh() == rate))
+            .max_by_key(|mode| mode.vrefresh());
+        if found.is_none() {
+            warn!("{name} has no {} mode", config.mode.as_deref().unwrap_or_default());
+        }
+        found
+    });
+    configured
+        .or_else(|| {
+            modes
+                .iter()
+                .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+        })
+        .or(modes.first())
+        .copied()
+}
+
+fn chosen_scale(config: &Config, mode: Mode, (width_mm, height_mm): (u32, u32)) -> f64 {
+    config
+        .scale
+        .unwrap_or_else(|| density_scale(mode.size.w, mode.size.h, width_mm, height_mm))
+}
+
+/// Sets every output to the mode and scale the settings now ask for, and lays the outputs
+/// out side by side again.
+// shortcut: windows keep their size and place, maximized ones too; fit them to the output
+// once that matters.
+fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
+    udev.applied = (state.config.mode.clone(), state.config.scale);
+    for (crtc, (surface, output)) in &mut udev.surfaces {
+        let Some((modes, size_mm)) = udev.displays.get(crtc) else {
+            continue;
+        };
+        let Some(drm_mode) = choose_mode(&output.name(), modes, &state.config) else {
+            continue;
+        };
+        let mode = Mode::from(drm_mode);
+        if output.current_mode() != Some(mode) {
+            let elements = DrmOutputRenderElements::<GlesRenderer, SceneElement>::default();
+            if let Err(err) = surface.use_mode(drm_mode, &mut udev.renderer, &elements) {
+                warn!("{}: could not change the mode: {err}", output.name());
+                continue;
+            }
+            info!("{}: {}x{}", output.name(), mode.size.w, mode.size.h);
+        }
+        let scale = chosen_scale(&state.config, mode, *size_mm);
+        output.change_current_state(Some(mode), None, Some(Scale::Fractional(scale)), None);
+        crate::text::set_picture_scale(scale);
+        smithay::desktop::layer_map_for_output(output).arrange();
+    }
+    let mut x = 0;
+    for output in state.space.outputs().cloned().collect::<Vec<_>>() {
+        output.change_current_state(None, None, None, Some((x, 0).into()));
+        state.space.map_output(&output, (x, 0));
+        x += state.space.output_geometry(&output).map_or(0, |geometry| geometry.size.w);
+    }
+    state.dock.drawn = None;
+    state.menu_bar.drawn = None;
 }
 
 /// Returns whether a frame was handed to the display.

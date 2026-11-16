@@ -48,7 +48,16 @@ fn run(program: &str, args: &[&str]) {
 
 /// Changes one of the compositor's settings; it answers only when the change is refused.
 fn set(line: &str) {
-    if let Some(reply) = output("nekoland", &["msg", &format!("set {line}")]) {
+    change(&format!("set {line}"));
+}
+
+/// Puts one of the compositor's settings back at its default.
+fn unset(key: &str) {
+    change(&format!("unset {key}"));
+}
+
+fn change(command: &str) {
+    if let Some(reply) = output("nekoland", &["msg", command]) {
         if !reply.trim().is_empty() {
             eprintln!("{}", reply.trim());
         }
@@ -253,9 +262,10 @@ fn build(app: &adw::Application) {
         look,
         move |styles| look.load_from_string(&look_for(styles.is_dark()))
     ));
-    let pages: [(&str, gtk::Widget); 11] = [
+    let pages: [(&str, gtk::Widget); 12] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
         ("外觀", appearance_page(&config, &look).upcast()),
+        ("顯示", display_page(&config).upcast()),
         ("字型", fonts_page(&look).upcast()),
         ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
@@ -1838,6 +1848,130 @@ fn list_commands(
     group.add(added);
 }
 
+/// The display's sizes, as WIDTHxHEIGHT, largest first, each with its rates, fastest first,
+/// and the mode in use, from what `nekoland msg modes` prints.
+fn display_modes(text: &str) -> (Option<(String, u32)>, Vec<(String, Vec<u32>)>) {
+    let parse = |line: &str| {
+        let (size, rate) = line.split_once('@')?;
+        Some((size.to_string(), rate.parse::<u32>().ok()?))
+    };
+    let mut lines = text.lines();
+    let current = lines.next().and_then(parse);
+    let mut sizes: Vec<(String, Vec<u32>)> = Vec::new();
+    for (size, rate) in lines.filter_map(parse) {
+        match sizes.iter_mut().find(|(known, _)| *known == size) {
+            Some((_, rates)) => rates.push(rate),
+            None => sizes.push((size, vec![rate])),
+        }
+    }
+    let pixels = |size: &str| {
+        let (width, height) = size.split_once('x')?;
+        Some(width.parse::<u64>().ok()? * height.parse::<u64>().ok()?)
+    };
+    sizes.sort_by_key(|(size, _)| std::cmp::Reverse(pixels(size)));
+    for (_, rates) in &mut sizes {
+        rates.sort_unstable_by(|a, b| b.cmp(a));
+        rates.dedup();
+    }
+    (current, sizes)
+}
+
+const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+
+fn display_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let display = adw::PreferencesGroup::new();
+    page.add(&display);
+
+    let (current, sizes) = display_modes(&output("nekoland", &["msg", "modes"]).unwrap_or_default());
+    if !sizes.is_empty() {
+        let labels: Vec<String> = sizes.iter().map(|(size, _)| size.replace('x', " × ")).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let resolution = adw::ComboRow::builder()
+            .title("解析度")
+            .model(&gtk::StringList::new(&labels))
+            .selected(
+                current
+                    .as_ref()
+                    .and_then(|(size, _)| sizes.iter().position(|(known, _)| known == size))
+                    .unwrap_or(0) as u32,
+            )
+            .build();
+        let rate = adw::ComboRow::builder().title("更新頻率").build();
+        let sizes = Rc::new(sizes);
+        // Set while the rates are filled in, which is not a choice of one.
+        let filling = Rc::new(Cell::new(false));
+        let show_rates = {
+            let (rate, sizes, filling) = (rate.clone(), sizes.clone(), filling.clone());
+            move |index: u32, wanted: Option<u32>| {
+                let Some((_, rates)) = sizes.get(index as usize) else {
+                    return;
+                };
+                let labels: Vec<String> = rates.iter().map(|hz| format!("{hz} Hz")).collect();
+                let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                filling.set(true);
+                rate.set_model(Some(&gtk::StringList::new(&labels)));
+                rate.set_selected(
+                    wanted
+                        .and_then(|wanted| rates.iter().position(|hz| *hz == wanted))
+                        .unwrap_or(0) as u32,
+                );
+                filling.set(false);
+                rate.set_visible(rates.len() > 1);
+            }
+        };
+        show_rates(resolution.selected(), current.map(|(_, hz)| hz));
+        resolution.connect_selected_notify(glib::clone!(
+            #[strong]
+            sizes,
+            move |row| {
+                if let Some((size, _)) = sizes.get(row.selected() as usize) {
+                    show_rates(row.selected(), None);
+                    set(&format!("mode = {size:?}"));
+                }
+            }
+        ));
+        rate.connect_selected_notify(glib::clone!(
+            #[weak]
+            resolution,
+            move |row| {
+                let Some((size, rates)) = sizes.get(resolution.selected() as usize) else {
+                    return;
+                };
+                if let (false, Some(hz)) = (filling.get(), rates.get(row.selected() as usize)) {
+                    set(&format!("mode = \"{size}@{hz}\""));
+                }
+            }
+        ));
+        display.add(&resolution);
+        display.add(&rate);
+    }
+
+    // None is the density's own; a scale of the file's own is kept among the choices.
+    let current_scale = config.0.get("scale").map(|_| config.number("scale", 1.0));
+    let mut scales: Vec<Option<f64>> = std::iter::once(None).chain(SCALES.map(Some)).collect();
+    if !scales.contains(&current_scale) {
+        scales.push(current_scale);
+    }
+    let labels: Vec<String> = scales
+        .iter()
+        .map(|scale| scale.map_or("自動".into(), |scale| format!("{}%", (scale * 100.0).round())))
+        .collect();
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let scale = adw::ComboRow::builder()
+        .title("縮放")
+        .model(&gtk::StringList::new(&labels))
+        .selected(scales.iter().position(|scale| *scale == current_scale).unwrap_or(0) as u32)
+        .build();
+    scale.connect_selected_notify(move |row| match scales.get(row.selected() as usize) {
+        Some(Some(scale)) => set(&format!("scale = {scale:?}")),
+        Some(None) => unset("scale"),
+        None => {}
+    });
+    display.add(&scale);
+    page
+}
+
 const POWER_BUTTON: [&str; 3] = ["shutdown", "sleep", "ignore"];
 const LID_CLOSE: [&str; 3] = ["sleep", "lock", "ignore"];
 
@@ -3080,6 +3214,22 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_modes_are_grouped_by_size_largest_first() {
+        let text = "1920x1080@60\n1920x1080@60\n1280x720@60\n1920x1080@144\n2560x1440@60\n";
+        let (current, sizes) = display_modes(text);
+        assert_eq!(current, Some(("1920x1080".to_string(), 60)));
+        assert_eq!(
+            sizes,
+            [
+                ("2560x1440".to_string(), vec![60]),
+                ("1920x1080".to_string(), vec![144, 60]),
+                ("1280x720".to_string(), vec![60]),
+            ]
+        );
+        assert_eq!(display_modes(""), (None, vec![]));
+    }
 
     #[test]
     fn a_family_is_quoted_for_css_without_what_would_end_it() {

@@ -111,6 +111,13 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
             state.reload_config();
         }
+        // `unset KEY`: one setting back at its default.
+        unset if unset.starts_with("unset ") => {
+            if let Err(err) = crate::config::unset(&unset["unset ".len()..]) {
+                return Some(format!("{err}\n"));
+            }
+            state.reload_config();
+        }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),
         "workspace-add" => {
