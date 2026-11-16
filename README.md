@@ -22,6 +22,22 @@ session bus for the menu bar.
 
 With no configuration it starts a terminal. `-c COMMAND` starts something else.
 
+On an Ubuntu without a desktop, such as Ubuntu Server, `install.sh` does all of it, as the
+user who will use Nekoland:
+
+```
+curl -fsSL https://raw.githubusercontent.com/KoukeNeko/Nekoland/main/install.sh | sh
+```
+
+or `./install.sh` from a checkout. It installs those packages and what Nekoland runs with,
+builds it, puts its programs in `/usr/local/bin`, its desktop entries and portal files where
+GTK and `xdg-desktop-portal` find them, `shell/config.toml` as the configuration unless
+there is one, and a few lines at the end of `~/.profile` that start Nekoland on logging in
+on the first console, tty1; quitting it goes back to that console's shell, and its log is
+`~/.local/state/nekoland.log`. Run it again to update. Without a checkout it clones into
+`~/.local/src/nekoland`, or `$NEKOLAND_SRC`; with a Rust older than Cargo.toml's
+`rust-version`, as on Ubuntu 24.04, it installs a newer one with rustup.
+
 ## Configuration
 
 `~/.config/nekoland/config.toml`; see `shell/config.toml` for one that adds a
