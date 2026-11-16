@@ -502,6 +502,8 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     bar.add(&switch_row(config, "日期", "clock_date"));
     bar.add(&switch_row(config, "星期", "clock_weekday"));
     bar.add(&switch_row(config, "秒數", "clock_seconds"));
+    bar.add(&switch_row(config, "網路", "menu_bar_network"));
+    bar.add(&switch_row(config, "音量", "menu_bar_sound"));
     page.add(&bar);
 
     let lock = group("鎖定螢幕");

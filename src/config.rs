@@ -71,6 +71,9 @@ pub struct Config {
     pub clock_weekday: bool,
     pub clock_seconds: bool,
     pub clock_date: bool,
+    /// Whether the menu bar shows the network's and the sound's icons.
+    pub menu_bar_network: bool,
+    pub menu_bar_sound: bool,
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
@@ -415,6 +418,8 @@ impl Default for Config {
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,
+            menu_bar_network: true,
+            menu_bar_sound: true,
             clock_date: true,
             menu_bar_background: true,
             dock_glass: true,

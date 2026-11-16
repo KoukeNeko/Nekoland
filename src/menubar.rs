@@ -610,7 +610,14 @@ impl MenuBar {
 
     /// Lays the bar out and draws it, its text for a `dark` background, on glass when it has
     /// a `background`.
-    fn draw_bar(&mut self, width: i32, titles: Vec<(Source, Option<String>)>, clock: &str, (dark, background): (bool, bool)) {
+    fn draw_bar(
+        &mut self,
+        width: i32,
+        titles: Vec<(Source, Option<String>)>,
+        clock: &str,
+        (dark, background): (bool, bool),
+        config: &config::Config,
+    ) {
         let colors = colors(dark);
         let open = self.open.as_ref().and_then(|open| open.title);
         let title_font = font("Medium", 10.0);
@@ -682,7 +689,7 @@ impl MenuBar {
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
         let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
-        if let Some(network) = &self.network {
+        if let Some(network) = self.network.as_ref().filter(|_| config.menu_bar_network) {
             icons.push((
                 Source::Network,
                 "network".into(),
@@ -691,7 +698,7 @@ impl MenuBar {
                 None,
             ));
         }
-        if let Some(volume) = self.sound {
+        if let Some(volume) = self.sound.filter(|_| config.menu_bar_sound) {
             icons.push((
                 Source::Sound,
                 "sound".into(),
@@ -1126,7 +1133,7 @@ impl Nekoland {
                 self.menu_bar.open = None;
             }
             let titles = self.left_titles();
-            self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, background));
+            self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, background), &self.config);
             self.menu_bar.drawn = Some(Drawn {
                 open: self.menu_bar.open.as_ref().and_then(|open| open.title),
                 ..drawn
