@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cairo::ImageSurface;
 use gio::prelude::*;
 use smithay::{
     backend::renderer::{
@@ -130,7 +131,11 @@ pub struct Desktop {
     quick_look: Option<(Looked, Picture)>,
     /// A picture being read for Quick Look away from the compositor's thread, which a
     /// camera's largest photos would hold up for half a second.
-    reading: Option<(Looked, Arc<Mutex<Option<Option<Pixels>>>>)>,
+    reading: Option<(Looked, Reading)>,
+    /// Each item's icon as drawn, and the pictures being read for them on a thread, which
+    /// would otherwise be read again at every click, holding the screen.
+    icons: Vec<(Item, ImageSurface)>,
+    icon_reads: Vec<(Item, Reading)>,
     /// Where the items were put, read once the desktop keeps them there.
     places: Option<Places>,
     /// Where the pointer was when the drag off the desktop started.
@@ -142,6 +147,9 @@ type Looked = (PathBuf, bool, Size<i32, Logical>);
 /// A picture's pixels as gdk-pixbuf gives them, which, unlike its pixbuf, may cross threads:
 /// the bytes, whether they have alpha, width, height and row stride.
 type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
+
+/// Pixels read on a thread: `None` until it is done, then what it read, if anything.
+type Reading = Arc<Mutex<Option<Option<Pixels>>>>;
 
 /// The cell each item was put in, by name, as column from the right and row from the top.
 type Places = std::collections::BTreeMap<String, [i32; 2]>;
@@ -385,6 +393,7 @@ impl Nekoland {
         desktop
             .selected
             .retain(|path| items.iter().any(|item| item.path == *path));
+        refresh_icons(desktop, &items);
         let looked = desktop.selected.last().filter(|_| desktop.looking);
         desktop.looking = looked.is_some();
         match looked.and_then(|path| items.iter().find(|item| item.path == *path)) {
@@ -414,7 +423,7 @@ impl Nekoland {
             None => cells(items.len(), size),
         };
         desktop.items = items.iter().cloned().zip(places.iter().copied()).collect();
-        desktop.picture = draw_items(&desktop.items, selected, renaming.as_ref());
+        desktop.picture = draw_items(&desktop.items, &desktop.icons, selected, renaming.as_ref());
         desktop.drawn = Some(wanted);
     }
 
@@ -624,7 +633,9 @@ impl Nekoland {
         self.desktop.dragged = self.desktop.selected.clone();
         self.desktop.drag_from = press.from;
         let icon_at = cell.loc + Point::from(((CELL_WIDTH - ICON) / 2, ICON_TOP));
-        self.desktop.drag_picture = draw_dragged(item, self.desktop.dragged.len())
+        let icon = self.desktop.icons.iter().find(|(known, _)| known == item);
+        self.desktop.drag_picture = icon
+            .and_then(|(_, icon)| draw_dragged(icon, self.desktop.dragged.len()))
             .map(|picture| (picture, icon_at - press.from.to_i32_round()));
         let start = GrabStartData {
             focus: None,
@@ -1145,12 +1156,56 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
         desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted, picture));
         return;
     }
+    let room = look_room(size) * text::picture_scale();
+    desktop.reading = Some((wanted, read_on_a_thread(item.path.clone(), room)));
+    desktop.quick_look = None;
+}
+
+/// Keeps an icon for each item, its kind's at first, then its picture once that is read on
+/// a thread; one read in has the items drawn again.
+fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
+    desktop.icons.retain(|(item, _)| items.contains(item));
+    desktop.icon_reads.retain(|(item, _)| items.contains(item));
+    let mut done = Vec::new();
+    desktop.icon_reads.retain(
+        |(item, read)| match read.lock().ok().and_then(|mut read| read.take()) {
+            Some(pixels) => {
+                done.push((item.clone(), pixels));
+                false
+            }
+            None => true,
+        },
+    );
+    for (item, pixels) in done {
+        if let Some(icon) = pixels.and_then(pixels_surface) {
+            desktop.icons.retain(|(known, _)| *known != item);
+            desktop.icons.push((item, icon));
+            desktop.drawn = None;
+        }
+    }
+    for item in items {
+        let known = desktop.icons.iter().any(|(known, _)| known == item)
+            || desktop.icon_reads.iter().any(|(known, _)| known == item);
+        if known {
+            continue;
+        }
+        if let Some(icon) = stacks::kind_icon(item, ICON, (1.0, 1.0, 1.0)) {
+            desktop.icons.push((item.clone(), icon));
+        }
+        if let Some(path) = stacks::picture_path(item) {
+            let size = ICON * text::picture_scale();
+            let read = read_on_a_thread(path, Size::from((size, size)));
+            desktop.icon_reads.push((item.clone(), read));
+        }
+    }
+}
+
+/// Reads the picture at `path`, at most `pixels` big, on a thread.
+fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
     let read = Arc::new(Mutex::new(None));
     let into = read.clone();
-    let path = item.path.clone();
-    let room = look_room(size) * text::picture_scale();
     std::thread::spawn(move || {
-        let pixels = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, room.w, room.h, true)
+        let found = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true)
             .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
             .ok()
             .map(|pixbuf| {
@@ -1164,11 +1219,23 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
                 )
             });
         if let Ok(mut read) = into.lock() {
-            *read = Some(pixels);
+            *read = Some(found);
         }
     });
-    desktop.reading = Some((wanted, read));
-    desktop.quick_look = None;
+    read
+}
+
+fn pixels_surface((bytes, alpha, width, height, stride): Pixels) -> Option<ImageSurface> {
+    let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
+        &bytes,
+        gdk_pixbuf::Colorspace::Rgb,
+        alpha,
+        8,
+        width,
+        height,
+        stride,
+    );
+    text::pixbuf_surface(&pixbuf, None)
 }
 
 /// The most of the output Quick Look's picture or text takes, under its title.
@@ -1187,18 +1254,7 @@ fn draw_quick_look(
     let colors = menubar::colors(dark);
     let room = look_room(output);
     let scale = text::picture_scale();
-    let image = pixels.and_then(|(bytes, alpha, width, height, stride)| {
-        let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
-            &bytes,
-            gdk_pixbuf::Colorspace::Rgb,
-            alpha,
-            8,
-            width,
-            height,
-            stride,
-        );
-        text::pixbuf_surface(&pixbuf, None)
-    });
+    let image = pixels.and_then(pixels_surface);
     let shown = (!item.is_dir && gio::content_type_is_a(&item.kind, "text/plain"))
         .then(|| {
             let mut start = Vec::new();
@@ -1384,14 +1440,13 @@ fn draw_band(size: Size<i32, Logical>) -> Option<Picture> {
 
 /// The icon dragged, faded, with how many items go with it on a red badge when more
 /// than one does.
-fn draw_dragged(item: &Item, count: usize) -> Option<Picture> {
-    let icon = stacks::item_icon(item, ICON, (1.0, 1.0, 1.0))?;
+fn draw_dragged(icon: &ImageSurface, count: usize) -> Option<Picture> {
     let badge = 22.0;
     let surface = text::canvas(ICON + badge as i32 / 2, ICON + badge as i32 / 2).ok()?;
     let cr = cairo::Context::new(&surface).ok()?;
     let _ = cr.save();
     cr.translate(0.0, badge / 2.0);
-    stacks::paint_fitted(&cr, &icon, f64::from(ICON), 0.7);
+    stacks::paint_fitted(&cr, icon, f64::from(ICON), 0.7);
     let _ = cr.restore();
     if count > 1 {
         let center = (f64::from(ICON) - badge / 2.0, badge / 2.0);
@@ -1418,6 +1473,7 @@ fn draw_dragged(item: &Item, count: usize) -> Option<Picture> {
 /// typed is drawn in a white field, with what is chosen of it marked and the caret.
 fn draw_items(
     items: &[(Item, Rectangle<i32, Logical>)],
+    icons: &[(Item, ImageSurface)],
     selected: &[PathBuf],
     renaming: Option<&Rename>,
 ) -> Option<(Picture, Point<i32, Logical>)> {
@@ -1448,10 +1504,10 @@ fn draw_items(
             );
             let _ = cr.fill();
         }
-        if let Some(icon) = stacks::item_icon(item, ICON, (1.0, 1.0, 1.0)) {
+        if let Some((_, icon)) = icons.iter().find(|(known, _)| known == item) {
             let _ = cr.save();
             cr.translate(icon_x, y + f64::from(ICON_TOP));
-            stacks::paint_fitted(&cr, &icon, f64::from(ICON), 1.0);
+            stacks::paint_fitted(&cr, icon, f64::from(ICON), 1.0);
             let _ = cr.restore();
         }
         let label_x = x + 4.0;

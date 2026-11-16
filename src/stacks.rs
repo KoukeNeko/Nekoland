@@ -147,31 +147,34 @@ pub fn icon_names(path: &Path) -> Vec<String> {
 /// An item's picture: the thumbnail a file manager made of it, the picture itself when it
 /// is one, or else its kind's icon.
 pub fn item_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
-    if !item.is_dir {
-        let thumbnail = gio::File::for_path(&item.path)
-            .query_info(
-                "thumbnail::path",
-                gio::FileQueryInfoFlags::NONE,
-                gio::Cancellable::NONE,
-            )
-            .ok()
-            .and_then(|info| info.attribute_byte_string("thumbnail::path"))
-            .map(|path| PathBuf::from(path.as_str()));
-        let small = || std::fs::metadata(&item.path).is_ok_and(|meta| meta.len() <= MAX_PICTURE_BYTES);
-        let picture =
-            thumbnail.or_else(|| (item.kind.starts_with("image/") && small()).then(|| item.path.clone()));
-        if let Some(pixbuf) = picture.and_then(|path| {
-            gdk_pixbuf::Pixbuf::from_file_at_scale(
-                path,
-                size * text::picture_scale(),
-                size * text::picture_scale(),
-                true,
-            )
-            .ok()
-        }) {
-            return text::pixbuf_surface(&pixbuf, None);
-        }
+    let scaled = size * text::picture_scale();
+    picture_path(item)
+        .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_scale(path, scaled, scaled, true).ok())
+        .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None))
+        .or_else(|| kind_icon(item, size, tint))
+}
+
+/// The picture an item's icon is made from: the thumbnail a file manager made of it, or the
+/// picture itself when it is one and not too big to read.
+pub fn picture_path(item: &Item) -> Option<PathBuf> {
+    if item.is_dir {
+        return None;
     }
+    let thumbnail = gio::File::for_path(&item.path)
+        .query_info(
+            "thumbnail::path",
+            gio::FileQueryInfoFlags::NONE,
+            gio::Cancellable::NONE,
+        )
+        .ok()
+        .and_then(|info| info.attribute_byte_string("thumbnail::path"))
+        .map(|path| PathBuf::from(path.as_str()));
+    let small = || std::fs::metadata(&item.path).is_ok_and(|meta| meta.len() <= MAX_PICTURE_BYTES);
+    thumbnail.or_else(|| (item.kind.starts_with("image/") && small()).then(|| item.path.clone()))
+}
+
+/// The icon of an item's kind in the theme.
+pub fn kind_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
     icon_names(&item.path)
         .iter()
         .find_map(|name| text::named_icon(name, "", size, tint))
