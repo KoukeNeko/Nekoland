@@ -188,9 +188,9 @@ Nekoland starts through `LD_PRELOAD`, from beside the `nekoland` binary, and cha
 popover as it is made. It reaches programs linked with GTK 4.14 or later, not those that
 load GTK while running, as Python and GJS programs do; others are left as they are.
 
-Text is drawn as the Mac draws it on a dense display: unhinted, with grey edges, and a
-little heavier than regular, where the Mac thickens every outline. Nekoland's own text,
-and GTK's in Nekoland's look, is Ubuntu Sans at weight 450; Noto Sans CJK, a CFF font, is
+Text is drawn as the Mac draws it on a dense display: unhinted, with grey edges, and
+heavier than regular, where the Mac thickens every outline. Nekoland's own text, and
+GTK's in Nekoland's look, is Ubuntu Sans Medium where it names no weight; Noto Sans CJK, a CFF font, is
 thickened by 0.4px by FreeType, through `FREETYPE_PROPERTIES` in what Nekoland starts,
 unless that is set already.
 

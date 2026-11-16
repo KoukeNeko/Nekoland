@@ -55,16 +55,16 @@ pub fn new_layout(cr: &Context) -> pango::Layout {
     pango::Layout::new(&context)
 }
 
-/// Text that names no weight of its own is set a little heavier than regular, where the
-/// Mac thickens every outline: unhinted text with grey edges otherwise reads thin and
-/// frayed. CJK outlines are thickened by FreeType instead; see `main`.
-const TEXT_WEIGHT: i32 = 450;
+/// Text that names no weight of its own is set at medium, where the Mac thickens every
+/// outline: unhinted text with grey edges otherwise reads thin and frayed. CJK outlines
+/// are thickened by FreeType instead; see `main`.
+const TEXT_WEIGHT: pango::Weight = pango::Weight::Medium;
 
 /// The font `description` names, in pango's words, at `TEXT_WEIGHT` if it names no weight.
 pub fn font(description: &str) -> pango::FontDescription {
     let mut font = pango::FontDescription::from_string(description);
     if font.weight() == pango::Weight::Normal {
-        font.set_weight(pango::Weight::__Unknown(TEXT_WEIGHT));
+        font.set_weight(TEXT_WEIGHT);
     }
     font
 }
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn text_that_names_no_weight_is_set_heavier_than_regular() {
+    fn text_that_names_no_weight_is_set_at_medium() {
         let surface = ImageSurface::create(Format::ARgb32, 1, 1).unwrap();
         let cr = Context::new(&surface).unwrap();
         let weight_of = |font: &str| {
@@ -568,10 +568,7 @@ mod tests {
             let run = layout.line_readonly(0).unwrap().runs()[0].clone();
             run.item().analysis().font().describe().weight()
         };
-        assert_eq!(
-            weight_of(&format!("{FONT} 11")),
-            pango::Weight::__Unknown(TEXT_WEIGHT)
-        );
+        assert_eq!(weight_of(&format!("{FONT} 11")), TEXT_WEIGHT);
         assert_eq!(weight_of(&format!("{FONT} Bold 11")), pango::Weight::Bold);
     }
 

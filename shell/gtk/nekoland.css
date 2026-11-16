@@ -67,12 +67,12 @@
   --nekoland-glass-opacity: 80%;
 }
 
-/* Text in the design language's typeface, a little heavier than regular, as the Mac sets
- * it; Nekoland thickens CJK outlines itself. What names its own weight keeps it. */
+/* Text in the design language's typeface, at medium, as heavy as the Mac sets it;
+ * Nekoland thickens CJK outlines itself. What names its own weight keeps it. */
 window,
 tooltip {
   font-family: "Ubuntu Sans", "Noto Sans CJK TC", sans-serif;
-  font-weight: 450;
+  font-weight: 500;
 }
 
 /* The controls as the design language draws them. GTK puts this file over the theme
