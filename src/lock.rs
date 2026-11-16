@@ -51,14 +51,23 @@ impl Lock {
 }
 
 impl Nekoland {
-    /// Starts the locker, unless one holds the screen already.
+    /// Starts the locker, unless one holds the screen already. swaylock shows the
+    /// wallpaper, as the desktop has it.
     pub fn lock_screen(&mut self) {
         // One started a moment ago is still coming up.
         let starting = self.locker_started.is_some_and(|at| at.elapsed() < LOCKER_START);
-        if !starting && !self.lock.as_ref().is_some_and(Lock::held) {
-            self.locker_started = Some(Instant::now());
-            config::spawn(&self.config.lock);
+        if starting || self.lock.as_ref().is_some_and(Lock::held) {
+            return;
         }
+        self.locker_started = Some(Instant::now());
+        let mut command = self.config.lock.clone();
+        if let Some(wallpaper) = self.config.wallpaper.as_ref().filter(|_| command.starts_with("swaylock")) {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let path = wallpaper.replacen('~', &home, 1);
+            let mode = self.config.wallpaper_mode.name();
+            command += &format!(" -i {} -s {mode}", config::quote(&path));
+        }
+        config::spawn(&command);
     }
 
     /// The locker's surface on an output.

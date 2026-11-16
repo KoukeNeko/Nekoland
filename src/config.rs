@@ -217,8 +217,18 @@ impl Default for Config {
             volume_mute: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
             brightness_up: "brightnessctl set 5%+".into(),
             brightness_down: "brightnessctl set 5%-".into(),
-            // Nekoland's dark paper.
-            lock: "swaylock -c 1b1b1e".into(),
+            // The ring in Nekoland's paper over dark paper, shown before anything is typed,
+            // red when the password is wrong.
+            lock: concat!(
+                "swaylock -c 1b1b1e --indicator-idle-visible --indicator-radius 64",
+                " --inside-color 1b1b1ecc --inside-clear-color 1b1b1ecc --inside-ver-color 1b1b1ecc",
+                " --inside-wrong-color c4372fcc --ring-color f4f3f0 --ring-clear-color f4f3f0",
+                " --ring-ver-color f4f3f0 --ring-wrong-color c4372f --key-hl-color 6f6d72",
+                " --bs-hl-color c4372f --line-color 00000000 --separator-color 00000000",
+                " --text-color f4f3f0 --text-clear-color f4f3f0 --text-ver-color f4f3f0",
+                " --text-wrong-color f4f3f0",
+            )
+            .into(),
             lock_after: 0,
             glass: HashMap::from([("nekoland-launcher".into(), 16)]),
             dock: [
