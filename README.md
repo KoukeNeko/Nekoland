@@ -163,11 +163,11 @@ cat's-eye stone. The surface's own colour goes on top, so it has to be transluce
 for the glass to show; the styles in `shell/` are. Glass behind a bar that spans the
 whole output has square corners.
 
-Behind every window is glass of the wallpaper alone, blurred, as Windows' Mica is: what a
-window leaves see-through, as sidebars in Nekoland's GTK look, shows it, and the windows
-behind do not. The wallpaper seldom changes, so it is seldom blurred again. Each display
-blurs its own. In the test VM, with eight GTK windows on the glass, the overview's
-animation draws as fast as without it.
+Behind every window is glass of what is under it, blurred, as Windows' Acrylic is: what a
+window leaves see-through, as sidebars and menus in Nekoland's GTK look, shows the windows
+behind it and the wallpaper. Each window has a blur as large as itself, drawn again only
+when what changes under it is near enough to show. An application's menus float over the
+windows on the same glass.
 
 ## Screen lock and capture
 

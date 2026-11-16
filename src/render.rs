@@ -13,10 +13,13 @@ use smithay::{
         gles::GlesRenderer,
         utils::CommitCounter,
     },
-    desktop::{layer_map_for_output, LayerSurface, Window},
+    desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale, Size},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{
+        compositor::{with_states, SurfaceAttributes},
+        shell::{wlr_layer::Layer, xdg::XdgPopupSurfaceData},
+    },
 };
 
 use crate::{
@@ -106,23 +109,14 @@ pub fn scene_elements(
             .filter(|window| !floating.contains(window) && !state.dock_draws(window))
             .cloned()
             .collect();
-        let backdrops = window_backdrops(state, renderer, output, glass.as_deref_mut(), &windows);
-        let mut under: Vec<SceneElement> = windows
-            .iter()
-            .zip(backdrops)
-            .flat_map(|(window, backdrop)| {
-                let mut elements = window_elements(state, renderer, window, output_geometry.loc, scale);
-                elements.extend(backdrop);
-                elements
-            })
-            .collect();
-        under.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+        let under = windows_on_glass(state, renderer, output, glass.as_deref_mut(), &windows);
         let mut overlays = state.menu_bar_overlays();
         overlays.extend(state.notice_overlays());
         overlays.extend(state.dock_overlays());
         let on_top = OnTop {
             overlays: &overlays,
             windows: &floating,
+            popups_of: &windows,
             without_top_panel: false,
         };
         let mut elements = dock_front(state, renderer, output_geometry.loc, scale);
@@ -262,6 +256,7 @@ pub fn scene_elements(
     let on_top = OnTop {
         overlays: &overlays,
         windows: &[],
+        popups_of: &[],
         without_top_panel: true,
     };
     let floating = floating_elements(state, renderer, output, glass, &elements, &on_top);
@@ -513,6 +508,8 @@ fn window_fitted(
 struct OnTop<'a> {
     overlays: &'a [Overlay<'a>],
     windows: &'a [Window],
+    /// Windows drawn under the glass, whose menus and other popups go over it.
+    popups_of: &'a [Window],
     without_top_panel: bool,
 }
 
@@ -529,6 +526,7 @@ fn floating_elements(
     let OnTop {
         overlays,
         windows,
+        popups_of,
         without_top_panel,
     } = *on_top;
     let output_width = state
@@ -552,6 +550,10 @@ fn floating_elements(
         .output_geometry(output)
         .map(|geometry| geometry.loc)
         .unwrap_or_default();
+    let popups: Vec<(PopupKind, Point<i32, Logical>)> = popups_of
+        .iter()
+        .flat_map(|window| window_popups(state, window, output_loc))
+        .collect();
     let areas: Vec<_> = overlays
         .iter()
         .filter(|overlay| overlay.glass.is_some())
@@ -572,6 +574,12 @@ fn floating_elements(
             windows
                 .iter()
                 .filter_map(|window| window_area(state, window, output_loc, scale)),
+        )
+        .chain(
+            popups
+                .iter()
+                .filter_map(|(popup, origin)| popup_glass_area(popup, *origin))
+                .map(|area| area.to_physical_precise_round(scale)),
         )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
@@ -626,6 +634,34 @@ fn floating_elements(
                 glass
                     .as_deref_mut()
                     .and_then(|glass| glass.pane_with(window_glass_id(window), area, pixels(radius)))
+                    .map(SceneElement::Glass),
+            );
+        }
+    }
+    for (popup, origin) in &popups {
+        elements.extend(
+            render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                (*origin - popup.geometry().loc).to_physical_precise_round(scale),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into_iter()
+            .map(SceneElement::Surface),
+        );
+        if let Some(area) = popup_glass_area(popup, *origin) {
+            elements.extend(
+                glass
+                    .as_deref_mut()
+                    .and_then(|glass| {
+                        glass.pane(
+                            popup.wl_surface(),
+                            area.to_physical_precise_round(scale),
+                            pixels(POPUP_RADIUS),
+                        )
+                    })
                     .map(SceneElement::Glass),
             );
         }
@@ -688,50 +724,138 @@ fn window_elements(
     .collect()
 }
 
+/// A window's own surfaces, without its popups, which go over the windows on glass.
+fn window_body_elements(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    output_loc: Point<i32, Logical>,
+    scale: f64,
+) -> Vec<SceneElement> {
+    let Some(toplevel) = window.toplevel() else {
+        return window_elements(state, renderer, window, output_loc, scale);
+    };
+    let location = state.space.element_location(window).unwrap_or_default();
+    render_elements_from_surface_tree(
+        renderer,
+        toplevel.wl_surface(),
+        (location - window.geometry().loc - output_loc).to_physical_precise_round(scale),
+        scale,
+        1.0,
+        Kind::Unspecified,
+    )
+    .into_iter()
+    .map(SceneElement::Surface)
+    .collect()
+}
+
+/// A window's popups, frontmost first, each with where its window geometry starts on the output.
+fn window_popups(
+    state: &Nekoland,
+    window: &Window,
+    output_loc: Point<i32, Logical>,
+) -> Vec<(PopupKind, Point<i32, Logical>)> {
+    let Some(toplevel) = window.toplevel() else {
+        return Vec::new();
+    };
+    let location = state.space.element_location(window).unwrap_or_default();
+    PopupManager::popups_for_surface(toplevel.wl_surface())
+        .map(|(popup, offset)| (popup, location + offset - output_loc))
+        .collect()
+}
+
+/// The corners of a GTK popover in Nekoland's look, as `popover > contents` has them.
+const POPUP_RADIUS: i32 = 12;
+/// GTK draws a popover's arrow inside its window geometry, as a band this deep on the side
+/// toward what it points at.
+const GTK_TAIL_HEIGHT: i32 = 12;
+
+/// The part of the output a menu's glass covers: its window geometry, less a GTK arrow's band.
+fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<Rectangle<i32, Logical>> {
+    let PopupKind::Xdg(xdg) = popup else {
+        return None;
+    };
+    let mut area = Rectangle::new(origin, popup.geometry().size);
+    // shortcut: a popover with an arrow is known by GTK's input region, which is the arrow and
+    // the rounded contents rather than one rectangle; other toolkits drawing arrows would need
+    // a way to say where their glass goes.
+    let (shaped, placed) = with_states(xdg.wl_surface(), |states| {
+        let shaped = states
+            .cached_state
+            .get::<SurfaceAttributes>()
+            .current()
+            .input_region
+            .as_ref()
+            .is_some_and(|region| region.rects.len() > 1);
+        let placed = states
+            .data_map
+            .get::<XdgPopupSurfaceData>()
+            .map(|data| {
+                let current = data.lock().unwrap().current;
+                (current.geometry, current.positioner.anchor_rect)
+            });
+        (shaped, placed)
+    });
+    if let (true, Some((geometry, anchor))) = (shaped, placed) {
+        if geometry.loc.y >= anchor.loc.y + anchor.size.h {
+            area.loc.y += GTK_TAIL_HEIGHT;
+            area.size.h -= GTK_TAIL_HEIGHT;
+        } else if geometry.loc.y + geometry.size.h <= anchor.loc.y {
+            area.size.h -= GTK_TAIL_HEIGHT;
+        } else if geometry.loc.x >= anchor.loc.x + anchor.size.w {
+            area.loc.x += GTK_TAIL_HEIGHT;
+            area.size.w -= GTK_TAIL_HEIGHT;
+        } else if geometry.loc.x + geometry.size.w <= anchor.loc.x {
+            area.size.w -= GTK_TAIL_HEIGHT;
+        }
+    }
+    (!area.is_empty()).then_some(area)
+}
+
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
 const WINDOW_RADIUS: i32 = 14;
 
-/// The wallpaper's glass behind each of `windows`, for what they leave see-through.
-fn window_backdrops(
+/// `windows`, front to back, over the layers under them, each on glass of what is under it.
+fn windows_on_glass(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
-    glass: Option<&mut Glass>,
+    mut glass: Option<&mut Glass>,
     windows: &[Window],
-) -> Vec<Option<SceneElement>> {
-    let Some(glass) = glass else {
-        return windows.iter().map(|_| None).collect();
-    };
+) -> Vec<SceneElement> {
     let output_loc = state
         .space
         .output_geometry(output)
         .map(|geometry| geometry.loc)
         .unwrap_or_default();
     let scale = output.current_scale().fractional_scale();
-    let areas: Vec<_> = windows
-        .iter()
-        .filter_map(|window| window_area(state, window, output_loc, scale))
-        .collect();
-    if let (false, Some(mode)) = (areas.is_empty(), output.current_mode()) {
-        let wallpaper = layer_elements(renderer, output, BELOW_WINDOWS, false);
-        if let Err(err) = glass.update_wallpaper(renderer, (mode.size, scale), &areas, &wallpaper) {
-            tracing::warn!("glass: {err}");
-        }
-    }
-    windows
-        .iter()
-        .map(|window| {
-            let area = window_area(state, window, output_loc, scale)?;
+    let output_size = output.current_mode().map(|mode| mode.size);
+    let mut scene = layer_elements(renderer, output, BELOW_WINDOWS, false);
+    let mut kept = Vec::new();
+    // From the bottom up, so the glass of each one shows those under it, theirs included.
+    for window in windows.iter().rev() {
+        let mut elements = window_body_elements(state, renderer, window, output_loc, scale);
+        let area = window_area(state, window, output_loc, scale);
+        if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
+            let id = window_glass_id(window);
+            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
+                tracing::warn!("glass: {err}");
+            }
             let radius = if has_square_corners(window) {
                 0
             } else {
                 (f64::from(WINDOW_RADIUS) * scale).round() as i32
             };
-            glass
-                .window_pane(window_glass_id(window), area, radius)
-                .map(SceneElement::Glass)
-        })
-        .collect()
+            elements.extend(glass.window_pane(id.clone(), area, radius).map(SceneElement::Glass));
+            kept.push(id);
+        }
+        elements.append(&mut scene);
+        scene = elements;
+    }
+    if let Some(glass) = glass {
+        glass.keep_windows(&kept);
+    }
+    scene
 }
 
 /// The part of the output a window covers, without its shadow.

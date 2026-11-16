@@ -7,9 +7,11 @@
 //! blurred by halving it a few times and doubling it back (dual Kawase). Each glass surface
 //! then gets an element right behind it that shows its part of the blur, cut to its corners.
 //!
-//! Windows have glass behind them too, of the wallpaper alone, as Windows' Mica is: what
-//! a window leaves see-through, as GTK's sidebars in Nekoland's look, shows the wallpaper
-//! blurred. The wallpaper seldom changes, so that blur is seldom drawn again.
+//! Windows have glass behind them too, as Windows' Acrylic is: what a window leaves
+//! see-through, as GTK's sidebars in Nekoland's look, shows what is under the window
+//! blurred, the windows behind it and the wallpaper. Each window has a blur of its own, as
+//! large as the window, drawn from the bottom window up, so each one's shows the glass of
+//! those under it.
 
 use std::collections::HashMap;
 
@@ -18,7 +20,10 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             damage::OutputDamageTracker,
-            element::{Element, Id, Kind, RenderElement},
+            element::{
+                utils::{Relocate, RelocateRenderElement},
+                Element, Id, Kind, RenderElement,
+            },
             gles::{
                 ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
@@ -126,8 +131,8 @@ pub struct Glass {
     pane: GlesTexProgram,
     /// What is under the floating surfaces, blurred.
     scene: Blur,
-    /// The wallpaper alone, blurred, for behind windows.
-    wallpaper: Blur,
+    /// What is under each window, blurred, by the window's id.
+    windows: HashMap<Id, Blur>,
     ids: HashMap<WlSurface, Id>,
 }
 
@@ -139,6 +144,9 @@ struct Blur {
     tracker: Option<OutputDamageTracker>,
     /// The output scale the tracker draws at.
     scale: f64,
+    /// Where on the output the textures start: the top left for the scene, a window's
+    /// surroundings for its own.
+    origin: Point<i32, Physical>,
     /// Where the panes were when it was last blurred.
     areas: Vec<Rectangle<i32, Physical>>,
     commit: CommitCounter,
@@ -169,7 +177,7 @@ impl Glass {
                 &pane_uniforms,
             )?,
             scene: Blur::default(),
-            wallpaper: Blur::default(),
+            windows: HashMap::new(),
             ids: HashMap::new(),
         })
     }
@@ -183,21 +191,43 @@ impl Glass {
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.scene
-            .update(renderer, (&self.down, &self.up), (size, scale), areas, behind)
+        self.scene.update(
+            renderer,
+            (&self.down, &self.up),
+            (Rectangle::from_size(size), scale),
+            areas,
+            behind,
+        )
     }
 
-    /// The same for the wallpaper behind windows, `wallpaper` its surfaces, `areas` the
-    /// windows.
-    pub fn update_wallpaper<E: RenderElement<GlesRenderer>>(
+    /// The same for what is `behind` the window named `id`, over `area` of the `output`.
+    pub fn update_window<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
-        (size, scale): (Size<i32, Physical>, f64),
-        areas: &[Rectangle<i32, Physical>],
-        wallpaper: &[E],
+        id: Id,
+        (output, scale): (Size<i32, Physical>, f64),
+        area: Rectangle<i32, Physical>,
+        behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.wallpaper
-            .update(renderer, (&self.down, &self.up), (size, scale), areas, wallpaper)
+        let reach = Rectangle::new(
+            area.loc - Point::from((REACH, REACH)),
+            area.size + Size::from((REACH * 2, REACH * 2)),
+        );
+        let Some(canvas) = reach.intersection(Rectangle::from_size(output)) else {
+            return Ok(());
+        };
+        self.windows.entry(id).or_default().update(
+            renderer,
+            (&self.down, &self.up),
+            (canvas, scale),
+            &[area],
+            behind,
+        )
+    }
+
+    /// Lets go of the blurs of windows no longer drawn, all but those of `kept`.
+    pub fn keep_windows(&mut self, kept: &[Id]) {
+        self.windows.retain(|id, _| kept.contains(id));
     }
 
     /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
@@ -212,9 +242,9 @@ impl Glass {
         self.scene.pane(&self.pane, id, rect, radius)
     }
 
-    /// The wallpaper's glass behind a window, which names it with `id`.
+    /// The glass behind the window named `id`, of what is under it.
     pub fn window_pane(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
-        self.wallpaper.pane(&self.pane, id, rect, radius)
+        self.windows.get(&id)?.pane(&self.pane, id, rect, radius)
     }
 }
 
@@ -223,10 +253,25 @@ impl Blur {
         &mut self,
         renderer: &mut GlesRenderer,
         (down, up): (&GlesTexProgram, &GlesTexProgram),
-        (size, scale): (Size<i32, Physical>, f64),
+        (canvas, scale): (Rectangle<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let size = canvas.size;
+        // What is behind, and where the panes are, as the textures have them.
+        let shift = Point::from((-canvas.loc.x, -canvas.loc.y));
+        let behind: Vec<_> = behind
+            .iter()
+            .map(|element| RelocateRenderElement::from_element(element, shift, Relocate::Relative))
+            .collect();
+        let areas: Vec<_> = areas
+            .iter()
+            .map(|area| Rectangle::new(area.loc + shift, area.size))
+            .collect();
+        if self.origin != canvas.loc {
+            self.origin = canvas.loc;
+            self.areas.clear();
+        }
         let full = Size::<i32, Buffer>::from((size.w, size.h));
         if self.levels.first().map(Texture::size) != Some(full) || self.scale != scale {
             self.levels = (0..=LEVELS)
@@ -269,7 +314,7 @@ impl Blur {
             let mut target = renderer.bind(&mut self.levels[0])?;
             // The texture keeps the last frame, so only what changed since is drawn again.
             let result = tracker
-                .render_output(renderer, &mut target, 1, behind, Color32F::TRANSPARENT)
+                .render_output(renderer, &mut target, 1, &behind, Color32F::TRANSPARENT)
                 .map_err(|err| format!("{err:?}"))?;
             result.damage.is_some_and(|damage| {
                 damage.iter().any(|damage| {
@@ -287,7 +332,7 @@ impl Blur {
         if !changed && self.areas == areas {
             return Ok(());
         }
-        self.areas = areas.to_vec();
+        self.areas = areas.clone();
 
         // Only the parts of the scene that can show through a pane are blurred.
         let regions: Vec<_> = areas
@@ -340,8 +385,9 @@ impl Blur {
         let full = self.levels[0].size();
         let scale_x = f64::from(blurred.w) / f64::from(full.w);
         let scale_y = f64::from(blurred.h) / f64::from(full.h);
+        let at = rect.loc - self.origin;
         let src = Rectangle::<f64, Buffer>::new(
-            (f64::from(rect.loc.x) * scale_x, f64::from(rect.loc.y) * scale_y).into(),
+            (f64::from(at.x) * scale_x, f64::from(at.y) * scale_y).into(),
             (f64::from(rect.size.w) * scale_x, f64::from(rect.size.h) * scale_y).into(),
         );
         Some(Pane {

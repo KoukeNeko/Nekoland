@@ -217,6 +217,12 @@ popover.menu modelbutton:selected {
 popover > contents {
   border-radius: 12px;
 }
+/* Menus on glass: Nekoland draws what is behind a popover blurred, as it does behind
+ * sidebars, so its sheet is left see-through; the arrow takes the same tint. */
+popover > contents,
+popover > arrow {
+  background-color: color-mix(in srgb, var(--popover-bg-color) 72%, transparent);
+}
 
 /* Dialogs take the corners windows do. */
 floating-sheet > sheet,
