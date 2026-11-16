@@ -267,7 +267,10 @@ impl Nekoland {
             .map(|(index, _)| index)
             .collect();
         for index in stale {
-            let notification = self.notices.banners[index].notification.clone();
+            let mut notification = self.notices.banners[index].notification.clone();
+            if !self.config.notification_previews {
+                notification.body.clear();
+            }
             let icon = self.notification_icon(&notification);
             let banner = &mut self.notices.banners[index];
             banner.picture = draw_banner(&notification, icon, dark);

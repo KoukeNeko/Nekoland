@@ -523,6 +523,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         }
     });
     notices.add(&banner);
+    notices.add(&switch_row(config, "顯示預覽", "notification_previews"));
     page.add(&notices);
 
     let windows = group("視窗");

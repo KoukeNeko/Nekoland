@@ -41,6 +41,8 @@ pub struct Config {
     pub sleep_after: u64,
     /// How many seconds a notification's banner stays when its program leaves it to Nekoland.
     pub notification_seconds: u64,
+    /// Whether a notification's banner shows its text, or its title alone.
+    pub notification_previews: bool,
     /// Whether the keyboard goes to the window the pointer moves into, as GNOME's sloppy
     /// focus, instead of the one clicked.
     pub focus_follows_pointer: bool,
@@ -395,6 +397,7 @@ impl Default for Config {
             hot_corner_bottom_left: HotCorner::None,
             hot_corner_bottom_right: HotCorner::None,
             notification_seconds: 5,
+            notification_previews: true,
             focus_follows_pointer: false,
             edge_tiling: true,
             night_shift: NightShift::Off,
