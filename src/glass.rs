@@ -47,18 +47,17 @@ const MAX_SPREAD: f32 = 4.0;
 /// The kinds of glass, each with a look of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
-    /// The menu bar, the Dock, the overview's bar and what else spans the screen.
+    /// The menu bar and the Dock themselves.
     Bar,
-    /// What opens over things: menus, notifications, the Dock's popups.
+    /// All other glass: menus, notifications, the Dock's popups, the overview and behind
+    /// windows, which shows where they are see-through, as GTK's sidebars.
     Menu,
-    /// Behind windows, which shows where they are see-through, as GTK's sidebars.
-    Window,
 }
 
 /// The look the configuration gives each tier's glass, in thousandths: how solid the tint
 /// over the blur is, and how strong the blur.
-static OPACITY: [AtomicU32; 3] = [AtomicU32::new(500), AtomicU32::new(800), AtomicU32::new(800)];
-static BLUR: [AtomicU32; 3] = [const { AtomicU32::new(500) }; 3];
+static OPACITY: [AtomicU32; 2] = [AtomicU32::new(500), AtomicU32::new(800)];
+static BLUR: [AtomicU32; 2] = [const { AtomicU32::new(500) }; 2];
 
 /// Takes how solid a tier's tint is and how strong its blur, each from 0 to 1, and says
 /// whether either changed.
@@ -272,7 +271,7 @@ impl Glass {
         area: Rectangle<i32, Physical>,
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let spread = spread(Tier::Window);
+        let spread = spread(Tier::Menu);
         let reach = reach(spread);
         let reach = Rectangle::new(
             area.loc - Point::from((reach, reach)),

@@ -554,14 +554,6 @@ fn floating_elements(
         .iter()
         .flat_map(|window| window_popups(state, window, output_loc))
         .collect();
-    // A layer surface across the whole output is a bar; anything smaller opens over things.
-    let layer_tier = |geometry: Rectangle<i32, Logical>| {
-        if geometry.size.w >= output_width {
-            Tier::Bar
-        } else {
-            Tier::Menu
-        }
-    };
     let areas: Vec<_> = overlays
         .iter()
         .filter_map(|overlay| {
@@ -575,7 +567,7 @@ fn floating_elements(
                 .filter(|surface| radius_of(surface).is_some())
                 .map(|surface| {
                     let geometry = map.layer_geometry(surface).unwrap_or_default();
-                    (layer_tier(geometry), geometry.to_physical_precise_round(scale))
+                    (Tier::Menu, geometry.to_physical_precise_round(scale))
                 }),
         )
         .chain(
@@ -702,7 +694,7 @@ fn floating_elements(
                     .and_then(|glass| {
                         glass.pane(
                             surface.wl_surface(),
-                            layer_tier(geometry),
+                            Tier::Menu,
                             geometry.to_physical_precise_round(scale),
                             pixels(radius),
                         )

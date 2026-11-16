@@ -42,7 +42,7 @@ wallpaper and an input method. Every key is optional:
 | `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
-| `menu_bar_opacity`, `menu_bar_blur`, `menu_opacity`, `menu_blur`, `sidebar_opacity`, `sidebar_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar, the Dock and the overview's bar; of menus, notifications and the Dock's popups, GTK's among them; and of windows' glass, which GTK's sidebars show. 0.5, 0.8 and 0.8, each blurred 0.5, unless set |
+| `bar_opacity`, `bar_blur`, `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar and the Dock themselves, and of all other glass, menus, notifications, the Dock's popups, the overview, and behind windows, as GTK's menus and sidebars show it. 0.5 and 0.8, each blurred 0.5, unless set |
 | `dock_size` | How big the Dock's icons are, from 24 to 96, the rest of it growing with them; 40 unless set, written back when the line between its icons is dragged |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
@@ -178,10 +178,9 @@ notifications, the overview's desktops and what `glass` names are drawn over a b
 with a thin line of light just inside its top edge, like the band of light across a
 cat's-eye stone. What `glass` names draws its own colour on top, so it has to be
 translucent for the glass to show; the styles in `shell/` are. Nekoland's own surfaces
-take a tint, the same light and dark. The menu bar, the Dock and the overview's bar;
-menus, notifications and the Dock's popups, GTK's menus among them; and the glass behind
-windows, which GTK's sidebars show, each have their own tint and blur, which Settings' 外觀
-page sets. Glass behind a bar that spans the whole output has square corners.
+take a tint, the same light and dark. The menu bar and the Dock have a tint and blur of
+their own; all other glass, GTK's menus and sidebars among it, shares one, and Settings'
+外觀 page sets both. Glass behind a bar that spans the whole output has square corners.
 
 Behind every window is glass of what is under it, blurred, as Windows' Acrylic is: what a
 window leaves see-through, as sidebars and menus in Nekoland's GTK look, shows the windows

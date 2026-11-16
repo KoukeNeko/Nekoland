@@ -1015,7 +1015,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[2],
                 rect: layout.search,
-                glass: Some((Tier::Bar, SEARCH_HEIGHT / 2)),
+                glass: Some((Tier::Menu, SEARCH_HEIGHT / 2)),
                 alpha: 1.0,
                 picture,
             });
@@ -1033,7 +1033,7 @@ impl Nekoland {
                         .into(),
                     picture.size,
                 ),
-                glass: Some((Tier::Bar, CANDIDATES_RADIUS)),
+                glass: Some((Tier::Menu, CANDIDATES_RADIUS)),
                 alpha: 1.0,
                 picture,
             });
@@ -1056,7 +1056,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[3],
                 rect: area,
-                glass: Some((Tier::Bar, 0)),
+                glass: Some((Tier::Menu, 0)),
                 alpha: 1.0,
                 picture,
             })
@@ -1467,7 +1467,7 @@ fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<P
             f64::from(size.h),
             f64::from(size.h) / 2.0,
             true,
-            Tier::Bar,
+            Tier::Menu,
         );
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
         cr.set_line_width(1.6);
@@ -1542,7 +1542,7 @@ fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<P
             f64::from(HEIGHT),
             f64::from(CANDIDATES_RADIUS),
             true,
-            Tier::Bar,
+            Tier::Menu,
         );
         let mut x = PAD;
         for (index, label) in labels.iter().enumerate() {
