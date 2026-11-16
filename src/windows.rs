@@ -135,6 +135,9 @@ impl Nekoland {
 
     pub fn raise_and_focus(&mut self, window: &Window) {
         self.space.raise_element(window, true);
+        if let (Some(xwm), Some(surface)) = (self.xwm.as_mut(), window.x11_surface()) {
+            let _ = xwm.raise_window(surface);
+        }
         self.set_keyboard_focus(Some(key_focus_of(window)));
     }
 

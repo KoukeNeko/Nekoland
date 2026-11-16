@@ -26,7 +26,9 @@ use smithay::{
         },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xwayland_shell::XWaylandShellState,
     },
+    xwayland::X11Wm,
 };
 
 use crate::{
@@ -75,6 +77,9 @@ pub struct Nekoland {
     pub dmabuf_import: Option<DmabufImport>,
     /// Switches to another virtual terminal; set by the backend that owns a session.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
+    pub xwayland_shell_state: XWaylandShellState,
+    /// The X11 window manager, once XWayland is up.
+    pub xwm: Option<X11Wm>,
     /// The cursor the client under the pointer asked for.
     pub cursor_status: CursorImageStatus,
 
@@ -97,6 +102,7 @@ impl Nekoland {
         let popups = PopupManager::default();
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -149,6 +155,8 @@ impl Nekoland {
             dmabuf_state: DmabufState::new(),
             dmabuf_import: None,
             switch_vt: None,
+            xwayland_shell_state,
+            xwm: None,
             cursor_status: CursorImageStatus::default_named(),
             seat,
         }

@@ -16,6 +16,7 @@ use smithay::{
 };
 
 use super::xdg_shell;
+use smithay::xwayland::XWaylandClientData;
 
 impl CompositorHandler for Nekoland {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -23,6 +24,10 @@ impl CompositorHandler for Nekoland {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // XWayland's connection is made by Smithay, with its own kind of client data.
+        if let Some(state) = client.get_data::<XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client
             .get_data::<ClientState>()
             .expect("a client connected without client data")

@@ -8,7 +8,7 @@ use smithay::{
         PointerInnerHandle, RelativeMotionEvent,
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point},
+    utils::{Logical, Point, Rectangle},
 };
 
 pub struct MoveSurfaceGrab {
@@ -30,8 +30,12 @@ impl PointerGrab<Nekoland> for MoveSurfaceGrab {
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
-        data.space
-            .map_element(self.window.clone(), new_location.to_i32_round(), true);
+        let new_location = new_location.to_i32_round();
+        data.space.map_element(self.window.clone(), new_location, true);
+        // An X11 program has to be told where its window went, or its menus open in the old place.
+        if let Some(surface) = self.window.x11_surface() {
+            let _ = surface.configure(Rectangle::new(new_location, surface.geometry().size));
+        }
     }
 
     fn relative_motion(

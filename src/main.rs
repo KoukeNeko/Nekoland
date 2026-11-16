@@ -15,6 +15,7 @@ mod udev;
 mod windows;
 mod winit;
 mod workspaces;
+mod x11;
 
 use smithay::reexports::{
     calloop::EventLoop,
@@ -58,14 +59,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
 
-    let config = &data.state.config;
-    config.autostart.iter().for_each(|command| config::spawn(command));
-    match &command {
-        Some(command) => config::spawn(command),
-        // Something to start from, when nothing else was asked for.
-        None if config.autostart.is_empty() => config::spawn(&config.terminal),
-        None => {}
-    }
+    // X11 programs find XWayland through the environment, so everything else starts after it.
+    x11::start(&event_loop.handle(), &mut data, move |data| {
+        let config = &data.state.config;
+        config.autostart.iter().for_each(|command| config::spawn(command));
+        match &command {
+            Some(command) => config::spawn(command),
+            // Something to start from, when nothing else was asked for.
+            None if config.autostart.is_empty() => config::spawn(&config.terminal),
+            None => {}
+        }
+    });
 
     event_loop.run(None, &mut data, move |_| {
         // Nekoland is running
