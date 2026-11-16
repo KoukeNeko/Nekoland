@@ -487,6 +487,8 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         .sync_create()
         .build();
     dock.add(&scale);
+    dock.add(&switch_row(config, "執行中指示燈", "dock_indicators"));
+    dock.add(&switch_row(config, "開啟動畫", "dock_bounce"));
     page.add(&dock);
 
     let bar = group("選單列");
