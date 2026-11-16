@@ -29,7 +29,7 @@ use smithay::{
     },
 };
 
-use crate::{config::Config, CalloopData};
+use crate::{config::Config, handlers::protocols::Protocols, CalloopData};
 
 /// Takes a client's GPU buffer; returns whether the renderer can use it.
 pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
@@ -60,6 +60,7 @@ pub struct Nekoland {
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
     pub cursor_shape_state: CursorShapeManagerState,
+    pub protocols: Protocols,
     pub dmabuf_state: DmabufState,
     /// Hands a client's GPU buffer to the renderer; set by a backend that takes them.
     pub dmabuf_import: Option<DmabufImport>,
@@ -86,6 +87,7 @@ impl Nekoland {
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let popups = PopupManager::default();
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
+        let protocols = Protocols::new(&dh);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -130,6 +132,7 @@ impl Nekoland {
             data_device_state,
             popups,
             cursor_shape_state,
+            protocols,
             dmabuf_state: DmabufState::new(),
             dmabuf_import: None,
             switch_vt: None,
