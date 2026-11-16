@@ -129,7 +129,13 @@ Nekoland draws the bar along the top itself, as the Mac does:
 - The Window menu, from Nekoland: minimize, zoom, tile, move to another desktop,
   and the program's windows. The Help menu searches every other menu as you type.
 - On the right: the status items programs register as StatusNotifierItems, with their
-  menus; the sound (through `wpctl`, when PipeWire runs) and the network; the clock.
+  menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
+  center; the clock.
+- The control center, as the Mac's, opens a panel on the menus' glass: the network, which
+  turns Wi-Fi on or off through `nmcli`; dark, which sets the GSetting
+  `org.gnome.desktop.interface color-scheme`; the display's brightness, through
+  `brightnessctl`, when there is a backlight; the volume, its icon muting it; and the sound
+  output, a list of PipeWire's to choose the default from. A tile that is on is solid ink.
 
 A click opens a menu; then moving across the bar opens the others without clicking. A
 press dragged onto an entry and let go chooses it. Submenus open beside their entry,

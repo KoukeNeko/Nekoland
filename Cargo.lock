@@ -3190,6 +3190,7 @@ dependencies = [
  "pango",
  "pangocairo",
  "serde",
+ "serde_json",
  "smithay",
  "smithay-drm-extras",
  "toml 0.8.23",

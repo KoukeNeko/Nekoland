@@ -34,6 +34,7 @@ use smithay::{
 use crate::{
     config,
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
+    control::{self, ControlCenter},
     dock::DockCommand,
     glass::Tier,
     system::{self, Network, Volume},
@@ -52,7 +53,7 @@ const SEARCH_HEIGHT: i32 = 32;
 const SEPARATOR_HEIGHT: i32 = 11;
 const MENU_PADDING: i32 = 6;
 const MENU_MIN_WIDTH: i32 = 220;
-const MENU_RADIUS: i32 = 12;
+pub(crate) const MENU_RADIUS: i32 = 12;
 /// Room on the left of an entry for its check mark.
 const CHECK_COLUMN: i32 = 22;
 const GAP_BELOW_BAR: i32 = 4;
@@ -232,6 +233,7 @@ enum Source {
     Status(String),
     Sound,
     Network,
+    Control,
 }
 
 struct Title {
@@ -267,6 +269,7 @@ pub(crate) struct Drawn {
     app: Option<(String, String)>,
     menus: u64,
     open: Option<usize>,
+    control: bool,
     dark: bool,
     background: bool,
     minute: i64,
@@ -275,7 +278,7 @@ pub(crate) struct Drawn {
 
 pub struct MenuBar {
     pub bus: Option<Bus>,
-    dark: bool,
+    pub(crate) dark: bool,
     /// The actions each application exports, as far as they are known.
     actions: HashMap<String, Vec<String>>,
     /// Where each window said its menus are, and the menus found there.
@@ -286,13 +289,14 @@ pub struct MenuBar {
     menus_revision: u64,
     items: Vec<StatusItem>,
     pub(crate) items_revision: u64,
-    sound: Option<Volume>,
+    pub(crate) sound: Option<Volume>,
     pub(crate) in_use: crate::privacy::InUse,
-    network: Option<Network>,
+    pub(crate) network: Option<Network>,
     network_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
+    pub(crate) control: Option<ControlCenter>,
     picture: Option<Picture>,
     pub(crate) drawn: Option<Drawn>,
     /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
@@ -321,6 +325,7 @@ impl Default for MenuBar {
             icons: HashMap::new(),
             titles: Vec::new(),
             open: None,
+            control: None,
             picture: None,
             drawn: None,
             wallpaper_dark: None,
@@ -345,11 +350,11 @@ pub struct Overlay<'a> {
 
 type Rgb = (f64, f64, f64);
 
-struct Colors {
-    ink: Rgb,
-    ink_3: Rgb,
-    on_ink: Rgb,
-    edge: (f64, f64, f64, f64),
+pub(crate) struct Colors {
+    pub(crate) ink: Rgb,
+    pub(crate) ink_3: Rgb,
+    pub(crate) on_ink: Rgb,
+    pub(crate) edge: (f64, f64, f64, f64),
 }
 
 // The design language's ink, paper and glass, in both themes.
@@ -395,7 +400,7 @@ fn strip_is_dark(
     sum / f64::from(columns * rows) < 0.5
 }
 
-fn colors(dark: bool) -> Colors {
+pub(crate) fn colors(dark: bool) -> Colors {
     if dark {
         Colors {
             ink: (0.945, 0.937, 0.918),
@@ -413,7 +418,7 @@ fn colors(dark: bool) -> Colors {
     }
 }
 
-fn font(weight: &str, points: f64) -> pango::FontDescription {
+pub(crate) fn font(weight: &str, points: f64) -> pango::FontDescription {
     text::font(&format!("{FONT} {weight} {points}"))
 }
 
@@ -438,7 +443,7 @@ fn text_size(text: &str, font: &pango::FontDescription) -> (i32, i32) {
     text_layout(&cr, text, font).pixel_size()
 }
 
-fn show_text(cr: &Context, text: &str, font: &pango::FontDescription, x: f64, center_y: f64, color: Rgb) {
+pub(crate) fn show_text(cr: &Context, text: &str, font: &pango::FontDescription, x: f64, center_y: f64, color: Rgb) {
     let layout = text_layout(cr, text, font);
     let (_, height) = layout.pixel_size();
     cr.set_source_rgb(color.0, color.1, color.2);
@@ -518,7 +523,7 @@ fn is_help(label: &str) -> bool {
     HELP_TITLES.contains(&label.trim().to_lowercase().as_str())
 }
 
-fn sound_icon(volume: Volume) -> &'static str {
+pub(crate) fn sound_icon(volume: Volume) -> &'static str {
     match (volume.muted, volume.percent) {
         (true, _) | (false, 0) => "audio-volume-muted-symbolic",
         (false, 1..=33) => "audio-volume-low-symbolic",
@@ -527,7 +532,7 @@ fn sound_icon(volume: Volume) -> &'static str {
     }
 }
 
-fn network_icon(network: &Network) -> &'static str {
+pub(crate) fn network_icon(network: &Network) -> &'static str {
     match (network.connected, network.wireless) {
         (false, _) => "network-offline-symbolic",
         (true, true) => "network-wireless-signal-good-symbolic",
@@ -675,7 +680,7 @@ impl MenuBar {
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
-        let mut icons: Vec<Icon> = Vec::new();
+        let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
         if let Some(network) = &self.network {
             icons.push((
                 Source::Network,
@@ -709,12 +714,15 @@ impl MenuBar {
                 (right - STATUS_ICON - TITLE_PADDING * 2 + 8, 0).into(),
                 (STATUS_ICON + TITLE_PADDING * 2 - 8, MENU_BAR_HEIGHT).into(),
             );
-            let lit = open == Some(self.titles.len());
+            let lit = open == Some(self.titles.len()) || (source == Source::Control && self.control.is_some());
             if lit {
                 highlight(&cr, rect);
             }
             let tint = if lit { colors.on_ink } else { colors.ink };
-            if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
+            if source == Source::Control {
+                let at = |side| f64::from(side - STATUS_ICON) / 2.0;
+                control::draw_bar_icon(&cr, f64::from(rect.loc.x) + at(rect.size.w), at(MENU_BAR_HEIGHT), f64::from(STATUS_ICON), tint);
+            } else if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
                 let (w, h) = text::points(&icon);
                 let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);
                 cr.save().ok();
@@ -914,7 +922,7 @@ impl MenuBar {
 }
 
 impl Nekoland {
-    fn output_area(&self) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn output_area(&self) -> Option<Rectangle<i32, Logical>> {
         let output = self.space.outputs().next()?;
         self.space.output_geometry(output)
     }
@@ -996,7 +1004,7 @@ impl Nekoland {
             return false;
         };
         self.menu_bar_shown()
-            && (self.menu_bar.open.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT))
+            && (self.menu_bar.open.is_some() || self.menu_bar.control.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT))
     }
 
     /// The titles of the bar's left side for the active application.
@@ -1100,6 +1108,7 @@ impl Nekoland {
             app: app.clone(),
             menus: self.menu_bar.menus_revision,
             open: self.menu_bar.open.as_ref().and_then(|open| open.title),
+            control: self.menu_bar.control.is_some(),
             dark,
             background,
             minute,
@@ -1133,6 +1142,7 @@ impl Nekoland {
                 MenuBar::draw_menu(dark, level);
             }
         }
+        self.refresh_control_center();
     }
 
     /// What the bar and its open menus put on screen, front first.
@@ -1159,6 +1169,7 @@ impl Nekoland {
                 }
             }
         }
+        overlays.extend(self.control_center_overlay());
         if let Some(picture) = &bar.picture {
             overlays.push(Overlay {
                 fade: 1.0,
@@ -1311,6 +1322,7 @@ impl Nekoland {
 
     pub fn close_menu(&mut self) {
         self.menu_bar.open = None;
+        self.menu_bar.control = None;
     }
 
     fn output_size(&self) -> Size<i32, Logical> {
@@ -1322,6 +1334,11 @@ impl Nekoland {
         let Some(source) = self.menu_bar.titles.get(title).map(|title| title.source.clone()) else {
             return;
         };
+        self.menu_bar.control = None;
+        if source == Source::Control {
+            self.toggle_control_center(self.menu_bar.titles[title].rect);
+            return;
+        }
         let mut entries = self.menu_entries(&source);
         if entries.is_empty() {
             self.menu_bar.open = None;
@@ -1680,6 +1697,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
+            Source::Control => Vec::new(),
         }
     }
 
@@ -1692,15 +1710,24 @@ impl Nekoland {
             return false;
         };
         if let Some(title) = self.title_at(local) {
-            if self
-                .menu_bar
-                .open
-                .as_ref()
-                .is_some_and(|open| open.title == Some(title))
+            let control = self.menu_bar.control.is_some()
+                && self.menu_bar.titles.get(title).is_some_and(|title| title.source == Source::Control);
+            if control
+                || self
+                    .menu_bar
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.title == Some(title))
             {
                 self.close_menu();
             } else {
                 self.open_menu(title, false);
+            }
+            return true;
+        }
+        if self.menu_bar.control.is_some() {
+            if !self.control_press(local) {
+                self.close_menu();
             }
             return true;
         }
@@ -1714,6 +1741,20 @@ impl Nekoland {
     /// The pointer moved: open menus follow it across the bar, light the entry under it,
     /// and open the submenu of that entry.
     pub fn menu_bar_motion(&mut self, pos: Point<f64, Logical>) {
+        if self.menu_bar.control.is_some() && self.menu_bar_shown() {
+            let Some(local) = self.local(pos) else {
+                return;
+            };
+            let dragging = self.menu_bar.control.as_ref().is_some_and(|control| control.dragging());
+            // As from one menu to the next, the pointer goes from the panel to another menu.
+            match self.title_at(local) {
+                Some(title) if !dragging && self.menu_bar.titles[title].source != Source::Control => {
+                    self.open_menu(title, false)
+                }
+                _ => self.control_motion(local),
+            }
+            return;
+        }
         if self.menu_bar.open.is_none() || !self.menu_bar_shown() {
             return;
         }
@@ -1768,6 +1809,12 @@ impl Nekoland {
     /// A button came up: over an entry, that entry is chosen, whether it was clicked or
     /// the press that opened the menu was dragged onto it.
     pub fn menu_bar_release(&mut self, pos: Point<f64, Logical>) {
+        if self.menu_bar.control.is_some() {
+            if let Some(local) = self.local(pos) {
+                self.control_release(local);
+            }
+            return;
+        }
         if self.menu_bar.open.is_none() {
             return;
         }

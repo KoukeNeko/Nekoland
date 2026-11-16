@@ -2,6 +2,7 @@
 
 mod appgrid;
 mod config;
+mod control;
 mod cursor;
 mod dbus;
 mod dock;

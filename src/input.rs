@@ -309,6 +309,10 @@ impl Nekoland {
         } = *modifiers;
         let focused = self.focused_window();
 
+        if self.menu_bar.control.is_some() && sym == Keysym::Escape {
+            self.close_menu();
+            return true;
+        }
         if self.menu_bar.open.is_some() {
             self.menu_bar_key(sym, typed);
             return true;
