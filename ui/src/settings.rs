@@ -5,6 +5,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -29,8 +30,8 @@ const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 
 /// What a program printed, or None when it could not be run or failed.
 fn output(program: &str, args: &[&str]) -> Option<String> {
-    if program == "gsettings" && matches!(args.first(), Some(&("set" | "reset"))) {
-        WROTE.set(true);
+    if let ("gsettings", ["set" | "reset", schema, key, ..]) = (program, args) {
+        WROTE.with_borrow_mut(|wrote| wrote.insert(format!("{schema} {key}")));
     }
     let output = Command::new(program)
         .args(args)
@@ -60,7 +61,9 @@ fn unset(key: &str) {
 }
 
 fn change(command: &str) {
-    WROTE.set(true);
+    let key = command.split_once(' ').map_or("", |(_, rest)| rest);
+    let key = key.split_once(" = ").map_or(key, |(key, _)| key);
+    WROTE.with_borrow_mut(|wrote| wrote.insert(key.to_string()));
     if let Some(reply) = output("nekoland", &["msg", command]) {
         if !reply.trim().is_empty() {
             eprintln!("{}", reply.trim());
@@ -215,8 +218,8 @@ thread_local! {
     static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
     /// Nekoland's `font`, which the look gives GTK's text too.
     static UI_FONT: RefCell<String> = RefCell::new("Ubuntu Sans".into());
-    /// Set as Settings changes a setting itself, which its pages already show.
-    static WROTE: Cell<bool> = const { Cell::new(false) };
+    /// The settings Settings changed itself, which its pages already show.
+    static WROTE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -429,12 +432,9 @@ fn build(app: &adw::Application) {
     let seen = RefCell::new(outside_settings());
     let refresh = Rc::new(move || {
         let now = outside_settings();
-        let own = WROTE.take();
-        if *seen.borrow() == now {
-            return;
-        }
+        let elsewhere = changed_elsewhere(&seen.borrow(), &now, &WROTE.take());
         seen.replace(now);
-        if own {
+        if !elsewhere {
             return;
         }
         let config = Config::load();
@@ -538,18 +538,42 @@ fn scroll_once_laid_out(scroll: &gtk::Adjustment, offset: f64) {
     handler.replace(Some(id));
 }
 
-/// The compositor's settings and the GNOME ones the pages show, as text to compare.
-fn outside_settings() -> String {
-    let mut all = output("nekoland", &["msg", "config"]).unwrap_or_default();
+/// The compositor's settings and the GNOME ones the pages show, by name: `key` for the
+/// compositor's, `schema key` for GNOME's, as Settings names them when it changes them.
+fn outside_settings() -> BTreeMap<String, String> {
+    let mut all = BTreeMap::new();
+    for line in output("nekoland", &["msg", "config"]).unwrap_or_default().lines() {
+        if let Some((key, value)) = line.split_once(" = ") {
+            all.insert(key.to_string(), value.to_string());
+        }
+    }
     for schema in [
         INTERFACE,
         WM_PREFERENCES,
         A11Y_INTERFACE,
         "org.gnome.desktop.privacy",
     ] {
-        all += &output("gsettings", &["list-recursively", schema]).unwrap_or_default();
+        for line in output("gsettings", &["list-recursively", schema])
+            .unwrap_or_default()
+            .lines()
+        {
+            if let [schema, key, value] = line.splitn(3, ' ').collect::<Vec<_>>()[..] {
+                all.insert(format!("{schema} {key}"), value.to_string());
+            }
+        }
     }
     all
+}
+
+/// Whether a setting changed that Settings did not change itself.
+fn changed_elsewhere(
+    seen: &BTreeMap<String, String>,
+    now: &BTreeMap<String, String>,
+    own: &HashSet<String>,
+) -> bool {
+    seen.keys()
+        .chain(now.keys())
+        .any(|key| !own.contains(key) && seen.get(key) != now.get(key))
 }
 
 /// Keeps what the custom look's stylesheet is drawn with up with the settings.
@@ -3798,6 +3822,39 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_settings_changed_elsewhere_count() {
+        let settings = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        let seen = settings(&[
+            ("key_repeat", "true"),
+            ("org.gnome.desktop.interface cursor-blink-time", "1200"),
+        ]);
+        let own: HashSet<String> = ["key_repeat".to_string()].into();
+        let toggled = settings(&[
+            ("key_repeat", "false"),
+            ("org.gnome.desktop.interface cursor-blink-time", "1200"),
+        ]);
+        assert!(!changed_elsewhere(&seen, &toggled, &own));
+        let both = settings(&[
+            ("key_repeat", "false"),
+            ("org.gnome.desktop.interface cursor-blink-time", "900"),
+        ]);
+        assert!(changed_elsewhere(&seen, &both, &own));
+        assert!(changed_elsewhere(&seen, &toggled, &HashSet::new()));
+        let added = settings(&[
+            ("key_repeat", "true"),
+            ("org.gnome.desktop.interface cursor-blink-time", "1200"),
+            ("clock_date", "false"),
+        ]);
+        assert!(changed_elsewhere(&seen, &added, &own));
+        assert!(!changed_elsewhere(&seen, &seen, &HashSet::new()));
+    }
 
     #[test]
     fn display_modes_are_grouped_by_size_largest_first() {
