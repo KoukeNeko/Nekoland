@@ -491,7 +491,7 @@ fn clock(config: &config::Config) -> (i64, String) {
         tm
     };
     let minute = ((i64::from(tm.tm_yday) * 24 + i64::from(tm.tm_hour)) * 60) + i64::from(tm.tm_min);
-    let key = if config.clock_seconds {
+    let key = if config.clock_seconds || config.clock_flash {
         minute * 60 + i64::from(tm.tm_sec)
     } else {
         minute
@@ -501,11 +501,13 @@ fn clock(config: &config::Config) -> (i64, String) {
     } else {
         String::new()
     };
+    // A flashing separator is a punctuation space every other second, about as wide.
+    let colon = if config.clock_flash && tm.tm_sec % 2 == 1 { '\u{2008}' } else { ':' };
     let time = if config.clock_24h {
-        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+        format!("{:02}{colon}{:02}", tm.tm_hour, tm.tm_min)
     } else {
         let half = if tm.tm_hour < 12 { "上午" } else { "下午" };
-        format!("{half} {}:{:02}", (tm.tm_hour + 11) % 12 + 1, tm.tm_min)
+        format!("{half} {}{colon}{:02}", (tm.tm_hour + 11) % 12 + 1, tm.tm_min)
     };
     let seconds = if config.clock_seconds {
         format!(":{:02}", tm.tm_sec)

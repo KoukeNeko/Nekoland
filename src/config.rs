@@ -73,6 +73,8 @@ pub struct Config {
     pub clock_weekday: bool,
     pub clock_seconds: bool,
     pub clock_date: bool,
+    /// Whether the colon between the clock's hours and minutes flashes each second.
+    pub clock_flash: bool,
     /// Whether the menu bar shows the network's and the sound's icons.
     pub menu_bar_network: bool,
     pub menu_bar_sound: bool,
@@ -421,6 +423,7 @@ impl Default for Config {
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,
+            clock_flash: false,
             menu_bar_network: true,
             menu_bar_sound: true,
             clock_date: true,
