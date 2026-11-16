@@ -1271,7 +1271,18 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     }
     page.add(&repeat);
     let typing = group("");
-    typing.add(&gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink"));
+    let blink = gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink");
+    typing.add(&blink);
+    // GNOME's time is one whole blink, on and off.
+    let blink_time = scale_row(
+        "閃爍間隔",
+        interface_setting("cursor-blink-time").parse().unwrap_or(1200.0),
+        (100.0, 2500.0, 100.0),
+        |time| format!("{time:.0} 毫秒"),
+        |time| set_interface("cursor-blink-time", &(time.round() as i32).to_string()),
+    );
+    blink.bind_property("active", &blink_time, "visible").sync_create().build();
+    typing.add(&blink_time);
     page.add(&typing);
     page
 }
