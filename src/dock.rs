@@ -99,6 +99,8 @@ const MAGNIFY_RANGE: f64 = 2.5;
 const MAGNIFY_TIME: f64 = 0.05;
 const MAX_MAGNIFY: f64 = 2.0;
 const MOVE_TIME: f64 = 0.18;
+/// How long an auto-hidden Dock takes to slide in or out.
+const SLIDE_TIME: f64 = 0.25;
 const PRESS_TIME: f64 = 0.09;
 const BOUNCE_TIME: f64 = 0.18;
 const PRESSED_SCALE: f64 = 0.92;
@@ -226,6 +228,7 @@ pub enum DockCommand {
     OpenTrash,
     EmptyTrash,
     ToggleMagnify,
+    ToggleAutohide,
 }
 
 /// What is in a kept folder, as last read.
@@ -391,6 +394,8 @@ pub struct Dock {
     resizing: Option<(f64, i32)>,
     /// Whether the pointer is on such a line, showing it can be dragged.
     on_divider: bool,
+    /// How far an auto-hidden Dock has slid off the bottom, from 0, all in, to 1, all out.
+    hidden: f64,
     /// An application dragged from the applications' grid, and among the kept ones where
     /// it would go if let go now; none when it is not over the Dock.
     pub incoming: Option<(String, Option<usize>)>,
@@ -766,7 +771,40 @@ impl Nekoland {
     }
 
     fn dock_shown(&self) -> bool {
-        self.fullscreen_window().is_none()
+        self.fullscreen_window().is_none() && self.dock.hidden < 1.0
+    }
+
+    /// Whether an auto-hidden Dock is to be in: the pointer at the bottom edge or on it,
+    /// or something of it in use.
+    fn dock_wanted(&self, pointer: Option<Point<f64, Logical>>) -> bool {
+        if !self.config.dock_autohide {
+            return true;
+        }
+        let dock_menu = self
+            .menu_bar
+            .open
+            .as_ref()
+            .is_some_and(|open| open.title.is_none());
+        let in_use = dock_menu
+            || self.dock.drag.is_some()
+            || self.dock.resizing.is_some()
+            || self.dock.press.is_some()
+            || self.dock.stack.is_some()
+            || self.dock.preview.is_some()
+            || !self.dock.minimizing.is_empty()
+            || !self.dock.restoring.is_empty()
+            || self
+                .dock
+                .incoming
+                .as_ref()
+                .is_some_and(|(_, slot)| slot.is_some());
+        let pointed = pointer.is_some_and(|pos| {
+            let at_edge = self
+                .output_rect()
+                .is_some_and(|area| pos.y >= f64::from(area.loc.y + area.size.h) - 1.0);
+            at_edge || (self.dock.hidden < 1.0 && self.dock_covers(pos))
+        });
+        in_use || pointed
     }
 
     fn output_rect(&self) -> Option<Rectangle<i32, Logical>> {
@@ -778,10 +816,11 @@ impl Nekoland {
     fn dock_rect_of(&self, width: i32) -> Option<Rectangle<i32, Logical>> {
         let area = self.output_rect()?;
         let height = self.dock_sizes().height;
+        let hidden = (ease_out(self.dock.hidden) * f64::from(height + MARGIN)).round() as i32;
         Some(Rectangle::new(
             (
                 area.loc.x + (area.size.w - width) / 2,
-                area.loc.y + area.size.h - MARGIN - height,
+                area.loc.y + area.size.h - MARGIN - height + hidden,
             )
                 .into(),
             (width, height).into(),
@@ -982,6 +1021,12 @@ impl Nekoland {
             self.dock.shown_width = f64::from(width);
         }
         self.dock.shown_width += (f64::from(width) - self.dock.shown_width) * approach;
+        let step = dt / SLIDE_TIME;
+        self.dock.hidden = if self.dock_wanted(pointer) {
+            (self.dock.hidden - step).max(0.0)
+        } else {
+            (self.dock.hidden + step).min(1.0)
+        };
         if (self.dock.shown_width - f64::from(width)).abs() < 0.5 {
             self.dock.shown_width = f64::from(width);
         }
@@ -1659,7 +1704,10 @@ impl Nekoland {
             fade: 1.0,
             id: &ids.dock,
             rect,
-            glass: self.config.dock_glass.then_some((Tier::Bar, self.dock_sizes().radius)),
+            glass: self
+                .config
+                .dock_glass
+                .then_some((Tier::Bar, self.dock_sizes().radius)),
             alpha: 1.0,
             picture,
         });
@@ -2028,6 +2076,8 @@ impl Nekoland {
                 let entries = vec![
                     Entry::item("放大", Command::Dock(DockCommand::ToggleMagnify))
                         .checked(self.config.dock_magnify),
+                    Entry::item("自動隱藏", Command::Dock(DockCommand::ToggleAutohide))
+                        .checked(self.config.dock_autohide),
                     Entry::separator(),
                     Entry::item("Dock 設定⋯", Command::Settings),
                 ];
@@ -2263,6 +2313,12 @@ impl Nekoland {
             DockCommand::OpenTrash => open_uri("trash:///"),
             // Asked first, in a dialog of its own: what is in the Trash cannot come back.
             DockCommand::EmptyTrash => config::spawn("nekoland-confirm empty-trash"),
+            DockCommand::ToggleAutohide => {
+                self.config.dock_autohide = !self.config.dock_autohide;
+                if let Err(err) = config::set(&format!("dock_autohide = {}", self.config.dock_autohide)) {
+                    tracing::warn!("{err}");
+                }
+            }
             DockCommand::ToggleMagnify => {
                 self.config.dock_magnify = !self.config.dock_magnify;
                 if let Err(err) = config::set(&format!("dock_magnify = {}", self.config.dock_magnify)) {

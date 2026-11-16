@@ -109,7 +109,13 @@ impl Nekoland {
             area.size.h -= below_bar - area.loc.y;
             area.loc.y = below_bar;
         }
-        let above_dock = geometry.loc.y + geometry.size.h - dock_space(self.config.dock_size);
+        // A Dock that hides leaves the whole height to windows, as on the Mac.
+        let dock = if self.config.dock_autohide {
+            0
+        } else {
+            dock_space(self.config.dock_size)
+        };
+        let above_dock = geometry.loc.y + geometry.size.h - dock;
         if area.loc.y + area.size.h > above_dock {
             area.size.h = above_dock - area.loc.y;
         }

@@ -423,6 +423,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         (24.0, 96.0, 1.0),
         |size| set(&format!("dock_size = {size:.0}")),
     ));
+    dock.add(&switch_row(config, "自動隱藏", "dock_autohide"));
     dock.add(&switch_row(config, "毛玻璃", "dock_glass"));
     let magnify = switch_row(config, "放大", "dock_magnify");
     dock.add(&magnify);
