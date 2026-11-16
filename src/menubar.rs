@@ -2113,7 +2113,7 @@ impl Nekoland {
                     self.focus_window(&window);
                 }
             }
-            Command::Focus(window) => self.reveal_window(&window),
+            Command::Focus(window) => self.restore_from_dock(&window),
             Command::Dock(command) => self.run_dock_command(command),
             Command::VolumeUp => config::spawn(&self.config.volume_up),
             Command::VolumeDown => config::spawn(&self.config.volume_down),

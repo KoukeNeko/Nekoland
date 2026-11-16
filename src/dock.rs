@@ -2536,9 +2536,14 @@ impl Nekoland {
             })
     }
 
-    /// Brings a minimized window back, drawn growing out of the tile it went into.
-    fn restore_from_dock(&mut self, window: &Window) {
-        if let Some(rect) = self.minimized_tile(window).and_then(|index| self.tile_rect(index)) {
+    /// Brings a window forward; a minimized one is drawn growing out of the tile it went into.
+    pub fn restore_from_dock(&mut self, window: &Window) {
+        let minimized = self.minimized.iter().any(|(minimized, _)| minimized == window);
+        if let Some(rect) = self
+            .minimized_tile(window)
+            .filter(|_| minimized)
+            .and_then(|index| self.tile_rect(index))
+        {
             let into = fit_window(window, tile_picture(rect));
             self.dock.restoring.retain(|(restoring, ..)| restoring != window);
             self.dock.restoring.push((window.clone(), into, Instant::now()));
@@ -2983,11 +2988,7 @@ impl Nekoland {
         }
         let elsewhere = self.all_windows().find(|window| same(window)).cloned();
         if let Some(window) = elsewhere {
-            if self.minimized.iter().any(|(minimized, _)| *minimized == window) {
-                self.restore_from_dock(&window);
-            } else {
-                self.reveal_window(&window);
-            }
+            self.restore_from_dock(&window);
         }
     }
 }
