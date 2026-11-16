@@ -52,7 +52,7 @@ pub const MIN_ART: i32 = 24;
 pub const MAX_ART: i32 = 96;
 const MARGIN: i32 = 8;
 /// How far over the Dock what opens from it stands: names, window pictures and menus.
-const POPUP_GAP: i32 = 10;
+const POPUP_GAP: i32 = 8;
 /// How near the output's edges what opens from the Dock comes.
 const EDGE: i32 = 6;
 const LIFT: f64 = 4.0;
@@ -997,18 +997,20 @@ impl Nekoland {
         ))
     }
 
+    /// How far a fully magnified icon stands above the Dock, which everything that opens
+    /// from a tile stands over, so that it opens as high however magnified the tile is.
+    fn full_rise(&self) -> i32 {
+        (f64::from(self.dock_sizes().art) * (self.magnify_scale() - 1.0)).ceil() as i32
+    }
+
     /// The strip across the Dock at a tile, on the output, from its edge out to the Dock's
-    /// far side or, `magnified`, the tile's if it stands out further.
+    /// far side or, `magnified`, as far as a fully magnified icon stands.
     fn dock_anchor(&self, index: usize, magnified: bool) -> Option<Rectangle<i32, Logical>> {
         let frame = self.dock_frame()?;
         let (along, width, out) = if magnified {
             let dock = self.dock_rect()?;
             let tile = self.turned_tile_rect(index)?;
-            (
-                tile.loc.x,
-                tile.size.w,
-                dock.loc.y.min(tile.loc.y - self.dock_sizes().pad),
-            )
+            (tile.loc.x, tile.size.w, dock.loc.y - self.full_rise())
         } else {
             let dock = self.dock_rect_of(self.dock.width)?;
             let (start, width) = *self.dock.spans.get(index)?;
@@ -2554,10 +2556,10 @@ impl Nekoland {
         }
     }
 
-    /// Opens a menu over a tile of the Dock, from the Dock's top edge.
+    /// Opens a menu over a tile of the Dock, as high as its name and windows open.
     fn open_tile_menu(&mut self, index: usize, entries: Vec<Entry>) {
         if let Some(anchor) = self.dock_anchor(index, false) {
-            self.open_dock_menu(entries, anchor, POPUP_GAP);
+            self.open_dock_menu(entries, anchor, self.full_rise() + POPUP_GAP);
         }
     }
 
