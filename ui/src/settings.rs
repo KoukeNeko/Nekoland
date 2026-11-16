@@ -479,13 +479,13 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         "放大程度",
         config.number("dock_magnify_scale", 1.6),
         (1.2, 2.0, 0.1),
+        |scale| format!("{scale:.1}×"),
         |scale| set(&format!("dock_magnify_scale = {scale:.2}")),
     );
     magnify
         .bind_property("active", &scale, "visible")
         .sync_create()
         .build();
-        |scale| format!("{scale:.1}×"),
     dock.add(&scale);
     page.add(&dock);
 
@@ -1003,6 +1003,8 @@ fn glass_group(
     glass.add(&scale_row(
         "不透明度",
         config.number(&format!("{key}_opacity"), opacity),
+        (0.0, 1.0, 0.05),
+        percent,
         move |opacity| {
             set(&format!("{key}_opacity = {opacity:.2}"));
             opacity_changed(opacity);
@@ -1021,8 +1023,6 @@ fn glass_group(
 /// Nekoland's design language for GTK 4 and libadwaita applications, as libadwaita's
 /// variables; see the file for what it reaches.
 const GTK_LOOK: &str = include_str!("../../shell/gtk/nekoland.css");
-        (0.0, 1.0, 0.05),
-        percent,
 /// Where Nekoland's look goes, in a folder of its own beside GTK's user stylesheet.
 const GTK_LOOK_FILE: &str = "nekoland/look.css";
 /// What GTK's own user stylesheet imports it with, the rest of that file left as it is.
@@ -1232,22 +1232,22 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
         "重複延遲",
         config.number("repeat_delay", 200.0),
         (150.0, 1000.0, 50.0),
+        |delay| format!("{delay:.0} 毫秒"),
         |delay| set(&format!("repeat_delay = {}", delay.round() as i32)),
     ));
     repeat.add(&scale_row(
         "重複速度",
         config.number("repeat_rate", 25.0),
         (10.0, 60.0, 5.0),
+        |rate| format!("{rate:.0} 次/秒"),
         |rate| set(&format!("repeat_rate = {}", rate.round() as i32)),
     ));
-        |delay| format!("{delay:.0} 毫秒"),
     page.add(&repeat);
     let typing = group("");
     typing.add(&gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink"));
     page.add(&typing);
     page
 }
-        |rate| format!("{rate:.0} 次/秒"),
 
 fn mouse_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
@@ -1256,6 +1256,8 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
         "指標速度",
         config.number("pointer_speed", 0.0),
         (-1.0, 1.0, 0.1),
+        // Adding 0 turns the -0 a step just under 0 rounds to into 0.
+        |speed| format!("{:.1}", (speed * 10.0).round() / 10.0 + 0.0),
         |speed| set(&format!("pointer_speed = {speed:.2}")),
     ));
     pointer.add(&switch_row(config, "滑鼠加速", "pointer_acceleration"));
@@ -1264,8 +1266,6 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
         .model(&gtk::StringList::new(&["左", "右"]))
         .selected(u32::from(config.flag("left_handed")))
         .build();
-        // Adding 0 turns the -0 a step just under 0 rounds to into 0.
-        |speed| format!("{:.1}", (speed * 10.0).round() / 10.0 + 0.0),
     primary.connect_selected_notify(|row| set(&format!("left_handed = {}", row.selected() == 1)));
     pointer.add(&primary);
     pointer.add(&switch_row(config, "自然捲動", "natural_scroll"));
@@ -2249,6 +2249,7 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
         "色溫",
         config.number("night_shift_warmth", 0.7),
         (0.0, 1.0, 0.05),
+        percent,
         |warmth| set(&format!("night_shift_warmth = {warmth:.2}")),
     ));
     page.add(&night);
@@ -2257,7 +2258,6 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
 
 const NIGHT_SHIFT: [&str; 3] = ["off", "on", "scheduled"];
 
-        percent,
 /// A row choosing an hour of the day for a setting kept as `HH:MM`; a time of the file's own
 /// is kept among the choices.
 fn time_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
