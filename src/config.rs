@@ -84,6 +84,8 @@ pub struct Config {
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
     pub pointer_speed: f64,
+    /// How many points across the cursor is drawn.
+    pub cursor_size: i32,
     /// Whether the pointer goes further the faster it is moved, as libinput's adaptive
     /// profile does, instead of as far however fast.
     pub pointer_acceleration: bool,
@@ -384,6 +386,7 @@ impl Default for Config {
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
+            cursor_size: 24,
             pointer_acceleration: true,
             left_handed: false,
             disable_while_typing: true,

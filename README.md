@@ -49,6 +49,7 @@ wallpaper and an input method. Every key is optional:
 | `dock_autohide` | Whether the Dock slides off its edge until the pointer reaches that edge, leaving windows the room; off unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+| `cursor_size` | How many points across Nekoland draws the cursor: 24 unless set |
 | `pointer_acceleration`, `left_handed`, `disable_while_typing` | Whether the pointer goes further the faster it moves, the buttons are swapped for the left hand, and a touchpad ignores touches while typing: on, off and on unless set |
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
@@ -97,8 +98,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   the display's resolution, refresh rate, scale and Night Shift, the fonts, the keyboard,
   the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
-  permission store, and what starts at login, show what the computer is and how worn its
-  batteries are, and show GTK's own widgets as the system style draws them.
+  permission store, the cursor size, high contrast and reduced motion, the applications
+  that open links and each kind of file, through GIO's defaults, and the terminal, and
+  what starts at login, show what the computer is and how worn its batteries are, and
+  show GTK's own widgets as the system style draws them.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
   others. The sound page picks the output and input, and the sample rate and

@@ -262,7 +262,7 @@ fn build(app: &adw::Application) {
         look,
         move |styles| look.load_from_string(&look_for(styles.is_dark()))
     ));
-    let pages: [(&str, gtk::Widget); 12] = [
+    let pages: [(&str, gtk::Widget); 14] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
         ("外觀", appearance_page(&config, &look).upcast()),
         ("顯示", display_page(&config).upcast()),
@@ -272,6 +272,8 @@ fn build(app: &adw::Application) {
         ("聲音", sound_page().upcast()),
         ("電源", power_page(&config).upcast()),
         ("隱私", privacy_page().upcast()),
+        ("協助工具", accessibility_page(&config).upcast()),
+        ("預設應用程式", default_apps_page(&config).upcast()),
         ("啟動項目", startup_page(&autostart).upcast()),
         ("關於", about_page().upcast()),
         ("設計語言", design_page().upcast()),
@@ -1785,6 +1787,115 @@ fn parse_audio_nodes(dump: &str) -> Vec<AudioDevice> {
 }
 
 /// What starts at login, each to be taken off, and a field to add another.
+/// GNOME's cursor sizes, which GTK draws its own cursors at too.
+const CURSOR_SIZES: [i64; 5] = [24, 32, 48, 64, 96];
+const A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
+
+fn accessibility_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let seeing = group("");
+    let current = config.number("cursor_size", 24.0) as i64;
+    let size = adw::ComboRow::builder()
+        .title("游標大小")
+        .model(&gtk::StringList::new(&["預設", "中", "大", "更大", "最大"]))
+        .selected(CURSOR_SIZES.iter().position(|size| *size == current).unwrap_or(0) as u32)
+        .build();
+    size.connect_selected_notify(|row| {
+        if let Some(size) = CURSOR_SIZES.get(row.selected() as usize) {
+            set(&format!("cursor_size = {size}"));
+            set_interface("cursor-size", &size.to_string());
+        }
+    });
+    seeing.add(&size);
+    let contrast = adw::SwitchRow::builder()
+        .title("高對比")
+        .active(
+            output("gsettings", &["get", A11Y_INTERFACE, "high-contrast"])
+                .is_some_and(|value| value.trim() == "true"),
+        )
+        .build();
+    contrast.connect_active_notify(|row| {
+        run("gsettings", &["set", A11Y_INTERFACE, "high-contrast", &row.is_active().to_string()]);
+    });
+    seeing.add(&contrast);
+    let motion = adw::SwitchRow::builder()
+        .title("減少動態效果")
+        .active(interface_setting("enable-animations") == "false")
+        .build();
+    motion.connect_active_notify(|row| set_interface("enable-animations", &(!row.is_active()).to_string()));
+    seeing.add(&motion);
+    page.add(&seeing);
+    page
+}
+
+/// What opens each kind of file or link, by the types it is the default for; the first
+/// lists the choices.
+const DEFAULT_APPS: [(&str, &[&str]); 7] = [
+    ("網頁瀏覽器", &["x-scheme-handler/http", "x-scheme-handler/https", "text/html"]),
+    ("郵件", &["x-scheme-handler/mailto"]),
+    ("檔案", &["inode/directory"]),
+    ("文字", &["text/plain"]),
+    ("圖片", &["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    ("音樂", &["audio/mpeg", "audio/flac", "audio/ogg", "audio/x-wav"]),
+    ("影片", &["video/mp4", "video/webm", "video/x-matroska"]),
+];
+
+fn default_apps_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let apps = group("");
+    for (title, types) in DEFAULT_APPS {
+        let choices = gio::AppInfo::all_for_type(types[0]);
+        if choices.is_empty() {
+            continue;
+        }
+        let current = gio::AppInfo::default_for_type(types[0], false).and_then(|app| app.id());
+        let row = app_row(title, &choices, |app| app.id().is_some_and(|id| Some(id) == current));
+        row.connect_selected_notify(move |row| {
+            let Some(app) = choices.get(row.selected() as usize) else {
+                return;
+            };
+            for kind in types {
+                if let Err(err) = app.set_as_default_for_type(kind) {
+                    eprintln!("{kind}: {err}");
+                }
+            }
+        });
+        apps.add(&row);
+    }
+    // The terminal is Nekoland's own setting, a command, for its shortcut.
+    let terminals: Vec<gio::AppInfo> = gio::AppInfo::all()
+        .into_iter()
+        .filter(|app| {
+            app.downcast_ref::<gio::DesktopAppInfo>()
+                .and_then(|app| app.categories())
+                .is_some_and(|categories| categories.split(';').any(|kind| kind == "TerminalEmulator"))
+        })
+        .collect();
+    if !terminals.is_empty() {
+        let command = config.word("terminal").to_string();
+        let row = app_row("終端機", &terminals, |app| app.executable().as_os_str() == command.as_str());
+        row.connect_selected_notify(move |row| {
+            if let Some(app) = terminals.get(row.selected() as usize) {
+                set(&format!("terminal = {:?}", app.executable().to_string_lossy()));
+            }
+        });
+        apps.add(&row);
+    }
+    page.add(&apps);
+    page
+}
+
+/// A row choosing one of `apps`, by name, with the first that `is_current` selected.
+fn app_row(title: &str, apps: &[gio::AppInfo], is_current: impl Fn(&gio::AppInfo) -> bool) -> adw::ComboRow {
+    let names: Vec<String> = apps.iter().map(|app| app.display_name().to_string()).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(&names))
+        .selected(apps.iter().position(is_current).unwrap_or(0) as u32)
+        .build()
+}
+
 fn startup_page(autostart: &Rc<RefCell<Vec<String>>>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let commands = group("");

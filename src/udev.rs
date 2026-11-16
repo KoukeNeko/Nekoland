@@ -559,7 +559,7 @@ fn cursor_elements(
         CursorImageStatus::Named(icon) => *icon,
     };
 
-    let Some(image) = cursors.get(icon, scale) else {
+    let Some(image) = cursors.get(icon, scale, state.config.cursor_size) else {
         return Vec::new();
     };
     let location = pointer.to_f64() - image.hotspot.to_physical(scale);
