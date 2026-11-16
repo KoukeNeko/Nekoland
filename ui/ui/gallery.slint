@@ -175,7 +175,7 @@ component Space {
 component MockWindow inherits Rectangle {
     in property <string> title;
     in property <bool> active: true;
-    border-radius: Theme.radius-l;
+    border-radius: Theme.radius-xl;
     background: Theme.paper;
     clip: true;
     border-width: 1px;
@@ -290,8 +290,8 @@ export component DesignLanguage {
                         alignment: start;
                         Corner { radius: 6px; use: "6 · 小按鈕、提示"; }
                         Corner { radius: 8px; use: "8 · 按鈕、輸入框"; }
-                        Corner { radius: 12px; use: "12 · 卡片、選單、視窗"; }
-                        Corner { radius: 14px; use: "14 · 對話框"; }
+                        Corner { radius: 12px; use: "12 · 卡片、選單"; }
+                        Corner { radius: 14px; use: "14 · 視窗、對話框"; }
                         Corner { radius: 28px; use: "全圓 · 開關、標籤"; }
                     }
                 }

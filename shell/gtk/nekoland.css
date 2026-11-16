@@ -13,7 +13,10 @@
   --nekoland-paper: #f4f3f0;
   --nekoland-sheet: #fbfaf8;
   --nekoland-ink: #17171a;
+  --nekoland-ink-2: #5d5c61;
+  --nekoland-ink-3: #6f6d72;
   --nekoland-line: #e2e0db;
+  --nekoland-fill: #eae8e3;
   --nekoland-on-ink: #fbfaf8;
   --nekoland-danger: #c4372f;
   --nekoland-on-danger: #ffffff;
@@ -49,21 +52,325 @@
   --accent-bg-color: var(--nekoland-ink);
   --accent-fg-color: var(--nekoland-on-ink);
   --accent-color: var(--nekoland-ink);
+  --active-toggle-bg-color: var(--nekoland-ink);
+  --active-toggle-fg-color: var(--nekoland-on-ink);
 
   --destructive-bg-color: var(--nekoland-danger);
   --destructive-fg-color: var(--nekoland-on-danger);
   --destructive-color: var(--nekoland-danger);
   --error-color: var(--nekoland-danger);
 
-  --window-radius: 12px;
+  --window-radius: 14px;
 }
+
+/* The controls as the design language draws them. GTK puts this file over the theme
+ * whatever a rule's selector, so each rule names only what it means to change. */
+
+/* Buttons with words: 8px corners, medium weight. */
+button.text-button:not(.pill):not(.circular),
+button.image-text-button:not(.pill):not(.circular) {
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+/* The one red: what deletes is solid, not tinted. */
+button.destructive-action {
+  background-color: var(--nekoland-danger);
+  color: var(--nekoland-on-danger);
+}
+
+/* Fields are filled, and take an ink line when typed into. */
+entry,
+dropdown > button {
+  min-height: 36px;
+  border-radius: 8px;
+  background-color: var(--nekoland-fill);
+  box-shadow: none;
+  font-weight: 400;
+}
+entry:focus-within {
+  background-color: var(--nekoland-sheet);
+  outline: 1.5px solid var(--nekoland-ink);
+  outline-offset: -1.5px;
+}
+entry.error {
+  background-color: var(--nekoland-sheet);
+  outline: 1.5px solid var(--nekoland-danger);
+  outline-offset: -1.5px;
+}
+
+/* A switch: a line-coloured track that turns ink, its knob the colour drawn on ink then,
+ * not libadwaita's white, which is lost on light ink in the dark. */
+switch {
+  padding: 3px;
+  background-color: var(--nekoland-line);
+}
+switch > slider {
+  min-width: 18px;
+  min-height: 18px;
+  background-color: var(--nekoland-sheet);
+}
+switch:checked {
+  background-color: var(--nekoland-ink);
+}
+switch:checked > slider,
+switch:checked:hover > slider,
+switch:checked:active > slider {
+  background: var(--nekoland-on-ink);
+}
+
+checkbutton > check {
+  border-radius: 5px;
+}
+checkbutton > check:not(:checked):not(:indeterminate),
+checkbutton > radio:not(:checked) {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--nekoland-ink-3);
+}
+
+/* One of a few: the chosen one solid ink. */
+toggle-group {
+  ---group-padding: 2px;
+  border-radius: 8px;
+  background: var(--nekoland-fill);
+  box-shadow: none;
+}
+toggle-group > toggle {
+  min-height: 28px;
+  border-radius: 6px;
+  color: var(--nekoland-ink-2);
+  font-weight: 400;
+}
+toggle-group > toggle:checked {
+  color: var(--nekoland-on-ink);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+/* A slider: a thin line, ink up to a knob ringed in ink. */
+scale > trough,
+scale > trough > highlight {
+  min-width: 4px;
+  min-height: 4px;
+}
+scale > trough {
+  background-color: var(--nekoland-line);
+}
+scale > trough > slider {
+  min-width: 18px;
+  min-height: 18px;
+  margin: -7px;
+  background-color: var(--nekoland-sheet);
+  box-shadow: 0 0 0 1.5px var(--nekoland-ink);
+}
+
+progressbar > trough,
+progressbar > trough > progress {
+  min-height: 4px;
+}
+progressbar > trough {
+  background-color: var(--nekoland-line);
+  box-shadow: none;
+}
+
+/* Where one is in a sidebar is solid ink too. */
+.navigation-sidebar > row {
+  min-height: 32px;
+  border-radius: 8px;
+}
+.navigation-sidebar row:selected {
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+/* One of two states that is on is solid ink, as what is chosen is. */
+button.toggle:checked {
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+}
+
+/* Number fields are fields. */
+spinbutton {
+  min-height: 36px;
+  border-radius: 8px;
+  background-color: var(--nekoland-fill);
+  box-shadow: none;
+}
+
+/* One in a row of a list is the row's, with no field of its own. */
+row.spin spinbutton {
+  min-height: 0;
+  background: none;
+}
+
+/* Menus: the entry pointed at is solid ink, on 6px corners. */
+popover.menu modelbutton {
+  border-radius: 6px;
+}
+popover.menu modelbutton:hover,
+popover.menu modelbutton:selected {
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+}
+popover > contents {
+  border-radius: 12px;
+}
+
+/* Dialogs take the corners windows do. */
+floating-sheet > sheet,
+dialog-host > dialog.alert sheet {
+  border-radius: 14px;
+}
+
+/* A calendar's chosen day is solid ink on a button's corners; today is marked by a line. */
+calendar {
+  border-radius: 12px;
+  background-color: var(--nekoland-sheet);
+}
+calendar > grid > label.day-number {
+  border-radius: 8px;
+}
+calendar > grid > label.day-number:selected {
+  border-radius: 8px;
+  font-weight: 500;
+}
+calendar > grid > label.today {
+  box-shadow: inset 0 -2px var(--nekoland-ink);
+}
+
+/* What is chosen in a list or a grid, and the tab that is open. */
+listview > row:selected,
+columnview > listview > row:selected,
+gridview > child:selected,
+flowbox > flowboxchild:selected {
+  background-color: color-mix(in srgb, var(--nekoland-ink) 14%, transparent);
+}
+tabbar tab:selected {
+  background-color: var(--nekoland-fill);
+}
+
+/* What is said in passing is on ink. */
+toast {
+  border-radius: 12px;
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+  box-shadow: 0 12px 30px -10px rgb(0 0 0 / 40%);
+}
+toast button {
+  background-color: color-mix(in srgb, var(--nekoland-on-ink) 14%, transparent);
+  color: var(--nekoland-on-ink);
+}
+tooltip.background {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Sidebars on glass: Nekoland draws the wallpaper blurred behind every window, so the
+ * window's own background goes, everything in it but the split views gets it back, and
+ * the sidebar is left see-through. libadwaita puts a window's content a few frames deep,
+ * which the rules below follow, as Ubuntu-Tools' sidebar blur does. */
+window.background:not(.desktopwindow) { background: none; }
+window.background:not(.desktopwindow) > *:not(dialog-host):not(.titlebar) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > toastoverlay > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > widget > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > taboverview > widget > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > toastoverlay > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > widget > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget > taboverview > widget > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > toastoverlay > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > widget > taboverview > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > toastoverlay > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > toastoverlay > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > widget > overlay-split-view { background: none; }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview > widget > *:not(toast) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview > widget > overlay-split-view { background: none; }
+.content-pane, navigation-split-view > navigation-view > navigation-view-page, overlay-split-view > outline + widget { background-color: var(--window-bg-color); }
+window.view .content-pane, window.view overlay-split-view > outline + widget { background-color: var(--view-bg-color); }
+.sidebar-pane { background-color: color-mix(in srgb, var(--sidebar-bg-color) 72%, transparent); }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --nekoland-paper: #1b1b1e;
     --nekoland-sheet: #222226;
     --nekoland-ink: #f1efea;
+    --nekoland-ink-2: #a9a7ab;
+    --nekoland-ink-3: #939197;
     --nekoland-line: #323237;
+    --nekoland-fill: #2c2c31;
     --nekoland-on-ink: #17171a;
     --nekoland-danger: #ff6b5f;
     --nekoland-on-danger: #17171a;
