@@ -297,6 +297,18 @@ fn build(app: &adw::Application) {
         .collect();
     let pages: Vec<(&str, &str, gtk::Widget)> = groups.into_iter().flatten().collect();
 
+    // A page's name has its glyphs half a pixel under the middle of its line, where its
+    // icon, placed on whole pixels, cannot follow but by a transform.
+    let sidebar_css = gtk::CssProvider::new();
+    sidebar_css.load_from_string(".nk-sidebar-icon { -gtk-icon-transform: translateY(0.5px); }");
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &sidebar_css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
@@ -317,13 +329,13 @@ fn build(app: &adw::Application) {
     });
     for (name, icon, page) in &pages {
         stack.add_named(page, Some(name));
-        sidebar.append(&line(
-            8,
-            &[
-                gtk::Image::builder().icon_name(*icon).pixel_size(16).build().upcast_ref(),
-                gtk::Label::builder().label(*name).xalign(0.0).build().upcast_ref(),
-            ],
-        ));
+        let icon = gtk::Image::builder()
+            .icon_name(*icon)
+            .pixel_size(16)
+            .css_classes(["nk-sidebar-icon"])
+            .build();
+        let label = gtk::Label::builder().label(*name).xalign(0.0).build();
+        sidebar.append(&line(8, &[icon.upcast_ref(), label.upcast_ref()]));
     }
 
     let content = adw::NavigationPage::builder().title(pages[0].0).build();
