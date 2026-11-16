@@ -199,6 +199,8 @@ thread_local! {
     static RESTART: RefCell<Option<&'static str>> = const { RefCell::new(None) };
     /// Nekoland's `glass_opacity`, which the look gives GTK's menus and sidebars too.
     static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
+    /// Nekoland's `font`, which the look gives GTK's text too.
+    static UI_FONT: RefCell<String> = RefCell::new("Ubuntu Sans".into());
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -229,6 +231,9 @@ fn build(app: &adw::Application) {
     }
     let config = Config::load();
     GLASS_OPACITY.set(config.number("glass_opacity", 0.8));
+    if !config.word("font").is_empty() {
+        UI_FONT.set(config.word("font").to_string());
+    }
     // A look turned on before keeps up with this version of it.
     if gtk_look_on() {
         if let Err(err) = set_gtk_look(true) {
@@ -237,9 +242,20 @@ fn build(app: &adw::Application) {
         set_window_buttons(true);
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
-    let pages: [(&str, gtk::Widget); 10] = [
+    // GTK reads its user stylesheet as an application starts: other applications take the
+    // look's changes when opened again, and Settings shows them at once with this.
+    let look = gtk::CssProvider::new();
+    let styles = adw::StyleManager::default();
+    look.load_from_string(&look_for(styles.is_dark()));
+    styles.connect_dark_notify(glib::clone!(
+        #[weak]
+        look,
+        move |styles| look.load_from_string(&look_for(styles.is_dark()))
+    ));
+    let pages: [(&str, gtk::Widget); 11] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
-        ("外觀", appearance_page(&config).upcast()),
+        ("外觀", appearance_page(&config, &look).upcast()),
+        ("字型", fonts_page(&look).upcast()),
         ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
         ("聲音", sound_page().upcast()),
@@ -563,7 +579,141 @@ fn show_thumbnail(picture: &gtk::Picture, path: PathBuf) {
     });
 }
 
-fn appearance_page(config: &Config) -> adw::PreferencesPage {
+/// GNOME's interface settings, which GTK reads through the settings portal, and Qt and
+/// others where they follow GNOME.
+const INTERFACE: &str = "org.gnome.desktop.interface";
+const TEXT_SCALES: [f64; 6] = [1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+/// GTK's own choice, then the antialiasing it is told to use.
+const ANTIALIASING: [&str; 4] = ["automatic", "grayscale", "rgba", "none"];
+const HINTING: [&str; 4] = ["none", "slight", "medium", "full"];
+
+/// One of GNOME's interface settings, without the quotes gsettings prints a string in.
+fn interface_setting(key: &str) -> String {
+    output("gsettings", &["get", INTERFACE, key])
+        .map(|value| value.trim().trim_matches('\'').to_string())
+        .unwrap_or_default()
+}
+
+fn set_interface(key: &str, value: &str) {
+    run("gsettings", &["set", INTERFACE, key, value]);
+}
+
+/// A row with a button that opens GTK's font chooser, at `level`.
+fn font_row(
+    title: &str,
+    level: gtk::FontLevel,
+    font: &str,
+    changed: impl Fn(&gtk::pango::FontDescription) + 'static,
+) -> adw::ActionRow {
+    let button = gtk::FontDialogButton::builder()
+        .dialog(&gtk::FontDialog::builder().title(title).build())
+        .level(level)
+        .font_desc(&gtk::pango::FontDescription::from_string(font))
+        .valign(gtk::Align::Center)
+        .build();
+    button.connect_font_desc_notify(move |button| {
+        if let Some(font) = button.font_desc() {
+            changed(&font);
+        }
+    });
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    row
+}
+
+/// The typefaces, for Nekoland and the applications, and how applications draw text.
+/// Nekoland's own text keeps its size and the Mac's grey, unhinted edges.
+fn fonts_page(look: &gtk::CssProvider) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let faces = group("字型");
+    let family = UI_FONT.with_borrow(Clone::clone);
+    let look = look.clone();
+    faces.add(&font_row("介面", gtk::FontLevel::Family, &family, move |font| {
+        let Some(family) = font.family() else { return };
+        set(&format!("font = {:?}", family.as_str()));
+        // GNOME's setting keeps its size; GTK takes the family from it without the look.
+        let mut name = gtk::pango::FontDescription::from_string(&interface_setting("font-name"));
+        name.set_family(&family);
+        if name.size() == 0 {
+            name.set_size(11 * gtk::pango::SCALE);
+        }
+        set_interface("font-name", &name.to_string());
+        UI_FONT.set(family.to_string());
+        if gtk_look_on() {
+            if let Err(err) = set_gtk_look(true) {
+                eprintln!("GTK look: {err}");
+            }
+            look.load_from_string(&look_for(adw::StyleManager::default().is_dark()));
+        }
+    }));
+    faces.add(&font_row(
+        "等寬",
+        gtk::FontLevel::Font,
+        &interface_setting("monospace-font-name"),
+        |font| set_interface("monospace-font-name", &font.to_string()),
+    ));
+    page.add(&faces);
+
+    let text = group("文字");
+    let scale: f64 = interface_setting("text-scaling-factor").parse().unwrap_or(1.0);
+    let size = adw::ComboRow::builder()
+        .title("文字大小")
+        .model(&gtk::StringList::new(&["100%", "110%", "125%", "150%", "175%", "200%"]))
+        .selected(TEXT_SCALES.iter().position(|known| (known - scale).abs() < 0.01).unwrap_or(0) as u32)
+        .build();
+    size.connect_selected_notify(|row| {
+        if let Some(scale) = TEXT_SCALES.get(row.selected() as usize) {
+            set_interface("text-scaling-factor", &scale.to_string());
+        }
+    });
+    text.add(&size);
+
+    let automatic = interface_setting("font-rendering") == "automatic";
+    let antialiasing = adw::ComboRow::builder()
+        .title("反鋸齒")
+        .model(&gtk::StringList::new(&["自動", "灰階", "次像素", "無"]))
+        .selected(if automatic {
+            0
+        } else {
+            let current = interface_setting("font-antialiasing");
+            ANTIALIASING.iter().position(|known| *known == current).unwrap_or(0) as u32
+        })
+        .build();
+    let hinting = adw::ComboRow::builder()
+        .title("微調")
+        .model(&gtk::StringList::new(&["無", "輕微", "中等", "完整"]))
+        .selected({
+            let current = interface_setting("font-hinting");
+            HINTING.iter().position(|known| *known == current).unwrap_or(0) as u32
+        })
+        .visible(!automatic)
+        .build();
+    antialiasing.connect_selected_notify(glib::clone!(
+        #[weak]
+        hinting,
+        move |row| {
+            let Some(chosen) = ANTIALIASING.get(row.selected() as usize) else { return };
+            let automatic = *chosen == "automatic";
+            set_interface("font-rendering", if automatic { "automatic" } else { "manual" });
+            if !automatic {
+                set_interface("font-antialiasing", chosen);
+            }
+            hinting.set_visible(!automatic);
+        }
+    ));
+    hinting.connect_selected_notify(|row| {
+        if let Some(chosen) = HINTING.get(row.selected() as usize) {
+            set_interface("font-hinting", chosen);
+        }
+    });
+    text.add(&antialiasing);
+    text.add(&hinting);
+    page.add(&text);
+    page
+}
+
+fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let style = group("");
     let dark = output(
@@ -598,16 +748,7 @@ fn appearance_page(config: &Config) -> adw::PreferencesPage {
         look.set_sensitive(false);
         look.set_subtitle(&format!("需要 GTK 4.{GTK_LOOK_MINOR} 以上"));
     }
-    // GTK reads its user stylesheet as an application starts: other applications take the
-    // change when opened again, and Settings shows it at once with a stylesheet of its own.
-    let provider = gtk::CssProvider::new();
-    let styles = adw::StyleManager::default();
-    provider.load_from_string(&look_for(styles.is_dark()));
-    styles.connect_dark_notify(glib::clone!(
-        #[weak]
-        provider,
-        move |styles| provider.load_from_string(&look_for(styles.is_dark()))
-    ));
+    let provider = provider.clone();
     let read_at_start = gtk_look_on();
     // On already, it is over what GTK read at start, so the glass's opacities show at once.
     if let Some(display) = gdk::Display::default().filter(|_| read_at_start) {
@@ -704,7 +845,16 @@ const GTK_LOOK_MINOR: u32 = 20;
 /// The look as GTK's user stylesheet takes it, with Nekoland's glass opacity.
 fn gtk_look() -> String {
     let opacity = GLASS_OPACITY.get() * 100.0;
-    format!("{GTK_LOOK}\n:root {{ --nekoland-glass-opacity: {opacity:.0}%; }}\n")
+    let font = UI_FONT.with_borrow(|font| css_family(font));
+    format!(
+        "{GTK_LOOK}\n:root {{ --nekoland-glass-opacity: {opacity:.0}%; \
+         --nekoland-font: {font}, \"Noto Sans CJK TC\", sans-serif; }}\n"
+    )
+}
+
+/// A family's name as CSS quotes it; quotes and backslashes in it are left out.
+fn css_family(family: &str) -> String {
+    format!("\"{}\"", family.replace(['"', '\\'], ""))
 }
 
 /// The look for a stylesheet Settings loads itself, which GTK reads light whatever the
@@ -2879,6 +3029,13 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_family_is_quoted_for_css_without_what_would_end_it() {
+        assert_eq!(css_family("Ubuntu Sans"), "\"Ubuntu Sans\"");
+        assert_eq!(css_family("A\"; } * { color: red"), "\"A; } * { color: red\"");
+        assert!(gtk_look().contains("--nekoland-font: \"Ubuntu Sans\", \"Noto Sans CJK TC\", sans-serif;"));
+    }
 
     #[test]
     fn a_permission_is_allowed_and_set_as_its_table_writes_it() {

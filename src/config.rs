@@ -24,6 +24,8 @@ pub struct Config {
     pub brightness_down: String,
     /// The locker the screen is locked with.
     pub lock: String,
+    /// The family of Nekoland's own text; Noto Sans CJK TC sets what it lacks.
+    pub font: String,
     /// Seconds without input after which the screen locks; 0 for never.
     pub lock_after: u64,
     /// Seconds without input after which the displays go dark, and after which the
@@ -273,6 +275,7 @@ impl Default for Config {
                 " --text-wrong-color f4f3f0",
             )
             .into(),
+            font: "Ubuntu Sans".into(),
             lock_after: 0,
             screen_off_after: 0,
             sleep_after: 0,

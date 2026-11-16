@@ -39,7 +39,6 @@ const SEARCH_WIDTH: i32 = 360;
 const SEARCH_HEIGHT: i32 = 38;
 /// Room under the grid for the dots that tell the pages.
 const DOTS: i32 = 40;
-const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
 /// How long the view and a folder take to fade in, and a page to slide to the next.
 const FADE_TIME: f64 = 0.2;
 const PAGE_TIME: f64 = 0.25;
@@ -653,7 +652,7 @@ fn fade_since(at: Instant) -> f32 {
 
 fn text_layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&text::font(&format!("{FONT} {points}"))));
+    layout.set_font_description(Some(&text::font(&points.to_string())));
     layout.set_text(text);
     layout
 }
@@ -1713,7 +1712,7 @@ fn draw_folder(
             Tier::Menu,
         );
         let title = text_layout(&cr, name, 14.0);
-        title.set_font_description(Some(&text::font(&format!("{FONT} Bold 14"))));
+        title.set_font_description(Some(&text::font("Bold 14")));
         let (width, height) = title.pixel_size();
         let (x, y) = (
             f64::from(size.w - width) / 2.0,

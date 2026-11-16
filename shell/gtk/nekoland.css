@@ -65,13 +65,15 @@
   /* How solid the tint over glass is, for menus and sidebars, as Nekoland's glass_opacity
    * says; Settings writes the one set after this file. */
   --nekoland-glass-opacity: 80%;
+  /* Nekoland's `font`, before CJK; Settings writes the one chosen after this file. */
+  --nekoland-font: "Ubuntu Sans", "Noto Sans CJK TC", sans-serif;
 }
 
 /* Text in the design language's typeface, at medium, as heavy as the Mac sets it;
  * Nekoland thickens CJK outlines itself. What names its own weight keeps it. */
 window,
 tooltip {
-  font-family: "Ubuntu Sans", "Noto Sans CJK TC", sans-serif;
+  font-family: var(--nekoland-font);
   font-weight: 500;
 }
 

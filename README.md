@@ -47,6 +47,7 @@ wallpaper and an input method. Every key is optional:
 | `dock_autohide` | Whether the Dock slides off the bottom until the pointer reaches the bottom edge, leaving windows the whole height; off unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+| `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
 | `repeat_delay`, `repeat_rate` | Milliseconds a held key waits before it repeats, and how many times a second it then repeats; 200 and 25 unless set |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
@@ -88,11 +89,13 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications,
-  as Flatpak's, may use the camera, the microphone and the location, through the portals'
-  permission store, and what starts at login, show what the computer is and how worn its
-  batteries are, and show GTK's own widgets as the system style draws them. Each change
-  takes effect at once. The sound page picks the output and input, and the sample rate and
+  the fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed
+  applications, as Flatpak's, may use the camera, the microphone and the location, through
+  the portals' permission store, and what starts at login, show what the computer is and
+  how worn its batteries are, and show GTK's own widgets as the system style draws them.
+  Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
+  and the monospace font, text size and antialiasing that GNOME's settings give GTK and
+  others. The sound page picks the output and input, and the sample rate and
   bit depth each sound card is opened with, apart from the others: a WirePlumber rule of
   its own in `~/.config/wireplumber/wireplumber.conf.d/`, which restarts WirePlumber and so
   stops the sound for a moment. It also makes a multi-output device that plays on the
@@ -206,9 +209,9 @@ load GTK while running, as Python and GJS programs do; others are left as they a
 
 Text is drawn as the Mac draws it on a dense display: unhinted, with grey edges, and
 heavier than regular, where the Mac thickens every outline. Nekoland's own text, and
-GTK's in Nekoland's look, is Ubuntu Sans Medium where it names no weight; Noto Sans CJK, a CFF font, is
-thickened by 0.4px by FreeType, through `FREETYPE_PROPERTIES` in what Nekoland starts,
-unless that is set already.
+GTK's in Nekoland's look, is Ubuntu Sans, or the family `font` names, at Medium where it
+names no weight; Noto Sans CJK, a CFF font, is thickened by 0.4px by FreeType, through
+`FREETYPE_PROPERTIES` in what Nekoland starts, unless that is set already.
 
 ## Screen lock and capture
 

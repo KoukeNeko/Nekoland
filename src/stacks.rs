@@ -18,7 +18,6 @@ use crate::{
     text::{self, Picture},
 };
 
-const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
 /// Pictures bigger than this are not opened to draw their icon; their kind's icon is used.
 const MAX_PICTURE_BYTES: u64 = 40 << 20;
 
@@ -193,7 +192,7 @@ pub fn paint_fitted(cr: &Context, icon: &ImageSurface, size: f64, alpha: f64) {
 
 fn layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&text::font(&format!("{FONT} {points}"))));
+    layout.set_font_description(Some(&text::font(&points.to_string())));
     layout.set_text(text);
     layout
 }
@@ -425,7 +424,7 @@ impl Grid {
             );
             let (r, g, b) = ink(dark);
             let heading = layout(&cr, title, 11.0);
-            heading.set_font_description(Some(&text::font(&format!("{FONT} Bold 11"))));
+            heading.set_font_description(Some(&text::font("Bold 11")));
             heading.set_width((self.size.w - GRID_PADDING * 2 - 140) * pango::SCALE);
             heading.set_ellipsize(pango::EllipsizeMode::End);
             cr.set_source_rgb(r, g, b);

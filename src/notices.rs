@@ -76,9 +76,9 @@ fn layout(cr: &Context, text: &str, font: &str, width: i32, lines: i32) -> pango
 }
 
 fn draw_banner(notification: &Notification, icon: Option<ImageSurface>, dark: bool) -> Option<Picture> {
-    const TITLE: &str = "Ubuntu Sans, Noto Sans CJK TC Bold 10";
-    const BODY: &str = "Ubuntu Sans, Noto Sans CJK TC 9.5";
-    const TIME: &str = "Ubuntu Sans, Noto Sans CJK TC 8.5";
+    const TITLE: &str = "Bold 10";
+    const BODY: &str = "9.5";
+    const TIME: &str = "8.5";
     let (ink, ink_2, tint) = colors(dark);
     let text_x = PADDING + ICON + 12;
     let text_width = WIDTH - text_x - PADDING;

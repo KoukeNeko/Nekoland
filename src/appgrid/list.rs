@@ -549,7 +549,7 @@ fn draw_list(
                     } else {
                         "Bold 11"
                     };
-                    heading.set_font_description(Some(&crate::text::font(&format!("{FONT} {bold}"))));
+                    heading.set_font_description(Some(&crate::text::font(bold)));
                     let (width, height_text) = heading.pixel_size();
                     let baseline = top + f64::from(HEADING) - f64::from(height_text) - 10.0;
                     cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);

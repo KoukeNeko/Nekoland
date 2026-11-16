@@ -144,6 +144,7 @@ impl Nekoland {
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
 
         let config = Config::load();
+        crate::text::set_family(&config.font);
         config.set_glass_look();
         // A layout XKB does not know is no reason to have no keyboard.
         let (delay, rate) = (config.repeat_delay, config.repeat_rate);
@@ -379,7 +380,15 @@ impl Nekoland {
     pub fn reload_config(&mut self) {
         let old_wallpaper = (self.config.wallpaper.clone(), self.config.wallpaper_mode);
         let old_keyboard = self.config.keyboard();
+        let old_font = std::mem::take(&mut self.config.font);
         self.config = Config::load();
+        if self.config.font != old_font {
+            crate::text::set_family(&self.config.font);
+            // shortcut: the bar and the Dock are drawn again; other text keeps the old font
+            // until it is next drawn.
+            self.dock.drawn = None;
+            self.menu_bar.drawn = None;
+        }
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.change_repeat_info(self.config.repeat_rate, self.config.repeat_delay);
         let names = self.config.keyboard();

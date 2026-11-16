@@ -3,7 +3,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicI32, Ordering},
+    sync::{
+        atomic::{AtomicI32, Ordering},
+        RwLock,
+    },
 };
 
 use cairo::{Context, Format, ImageSurface};
@@ -12,7 +15,10 @@ use smithay::{
     utils::{Logical, Size, Transform},
 };
 
-const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC, Sans";
+/// The family Nekoland's own text is set in, the configuration's `font`, before the
+/// families that fill in what it lacks: CJK first.
+static FAMILY: RwLock<String> = RwLock::new(String::new());
+const FALLBACK: &str = "Noto Sans CJK TC, Sans";
 const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
 // Largest first: icons are drawn smaller than this more often than larger.
 const ICON_SIZES: [&str; 6] = ["256x256", "128x128", "96x96", "64x64", "48x48", "32x32"];
@@ -60,9 +66,18 @@ pub fn new_layout(cr: &Context) -> pango::Layout {
 /// are thickened by FreeType instead; see `main`.
 const TEXT_WEIGHT: pango::Weight = pango::Weight::Medium;
 
-/// The font `description` names, in pango's words, at `TEXT_WEIGHT` if it names no weight.
+pub fn set_family(family: &str) {
+    *FAMILY.write().unwrap() = format!("{family}, {FALLBACK}");
+}
+
+/// The font `description` names, in pango's words, in Nekoland's family if it names no
+/// family, and at `TEXT_WEIGHT` if it names no weight.
 pub fn font(description: &str) -> pango::FontDescription {
     let mut font = pango::FontDescription::from_string(description);
+    if font.family().is_none() {
+        let family = FAMILY.read().unwrap();
+        font.set_family(if family.is_empty() { FALLBACK } else { &family });
+    }
     if font.weight() == pango::Weight::Normal {
         font.set_weight(TEXT_WEIGHT);
     }
@@ -149,7 +164,7 @@ pub fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, 
 fn layout(cr: &Context, text: &str, points: i32, bold: bool, max_width: i32) -> pango::Layout {
     let layout = new_layout(cr);
     let weight = if bold { " Semi-Bold" } else { "" };
-    let font = font(&format!("{FONT}{weight} {points}"));
+    let font = font(&format!("{weight} {points}"));
     layout.set_font_description(Some(&font));
     layout.set_text(text);
     layout.set_width(max_width * pango::SCALE);
@@ -568,8 +583,16 @@ mod tests {
             let run = layout.line_readonly(0).unwrap().runs()[0].clone();
             run.item().analysis().font().describe().weight()
         };
-        assert_eq!(weight_of(&format!("{FONT} 11")), TEXT_WEIGHT);
-        assert_eq!(weight_of(&format!("{FONT} Bold 11")), pango::Weight::Bold);
+        assert_eq!(weight_of("Ubuntu Sans 11"), TEXT_WEIGHT);
+        assert_eq!(weight_of("Ubuntu Sans Bold 11"), pango::Weight::Bold);
+    }
+
+    #[test]
+    fn text_is_in_nekolands_family_unless_it_names_one() {
+        set_family("DejaVu Serif");
+        assert_eq!(font("Bold 11").family().as_deref(), Some("DejaVu Serif, Noto Sans CJK TC, Sans"));
+        assert_eq!(font("Ubuntu Sans Mono 9").family().as_deref(), Some("Ubuntu Sans Mono"));
+        set_family("Ubuntu Sans");
     }
 
     #[test]

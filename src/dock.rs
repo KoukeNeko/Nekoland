@@ -136,7 +136,6 @@ const PREVIEW_RADIUS: i32 = 12;
 const CLOSE: i32 = 20;
 const LABEL_HEIGHT: i32 = 26;
 const LABEL_RADIUS: i32 = 8;
-const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
 
 #[derive(Clone, PartialEq)]
 enum Tile {
@@ -563,10 +562,7 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&text::font(&format!(
-        "{FONT} Bold {}",
-        (size * 0.36).round()
-    ))));
+    layout.set_font_description(Some(&text::font(&format!("Bold {}", (size * 0.36).round()))));
     layout.set_text(&initial);
     let (width, height) = layout.pixel_size();
     cr.set_source_rgb(r, g, b);
@@ -579,7 +575,7 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
 
 /// A name on a small pane of glass, as shown over a pointed-at icon.
 fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) -> Option<Picture> {
-    let font = text::font(&format!("{FONT} {points}"));
+    let font = text::font(&points.to_string());
     let probe = Context::new(ImageSurface::create(Format::ARgb32, 1, 1).ok()?).ok()?;
     let layout = text::new_layout(&probe);
     layout.set_font_description(Some(&font));
@@ -2864,7 +2860,7 @@ fn draw_preview(
             Tier::Menu,
         );
         let (r, g, b) = ink(dark);
-        let font = text::font(&format!("{FONT} 9.75"));
+        let font = text::font("9.75");
         for (index, (card, title)) in cards.iter().zip(titles).enumerate() {
             let card = Rectangle::<i32, Logical>::new(card.loc - origin, card.size);
             let (x, y) = (f64::from(card.loc.x), f64::from(card.loc.y));

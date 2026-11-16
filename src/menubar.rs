@@ -62,7 +62,6 @@ const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
 const NETWORK_POLL: Duration = Duration::from_secs(3);
 
-const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
 const MONO: &str = "Ubuntu Sans Mono";
 const WEEKDAYS: [&str; 7] = ["日", "一", "二", "三", "四", "五", "六"];
 /// What Help menus are called, by the programs that bring their own.
@@ -419,7 +418,7 @@ pub(crate) fn colors(dark: bool) -> Colors {
 }
 
 pub(crate) fn font(weight: &str, points: f64) -> pango::FontDescription {
-    text::font(&format!("{FONT} {weight} {points}"))
+    text::font(&format!("{weight} {points}"))
 }
 
 fn mono_font() -> pango::FontDescription {

@@ -525,7 +525,7 @@ impl Nekoland {
         let names: Vec<String> = (0..count).map(|index| format!("桌面 {}", index + 1)).collect();
         let tile_height = thumbnail_height(output);
         let expanded_height = expanded_height(output);
-        let font = text::font("Ubuntu Sans, Noto Sans CJK TC Medium 10");
+        let font = text::font("Medium 10");
 
         // The strip, where the menu bar was: names in a row, centered.
         let widths: Vec<i32> = names
