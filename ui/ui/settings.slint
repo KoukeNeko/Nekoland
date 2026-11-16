@@ -307,566 +307,573 @@ export component Settings inherits Window {
     preferred-height: 720px;
     min-width: 760px;
     min-height: 520px;
-    background: Theme.paper;
+    // The paper is rounded as GTK's windows are, square when maximized as theirs are.
+    background: transparent;
     default-font-family: Theme.font;
     default-font-size: Theme.text-body;
 
-    HorizontalLayout {
-        VerticalLayout {
-            width: 216px;
-            padding: 14px;
-            padding-left: 10px;
-            padding-right: 10px;
-            spacing: 2px;
-            NavItem {
-                text: pages[0];
-                current: page == 0;
-                clicked => { page = 0; }
-            }
-            NavItem {
-                text: pages[1];
-                detail: dark ? "深色" : "淺色";
-                current: page == 1;
-                clicked => { page = 1; }
-            }
-            VerticalLayout {
-                padding: 10px;
-                padding-top: 12px;
-                padding-bottom: 4px;
-                Heading { text: "輸入"; }
-            }
-            NavItem {
-                text: pages[2];
-                current: page == 2;
-                clicked => { page = 2; }
-            }
-            VerticalLayout {
-                padding: 10px;
-                padding-top: 12px;
-                padding-bottom: 4px;
-                Heading { text: "系統"; }
-            }
-            NavItem {
-                text: pages[3];
-                detail: !has-sound ? "" : muted ? "靜音" : round(volume) + "%";
-                current: page == 3;
-                clicked => { page = 3; }
-            }
-            NavItem {
-                text: pages[4];
-                detail: autostart.length;
-                current: page == 4;
-                clicked => { page = 4; }
-            }
-            NavItem {
-                text: pages[5];
-                current: page == 5;
-                clicked => { page = 5; }
-            }
-            Rectangle { }
-        }
-        Rectangle {
-            width: 1px;
-            background: Theme.line;
-        }
+    Rectangle {
+        border-radius: root.maximized ? 0 : Theme.radius-l;
+        clip: true;
+        background: Theme.paper;
 
-        VerticalLayout {
-            horizontal-stretch: 1;
-            // The window's own title bar: the page's name, and the window's buttons.
+        HorizontalLayout {
+            VerticalLayout {
+                width: 216px;
+                padding: 14px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 2px;
+                NavItem {
+                    text: pages[0];
+                    current: page == 0;
+                    clicked => { page = 0; }
+                }
+                NavItem {
+                    text: pages[1];
+                    detail: dark ? "深色" : "淺色";
+                    current: page == 1;
+                    clicked => { page = 1; }
+                }
+                VerticalLayout {
+                    padding: 10px;
+                    padding-top: 12px;
+                    padding-bottom: 4px;
+                    Heading { text: "輸入"; }
+                }
+                NavItem {
+                    text: pages[2];
+                    current: page == 2;
+                    clicked => { page = 2; }
+                }
+                VerticalLayout {
+                    padding: 10px;
+                    padding-top: 12px;
+                    padding-bottom: 4px;
+                    Heading { text: "系統"; }
+                }
+                NavItem {
+                    text: pages[3];
+                    detail: !has-sound ? "" : muted ? "靜音" : round(volume) + "%";
+                    current: page == 3;
+                    clicked => { page = 3; }
+                }
+                NavItem {
+                    text: pages[4];
+                    detail: autostart.length;
+                    current: page == 4;
+                    clicked => { page = 4; }
+                }
+                NavItem {
+                    text: pages[5];
+                    current: page == 5;
+                    clicked => { page = 5; }
+                }
+                Rectangle { }
+            }
             Rectangle {
-                height: 44px;
-                TouchArea {
-                    pointer-event(event) => {
-                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                            root.dragged();
-                        }
-                    }
-                    double-clicked => { root.maximize(); }
-                }
-                HorizontalLayout {
-                    padding-left: 28px;
-                    padding-right: 12px;
-                    spacing: 4px;
-                    Text {
-                        text: pages[page];
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        color: Theme.ink;
-                    }
-                    IconButton {
-                        icon: "minimize";
-                        label: "最小化";
-                        size: 28px;
-                        glyph: 12px;
-                        y: 8px;
-                        clicked => { root.minimize(); }
-                    }
-                    IconButton {
-                        icon: "maximize";
-                        label: "最大化";
-                        size: 28px;
-                        glyph: 12px;
-                        y: 8px;
-                        clicked => { root.maximize(); }
-                    }
-                    IconButton {
-                        icon: "close";
-                        label: "關閉";
-                        size: 28px;
-                        glyph: 12px;
-                        y: 8px;
-                        clicked => { root.close-window(); }
-                    }
-                }
+                width: 1px;
+                background: Theme.line;
             }
 
-            flickable := Flickable {
-                content-height: max(self.height, content.preferred-height);
-                content := VerticalLayout {
-                    width: flickable.width;
-                    alignment: start;
-                    padding-bottom: 24px;
-
-                    if page == 0: VerticalLayout {
-                        spacing: 6px;
-                        Rectangle {
-                            height: screen.height + 4px;
-                            screen := Rectangle {
-                                width: min(640px, parent.width - 56px);
-                                height: self.width * 9 / 16;
-                                x: (parent.width - self.width) / 2;
-                                y: 4px;
-                                border-radius: 10px;
-                                drop-shadow-blur: 24px;
-                                drop-shadow-offset-y: 10px;
-                                drop-shadow-color: #00000059;
-
-                                Part {
-                                    width: parent.width;
-                                    height: parent.height;
-                                    name: parts[3];
-                                    inset: true;
-                                    radius: 6px;
-                                    clicked => { root.scroll-to(sections.y + wall-section.y); }
-                                    Rectangle {
-                                        border-radius: 10px;
-                                        clip: true;
-                                        background: @linear-gradient(140deg, #f3b47a 0%, #d4577b 42%, #4b3f8f 78%, #1f2a5c 100%);
-                                        Image {
-                                            width: parent.width;
-                                            height: parent.height;
-                                            source: wallpapers[wallpaper];
-                                            image-fit: wallpaper-mode == 0 ? cover : wallpaper-mode == 1 ? contain : preserve;
-                                        }
-                                    }
-                                }
-                                // Two windows, for the look of a desktop in use.
-                                for window in 2: Rectangle {
-                                    x: parent.width * (window == 0 ? 0.12 : 0.46);
-                                    y: parent.height * (window == 0 ? 0.16 : 0.3);
-                                    width: parent.width * (window == 0 ? 0.46 : 0.38);
-                                    height: parent.height * (window == 0 ? 0.54 : 0.46);
-                                    border-radius: 6px;
-                                    background: window == 0 ? #fbfaf8 : #26262b;
-                                    drop-shadow-blur: 16px;
-                                    drop-shadow-offset-y: 6px;
-                                    drop-shadow-color: #00000080;
-                                    TouchArea { }
-                                }
-                                Part {
-                                    y: 0;
-                                    width: parent.width;
-                                    height: parent.height * 0.05;
-                                    name: parts[2];
-                                    name-below: true;
-                                    clicked => { root.scroll-to(sections.y + bar-section.y); }
-                                    Rectangle {
-                                        border-top-left-radius: 10px;
-                                        border-top-right-radius: 10px;
-                                        background: #14141861;
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            Text {
-                                                text: "設定";
-                                                font-size: 9px;
-                                                font-weight: 700;
-                                                color: #ffffff;
-                                                vertical-alignment: center;
-                                                horizontal-stretch: 1;
-                                            }
-                                            Text {
-                                                text: clock;
-                                                font-size: 9px;
-                                                font-weight: 500;
-                                                color: #ffffff;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                                Part {
-                                    property <length> icon: parent.height * 0.065;
-                                    width: dock.preferred-width;
-                                    height: dock.preferred-height;
-                                    x: (parent.width - self.width) / 2;
-                                    y: parent.height * 0.97 - self.height;
-                                    name: parts[1];
-                                    radius: 10px;
-                                    clicked => { root.scroll-to(sections.y + dock-section.y); }
-                                    Rectangle {
-                                        border-radius: 10px;
-                                        background: dock-glass ? #fafafa4d : #1c1c20f0;
-                                        border-width: 0.5px;
-                                        border-color: #ffffff80;
-                                    }
-                                    dock := HorizontalLayout {
-                                        padding: icon * 0.25;
-                                        spacing: icon * 0.25;
-                                        Part {
-                                            width: icon;
-                                            height: icon;
-                                            name: parts[0];
-                                            radius: icon * 0.26;
-                                            clicked => { root.scroll-to(sections.y + apps-section.y); }
-                                            Rectangle {
-                                                border-radius: icon * 0.26;
-                                                background: #f1efeae6;
-                                                for i in 9: Rectangle {
-                                                    x: parent.width * (0.22 + mod(i, 3) * 0.22);
-                                                    y: parent.height * (0.22 + floor(i / 3) * 0.22);
-                                                    width: parent.width * 0.14;
-                                                    height: self.width;
-                                                    border-radius: self.width / 2;
-                                                    background: #17171a;
-                                                }
-                                            }
-                                        }
-                                        for tint in [#f2f0ea, #2b2b31, #e9a23b, #3f8f6b, #d4577b]: Rectangle {
-                                            width: icon;
-                                            height: icon;
-                                            border-radius: icon * 0.26;
-                                            background: tint;
-                                        }
-                                    }
-                                }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                // The window's own title bar: the page's name, and the window's buttons.
+                Rectangle {
+                    height: 44px;
+                    TouchArea {
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                root.dragged();
                             }
                         }
-                        sections := Column {
-                            apps-section := VerticalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: parts[0];
-                                    font-size: Theme.text-small;
-                                    font-weight: 500;
-                                    color: Theme.ink-3;
-                                }
-                                Rows {
-                                    HorizontalLayout {
-                                        padding: 16px;
-                                        spacing: 12px;
-                                        for name[kind] in ["概覽", "全螢幕", "分類", "側欄"]: StyleChoice {
-                                            width: (parent.width - 32px - 3 * 12px) / 4;
-                                            kind: kind;
-                                            text: name;
-                                            current: apps-view == kind;
-                                            clicked => {
-                                                apps-view = kind;
-                                                apps-view-changed(kind);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            dock-section := VerticalLayout {
-                                spacing: 8px;
-                                padding-top: 10px;
-                                Text {
-                                    text: parts[1];
-                                    font-size: Theme.text-small;
-                                    font-weight: 500;
-                                    color: Theme.ink-3;
-                                }
-                                Rows {
-                                    Row {
-                                        title: "毛玻璃";
-                                        first: true;
-                                        Switch {
-                                            label: "毛玻璃";
-                                            checked <=> dock-glass;
-                                            toggled(on) => { setting-changed("dock_glass", on); }
-                                        }
-                                    }
-                                    Row {
-                                        title: "放大";
-                                        Switch {
-                                            label: "放大";
-                                            checked <=> dock-magnify;
-                                            toggled(on) => { setting-changed("dock_magnify", on); }
-                                        }
-                                    }
-                                    if dock-magnify: Row {
-                                        title: "放大程度";
-                                        Slider {
-                                            width: 200px;
-                                            label: "放大程度";
-                                            minimum: 1.2;
-                                            maximum: 2;
-                                            step: 0.1;
-                                            value <=> dock-magnify-scale;
-                                            changed(value) => { magnify-scale-changed(value); }
-                                        }
-                                    }
-                                }
-                            }
-                            bar-section := VerticalLayout {
-                                spacing: 8px;
-                                padding-top: 10px;
-                                Text {
-                                    text: parts[2];
-                                    font-size: Theme.text-small;
-                                    font-weight: 500;
-                                    color: Theme.ink-3;
-                                }
-                                Rows {
-                                    Row {
-                                        title: "時制";
-                                        first: true;
-                                        Segmented {
-                                            options: ["24 小時", "12 小時"];
-                                            current: clock-24h ? 0 : 1;
-                                            changed(index) => {
-                                                clock-24h = index == 0;
-                                                setting-changed("clock_24h", clock-24h);
-                                            }
-                                        }
-                                    }
-                                    Row {
-                                        title: "星期";
-                                        Switch {
-                                            label: "星期";
-                                            checked <=> clock-weekday;
-                                            toggled(on) => { setting-changed("clock_weekday", on); }
-                                        }
-                                    }
-                                    Row {
-                                        title: "秒數";
-                                        Switch {
-                                            label: "秒數";
-                                            checked <=> clock-seconds;
-                                            toggled(on) => { setting-changed("clock_seconds", on); }
-                                        }
-                                    }
-                                }
-                            }
-                            wall-section := VerticalLayout {
-                                spacing: 8px;
-                                padding-top: 10px;
-                                Text {
-                                    text: parts[3];
-                                    font-size: Theme.text-small;
-                                    font-weight: 500;
-                                    color: Theme.ink-3;
-                                }
-                                Rows {
-                                    Row {
-                                        title: "圖片";
-                                        first: true;
-                                        if wallpapers.length == 0: Text {
-                                            text: "沒有圖片";
-                                            color: Theme.ink-3;
-                                        }
-                                        for picture[index] in wallpapers: Rectangle {
-                                            width: 60px;
-                                            height: 38px;
-                                            border-radius: 8px;
-                                            border-width: wallpaper == index ? 2px : 0;
-                                            border-color: Theme.ink;
-                                            accessible-role: radio-button;
-                                            accessible-checkable: true;
-                                            accessible-checked: wallpaper == index;
-                                            accessible-label: "桌布 " + (index + 1);
-                                            Rectangle {
-                                                x: 4px;
-                                                y: 4px;
-                                                width: parent.width - 8px;
-                                                height: parent.height - 8px;
-                                                border-radius: 5px;
-                                                clip: true;
-                                                Image {
-                                                    width: parent.width;
-                                                    height: parent.height;
-                                                    source: picture;
-                                                    image-fit: cover;
-                                                }
-                                            }
-                                            TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => {
-                                                    wallpaper = index;
-                                                    wallpaper-chosen(index);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Row {
-                                        title: "填滿方式";
-                                        Segmented {
-                                            options: ["填滿", "符合", "置中"];
-                                            current <=> wallpaper-mode;
-                                            changed(index) => { wallpaper-mode-changed(index); }
-                                        }
-                                    }
-                                }
-                            }
+                        double-clicked => { root.maximize(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 28px;
+                        padding-right: 12px;
+                        spacing: 4px;
+                        Text {
+                            text: pages[page];
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            color: Theme.ink;
+                        }
+                        IconButton {
+                            icon: "minimize";
+                            label: "最小化";
+                            size: 28px;
+                            glyph: 12px;
+                            y: 8px;
+                            clicked => { root.minimize(); }
+                        }
+                        IconButton {
+                            icon: "maximize";
+                            label: "最大化";
+                            size: 28px;
+                            glyph: 12px;
+                            y: 8px;
+                            clicked => { root.maximize(); }
+                        }
+                        IconButton {
+                            icon: "close";
+                            label: "關閉";
+                            size: 28px;
+                            glyph: 12px;
+                            y: 8px;
+                            clicked => { root.close-window(); }
                         }
                     }
+                }
 
-                    if page == 1: Column {
-                        Rows {
-                            Row {
-                                title: "配色";
-                                first: true;
-                                Segmented {
-                                    options: ["淺色", "深色"];
-                                    current: dark ? 1 : 0;
-                                    changed(index) => {
-                                        dark = index == 1;
-                                        dark-changed(dark);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                flickable := Flickable {
+                    content-height: max(self.height, content.preferred-height);
+                    content := VerticalLayout {
+                        width: flickable.width;
+                        alignment: start;
+                        padding-bottom: 24px;
 
-                    if page == 2: Column {
-                        Rows {
-                            Row {
-                                title: "指標速度";
-                                first: true;
-                                Slider {
-                                    width: 200px;
-                                    label: "指標速度";
-                                    minimum: -1;
-                                    maximum: 1;
-                                    step: 0.1;
-                                    value <=> pointer-speed;
-                                    changed(value) => { pointer-speed-changed(value); }
-                                }
-                            }
-                            Row {
-                                title: "自然捲動";
-                                Switch {
-                                    label: "自然捲動";
-                                    checked <=> natural-scroll;
-                                    toggled(on) => { setting-changed("natural_scroll", on); }
-                                }
-                            }
-                            Row {
-                                title: "輕觸以點按";
-                                Switch {
-                                    label: "輕觸以點按";
-                                    checked <=> tap-to-click;
-                                    toggled(on) => { setting-changed("tap_to_click", on); }
-                                }
-                            }
-                        }
-                    }
-
-                    if page == 3: Column {
-                        if !has-sound: Rows {
-                            Row {
-                                title: "沒有音訊輸出";
-                                first: true;
-                            }
-                        }
-                        if has-sound: Rows {
-                            Row {
-                                title: "音量";
-                                first: true;
-                                Slider {
-                                    width: 200px;
-                                    label: "音量";
-                                    maximum: 100;
-                                    step: 5;
-                                    value <=> volume;
-                                    changed(value) => { volume-changed(value); }
-                                }
-                                Text {
-                                    width: 44px;
-                                    text: round(volume) + "%";
-                                    font-family: Theme.mono;
-                                    font-size: 13px;
-                                    color: Theme.ink-2;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            Row {
-                                title: "靜音";
-                                Switch {
-                                    label: "靜音";
-                                    checked <=> muted;
-                                    toggled(on) => { muted-changed(on); }
-                                }
-                            }
-                        }
-                    }
-
-                    if page == 4: Column {
-                        Rows {
-                            for command[index] in autostart: Row {
-                                title: command;
-                                first: index == 0;
-                                IconButton {
-                                    icon: "close";
-                                    label: "移除";
-                                    clicked => { autostart-removed(index); }
-                                }
-                            }
+                        if page == 0: VerticalLayout {
+                            spacing: 6px;
                             Rectangle {
-                                height: added.preferred-height;
-                                if autostart.length > 0: Rectangle {
-                                    y: 0;
-                                    height: 1px;
-                                    background: Theme.line;
-                                }
-                                added := HorizontalLayout {
-                                    padding: 12px;
-                                    spacing: 8px;
-                                    field := TextField {
-                                        placeholder: "指令";
-                                        accepted(text) => {
-                                            if text != "" {
-                                                autostart-added(text);
-                                                self.text = "";
+                                height: screen.height + 4px;
+                                screen := Rectangle {
+                                    width: min(640px, parent.width - 56px);
+                                    height: self.width * 9 / 16;
+                                    x: (parent.width - self.width) / 2;
+                                    y: 4px;
+                                    border-radius: 10px;
+                                    drop-shadow-blur: 24px;
+                                    drop-shadow-offset-y: 10px;
+                                    drop-shadow-color: #00000059;
+
+                                    Part {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        name: parts[3];
+                                        inset: true;
+                                        radius: 6px;
+                                        clicked => { root.scroll-to(sections.y + wall-section.y); }
+                                        Rectangle {
+                                            border-radius: 10px;
+                                            clip: true;
+                                            background: @linear-gradient(140deg, #f3b47a 0%, #d4577b 42%, #4b3f8f 78%, #1f2a5c 100%);
+                                            Image {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                source: wallpapers[wallpaper];
+                                                image-fit: wallpaper-mode == 0 ? cover : wallpaper-mode == 1 ? contain : preserve;
                                             }
                                         }
                                     }
-                                    Button {
-                                        text: "新增";
-                                        kind: "secondary";
-                                        enabled: field.text != "";
-                                        clicked => {
-                                            autostart-added(field.text);
-                                            field.text = "";
+                                    // Two windows, for the look of a desktop in use.
+                                    for window in 2: Rectangle {
+                                        x: parent.width * (window == 0 ? 0.12 : 0.46);
+                                        y: parent.height * (window == 0 ? 0.16 : 0.3);
+                                        width: parent.width * (window == 0 ? 0.46 : 0.38);
+                                        height: parent.height * (window == 0 ? 0.54 : 0.46);
+                                        border-radius: 6px;
+                                        background: window == 0 ? #fbfaf8 : #26262b;
+                                        drop-shadow-blur: 16px;
+                                        drop-shadow-offset-y: 6px;
+                                        drop-shadow-color: #00000080;
+                                        TouchArea { }
+                                    }
+                                    Part {
+                                        y: 0;
+                                        width: parent.width;
+                                        height: parent.height * 0.05;
+                                        name: parts[2];
+                                        name-below: true;
+                                        clicked => { root.scroll-to(sections.y + bar-section.y); }
+                                        Rectangle {
+                                            border-top-left-radius: 10px;
+                                            border-top-right-radius: 10px;
+                                            background: #14141861;
+                                            HorizontalLayout {
+                                                padding-left: 10px;
+                                                padding-right: 10px;
+                                                Text {
+                                                    text: "設定";
+                                                    font-size: 9px;
+                                                    font-weight: 700;
+                                                    color: #ffffff;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                Text {
+                                                    text: clock;
+                                                    font-size: 9px;
+                                                    font-weight: 500;
+                                                    color: #ffffff;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Part {
+                                        property <length> icon: parent.height * 0.065;
+                                        width: dock.preferred-width;
+                                        height: dock.preferred-height;
+                                        x: (parent.width - self.width) / 2;
+                                        y: parent.height * 0.97 - self.height;
+                                        name: parts[1];
+                                        radius: 10px;
+                                        clicked => { root.scroll-to(sections.y + dock-section.y); }
+                                        Rectangle {
+                                            border-radius: 10px;
+                                            background: dock-glass ? #fafafa4d : #1c1c20f0;
+                                            border-width: 0.5px;
+                                            border-color: #ffffff80;
+                                        }
+                                        dock := HorizontalLayout {
+                                            padding: icon * 0.25;
+                                            spacing: icon * 0.25;
+                                            Part {
+                                                width: icon;
+                                                height: icon;
+                                                name: parts[0];
+                                                radius: icon * 0.26;
+                                                clicked => { root.scroll-to(sections.y + apps-section.y); }
+                                                Rectangle {
+                                                    border-radius: icon * 0.26;
+                                                    background: #f1efeae6;
+                                                    for i in 9: Rectangle {
+                                                        x: parent.width * (0.22 + mod(i, 3) * 0.22);
+                                                        y: parent.height * (0.22 + floor(i / 3) * 0.22);
+                                                        width: parent.width * 0.14;
+                                                        height: self.width;
+                                                        border-radius: self.width / 2;
+                                                        background: #17171a;
+                                                    }
+                                                }
+                                            }
+                                            for tint in [#f2f0ea, #2b2b31, #e9a23b, #3f8f6b, #d4577b]: Rectangle {
+                                                width: icon;
+                                                height: icon;
+                                                border-radius: icon * 0.26;
+                                                background: tint;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            sections := Column {
+                                apps-section := VerticalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: parts[0];
+                                        font-size: Theme.text-small;
+                                        font-weight: 500;
+                                        color: Theme.ink-3;
+                                    }
+                                    Rows {
+                                        HorizontalLayout {
+                                            padding: 16px;
+                                            spacing: 12px;
+                                            for name[kind] in ["概覽", "全螢幕", "分類", "側欄"]: StyleChoice {
+                                                width: (parent.width - 32px - 3 * 12px) / 4;
+                                                kind: kind;
+                                                text: name;
+                                                current: apps-view == kind;
+                                                clicked => {
+                                                    apps-view = kind;
+                                                    apps-view-changed(kind);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                dock-section := VerticalLayout {
+                                    spacing: 8px;
+                                    padding-top: 10px;
+                                    Text {
+                                        text: parts[1];
+                                        font-size: Theme.text-small;
+                                        font-weight: 500;
+                                        color: Theme.ink-3;
+                                    }
+                                    Rows {
+                                        Row {
+                                            title: "毛玻璃";
+                                            first: true;
+                                            Switch {
+                                                label: "毛玻璃";
+                                                checked <=> dock-glass;
+                                                toggled(on) => { setting-changed("dock_glass", on); }
+                                            }
+                                        }
+                                        Row {
+                                            title: "放大";
+                                            Switch {
+                                                label: "放大";
+                                                checked <=> dock-magnify;
+                                                toggled(on) => { setting-changed("dock_magnify", on); }
+                                            }
+                                        }
+                                        if dock-magnify: Row {
+                                            title: "放大程度";
+                                            Slider {
+                                                width: 200px;
+                                                label: "放大程度";
+                                                minimum: 1.2;
+                                                maximum: 2;
+                                                step: 0.1;
+                                                value <=> dock-magnify-scale;
+                                                changed(value) => { magnify-scale-changed(value); }
+                                            }
+                                        }
+                                    }
+                                }
+                                bar-section := VerticalLayout {
+                                    spacing: 8px;
+                                    padding-top: 10px;
+                                    Text {
+                                        text: parts[2];
+                                        font-size: Theme.text-small;
+                                        font-weight: 500;
+                                        color: Theme.ink-3;
+                                    }
+                                    Rows {
+                                        Row {
+                                            title: "時制";
+                                            first: true;
+                                            Segmented {
+                                                options: ["24 小時", "12 小時"];
+                                                current: clock-24h ? 0 : 1;
+                                                changed(index) => {
+                                                    clock-24h = index == 0;
+                                                    setting-changed("clock_24h", clock-24h);
+                                                }
+                                            }
+                                        }
+                                        Row {
+                                            title: "星期";
+                                            Switch {
+                                                label: "星期";
+                                                checked <=> clock-weekday;
+                                                toggled(on) => { setting-changed("clock_weekday", on); }
+                                            }
+                                        }
+                                        Row {
+                                            title: "秒數";
+                                            Switch {
+                                                label: "秒數";
+                                                checked <=> clock-seconds;
+                                                toggled(on) => { setting-changed("clock_seconds", on); }
+                                            }
+                                        }
+                                    }
+                                }
+                                wall-section := VerticalLayout {
+                                    spacing: 8px;
+                                    padding-top: 10px;
+                                    Text {
+                                        text: parts[3];
+                                        font-size: Theme.text-small;
+                                        font-weight: 500;
+                                        color: Theme.ink-3;
+                                    }
+                                    Rows {
+                                        Row {
+                                            title: "圖片";
+                                            first: true;
+                                            if wallpapers.length == 0: Text {
+                                                text: "沒有圖片";
+                                                color: Theme.ink-3;
+                                            }
+                                            for picture[index] in wallpapers: Rectangle {
+                                                width: 60px;
+                                                height: 38px;
+                                                border-radius: 8px;
+                                                border-width: wallpaper == index ? 2px : 0;
+                                                border-color: Theme.ink;
+                                                accessible-role: radio-button;
+                                                accessible-checkable: true;
+                                                accessible-checked: wallpaper == index;
+                                                accessible-label: "桌布 " + (index + 1);
+                                                Rectangle {
+                                                    x: 4px;
+                                                    y: 4px;
+                                                    width: parent.width - 8px;
+                                                    height: parent.height - 8px;
+                                                    border-radius: 5px;
+                                                    clip: true;
+                                                    Image {
+                                                        width: parent.width;
+                                                        height: parent.height;
+                                                        source: picture;
+                                                        image-fit: cover;
+                                                    }
+                                                }
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        wallpaper = index;
+                                                        wallpaper-chosen(index);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Row {
+                                            title: "填滿方式";
+                                            Segmented {
+                                                options: ["填滿", "符合", "置中"];
+                                                current <=> wallpaper-mode;
+                                                changed(index) => { wallpaper-mode-changed(index); }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if page == 5: Column {
-                        Rows {
-                            for fact[index] in facts: Row {
-                                title: fact.title;
-                                first: index == 0;
-                                Text {
-                                    text: fact.value;
-                                    color: Theme.ink-2;
-                                    vertical-alignment: center;
+                        if page == 1: Column {
+                            Rows {
+                                Row {
+                                    title: "配色";
+                                    first: true;
+                                    Segmented {
+                                        options: ["淺色", "深色"];
+                                        current: dark ? 1 : 0;
+                                        changed(index) => {
+                                            dark = index == 1;
+                                            dark-changed(dark);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if page == 2: Column {
+                            Rows {
+                                Row {
+                                    title: "指標速度";
+                                    first: true;
+                                    Slider {
+                                        width: 200px;
+                                        label: "指標速度";
+                                        minimum: -1;
+                                        maximum: 1;
+                                        step: 0.1;
+                                        value <=> pointer-speed;
+                                        changed(value) => { pointer-speed-changed(value); }
+                                    }
+                                }
+                                Row {
+                                    title: "自然捲動";
+                                    Switch {
+                                        label: "自然捲動";
+                                        checked <=> natural-scroll;
+                                        toggled(on) => { setting-changed("natural_scroll", on); }
+                                    }
+                                }
+                                Row {
+                                    title: "輕觸以點按";
+                                    Switch {
+                                        label: "輕觸以點按";
+                                        checked <=> tap-to-click;
+                                        toggled(on) => { setting-changed("tap_to_click", on); }
+                                    }
+                                }
+                            }
+                        }
+
+                        if page == 3: Column {
+                            if !has-sound: Rows {
+                                Row {
+                                    title: "沒有音訊輸出";
+                                    first: true;
+                                }
+                            }
+                            if has-sound: Rows {
+                                Row {
+                                    title: "音量";
+                                    first: true;
+                                    Slider {
+                                        width: 200px;
+                                        label: "音量";
+                                        maximum: 100;
+                                        step: 5;
+                                        value <=> volume;
+                                        changed(value) => { volume-changed(value); }
+                                    }
+                                    Text {
+                                        width: 44px;
+                                        text: round(volume) + "%";
+                                        font-family: Theme.mono;
+                                        font-size: 13px;
+                                        color: Theme.ink-2;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Row {
+                                    title: "靜音";
+                                    Switch {
+                                        label: "靜音";
+                                        checked <=> muted;
+                                        toggled(on) => { muted-changed(on); }
+                                    }
+                                }
+                            }
+                        }
+
+                        if page == 4: Column {
+                            Rows {
+                                for command[index] in autostart: Row {
+                                    title: command;
+                                    first: index == 0;
+                                    IconButton {
+                                        icon: "close";
+                                        label: "移除";
+                                        clicked => { autostart-removed(index); }
+                                    }
+                                }
+                                Rectangle {
+                                    height: added.preferred-height;
+                                    if autostart.length > 0: Rectangle {
+                                        y: 0;
+                                        height: 1px;
+                                        background: Theme.line;
+                                    }
+                                    added := HorizontalLayout {
+                                        padding: 12px;
+                                        spacing: 8px;
+                                        field := TextField {
+                                            placeholder: "指令";
+                                            accepted(text) => {
+                                                if text != "" {
+                                                    autostart-added(text);
+                                                    self.text = "";
+                                                }
+                                            }
+                                        }
+                                        Button {
+                                            text: "新增";
+                                            kind: "secondary";
+                                            enabled: field.text != "";
+                                            clicked => {
+                                                autostart-added(field.text);
+                                                field.text = "";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if page == 5: Column {
+                            Rows {
+                                for fact[index] in facts: Row {
+                                    title: fact.title;
+                                    first: index == 0;
+                                    Text {
+                                        text: fact.value;
+                                        color: Theme.ink-2;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
