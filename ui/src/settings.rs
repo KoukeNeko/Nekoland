@@ -526,18 +526,23 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     page.add(&notices);
 
     let windows = group("視窗");
-    let current = output("gsettings", &["get", WM_PREFERENCES, "action-double-click-titlebar"]).unwrap_or_default();
-    let titlebar = adw::ComboRow::builder()
-        .title("按兩下標題列")
-        .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
-        .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(0) as u32)
-        .build();
-    titlebar.connect_selected_notify(|row| {
-        if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
-            run("gsettings", &["set", WM_PREFERENCES, "action-double-click-titlebar", action]);
-        }
-    });
-    windows.add(&titlebar);
+    for (title, key) in [
+        ("按兩下標題列", "action-double-click-titlebar"),
+        ("按中鍵標題列", "action-middle-click-titlebar"),
+    ] {
+        let current = output("gsettings", &["get", WM_PREFERENCES, key]).unwrap_or_default();
+        let titlebar = adw::ComboRow::builder()
+            .title(title)
+            .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
+            .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(0) as u32)
+            .build();
+        titlebar.connect_selected_notify(move |row| {
+            if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
+                run("gsettings", &["set", WM_PREFERENCES, key, action]);
+            }
+        });
+        windows.add(&titlebar);
+    }
     windows.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
     windows.add(&switch_row(config, "拖到螢幕邊緣時並排", "edge_tiling"));
     page.add(&windows);
@@ -667,7 +672,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
 const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
 const HOT_CORNERS: [&str; 4] = ["none", "overview", "apps", "lock"];
 const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
-/// What double-clicking a GTK title bar does, as GNOME names it.
+/// What double-clicking or middle-clicking a GTK title bar does, as GNOME names it.
 const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
 
 fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
