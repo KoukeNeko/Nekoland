@@ -1,8 +1,9 @@
-use std::{ffi::OsString, sync::Arc, time::Duration};
+use std::{collections::HashSet, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
-    desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    backend::allocator::dmabuf::Dmabuf,
+    desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
+    input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatState},
     output::Output,
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
@@ -15,6 +16,8 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        cursor_shape::CursorShapeManagerState,
+        dmabuf::DmabufState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::{
@@ -26,14 +29,25 @@ use smithay::{
     },
 };
 
-use crate::CalloopData;
+use crate::{config::Config, CalloopData};
+
+/// Takes a client's GPU buffer; returns whether the renderer can use it.
+pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
+
+pub const ABOVE_WINDOWS: [Layer; 2] = [Layer::Overlay, Layer::Top];
+pub const BELOW_WINDOWS: [Layer; 2] = [Layer::Bottom, Layer::Background];
 
 pub struct Nekoland {
     pub start_time: std::time::Instant,
+    pub config: Config,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
     pub space: Space<Window>,
+    /// Minimized windows, with where they go back to.
+    pub minimized: Vec<(Window, Point<i32, Logical>)>,
+    /// Keys whose press ran a shortcut, so their release is not sent to a client either.
+    pub suppressed_keys: HashSet<Keycode>,
     pub loop_signal: LoopSignal,
 
     // Smithay State
@@ -45,6 +59,14 @@ pub struct Nekoland {
     pub seat_state: SeatState<Nekoland>,
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
+    pub cursor_shape_state: CursorShapeManagerState,
+    pub dmabuf_state: DmabufState,
+    /// Hands a client's GPU buffer to the renderer; set by a backend that takes them.
+    pub dmabuf_import: Option<DmabufImport>,
+    /// Switches to another virtual terminal; set by the backend that owns a session.
+    pub switch_vt: Option<Box<dyn FnMut(i32)>>,
+    /// The cursor the client under the pointer asked for.
+    pub cursor_status: CursorImageStatus,
 
     pub seat: Seat<Self>,
 }
@@ -63,6 +85,7 @@ impl Nekoland {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let popups = PopupManager::default();
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -89,9 +112,12 @@ impl Nekoland {
 
         Self {
             start_time,
+            config: Config::load(),
             display_handle: dh,
 
             space,
+            minimized: Vec::new(),
+            suppressed_keys: HashSet::new(),
             loop_signal,
             socket_name,
 
@@ -103,6 +129,11 @@ impl Nekoland {
             seat_state,
             data_device_state,
             popups,
+            cursor_shape_state,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_import: None,
+            switch_vt: None,
+            cursor_status: CursorImageStatus::default_named(),
             seat,
         }
     }
@@ -149,21 +180,31 @@ impl Nekoland {
         socket_name
     }
 
+    /// The layer surface of one of `layers` at a position, with where it is.
+    pub fn layer_under(
+        &self,
+        pos: Point<f64, Logical>,
+        layers: [Layer; 2],
+    ) -> Option<(LayerSurface, Point<i32, Logical>)> {
+        let output = self.space.output_under(pos).next()?;
+        let output_loc = self.space.output_geometry(output)?.loc;
+        let map = layer_map_for_output(output);
+        let local = pos - output_loc.to_f64();
+        let layer = layers
+            .into_iter()
+            .find_map(|layer| map.layer_under(layer, local))?;
+        let layer_loc = map.layer_geometry(layer)?.loc;
+        Some((layer.clone(), layer_loc + output_loc))
+    }
+
     /// The surface at a position: overlay and top layers come before windows, the
     /// bottom and background layers after them.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let layer_under = |layers: [Layer; 2]| {
-            let output = self.space.output_under(pos).next()?;
-            let output_loc = self.space.output_geometry(output)?.loc;
-            let map = layer_map_for_output(output);
-            let local = pos - output_loc.to_f64();
-            let layer = layers
-                .into_iter()
-                .find_map(|layer| map.layer_under(layer, local))?;
-            let layer_loc = map.layer_geometry(layer)?.loc;
+        let layer_surface_under = |layers| {
+            let (layer, location) = self.layer_under(pos, layers)?;
             layer
-                .surface_under(local - layer_loc.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + layer_loc + output_loc).to_f64()))
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(s, p)| (s, (p + location).to_f64()))
         };
         let window_under = || {
             self.space.element_under(pos).and_then(|(window, location)| {
@@ -173,9 +214,13 @@ impl Nekoland {
             })
         };
 
-        layer_under([Layer::Overlay, Layer::Top])
+        // A fullscreen window covers the panels; only the overlay layer stays above it.
+        if self.fullscreen_window().is_some() {
+            return layer_surface_under([Layer::Overlay, Layer::Overlay]).or_else(window_under);
+        }
+        layer_surface_under(ABOVE_WINDOWS)
             .or_else(window_under)
-            .or_else(|| layer_under([Layer::Bottom, Layer::Background]))
+            .or_else(|| layer_surface_under(BELOW_WINDOWS))
     }
 
     /// What every backend does once an output has been drawn: tell its surfaces that a

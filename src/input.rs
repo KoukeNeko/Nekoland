@@ -1,17 +1,23 @@
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
+    desktop::{LayerSurface, Window, WindowSurface},
     input::{
-        keyboard::{FilterResult, Keysym},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+        keyboard::{FilterResult, Keysym, ModifiersState},
+        pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, RelativeMotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::SERIAL_COUNTER,
+    utils::{Serial, SERIAL_COUNTER},
+    wayland::shell::wlr_layer::KeyboardInteractivity,
 };
 
-use crate::state::Nekoland;
+use crate::{
+    config,
+    grabs::MoveSurfaceGrab,
+    state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
+    windows::Side,
+};
 
 impl Nekoland {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -19,17 +25,34 @@ impl Nekoland {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
+                let key_state = event.state();
 
                 self.seat.get_keyboard().unwrap().input::<(), _>(
                     self,
                     event.key_code(),
-                    event.state(),
+                    key_state,
                     serial,
                     time,
                     |state, modifiers, keysym| {
-                        // The only way out on a bare console.
-                        if modifiers.ctrl && modifiers.alt && keysym.modified_sym() == Keysym::BackSpace {
-                            state.loop_signal.stop();
+                        let code = keysym.raw_code();
+                        let handled = match key_state {
+                            KeyState::Pressed => {
+                                // Letters by their plain symbol, so that Shift does not change them;
+                                // the rest as the keymap gives them, which is where VT switching comes from.
+                                let modified = keysym.modified_sym();
+                                let sym = match keysym.raw_syms().first().copied() {
+                                    Some(raw) if modified.key_char().is_some() => raw,
+                                    _ => modified,
+                                };
+                                let handled = state.key_pressed(modifiers, sym);
+                                if handled {
+                                    state.suppressed_keys.insert(code);
+                                }
+                                handled
+                            }
+                            KeyState::Released => state.suppressed_keys.remove(&code),
+                        };
+                        if handled {
                             FilterResult::Intercept(())
                         } else {
                             FilterResult::Forward
@@ -93,37 +116,13 @@ impl Nekoland {
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
-                let keyboard = self.seat.get_keyboard().unwrap();
-
                 let serial = SERIAL_COUNTER.next_serial();
-
                 let button = event.button_code();
-
                 let button_state = event.state();
 
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-                    if let Some((window, _loc)) = self
-                        .space
-                        .element_under(pointer.current_location())
-                        .map(|(w, l)| (w.clone(), l))
-                    {
-                        self.space.raise_element(&window, true);
-                        keyboard.set_focus(
-                            self,
-                            Some(window.toplevel().unwrap().wl_surface().clone()),
-                            serial,
-                        );
-                        self.space.elements().for_each(|window| {
-                            window.toplevel().unwrap().send_pending_configure();
-                        });
-                    } else {
-                        self.space.elements().for_each(|window| {
-                            window.set_activated(false);
-                            window.toplevel().unwrap().send_pending_configure();
-                        });
-                        keyboard.set_focus(self, Option::<WlSurface>::None, serial);
-                    }
-                };
+                    self.pointer_pressed(button, serial);
+                }
 
                 pointer.button(
                     self,
@@ -177,5 +176,131 @@ impl Nekoland {
             }
             _ => {}
         }
+    }
+}
+
+// evdev's BTN_LEFT
+const BUTTON_LEFT: u32 = 0x110;
+
+impl Nekoland {
+    /// Gives the keyboard to what was clicked, and starts moving a window dragged with Super held.
+    fn pointer_pressed(&mut self, button: u32, serial: Serial) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let pos = pointer.current_location();
+
+        if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {
+            self.focus_layer(&layer);
+        } else if let Some((window, location)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
+            self.focus_window(&window);
+
+            let logo = self
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.modifier_state().logo);
+            if logo && button == BUTTON_LEFT {
+                let grab = MoveSurfaceGrab {
+                    start_data: GrabStartData {
+                        focus: None,
+                        button,
+                        location: pos,
+                    },
+                    window,
+                    initial_window_location: location,
+                };
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+            }
+        } else if let Some((layer, _)) = self.layer_under(pos, BELOW_WINDOWS) {
+            self.focus_layer(&layer);
+        } else {
+            self.set_keyboard_focus(None);
+        }
+    }
+
+    /// A layer surface only takes the keyboard if it said it wants it.
+    fn focus_layer(&mut self, layer: &LayerSurface) {
+        if layer.cached_state().keyboard_interactivity != KeyboardInteractivity::None {
+            self.set_keyboard_focus(Some(layer.wl_surface().clone().into()));
+        }
+    }
+
+    /// Runs the shortcut a key press stands for. Returns whether there was one.
+    fn key_pressed(&mut self, modifiers: &ModifiersState, sym: Keysym) -> bool {
+        let ModifiersState {
+            ctrl,
+            alt,
+            logo,
+            shift,
+            ..
+        } = *modifiers;
+        let focused = self.focused_window();
+
+        match sym {
+            // The only way out on a bare console.
+            Keysym::BackSpace if ctrl && alt => self.loop_signal.stop(),
+            Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
+            Keysym::Return if logo => config::spawn(&self.config.terminal),
+            Keysym::a if logo => config::spawn(&self.config.launcher),
+            Keysym::F4 if alt => close(focused),
+            Keysym::q if logo => close(focused),
+            Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
+            Keysym::Up if logo => {
+                if let Some(window) = focused {
+                    self.maximize(&window);
+                }
+            }
+            Keysym::Down if logo => {
+                if let Some(window) = focused {
+                    self.restore(&window);
+                }
+            }
+            Keysym::Left if logo => {
+                if let Some(window) = focused {
+                    self.tile(&window, Side::Left);
+                }
+            }
+            Keysym::Right if logo => {
+                if let Some(window) = focused {
+                    self.tile(&window, Side::Right);
+                }
+            }
+            Keysym::h if logo => {
+                if let Some(window) = focused {
+                    self.minimize(&window);
+                }
+            }
+            Keysym::F11 if !(ctrl || alt || logo) => {
+                if let Some(window) = focused {
+                    if self.is_fullscreen(&window) {
+                        self.restore(&window);
+                    } else {
+                        self.fullscreen(&window);
+                    }
+                }
+            }
+            Keysym::XF86_AudioRaiseVolume => config::spawn(&self.config.volume_up),
+            Keysym::XF86_AudioLowerVolume => config::spawn(&self.config.volume_down),
+            Keysym::XF86_AudioMute => config::spawn(&self.config.volume_mute),
+            Keysym::XF86_MonBrightnessUp => config::spawn(&self.config.brightness_up),
+            Keysym::XF86_MonBrightnessDown => config::spawn(&self.config.brightness_down),
+            // Ctrl+Alt+F1 and so on, which the keymap turns into these.
+            _ if (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw()).contains(&sym.raw()) => {
+                let vt = (sym.raw() - Keysym::XF86_Switch_VT_1.raw() + 1) as i32;
+                if let Some(switch_vt) = self.switch_vt.as_mut() {
+                    switch_vt(vt);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+fn close(window: Option<Window>) {
+    match window.as_ref().map(Window::underlying_surface) {
+        Some(WindowSurface::Wayland(toplevel)) => toplevel.send_close(),
+        Some(WindowSurface::X11(surface)) => {
+            let _ = surface.close();
+        }
+        None => {}
     }
 }

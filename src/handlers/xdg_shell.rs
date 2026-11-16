@@ -1,9 +1,6 @@
 use smithay::{
     delegate_xdg_shell,
-    desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind, PopupManager,
-        Space, Window,
-    },
+    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window},
     input::{
         pointer::{Focus, GrabStartData as PointerGrabStartData},
         Seat,
@@ -11,7 +8,7 @@ use smithay::{
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
-            protocol::{wl_seat, wl_surface::WlSurface},
+            protocol::{wl_output, wl_seat, wl_surface::WlSurface},
             Resource,
         },
     },
@@ -36,15 +33,51 @@ impl XdgShellHandler for Nekoland {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let window = Window::new_wayland_window(surface);
-        // Below a panel rather than under it.
-        let origin = self
-            .space
-            .outputs()
-            .next()
-            .map(|output| layer_map_for_output(output).non_exclusive_zone().loc)
-            .unwrap_or_default();
-        self.space.map_element(window, origin, false);
+        // Off to the side of a panel for now; it is centered once its size is known.
+        let origin = self.usable_area().map(|area| area.loc).unwrap_or_default();
+        self.space
+            .map_element(Window::new_wayland_window(surface), origin, false);
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.window_closed(surface.wl_surface());
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window_for_surface(surface.wl_surface()) {
+            Some(window) => self.maximize(&window),
+            // The protocol wants an answer either way.
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.restore(&window);
+        }
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<wl_output::WlOutput>) {
+        match self.window_for_surface(surface.wl_surface()) {
+            Some(window) => self.fullscreen(&window),
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.restore(&window);
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.minimize(&window);
+        }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -73,7 +106,10 @@ impl XdgShellHandler for Nekoland {
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
+                .find(|w| {
+                    w.toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
+                })
                 .unwrap()
                 .clone();
             let initial_window_location = self.space.element_location(&window).unwrap();
@@ -105,7 +141,10 @@ impl XdgShellHandler for Nekoland {
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
+                .find(|w| {
+                    w.toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
+                })
                 .unwrap()
                 .clone();
             let initial_window_location = self.space.element_location(&window).unwrap();
@@ -164,7 +203,10 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     // Handle toplevel commits.
     if let Some(window) = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| {
+            w.toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        })
         .cloned()
     {
         let initial_configure_sent = with_states(surface, |states| {
@@ -203,11 +245,10 @@ impl Nekoland {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|w| w.toplevel().unwrap().wl_surface() == &root)
-        else {
+        let Some(window) = self.space.elements().find(|w| {
+            w.toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+        }) else {
             return;
         };
 

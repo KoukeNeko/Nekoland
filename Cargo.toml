@@ -2,12 +2,15 @@
 name = "nekoland"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80.1"
+rust-version = "1.82"
 
 [dependencies]
 bitflags = "2.2.1"
+serde = { version = "1", features = ["derive"] }
 smithay-drm-extras = { version = "0.1.0", default-features = false }
+toml = "0.8"
 tracing = "0.1"
+xcursor = "0.3"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
 [dependencies.smithay]
@@ -21,5 +24,6 @@ features = [
     "backend_udev",
     "backend_winit",
     "wayland_frontend",
+    "xwayland",
     "desktop",
 ]

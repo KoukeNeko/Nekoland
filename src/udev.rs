@@ -3,7 +3,7 @@
 //! shortcut: one GPU, and the connectors found at startup; hotplug and a second GPU need
 //! the udev monitor and per-device state that Smithay's anvil has.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Mutex, time::Duration};
 
 use smithay::{
     backend::{
@@ -15,19 +15,21 @@ use smithay::{
             compositor::FrameFlags,
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            element::{solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, Id, Kind},
+            element::{
+                memory::MemoryRenderBufferRenderElement, surface::render_elements_from_surface_tree, Kind,
+            },
             gles::GlesRenderer,
-            utils::CommitCounter,
+            ImportDma, ImportMemWl,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{all_gpus, primary_gpu},
     },
-    desktop::space::{space_render_elements, SpaceRenderElements},
+    input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     output::{Mode, Output, PhysicalProperties},
     reexports::{
         calloop::{
@@ -38,16 +40,18 @@ use smithay::{
         input::Libinput,
         rustix::fs::OFlags,
     },
-    utils::{DeviceFd, Rectangle},
+    utils::{DeviceFd, IsAlive, Physical, Point},
+    wayland::{compositor::with_states, dmabuf::DmabufFeedbackBuilder},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
 
-use crate::{CalloopData, Nekoland};
+use crate::{
+    cursor::Cursors,
+    render::{scene_elements, SceneElement, CLEAR_COLOR},
+    CalloopData, Nekoland,
+};
 
-const CLEAR_COLOR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
-const CURSOR_SIZE: i32 = 12;
-const CURSOR_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 // How soon to look again when a frame had nothing new to show.
 const IDLE_REDRAW: Duration = Duration::from_millis(16);
 
@@ -55,19 +59,11 @@ type OutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
-smithay::backend::renderer::element::render_elements! {
-    OutputElement<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
-    Cursor=SolidColorRenderElement,
-}
-
 struct Udev {
     renderer: GlesRenderer,
     manager: OutputManager,
     surfaces: HashMap<crtc::Handle, (Surface, Output)>,
-    // shortcut: a plain square, whatever cursor the client asks for; drawing the
-    // client's cursor surface or a themed one replaces this.
-    cursor_id: Id,
+    cursors: Cursors,
 }
 
 type SharedUdev = Rc<RefCell<Udev>>;
@@ -119,11 +115,24 @@ pub fn init_udev(
         };
 
         let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
-        let drm_mode = *connector
-            .modes()
-            .iter()
-            .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or(connector.modes().first())
+        let modes = connector.modes();
+        let configured = state.config.mode_size().and_then(|size| {
+            let found = modes
+                .iter()
+                .filter(|mode| mode.size() == size)
+                .max_by_key(|mode| mode.vrefresh());
+            if found.is_none() {
+                warn!("{name} has no {}x{} mode", size.0, size.1);
+            }
+            found
+        });
+        let drm_mode = *configured
+            .or_else(|| {
+                modes
+                    .iter()
+                    .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+            })
+            .or(modes.first())
             .ok_or("connector has no modes")?;
         let mode = Mode::from(drm_mode);
         let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
@@ -150,7 +159,7 @@ pub fn init_udev(
         state.space.map_output(&output, (x, 0));
 
         let surface = manager
-            .initialize_output::<GlesRenderer, OutputElement>(
+            .initialize_output::<GlesRenderer, SceneElement>(
                 crtc,
                 drm_mode,
                 &[connector.handle()],
@@ -171,8 +180,29 @@ pub fn init_udev(
         renderer,
         manager,
         surfaces,
-        cursor_id: Id::new(),
+        cursors: Cursors::load(),
     }));
+
+    // Clients that draw with the GPU hand their buffers over as dmabufs.
+    {
+        let backend = udev.borrow();
+        state.shm_state.update_formats(backend.renderer.shm_formats());
+        let node = DrmNode::from_path(&gpu_path)?;
+        let node = node
+            .node_with_type(NodeType::Render)
+            .and_then(Result::ok)
+            .unwrap_or(node);
+        let feedback =
+            DmabufFeedbackBuilder::new(node.dev_id(), backend.renderer.dmabuf_formats()).build()?;
+        // The global lives as long as the compositor does.
+        let _global = state
+            .dmabuf_state
+            .create_global_with_default_feedback::<Nekoland>(&data.display_handle, &feedback);
+        let importer = udev.clone();
+        state.dmabuf_import = Some(Box::new(move |dmabuf| {
+            importer.borrow_mut().renderer.import_dmabuf(dmabuf, None).is_ok()
+        }));
+    }
 
     let mut libinput =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
@@ -224,8 +254,12 @@ pub fn init_udev(
     let loop_handle = handle.clone();
     handle.insert_idle(move |data| render_all(&udev, data, &loop_handle));
 
-    // The session has to outlive the event loop, which owns everything else.
-    std::mem::forget(session);
+    // The state keeps the session alive, which has to outlive everything opened through it.
+    data.state.switch_vt = Some(Box::new(move |vt| {
+        if let Err(err) = session.change_vt(vt) {
+            warn!("could not switch to VT {vt}: {err}");
+        }
+    }));
 
     Ok(())
 }
@@ -250,14 +284,14 @@ fn render(
     let Udev {
         renderer,
         surfaces,
-        cursor_id,
+        cursors,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
         return;
     };
 
-    let queued = draw(state, renderer, surface, output, cursor_id).unwrap_or_else(|err| {
+    let queued = draw(state, renderer, surface, output, cursors).unwrap_or_else(|err| {
         warn!("render: {err}");
         false
     });
@@ -286,7 +320,7 @@ fn draw(
     renderer: &mut GlesRenderer,
     surface: &mut Surface,
     output: &Output,
-    cursor_id: &Id,
+    cursors: &mut Cursors,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let output_origin = state
         .space
@@ -298,21 +332,11 @@ fn draw(
         .get_pointer()
         .ok_or("seat has no pointer")?
         .current_location();
-    let cursor = (pointer - output_origin.to_f64()).to_physical(1.0).to_i32_round();
+    let pointer = (pointer - output_origin.to_f64()).to_physical(1.0).to_i32_round();
 
-    // Front to back: the cursor is above every window.
-    let mut elements = vec![OutputElement::Cursor(SolidColorRenderElement::new(
-        cursor_id.clone(),
-        Rectangle::new(cursor, (CURSOR_SIZE, CURSOR_SIZE).into()),
-        CommitCounter::default(),
-        CURSOR_COLOR,
-        Kind::Unspecified,
-    ))];
-    elements.extend(
-        space_render_elements(renderer, [&state.space], output, 1.0)?
-            .into_iter()
-            .map(OutputElement::Space),
-    );
+    // Front to back: the cursor is above everything else.
+    let mut elements = cursor_elements(state, renderer, cursors, pointer);
+    elements.extend(scene_elements(state, renderer, output)?);
 
     let is_empty = surface
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
@@ -323,4 +347,49 @@ fn draw(
     }
     surface.queue_frame(()).map_err(|err| err.to_string())?;
     Ok(true)
+}
+
+/// The cursor a client drew itself, or the theme's picture for the one it named.
+fn cursor_elements(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    cursors: &mut Cursors,
+    pointer: Point<i32, Physical>,
+) -> Vec<SceneElement> {
+    let icon = match &state.cursor_status {
+        CursorImageStatus::Hidden => return Vec::new(),
+        CursorImageStatus::Surface(surface) if surface.alive() => {
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<Mutex<CursorImageAttributes>>()
+                    .map(|attributes| attributes.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let location = pointer - hotspot.to_physical(1);
+            return render_elements_from_surface_tree(renderer, surface, location, 1.0, 1.0, Kind::Cursor);
+        }
+        // A client that went away leaves its cursor behind; fall back to the arrow.
+        CursorImageStatus::Surface(_) => CursorIcon::Default,
+        CursorImageStatus::Named(icon) => *icon,
+    };
+
+    let Some(image) = cursors.get(icon) else {
+        return Vec::new();
+    };
+    let location = (pointer - image.hotspot).to_f64();
+    MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        location,
+        &image.buffer,
+        None,
+        None,
+        None,
+        Kind::Cursor,
+    )
+    .map(|element| vec![SceneElement::Picture(element)])
+    .unwrap_or_else(|err| {
+        warn!("cursor: {err}");
+        Vec::new()
+    })
 }

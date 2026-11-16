@@ -1,11 +1,16 @@
 #![allow(irrefutable_let_patterns)]
 
+mod config;
+mod cursor;
+mod focus;
 mod handlers;
 
 mod grabs;
 mod input;
+mod render;
 mod state;
 mod udev;
+mod windows;
 mod winit;
 
 use smithay::reexports::{
@@ -26,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().init();
     }
 
-    let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
 
     let display: Display<Nekoland> = Display::new()?;
     let display_handle = display.handle();
@@ -44,17 +49,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::udev::init_udev(&mut event_loop, &mut data)?;
     }
 
-    let mut args = std::env::args().skip(1);
-    let flag = args.next();
-    let arg = args.next();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let command = match arguments.as_slice() {
+        [flag, command] if flag == "-c" || flag == "--command" => Some(command.clone()),
+        _ => None,
+    };
 
-    match (flag.as_deref(), arg) {
-        (Some("-c") | Some("--command"), Some(command)) => {
-            std::process::Command::new(command).spawn().ok();
-        }
-        _ => {
-            std::process::Command::new("foot").spawn().ok();
-        }
+    let config = &data.state.config;
+    config.autostart.iter().for_each(|command| config::spawn(command));
+    match &command {
+        Some(command) => config::spawn(command),
+        // Something to start from, when nothing else was asked for.
+        None if config.autostart.is_empty() => config::spawn(&config.terminal),
+        None => {}
     }
 
     event_loop.run(None, &mut data, move |_| {

@@ -1,18 +1,18 @@
 use smithay::{
     delegate_layer_shell,
-    desktop::{layer_map_for_output, LayerSurface, Space, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType},
     output::Output,
     reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
     wayland::{
         compositor::with_states,
         shell::wlr_layer::{
-            Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
-            WlrLayerShellState,
+            KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData,
+            WlrLayerShellHandler, WlrLayerShellState,
         },
     },
 };
 
-use crate::Nekoland;
+use crate::{state::ABOVE_WINDOWS, Nekoland};
 
 impl WlrLayerShellHandler for Nekoland {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
@@ -50,35 +50,59 @@ impl WlrLayerShellHandler for Nekoland {
                 map.unmap_layer(&layer);
             }
         }
+
+        if self.keyboard_is_on(surface.wl_surface()) {
+            self.focus_top_window();
+        }
     }
 }
 
 delegate_layer_shell!(Nekoland);
 
-/// Lays the layer surfaces of the output out again, and answers a new one's first commit.
-pub fn handle_commit(space: &Space<Window>, surface: &WlSurface) {
-    let Some(output) = space.outputs().find(|output| {
-        layer_map_for_output(output)
+impl Nekoland {
+    /// Lays the layer surfaces of the output out again, answers a new one's first
+    /// commit, and gives the keyboard to one that asks for all of it.
+    pub fn layer_commit(&mut self, surface: &WlSurface) {
+        let Some(output) = self
+            .space
+            .outputs()
+            .find(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some()
+            })
+            .cloned()
+        else {
+            return;
+        };
+
+        let initial_configure_sent = with_states(surface, |states| {
+            states
+                .data_map
+                .get::<LayerSurfaceData>()
+                .map(|data| data.lock().unwrap().initial_configure_sent)
+                .unwrap_or(true)
+        });
+
+        // Arranged before the first configure, so that it carries the size the client asked for.
+        let mut map = layer_map_for_output(&output);
+        map.arrange();
+        let Some(layer) = map
             .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-            .is_some()
-    }) else {
-        return;
-    };
+            .cloned()
+        else {
+            return;
+        };
+        drop(map);
 
-    let initial_configure_sent = with_states(surface, |states| {
-        states
-            .data_map
-            .get::<LayerSurfaceData>()
-            .map(|data| data.lock().unwrap().initial_configure_sent)
-            .unwrap_or(true)
-    });
-
-    // Arranged before the first configure, so that it carries the size the client asked for.
-    let mut map = layer_map_for_output(output);
-    map.arrange();
-    if !initial_configure_sent {
-        if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+        if !initial_configure_sent {
             layer.layer_surface().send_configure();
+        }
+
+        let wants_keyboard = layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+            && ABOVE_WINDOWS.contains(&layer.layer());
+        if wants_keyboard && !self.keyboard_is_on(surface) {
+            self.set_keyboard_focus(Some(surface.clone().into()));
         }
     }
 }

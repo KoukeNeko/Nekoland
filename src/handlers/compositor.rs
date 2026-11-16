@@ -15,7 +15,7 @@ use smithay::{
     },
 };
 
-use super::{layer_shell, xdg_shell};
+use super::xdg_shell;
 
 impl CompositorHandler for Nekoland {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -23,7 +23,10 @@ impl CompositorHandler for Nekoland {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        &client
+            .get_data::<ClientState>()
+            .expect("a client connected without client data")
+            .compositor_state
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -33,17 +36,14 @@ impl CompositorHandler for Nekoland {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
-                .space
-                .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
-            {
+            if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+                self.place_new_window(&window);
             }
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
-        layer_shell::handle_commit(&self.space, surface);
+        self.layer_commit(surface);
         resize_grab::handle_commit(&mut self.space, surface);
     }
 }

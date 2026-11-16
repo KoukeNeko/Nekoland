@@ -1,8 +1,6 @@
 use smithay::{
     backend::{
-        renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer,
-        },
+        renderer::damage::OutputDamageTracker,
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -10,7 +8,10 @@ use smithay::{
     utils::{Rectangle, Transform},
 };
 
-use crate::{CalloopData, Nekoland};
+use crate::{
+    render::{scene_elements, CLEAR_COLOR},
+    CalloopData, Nekoland,
+};
 
 pub fn init_winit(
     event_loop: &mut EventLoop<CalloopData>,
@@ -69,23 +70,10 @@ pub fn init_winit(
 
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    smithay::desktop::space::render_output::<
-                        _,
-                        WaylandSurfaceRenderElement<GlesRenderer>,
-                        _,
-                        _,
-                    >(
-                        &output,
-                        renderer,
-                        &mut framebuffer,
-                        1.0,
-                        0,
-                        [&state.space],
-                        &[],
-                        &mut damage_tracker,
-                        [0.1, 0.1, 0.1, 1.0],
-                    )
-                    .unwrap();
+                    let elements = scene_elements(state, renderer, &output).unwrap();
+                    damage_tracker
+                        .render_output(renderer, &mut framebuffer, 0, &elements, CLEAR_COLOR)
+                        .unwrap();
                 }
                 backend.submit(Some(&[damage])).unwrap();
 
