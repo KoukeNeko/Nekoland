@@ -1148,9 +1148,10 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
         desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted, picture));
         return;
     }
+    // Its card, as for any file, stands in until the picture is read.
+    desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted.clone(), picture));
     let room = look_room(size) * text::picture_scale();
     desktop.reading = Some((wanted, stacks::read_on_a_thread(item.path.clone(), room)));
-    desktop.quick_look = None;
 }
 
 /// Keeps an icon for each item, its kind's at first, then its picture once that is read on
