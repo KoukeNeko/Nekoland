@@ -381,17 +381,40 @@ fn choice_row(
 fn scale_row(
     title: &str,
     value: f64,
-    (low, high, step): (f64, f64, f64),
+    range: (f64, f64, f64),
     changed: impl Fn(f64) + 'static,
 ) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&slider(value, range, changed));
+    row
+}
+
+/// A row with a slider from 0 to 1 on it, its value at its left as a percentage.
+fn percent_row(title: &str, value: f64, changed: impl Fn(f64) + 'static) -> adw::ActionRow {
+    let percent = |value: f64| format!("{:.0}%", value * 100.0);
+    let label = gtk::Label::builder()
+        .label(percent(value))
+        .xalign(1.0)
+        .width_chars(4)
+        .css_classes(["dim-label", "numeric"])
+        .build();
+    let shown = label.clone();
+    let slider = slider(value, (0.0, 1.0, 0.05), move |value| {
+        shown.set_label(&percent(value));
+        changed(value);
+    });
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&line(8, &[label.upcast_ref(), slider.upcast_ref()]));
+    row
+}
+
+fn slider(value: f64, (low, high, step): (f64, f64, f64), changed: impl Fn(f64) + 'static) -> gtk::Scale {
     let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, low, high, step);
     scale.set_value(value);
     scale.set_width_request(220);
     scale.set_valign(gtk::Align::Center);
     scale.connect_value_changed(move |scale| changed(scale.value()));
-    let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(&scale);
-    row
+    scale
 }
 
 /// The choices of how long, in seconds, the computer waits idle before it locks the screen,
@@ -968,19 +991,17 @@ fn glass_group(
     opacity_changed: impl Fn(f64) + 'static,
 ) -> adw::PreferencesGroup {
     let glass = group(title);
-    glass.add(&scale_row(
+    glass.add(&percent_row(
         "不透明度",
         config.number(&format!("{key}_opacity"), opacity),
-        (0.0, 1.0, 0.05),
         move |opacity| {
             set(&format!("{key}_opacity = {opacity:.2}"));
             opacity_changed(opacity);
         },
     ));
-    glass.add(&scale_row(
+    glass.add(&percent_row(
         "模糊程度",
         config.number(&format!("{key}_blur"), 0.5),
-        (0.0, 1.0, 0.05),
         move |blur| set(&format!("{key}_blur = {blur:.2}")),
     ));
     glass

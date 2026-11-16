@@ -39,7 +39,7 @@ use smithay::{
 };
 
 /// How many times the scene is halved. Each one roughly doubles how far the blur reaches.
-const LEVELS: usize = 4;
+const LEVELS: usize = 5;
 /// How far apart the samples of a pass are, in texels of the smaller texture, with the
 /// blur as strong as the configuration can make it.
 const MAX_SPREAD: f32 = 4.0;
