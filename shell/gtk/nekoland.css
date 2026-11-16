@@ -199,6 +199,29 @@ progressbar > trough {
   box-shadow: none;
 }
 
+/* GTK's font chooser: its list on rounded corners with no frame, its rows as a sidebar's,
+ * and its search field and filter button one filled field. */
+fontchooser scrolledwindow.frame {
+  border: none;
+  border-radius: 12px;
+}
+fontchooser listview {
+  padding: 4px;
+  border-radius: 12px;
+}
+fontchooser listview > row {
+  border-radius: 8px;
+}
+fontchooser listview > row:selected {
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+}
+fontchooser .linked > menubutton > button {
+  min-height: 36px;
+  background-color: var(--nekoland-fill);
+  box-shadow: none;
+}
+
 /* One of two states that is on is solid ink, as what is chosen is. */
 button.toggle:checked {
   background-color: var(--nekoland-ink);
