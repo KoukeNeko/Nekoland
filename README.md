@@ -39,6 +39,7 @@ wallpaper and an input method. Every key is optional:
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
 | `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
+| `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 
 The Settings application changes most of these while Nekoland runs (see below);
@@ -52,8 +53,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   others with windows open, and after another the kept folders, the minimized windows,
   each a live picture to click back, and the Trash. Icons are trimmed of the margins their theme draws and shown
   at one size, as the Mac's are. A dot marks those that run, a longer one the active
-  one. Pointing at an icon lifts it and names it; a click starts the application, which
-  breathes until its window shows, or brings its windows forward, from another desktop
+  one. As the pointer passes over the icons they grow, the nearest most, and the Dock
+  widens for them, as the Mac's magnification does; with that off, pointing at an icon
+  lifts it. Either way it is named; a click starts the application, which breathes until its window shows, or brings its windows forward, from another desktop
   or minimized too. Resting on a running application shows a live picture of each of
   its windows, to go to one or close it. A right click lists its windows and offers a
   new window, keeping it in the Dock, hiding and quitting. Kept icons are dragged to

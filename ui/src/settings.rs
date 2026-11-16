@@ -170,6 +170,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     window.set_apps_view(index(&APPS_VIEWS, "apps_view"));
     window.set_dock_glass(flag("dock_glass"));
+    window.set_dock_magnify(flag("dock_magnify"));
+    window.set_dock_magnify_scale(
+        config
+            .get("dock_magnify_scale")
+            .and_then(toml::Value::as_float)
+            .unwrap_or(1.0) as f32,
+    );
     window.set_clock_24h(flag("clock_24h"));
     window.set_clock_weekday(flag("clock_weekday"));
     window.set_clock_seconds(flag("clock_seconds"));
@@ -252,6 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         set(&format!("wallpaper_mode = {:?}", WALLPAPER_MODES[mode as usize]))
     });
     window.on_pointer_speed_changed(|speed| set(&format!("pointer_speed = {speed:.2}")));
+    window.on_magnify_scale_changed(|scale| set(&format!("dock_magnify_scale = {scale:.2}")));
     {
         let autostart = autostart.clone();
         window.on_wallpaper_chosen(move |chosen| {

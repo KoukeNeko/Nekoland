@@ -251,6 +251,8 @@ export component Settings inherits Window {
 
     in-out property <int> apps-view;
     in-out property <bool> dock-glass;
+    in-out property <bool> dock-magnify;
+    in-out property <float> dock-magnify-scale;
     in-out property <bool> clock-24h;
     in-out property <bool> clock-weekday;
     in-out property <bool> clock-seconds;
@@ -279,6 +281,7 @@ export component Settings inherits Window {
     callback wallpaper-mode-changed(int);
     callback dark-changed(bool);
     callback pointer-speed-changed(float);
+    callback magnify-scale-changed(float);
     callback volume-changed(float);
     callback muted-changed(bool);
     callback autostart-removed(int);
@@ -581,6 +584,26 @@ export component Settings inherits Window {
                                         label: "毛玻璃";
                                         checked <=> dock-glass;
                                         toggled(on) => { setting-changed("dock_glass", on); }
+                                    }
+                                }
+                                Row {
+                                    title: "放大";
+                                    Switch {
+                                        label: "放大";
+                                        checked <=> dock-magnify;
+                                        toggled(on) => { setting-changed("dock_magnify", on); }
+                                    }
+                                }
+                                if dock-magnify: Row {
+                                    title: "放大程度";
+                                    Slider {
+                                        width: 200px;
+                                        label: "放大程度";
+                                        minimum: 1.2;
+                                        maximum: 2;
+                                        step: 0.1;
+                                        value <=> dock-magnify-scale;
+                                        changed(value) => { magnify-scale-changed(value); }
                                     }
                                 }
                             }

@@ -37,6 +37,10 @@ pub struct Config {
     pub clock_seconds: bool,
     /// Whether the Dock is drawn on glass, or on its tint alone.
     pub dock_glass: bool,
+    /// Whether the Dock's icons grow as the pointer passes over them, as the Mac's do, and
+    /// how big the one under it grows, as a multiple of their size.
+    pub dock_magnify: bool,
+    pub dock_magnify_scale: f64,
     pub natural_scroll: bool,
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
@@ -226,6 +230,8 @@ impl Default for Config {
             clock_weekday: true,
             clock_seconds: false,
             dock_glass: true,
+            dock_magnify: true,
+            dock_magnify_scale: 1.6,
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
