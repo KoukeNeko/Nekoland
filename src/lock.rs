@@ -97,6 +97,11 @@ impl Nekoland {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
+        // An input method holding the keyboard would take the password, or compose it into
+        // something else: it is let go, and the locker gets the keys as typed.
+        if keyboard.is_grabbed() {
+            keyboard.unset_grab(self);
+        }
         if keyboard.current_focus() != focus {
             keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
         }
