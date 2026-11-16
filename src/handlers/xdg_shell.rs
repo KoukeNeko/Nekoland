@@ -15,7 +15,7 @@ use smithay::{
             Resource,
         },
     },
-    utils::{Rectangle, Serial},
+    utils::{Rectangle, Serial, SERIAL_COUNTER},
     wayland::{
         compositor::with_states,
         shell::xdg::{
@@ -87,6 +87,21 @@ impl XdgShellHandler for Nekoland {
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+    }
+
+    // The popup grab gives the keyboard back only at the next key; until then it would be on
+    // a surface that is gone, and no window would have it.
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        if keyboard.current_focus() != Some(KeyFocus::Wayland(surface.wl_surface().clone())) {
+            return;
+        }
+        if let Some(parent) = surface.get_parent_surface() {
+            let focus = Some(KeyFocus::Wayland(parent));
+            keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
+        }
     }
 
     fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {

@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 
 use smithay::{
-    desktop::{layer_map_for_output, Window, WindowSurface},
+    desktop::{find_popup_root_surface, layer_map_for_output, Window, WindowSurface},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
         wayland_server::protocol::wl_surface::WlSurface,
@@ -155,7 +155,17 @@ impl Nekoland {
     }
 
     pub fn focused_window(&self) -> Option<Window> {
-        let focus = self.seat.get_keyboard()?.current_focus()?;
+        let mut focus = self.seat.get_keyboard()?.current_focus()?;
+        // A menu open in a window has the keyboard for it; the window stays the focused one.
+        if let KeyFocus::Wayland(surface) = &focus {
+            if let Some(root) = self
+                .popups
+                .find_popup(surface)
+                .and_then(|popup| find_popup_root_surface(&popup).ok())
+            {
+                focus = KeyFocus::Wayland(root);
+            }
+        }
         self.space
             .elements()
             .find(|window| key_focus_of(window) == focus)

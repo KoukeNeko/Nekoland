@@ -42,6 +42,8 @@ struct Banner {
 
 #[derive(Default)]
 pub struct Notices {
+    /// Do Not Disturb, from the control center: no banners come up.
+    pub(crate) quiet: bool,
     banners: Vec<Banner>,
     hovered: Option<u32>,
 }
@@ -189,6 +191,9 @@ impl Nekoland {
     /// Takes a notification in, or takes one away.
     pub fn notice_event(&mut self, event: &Event) {
         match event {
+            // shortcut: what comes in while quiet is not kept; keep it once there is a list of
+            // past notifications to show it in.
+            Event::Notify(_) if self.notices.quiet => {}
             Event::Notify(notification) => {
                 let deadline = notification.timeout.map(|timeout| Instant::now() + timeout);
                 match self

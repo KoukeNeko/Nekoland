@@ -1,7 +1,8 @@
 //! The system's own items in the menu bar, as on the Mac: the sound, and the network; and
-//! what the control center reads besides, the sound outputs and the display's brightness.
+//! what the control center reads besides: the sound outputs and inputs, the microphone's volume, the display's
+//! brightness, the Wi-Fi networks, whether there is Bluetooth, and what plays.
 
-use std::{net::Ipv4Addr, path::Path, process::Command, time::Duration};
+use std::{collections::HashMap, net::Ipv4Addr, path::Path, process::Command, time::Duration};
 
 use smithay::reexports::calloop::channel::Sender;
 
@@ -32,7 +33,7 @@ pub fn watch_sound(events: Sender<Event>) {
         .spawn(move || {
             let mut last = None;
             loop {
-                let now = read_volume();
+                let now = read_volume(DEFAULT_SINK);
                 if now != last {
                     if events.send(Event::Sound(now)).is_err() {
                         return;
@@ -47,11 +48,12 @@ pub fn watch_sound(events: Sender<Event>) {
     }
 }
 
-fn read_volume() -> Option<Volume> {
-    let output = Command::new("wpctl")
-        .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
-        .output()
-        .ok()?;
+pub const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
+pub const DEFAULT_SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
+
+/// The volume of `target`, the default output or input as wpctl names them.
+pub fn read_volume(target: &str) -> Option<Volume> {
+    let output = Command::new("wpctl").args(["get-volume", target]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -73,53 +75,59 @@ fn parse_volume(text: &str) -> Option<Volume> {
     })
 }
 
-/// A device PipeWire plays sound on.
+/// A device PipeWire plays sound on, or records it from.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sink {
+pub struct AudioDevice {
     pub id: u32,
     pub description: String,
     pub default: bool,
 }
 
-/// The sound outputs, the default one marked; none without PipeWire.
-pub fn read_sinks() -> Vec<Sink> {
+/// The sound outputs and inputs, the default of each marked; none without PipeWire.
+pub fn read_audio_devices() -> (Vec<AudioDevice>, Vec<AudioDevice>) {
     let Ok(output) = Command::new("pw-dump").output() else {
-        return Vec::new();
+        return Default::default();
     };
-    parse_sinks(&String::from_utf8_lossy(&output.stdout))
+    parse_audio_devices(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn parse_sinks(dump: &str) -> Vec<Sink> {
+fn parse_audio_devices(dump: &str) -> (Vec<AudioDevice>, Vec<AudioDevice>) {
     use serde_json::Value;
     let objects: Vec<Value> = match serde_json::from_str(dump) {
         Ok(objects) => objects,
         Err(err) => {
             tracing::warn!("pw-dump: {err}");
-            return Vec::new();
+            return Default::default();
         }
     };
-    // PipeWire keeps the default by node name, in its "default" metadata.
-    let default = objects
-        .iter()
-        .filter(|object| object["props"]["metadata.name"] == "default")
-        .flat_map(|object| object["metadata"].as_array().into_iter().flatten())
-        .find(|entry| entry["key"] == "default.audio.sink")
-        .and_then(|entry| entry["value"]["name"].as_str());
-    objects
-        .iter()
-        .filter_map(|object| {
-            let props = &object["info"]["props"];
-            if props["media.class"] != "Audio/Sink" {
-                return None;
-            }
-            let name = props["node.name"].as_str()?;
-            Some(Sink {
-                id: u32::try_from(object["id"].as_u64()?).ok()?,
-                description: props["node.description"].as_str().unwrap_or(name).to_string(),
-                default: Some(name) == default,
+    let devices = |class: &str, default_key: &str| {
+        // PipeWire keeps the default by node name, in its "default" metadata.
+        let default = objects
+            .iter()
+            .filter(|object| object["props"]["metadata.name"] == "default")
+            .flat_map(|object| object["metadata"].as_array().into_iter().flatten())
+            .find(|entry| entry["key"] == default_key)
+            .and_then(|entry| entry["value"]["name"].as_str());
+        objects
+            .iter()
+            .filter_map(|object| {
+                let props = &object["info"]["props"];
+                if props["media.class"] != class {
+                    return None;
+                }
+                let name = props["node.name"].as_str()?;
+                Some(AudioDevice {
+                    id: u32::try_from(object["id"].as_u64()?).ok()?,
+                    description: props["node.description"].as_str().unwrap_or(name).to_string(),
+                    default: Some(name) == default,
+                })
             })
-        })
-        .collect()
+            .collect()
+    };
+    (
+        devices("Audio/Sink", "default.audio.sink"),
+        devices("Audio/Source", "default.audio.source"),
+    )
 }
 
 /// The display's brightness in percent, from its backlight; none without one.
@@ -143,6 +151,204 @@ fn parse_brightness(text: &str) -> Option<u32> {
         .strip_suffix('%')?
         .parse()
         .ok()
+}
+
+/// Runs a program on a thread of its own, which waits for it so that it leaves nothing
+/// behind; what it is given goes to it as it is, not through a shell.
+pub fn run(program: &str, args: &[&str]) {
+    let mut command = Command::new(program);
+    command.args(args);
+    let program = program.to_string();
+    std::thread::spawn(move || match command.status() {
+        Ok(status) if !status.success() => tracing::warn!("{program}: {status}"),
+        Ok(_) => {}
+        Err(err) => tracing::warn!("{program}: {err}"),
+    });
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wifi {
+    pub on: bool,
+    pub networks: Vec<WifiNetwork>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal: u32,
+    pub active: bool,
+}
+
+/// How many networks the control center lists, the strongest.
+const WIFI_SHOWN: usize = 6;
+
+/// Wi-Fi as NetworkManager sees it; none without NetworkManager or a wireless device.
+pub fn read_wifi() -> Option<Wifi> {
+    let nmcli = |args: &[&str]| {
+        let output = Command::new("nmcli").args(args).output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let on = nmcli(&["-t", "-f", "WIFI", "radio"])?.trim() == "enabled";
+    let list = nmcli(&[
+        "-t",
+        "-f",
+        "IN-USE,SIGNAL,SSID",
+        "device",
+        "wifi",
+        "list",
+        "--rescan",
+        "no",
+    ])?;
+    Some(Wifi {
+        on,
+        networks: parse_wifi(&list),
+    })
+}
+
+/// nmcli's terse lines, "*:72:Home", with colons in the name escaped; a network heard
+/// through several access points is listed once, by its strongest.
+fn parse_wifi(text: &str) -> Vec<WifiNetwork> {
+    let mut networks: Vec<WifiNetwork> = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(in_use), Some(signal), Some(ssid)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let ssid = ssid.replace("\\:", ":").replace("\\\\", "\\");
+        let Ok(signal) = signal.parse() else {
+            continue;
+        };
+        if ssid.is_empty() {
+            continue;
+        }
+        let network = WifiNetwork {
+            ssid,
+            signal,
+            active: in_use == "*",
+        };
+        match networks.iter_mut().find(|known| known.ssid == network.ssid) {
+            Some(known) => {
+                known.active |= network.active;
+                known.signal = known.signal.max(network.signal);
+            }
+            None => networks.push(network),
+        }
+    }
+    networks.sort_by_key(|network| (!network.active, std::cmp::Reverse(network.signal)));
+    networks.truncate(WIFI_SHOWN);
+    networks
+}
+
+/// Whether the computer has a Bluetooth adapter.
+pub fn has_bluetooth() -> bool {
+    std::fs::read_dir("/sys/class/bluetooth").is_ok_and(|mut adapters| adapters.next().is_some())
+}
+
+/// A program playing, or able to play, through MPRIS.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Player {
+    pub bus: String,
+    pub app: String,
+    pub title: String,
+    pub artist: String,
+    /// A local picture of what plays, as its cover.
+    pub art: Option<String>,
+    pub playing: bool,
+}
+
+const MPRIS: &str = "org.mpris.MediaPlayer2";
+const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+
+/// The player to show: one that plays, or else the first with something to play.
+pub fn read_player() -> Option<Player> {
+    use zbus::{blocking::Connection, zvariant::OwnedValue};
+    let connection = Connection::session().ok()?;
+    let reply = connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "ListNames",
+            &(),
+        )
+        .ok()?;
+    let (names,) = reply.body().deserialize::<(Vec<String>,)>().ok()?;
+    let all = |bus: &str, interface: &str| -> Option<HashMap<String, OwnedValue>> {
+        let reply = connection
+            .call_method(
+                Some(bus),
+                MPRIS_PATH,
+                Some("org.freedesktop.DBus.Properties"),
+                "GetAll",
+                &(interface,),
+            )
+            .ok()?;
+        Some(
+            reply
+                .body()
+                .deserialize::<(HashMap<String, OwnedValue>,)>()
+                .ok()?
+                .0,
+        )
+    };
+    let mut players: Vec<Player> = names
+        .iter()
+        .filter(|name| name.starts_with(&format!("{MPRIS}.")))
+        .filter_map(|bus| {
+            let player = all(bus, &format!("{MPRIS}.Player"))?;
+            let text = |value: &OwnedValue| String::try_from(value.clone()).ok();
+            let metadata: HashMap<String, OwnedValue> = player
+                .get("Metadata")
+                .and_then(|value| HashMap::try_from(value.clone()).ok())
+                .unwrap_or_default();
+            let title = metadata.get("xesam:title").and_then(text).unwrap_or_default();
+            if title.is_empty() {
+                return None;
+            }
+            let artist = metadata
+                .get("xesam:artist")
+                .and_then(|value| Vec::<String>::try_from(value.clone()).ok())
+                .map(|artists| artists.join("、"))
+                .unwrap_or_default();
+            let art = metadata
+                .get("mpris:artUrl")
+                .and_then(text)
+                .and_then(|url| url.strip_prefix("file://").map(String::from));
+            let app = all(bus, MPRIS)
+                .and_then(|root| root.get("Identity").and_then(text))
+                .unwrap_or_default();
+            Some(Player {
+                bus: bus.clone(),
+                app,
+                title,
+                artist,
+                art,
+                playing: player.get("PlaybackStatus").and_then(text).as_deref() == Some("Playing"),
+            })
+        })
+        .collect();
+    players.sort_by_key(|player| !player.playing);
+    players.into_iter().next()
+}
+
+/// Asks a player to `method`, as PlayPause or Next.
+pub fn player_command(bus: &str, method: &str) {
+    let connection = match zbus::blocking::Connection::session() {
+        Ok(connection) => connection,
+        Err(err) => return tracing::warn!("{bus}: {err}"),
+    };
+    if let Err(err) = connection.call_method(
+        Some(bus),
+        MPRIS_PATH,
+        Some(&*format!("{MPRIS}.Player")),
+        method,
+        &(),
+    ) {
+        tracing::warn!("{bus}: {method}: {err}");
+    }
 }
 
 /// The interface the computer is most likely online through: the first one that is up,
@@ -201,7 +407,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sinks_are_read_from_pw_dump() {
+    fn audio_devices_are_read_from_pw_dump() {
         let dump = r#"[
             {"id": 30, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
              "metadata": [{"key": "default.audio.sink", "value": {"name": "alsa_output.usb"}}]},
@@ -210,17 +416,49 @@ mod tests {
             {"id": 43, "info": {"props": {"media.class": "Audio/Source", "node.name": "alsa_input.pci"}}}
         ]"#;
         assert_eq!(
-            parse_sinks(dump),
-            vec![
-                Sink {
-                    id: 41,
-                    description: "Built-in Audio".into(),
+            parse_audio_devices(dump),
+            (
+                vec![
+                    AudioDevice {
+                        id: 41,
+                        description: "Built-in Audio".into(),
+                        default: false
+                    },
+                    AudioDevice {
+                        id: 42,
+                        description: "alsa_output.usb".into(),
+                        default: true
+                    },
+                ],
+                vec![AudioDevice {
+                    id: 43,
+                    description: "alsa_input.pci".into(),
                     default: false
+                },]
+            )
+        );
+    }
+
+    #[test]
+    fn wifi_networks_are_read_from_nmcli() {
+        let list = "*:72:Home\n:40:Home\n:80:Caf\\:e\n:20:\n:55:Office\n";
+        assert_eq!(
+            parse_wifi(list),
+            vec![
+                WifiNetwork {
+                    ssid: "Home".into(),
+                    signal: 72,
+                    active: true
                 },
-                Sink {
-                    id: 42,
-                    description: "alsa_output.usb".into(),
-                    default: true
+                WifiNetwork {
+                    ssid: "Caf:e".into(),
+                    signal: 80,
+                    active: false
+                },
+                WifiNetwork {
+                    ssid: "Office".into(),
+                    signal: 55,
+                    active: false
                 },
             ]
         );

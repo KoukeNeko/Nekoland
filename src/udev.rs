@@ -43,7 +43,7 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle,
         },
-        drm::control::{crtc, Mode as DrmMode, ModeTypeFlags},
+        drm::control::{crtc, Device as _, Mode as DrmMode, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
     },
@@ -64,6 +64,9 @@ use crate::{
 // How soon to look again when a frame had nothing new to show.
 const IDLE_REDRAW: Duration = Duration::from_millis(16);
 
+// Night Shift's red, green and blue gains: warm, as an incandescent bulb is.
+const NIGHT: (f64, f64, f64) = (1.0, 0.82, 0.62);
+
 type OutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
@@ -78,6 +81,10 @@ struct Udev {
     glass: HashMap<crtc::Handle, Glass>,
     /// The outputs turned off while the screens are, to be drawn afresh when they come back.
     dark: HashSet<crtc::Handle>,
+    /// The outputs whose gamma can be set, by the length of their ramps.
+    gamma: HashMap<crtc::Handle, u32>,
+    /// The outputs given Night Shift's ramps, to set back when it is turned off.
+    warm: HashSet<crtc::Handle>,
     /// Each output's modes and size in millimetres, to choose from again as the settings change.
     displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
     /// The `mode` and `scale` settings the outputs were last set up with.
@@ -126,6 +133,7 @@ pub fn init_udev(
 
     let mut surfaces = HashMap::new();
     let mut displays = HashMap::new();
+    let mut gamma = HashMap::new();
     for event in <DrmScanner>::new().scan_connectors(manager.device())? {
         let DrmScanEvent::Connected {
             connector,
@@ -186,6 +194,13 @@ pub fn init_udev(
             )
             .map_err(|err| format!("could not set up {name}: {err}"))?;
         info!("{name}: {}x{}", mode.size.w, mode.size.h);
+        match manager.device().get_crtc(crtc) {
+            Ok(info) if info.gamma_length() > 1 => {
+                gamma.insert(crtc, info.gamma_length());
+            }
+            Ok(_) => {}
+            Err(err) => warn!("{name}: no gamma: {err}"),
+        }
         surfaces.insert(crtc, (surface, output));
         displays.insert(crtc, (modes.to_vec(), (width_mm, height_mm)));
     }
@@ -196,10 +211,13 @@ pub fn init_udev(
     let power_keys = crate::power::take_power_keys()
         .inspect_err(|err| warn!("logind keeps the power button and the lid: {err}"))
         .ok();
+    state.night_shift_available = !gamma.is_empty();
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
         dark: HashSet::new(),
         displays,
         applied: (state.config.mode.clone(), state.config.scale),
+        gamma,
+        warm: HashSet::new(),
         _power_keys: power_keys,
         glass: surfaces
             .keys()
@@ -277,9 +295,13 @@ pub fn init_udev(
                 if libinput.resume().is_err() {
                     warn!("libinput did not resume");
                 }
-                if let Err(err) = udev.borrow_mut().manager.activate(false) {
+                let mut backend = udev.borrow_mut();
+                if let Err(err) = backend.manager.activate(false) {
                     warn!("could not take the display back: {err}");
                 }
+                // Whoever had the display meanwhile may have left ramps of their own.
+                backend.warm.clear();
+                drop(backend);
                 render_all(&udev, data, &loop_handle);
             }
         })?;
@@ -328,15 +350,41 @@ fn render(
     }
     let Udev {
         renderer,
+        manager,
         surfaces,
         cursors,
         glass,
         dark,
+        gamma,
+        warm,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
         return;
     };
+
+    if let Some(&size) = gamma.get(&crtc) {
+        if state.night_shift != warm.contains(&crtc) {
+            let (r, g, b) = if state.night_shift { NIGHT } else { (1.0, 1.0, 1.0) };
+            let ramp = |gain: f64| -> Vec<u16> {
+                (0..size)
+                    .map(|i| (f64::from(i) / f64::from(size - 1) * gain * 65535.0).round() as u16)
+                    .collect()
+            };
+            match manager.device().set_gamma(crtc, &ramp(r), &ramp(g), &ramp(b)) {
+                Ok(()) if state.night_shift => {
+                    warm.insert(crtc);
+                }
+                Ok(()) => {
+                    warm.remove(&crtc);
+                }
+                Err(err) => {
+                    warn!("could not set the gamma of {}: {err}", output.name());
+                    gamma.remove(&crtc);
+                }
+            }
+        }
+    }
 
     // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
     let queued = if state.screens_off {

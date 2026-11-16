@@ -15,6 +15,10 @@ const POLL: Duration = Duration::from_secs(2);
 /// frames one after another.
 const SHARING_LINGER: Duration = Duration::from_secs(1);
 const DOT: f64 = 6.0;
+/// Each recorder's colour, as the Mac's.
+pub const SCREEN: (f64, f64, f64) = (0.69, 0.32, 0.87);
+pub const CAMERA: (f64, f64, f64) = (0.20, 0.78, 0.35);
+pub const MICROPHONE: (f64, f64, f64) = (1.0, 0.58, 0.0);
 const DOT_GAP: i32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -101,9 +105,9 @@ impl Nekoland {
 /// Draws the dots of what is in use, leftwards from `right`, and returns where they end.
 pub fn draw_dots(cr: &cairo::Context, in_use: InUse, mut right: i32, center: f64) -> i32 {
     let dots = [
-        (in_use.screen, (0.69, 0.32, 0.87)),
-        (in_use.camera, (0.20, 0.78, 0.35)),
-        (in_use.microphone, (1.0, 0.58, 0.0)),
+        (in_use.screen, SCREEN),
+        (in_use.camera, CAMERA),
+        (in_use.microphone, MICROPHONE),
     ];
     for (_, (r, g, b)) in dots.iter().filter(|(on, _)| *on) {
         cr.set_source_rgb(*r, *g, *b);

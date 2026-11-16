@@ -138,11 +138,17 @@ Nekoland draws the bar along the top itself, as the Mac does:
 - On the right: the status items programs register as StatusNotifierItems, with their
   menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
   center; the clock.
-- The control center, as the Mac's, opens a panel on the menus' glass: the network, which
-  turns Wi-Fi on or off through `nmcli`; dark, which sets the GSetting
-  `org.gnome.desktop.interface color-scheme`; the display's brightness, through
-  `brightnessctl`, when there is a backlight; the volume, its icon muting it; and the sound
-  output, a list of PipeWire's to choose the default from. A tile that is on is solid ink.
+- The control center, as the Mac's, opens a panel on the menus' glass. At its top, what is
+  recording, in the colours of the bar's dots. Then tiles: the network, whose list of
+  Wi-Fi networks joins one or turns Wi-Fi on or off through `nmcli`; Bluetooth, whether
+  there is an adapter (it lists no devices yet); Do Not Disturb, which keeps notifications
+  from coming up (they are not kept); dark, which sets the GSetting
+  `org.gnome.desktop.interface color-scheme`; Night Shift, warm gamma ramps on displays
+  that take them (not in a window); and a screenshot of the whole screen into Pictures,
+  through `grim`. Under them, the display's brightness, through `brightnessctl`, when
+  there is a backlight; the volume and the microphone, each icon muting it; the sound
+  output and input, lists of PipeWire's to choose the default from; and what plays, from
+  the first MPRIS player, with its cover and buttons. A tile that is on is solid ink.
 
 A click opens a menu; then moving across the bar opens the others without clicking. A
 press dragged onto an entry and let go chooses it. Submenus open beside their entry,

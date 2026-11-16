@@ -1,13 +1,15 @@
 //! The control center, as the Mac's: a panel of the menus' glass under its icon in the menu
-//! bar, with the network, light or dark, the display's brightness, the volume and where the
-//! sound plays. A tile that is on is solid ink, as anything chosen is in Nekoland.
+//! bar, with what is recording; the network, Bluetooth, Do Not Disturb, light or dark, Night
+//! Shift and a screenshot; the display's brightness, the volume and the microphone, where the
+//! sound plays and is recorded from, and what is playing. A tile that is on is solid ink, as
+//! anything chosen is in Nekoland.
 
 use std::{
     sync::mpsc::{self, Receiver},
     time::{Duration, Instant},
 };
 
-use cairo::Context;
+use cairo::{Context, ImageSurface};
 use smithay::{
     backend::renderer::element::Id,
     utils::{Logical, Point, Rectangle},
@@ -19,56 +21,117 @@ use crate::{
     menubar::{
         colors, font, network_icon, show_text, sound_icon, Colors, Overlay, MENU_BAR_HEIGHT, MENU_RADIUS,
     },
-    system::{self, Network, Sink, Volume},
+    privacy::{self, InUse},
+    system::{self, AudioDevice, Network, Player, Volume, Wifi},
     text::{self, Picture},
     Nekoland,
 };
 
-const WIDTH: i32 = 300;
+const WIDTH: i32 = 320;
 const PADDING: i32 = 12;
 const GAP: i32 = 8;
-const TILE_HEIGHT: i32 = 56;
+const TILE_HEIGHT: i32 = 52;
 const GROUP_HEIGHT: i32 = 64;
+/// A group's second slider, under its first.
+const SLIDER_ROW: i32 = 32;
+const IN_USE_ROW: i32 = 22;
 /// The output's row in its group, and the group's padding around it.
 const OUTPUT_ROW: i32 = 36;
-const OUTPUT_INSET: i32 = 4;
-const SINK_ROW: i32 = 30;
-const SINK_RULE: i32 = 9;
+const INSET: i32 = 4;
+/// A row of the lists that open, the networks and the outputs, and the rule above the last.
+const LIST_ROW: i32 = 30;
+const LIST_RULE: i32 = 9;
+const PLAYER_HEIGHT: i32 = 64;
+const ART: i32 = 40;
+const BUTTON: i32 = 28;
 const ICON: i32 = 16;
+/// A slider's knob, its radius.
+const KNOB: i32 = 7;
 const OPEN_TIME: f64 = 0.16;
 const EXPAND_TIME: f64 = 0.2;
 /// How much a tile shrinks while pressed.
 const PRESSED_SCALE: f64 = 0.97;
 /// How often a dragged slider tells the system, which takes a process each time.
 const SET_EVERY: Duration = Duration::from_millis(50);
+/// How often what the panel shows is read again while it is open.
+const READ_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Part {
+    InUse,
     Network,
+    Bluetooth,
+    Quiet,
     Dark,
+    Night,
+    Screenshot,
+    Wifi(usize),
+    WifiPower,
     Brightness,
     Mute,
     Volume,
+    MicrophoneMute,
+    Microphone,
     Output,
     Sink(usize),
+    Input,
+    Source(usize),
+    Player,
+    Previous,
+    PlayPause,
+    Next,
 }
 
-/// What is read off the compositor's thread when the panel opens.
+impl Part {
+    fn is_slider(self) -> bool {
+        matches!(self, Part::Brightness | Part::Volume | Part::Microphone)
+    }
+
+    fn is_tile(self) -> bool {
+        matches!(
+            self,
+            Part::Network | Part::Bluetooth | Part::Quiet | Part::Dark | Part::Night | Part::Screenshot
+        )
+    }
+}
+
+/// The lists that open in the panel, one at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum List {
+    Wifi,
+    Output,
+    Input,
+}
+
+/// What is read off the compositor's thread, when the panel opens and every `READ_EVERY`.
 struct Found {
     brightness: Option<u32>,
-    sinks: Vec<Sink>,
+    /// The sound outputs and inputs.
+    devices: (Vec<AudioDevice>, Vec<AudioDevice>),
+    wifi: Option<Wifi>,
+    microphone: Option<Volume>,
+    player: Option<Player>,
 }
 
 /// What the panel shows; it is drawn again when any of it changes.
 #[derive(Clone, PartialEq)]
 struct Shown {
     dark: bool,
+    quiet: bool,
+    night: bool,
+    in_use: InUse,
     network: Option<Network>,
+    wifi: Option<Wifi>,
     volume: Option<Volume>,
+    microphone: Option<Volume>,
     brightness: Option<u32>,
-    sinks: Vec<Sink>,
-    /// How far the outputs' list is open, in thousandths.
-    expansion: u32,
+    sinks: Vec<AudioDevice>,
+    sources: Vec<AudioDevice>,
+    player: Option<Player>,
+    /// How far each list is open, in thousandths.
+    wifi_open: u32,
+    output_open: u32,
+    input_open: u32,
     pressed: Option<Part>,
     hovered: Option<Part>,
 }
@@ -78,10 +141,22 @@ pub struct ControlCenter {
     x: i32,
     opened: Instant,
     found: Option<Receiver<Found>>,
+    // What decides where everything is, as of the last refresh.
+    in_use: InUse,
+    night_available: bool,
+    has_volume: bool,
+    bluetooth: bool,
     brightness: Option<u32>,
-    sinks: Vec<Sink>,
-    expanded: bool,
-    /// When the outputs' list last opened or closed.
+    sinks: Vec<AudioDevice>,
+    sources: Vec<AudioDevice>,
+    wifi: Option<Wifi>,
+    microphone: Option<Volume>,
+    player: Option<Player>,
+    /// The cover of what plays, by the path it was read from.
+    art: Option<(String, Option<ImageSurface>)>,
+    open: Option<List>,
+    /// The list closing as `open` opens, and when that began.
+    closing: Option<List>,
     toggled: Option<Instant>,
     pressed: Option<Part>,
     hovered: Option<Part>,
@@ -100,6 +175,15 @@ struct Layout {
     parts: Vec<(Part, Rectangle<i32, Logical>)>,
 }
 
+impl Layout {
+    fn find(&self, part: Part) -> Option<Rectangle<i32, Logical>> {
+        self.parts
+            .iter()
+            .find(|(found, _)| *found == part)
+            .map(|(_, rect)| *rect)
+    }
+}
+
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
     Rectangle::new((x, y).into(), (w, h).into())
 }
@@ -109,6 +193,29 @@ fn ease_out(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// What is recording, in the order the bar's dots are, with each one's colour.
+fn recording(in_use: InUse) -> Vec<(&'static str, (f64, f64, f64))> {
+    [
+        (in_use.microphone, "麥克風", privacy::MICROPHONE),
+        (in_use.camera, "相機", privacy::CAMERA),
+        (in_use.screen, "螢幕錄製", privacy::SCREEN),
+    ]
+    .into_iter()
+    .filter(|(on, ..)| *on)
+    .map(|(_, name, color)| (name, color))
+    .collect()
+}
+
+fn read_found() -> Found {
+    Found {
+        brightness: system::read_brightness(),
+        devices: system::read_audio_devices(),
+        wifi: system::read_wifi(),
+        microphone: system::read_volume(system::DEFAULT_SOURCE),
+        player: system::read_player(),
+    }
+}
+
 impl ControlCenter {
     pub(crate) fn dragging(&self) -> bool {
         self.dragging.is_some()
@@ -116,13 +223,13 @@ impl ControlCenter {
 
     fn new(anchor: Rectangle<i32, Logical>, output_width: i32) -> Self {
         let (send, found) = mpsc::channel();
+        // It stops once the panel closes and nobody takes what it reads.
         let spawned = std::thread::Builder::new()
             .name("nekoland-control".into())
             .spawn(move || {
-                let _ = send.send(Found {
-                    brightness: system::read_brightness(),
-                    sinks: system::read_sinks(),
-                });
+                while send.send(read_found()).is_ok() {
+                    std::thread::sleep(READ_EVERY);
+                }
             });
         if let Err(err) = &spawned {
             tracing::warn!("control center: {err}");
@@ -133,9 +240,19 @@ impl ControlCenter {
                 .max(6),
             opened: Instant::now(),
             found: spawned.is_ok().then_some(found),
+            in_use: InUse::default(),
+            night_available: false,
+            has_volume: false,
+            bluetooth: system::has_bluetooth(),
             brightness: None,
             sinks: Vec::new(),
-            expanded: false,
+            sources: Vec::new(),
+            wifi: None,
+            microphone: None,
+            player: None,
+            art: None,
+            open: None,
+            closing: None,
             toggled: None,
             pressed: None,
             hovered: None,
@@ -146,64 +263,174 @@ impl ControlCenter {
         }
     }
 
-    /// How far the outputs' list is open, from 0 to 1.
-    fn expansion(&self) -> f64 {
+    /// How far `list` is open, from 0 to 1.
+    fn expansion(&self, list: List) -> f64 {
         let progress = self.toggled.map_or(1.0, |toggled| {
             ease_out(toggled.elapsed().as_secs_f64() / EXPAND_TIME)
         });
-        if self.expanded {
+        if self.open == Some(list) {
             progress
-        } else {
+        } else if self.closing == Some(list) {
             1.0 - progress
+        } else {
+            0.0
         }
     }
 
-    fn layout(&self, volume: bool) -> Layout {
+    /// Opens `list`, or closes it if it is open, closing any other.
+    fn toggle(&mut self, list: List) {
+        self.closing = self.open;
+        self.open = (self.open != Some(list)).then_some(list);
+        self.toggled = Some(Instant::now());
+        self.hovered = None;
+    }
+
+    fn layout(&self) -> Layout {
         let inner = WIDTH - PADDING * 2;
         let mut groups = Vec::new();
         let mut parts = Vec::new();
+        let mut y = PADDING;
+        let row = |y| rect(PADDING + INSET, y, inner - INSET * 2, LIST_ROW);
+
+        let recording = recording(self.in_use).len() as i32;
+        if recording > 0 {
+            let height = 26 + IN_USE_ROW * recording + 6;
+            groups.push((rect(PADDING, y, inner, height), Some("使用中")));
+            parts.push((Part::InUse, rect(PADDING, y + 26, inner, IN_USE_ROW * recording)));
+            y += height + GAP;
+        }
+
         let tile = (inner - GAP) / 2;
-        parts.push((Part::Network, rect(PADDING, PADDING, tile, TILE_HEIGHT)));
-        parts.push((Part::Dark, rect(PADDING + tile + GAP, PADDING, tile, TILE_HEIGHT)));
-        let mut y = PADDING + TILE_HEIGHT + GAP;
+        let tiles: Vec<Part> = [Part::Network, Part::Bluetooth, Part::Quiet, Part::Dark]
+            .into_iter()
+            .chain(self.night_available.then_some(Part::Night))
+            .chain([Part::Screenshot])
+            .collect();
+        for (index, part) in tiles.iter().enumerate() {
+            let (column, line) = (index as i32 % 2, index as i32 / 2);
+            parts.push((
+                *part,
+                rect(
+                    PADDING + column * (tile + GAP),
+                    y + line * (TILE_HEIGHT + GAP),
+                    tile,
+                    TILE_HEIGHT,
+                ),
+            ));
+        }
+        y += (tiles.len() as i32 + 1) / 2 * (TILE_HEIGHT + GAP);
+
+        // A list that opens: the well grows to it, and what is in it is there once it has.
+        let mut list = |y: &mut i32, open: f64, full: i32, fill: &mut dyn FnMut(i32)| {
+            if open <= 0.0 {
+                return;
+            }
+            let height = (f64::from(full) * open).round() as i32;
+            groups.push((rect(PADDING, *y, inner, height), None));
+            if open >= 1.0 {
+                fill(*y + INSET);
+            }
+            *y += height + (f64::from(GAP) * open).round() as i32;
+        };
+        if let Some(wifi) = &self.wifi {
+            let networks = wifi.networks.len() as i32;
+            let rule = if networks > 0 { LIST_RULE } else { 0 };
+            let full = INSET * 2 + LIST_ROW * (networks + 1) + rule;
+            list(&mut y, self.expansion(List::Wifi), full, &mut |top| {
+                for index in 0..wifi.networks.len() {
+                    parts.push((Part::Wifi(index), row(top + LIST_ROW * index as i32)));
+                }
+                parts.push((Part::WifiPower, row(top + LIST_ROW * networks + rule)));
+            });
+        }
 
         // A slider: its icon at the left, then its track; the part is the track.
-        let mut slider = |title, icon: Option<Part>, track: Part, y: i32| {
-            let group = rect(PADDING, y, inner, GROUP_HEIGHT);
-            groups.push((group, Some(title)));
-            let row = y + 30;
+        let slider = |parts: &mut Vec<_>, icon: Option<Part>, track: Part, row: i32| {
             if let Some(icon) = icon {
                 parts.push((icon, rect(PADDING + 8, row, 24, 24)));
             }
-            parts.push((track, rect(PADDING + 42, row, inner - 54, 24)));
+            // The knob stops a group's padding from the icon and from the well's edge.
+            let start = 12 + ICON + 12 + KNOB;
+            parts.push((track, rect(PADDING + start, row, inner - start - 12 - KNOB, 24)));
         };
         if self.brightness.is_some() {
-            slider("顯示器", None, Part::Brightness, y);
+            groups.push((rect(PADDING, y, inner, GROUP_HEIGHT), Some("顯示器")));
+            slider(&mut parts, None, Part::Brightness, y + 30);
             y += GROUP_HEIGHT + GAP;
         }
-        if volume {
-            slider("聲音", Some(Part::Mute), Part::Volume, y);
-            y += GROUP_HEIGHT + GAP;
+        let sliders = [
+            (self.has_volume, Part::Mute, Part::Volume),
+            (self.microphone.is_some(), Part::MicrophoneMute, Part::Microphone),
+        ];
+        let shown = sliders.iter().filter(|(shown, ..)| *shown).count() as i32;
+        if shown > 0 {
+            let height = GROUP_HEIGHT + SLIDER_ROW * (shown - 1);
+            groups.push((rect(PADDING, y, inner, height), Some("聲音")));
+            let mut at = y + 30;
+            for (_, icon, track) in sliders.iter().filter(|(shown, ..)| *shown) {
+                slider(&mut parts, Some(*icon), *track, at);
+                at += SLIDER_ROW;
+            }
+            y += height + GAP;
         }
-        if !self.sinks.is_empty() {
-            let list = SINK_RULE + SINK_ROW * self.sinks.len() as i32;
-            let expansion = self.expansion();
-            let height = OUTPUT_ROW + OUTPUT_INSET * 2 + (f64::from(list) * expansion).round() as i32;
+
+        let devices = [
+            (
+                List::Output,
+                &self.sinks,
+                Part::Output,
+                Part::Sink as fn(usize) -> Part,
+            ),
+            (List::Input, &self.sources, Part::Input, Part::Source),
+        ];
+        for (list, devices, current, device) in devices {
+            if devices.is_empty() {
+                continue;
+            }
+            let open = self.expansion(list);
+            let full = LIST_RULE + LIST_ROW * devices.len() as i32;
+            let height = OUTPUT_ROW + INSET * 2 + (f64::from(full) * open).round() as i32;
             groups.push((rect(PADDING, y, inner, height), None));
-            let row = |y| rect(PADDING + OUTPUT_INSET, y, inner - OUTPUT_INSET * 2, OUTPUT_ROW);
-            parts.push((Part::Output, row(y + OUTPUT_INSET)));
-            if expansion >= 1.0 {
-                let top = y + OUTPUT_INSET + OUTPUT_ROW + SINK_RULE;
-                for index in 0..self.sinks.len() {
-                    let at = top + SINK_ROW * index as i32;
-                    parts.push((
-                        Part::Sink(index),
-                        rect(PADDING + OUTPUT_INSET, at, inner - OUTPUT_INSET * 2, SINK_ROW),
-                    ));
+            parts.push((
+                current,
+                rect(PADDING + INSET, y + INSET, inner - INSET * 2, OUTPUT_ROW),
+            ));
+            if open >= 1.0 {
+                let top = y + INSET + OUTPUT_ROW + LIST_RULE;
+                for index in 0..devices.len() {
+                    parts.push((device(index), row(top + LIST_ROW * index as i32)));
                 }
             }
             y += height + GAP;
         }
+
+        if self.player.is_some() {
+            groups.push((rect(PADDING, y, inner, PLAYER_HEIGHT), None));
+            let buttons = [Part::Previous, Part::PlayPause, Part::Next];
+            let first = PADDING + inner - 8 - BUTTON * buttons.len() as i32;
+            parts.push((
+                Part::Player,
+                rect(
+                    PADDING + 12,
+                    y + (PLAYER_HEIGHT - ART) / 2,
+                    first - PADDING - 20,
+                    ART,
+                ),
+            ));
+            for (index, part) in buttons.into_iter().enumerate() {
+                parts.push((
+                    part,
+                    rect(
+                        first + BUTTON * index as i32,
+                        y + (PLAYER_HEIGHT - BUTTON) / 2,
+                        BUTTON,
+                        BUTTON,
+                    ),
+                ));
+            }
+            y += PLAYER_HEIGHT + GAP;
+        }
+
         Layout {
             height: y - GAP + PADDING,
             groups,
@@ -211,23 +438,37 @@ impl ControlCenter {
         }
     }
 
-    fn part_at(&self, local: Point<i32, Logical>, volume: bool) -> Option<Part> {
-        let layout = self.layout(volume);
+    fn part_at(&self, local: Point<i32, Logical>) -> Option<Part> {
+        let layout = self.layout();
         layout.parts.iter().find_map(|(part, rect)| {
             // A slider takes the pointer a little past its ends, and its whole row.
-            let rect = match part {
-                Part::Brightness | Part::Volume => {
-                    Rectangle::new(rect.loc - Point::from((8, 2)), rect.size + (16, 4).into())
-                }
-                _ => *rect,
+            let rect = if part.is_slider() {
+                Rectangle::new(rect.loc - Point::from((8, 2)), rect.size + (16, 4).into())
+            } else {
+                *rect
             };
             rect.contains(local).then_some(*part)
         })
     }
 
+    /// The cover of what plays, read again only when it is another picture.
+    fn art(&mut self) -> Option<&ImageSurface> {
+        let path = self.player.as_ref()?.art.clone()?;
+        if self.art.as_ref().map(|(read, _)| read) != Some(&path) {
+            let scale = text::picture_scale();
+            let surface = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, ART * scale, ART * scale, true)
+                .inspect_err(|err| tracing::debug!("{path}: {err}"))
+                .ok()
+                .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None))
+                .inspect(|surface| surface.set_device_scale(f64::from(scale), f64::from(scale)));
+            self.art = Some((path, surface));
+        }
+        self.art.as_ref()?.1.as_ref()
+    }
+
     fn draw(&mut self, shown: &Shown) {
         let colors = colors(shown.dark);
-        let layout = self.layout(shown.volume.is_some());
+        let layout = self.layout();
         let Ok(surface) = text::canvas(WIDTH, layout.height) else {
             return;
         };
@@ -249,15 +490,18 @@ impl ControlCenter {
         cr.set_line_width(1.0);
         let _ = cr.stroke();
 
-        let well = |cr: &Context, area: Rectangle<i32, Logical>| {
+        let well = |cr: &Context, area: Rectangle<i32, Logical>, radius: f64| {
             let (x, y, w, h) = to_f64(area);
-            text::rounded_rectangle(cr, x, y, w, h, 8.0);
+            text::rounded_rectangle(cr, x, y, w, h, radius);
             cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.07);
             let _ = cr.fill();
         };
         let small = font("", 9.0);
         for (group, title) in &layout.groups {
-            well(&cr, *group);
+            if group.size.h < 2 {
+                continue;
+            }
+            well(&cr, *group, 8.0);
             if let Some(title) = title {
                 show_text(
                     &cr,
@@ -271,32 +515,38 @@ impl ControlCenter {
         }
 
         let label = font("", 10.0);
+        // A row of a list, lit in ink under the pointer as a menu's item is.
+        let list_row = |cr: &Context, part: Part, area: Rectangle<i32, Logical>| {
+            let lit = shown.hovered == Some(part);
+            if lit {
+                let (x, y, w, h) = to_f64(area);
+                text::rounded_rectangle(cr, x, y, w, h, 6.0);
+                cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
+                let _ = cr.fill();
+            }
+            if lit {
+                colors.on_ink
+            } else {
+                colors.ink
+            }
+        };
         for (part, area) in &layout.parts {
             let (x, y, w, h) = to_f64(*area);
             let center = y + h / 2.0;
-            match part {
-                Part::Network | Part::Dark => {
-                    let (on, icon, title, detail) = match part {
-                        Part::Network => {
-                            let network = shown.network.as_ref();
-                            let title = match network {
-                                Some(network) if network.wireless => "Wi-Fi",
-                                Some(_) => "乙太網路",
-                                None => "網路",
-                            };
-                            let connected = network.is_some_and(|network| network.connected);
-                            let icon = network.map_or("network-offline-symbolic", network_icon);
-                            (
-                                connected,
-                                icon,
-                                title,
-                                Some(if connected { "已連線" } else { "未連線" }),
-                            )
-                        }
-                        _ => (shown.dark, "weather-clear-night-symbolic", "深色", None),
-                    };
+            match *part {
+                Part::InUse => {
+                    for (index, (name, (r, g, b))) in recording(shown.in_use).into_iter().enumerate() {
+                        let center = y + f64::from(IN_USE_ROW) * (index as f64 + 0.5);
+                        cr.arc(x + 16.0, center, 3.5, 0.0, std::f64::consts::TAU);
+                        cr.set_source_rgb(r, g, b);
+                        let _ = cr.fill();
+                        show_text(&cr, name, &label, x + 30.0, center, colors.ink);
+                    }
+                }
+                tile if tile.is_tile() => {
+                    let (on, icon, title, detail) = tile_face(tile, shown, self.bluetooth);
                     cr.save().ok();
-                    if shown.pressed == Some(*part) {
+                    if shown.pressed == Some(tile) {
                         cr.translate(x + w / 2.0, center);
                         cr.scale(PRESSED_SCALE, PRESSED_SCALE);
                         cr.translate(-(x + w / 2.0), -center);
@@ -306,7 +556,7 @@ impl ControlCenter {
                         cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
                         let _ = cr.fill();
                     } else {
-                        well(&cr, *area);
+                        well(&cr, *area, 8.0);
                     }
                     let color = if on { colors.on_ink } else { colors.ink };
                     draw_icon(&cr, icon, x + 12.0, center, color);
@@ -314,90 +564,234 @@ impl ControlCenter {
                         Some(detail) => {
                             show_text(&cr, title, &label, x + 38.0, center - 8.0, color);
                             cr.push_group();
-                            show_text(&cr, detail, &small, x + 38.0, center + 9.0, color);
+                            let width = w - 38.0 - if tile == Part::Network { 22.0 } else { 8.0 };
+                            show_line(&cr, &detail, &small, (x + 38.0, center + 9.0, width), color);
                             let _ = cr.pop_group_to_source();
                             let _ = cr.paint_with_alpha(0.7);
                         }
                         None => show_text(&cr, title, &label, x + 38.0, center, color),
                     }
+                    if tile == Part::Network && shown.wifi.is_some() {
+                        let turn = f64::from(shown.wifi_open) / 1000.0;
+                        draw_chevron(&cr, x + w - 14.0, center, turn, color);
+                    }
                     cr.restore().ok();
+                }
+                Part::Wifi(index) => {
+                    let Some(network) = shown.wifi.as_ref().and_then(|wifi| wifi.networks.get(index)) else {
+                        continue;
+                    };
+                    let color = list_row(&cr, *part, *area);
+                    if network.active {
+                        show_text(&cr, "✓", &label, x + 10.0, center, color);
+                    }
+                    let icon = match network.signal {
+                        0..=24 => "network-wireless-signal-weak-symbolic",
+                        25..=49 => "network-wireless-signal-ok-symbolic",
+                        50..=74 => "network-wireless-signal-good-symbolic",
+                        _ => "network-wireless-signal-excellent-symbolic",
+                    };
+                    show_line(&cr, &network.ssid, &label, (x + 34.0, center, w - 70.0), color);
+                    draw_icon(&cr, icon, x + w - 10.0 - f64::from(ICON), center, color);
+                }
+                Part::WifiPower => {
+                    if shown.wifi.as_ref().is_some_and(|wifi| !wifi.networks.is_empty()) {
+                        rule(&cr, &colors, x, y - f64::from(LIST_RULE) / 2.0, w);
+                    }
+                    let color = list_row(&cr, *part, *area);
+                    let on = shown.wifi.as_ref().is_some_and(|wifi| wifi.on);
+                    let text = if on { "關閉 Wi-Fi" } else { "開啟 Wi-Fi" };
+                    show_text(&cr, text, &label, x + 34.0, center, color);
                 }
                 Part::Mute => {
                     let icon = shown.volume.map_or("audio-volume-high-symbolic", sound_icon);
                     draw_icon(&cr, icon, x + 4.0, center, colors.ink);
                 }
-                Part::Brightness | Part::Volume => {
-                    if *part == Part::Brightness {
-                        draw_icon(&cr, "display-brightness-symbolic", x - 30.0, center, colors.ink);
+                Part::MicrophoneMute => {
+                    let muted = shown
+                        .microphone
+                        .is_some_and(|volume| volume.muted || volume.percent == 0);
+                    let icon = if muted {
+                        "microphone-disabled-symbolic"
+                    } else {
+                        "microphone-sensitivity-high-symbolic"
+                    };
+                    draw_icon(&cr, icon, x + 4.0, center, colors.ink);
+                }
+                slider if slider.is_slider() => {
+                    if slider == Part::Brightness {
+                        draw_icon(&cr, "display-brightness-symbolic", x - f64::from(12 + KNOB + ICON), center, colors.ink);
                     }
-                    let (level, muted) = match part {
+                    let (level, muted) = match slider {
                         Part::Brightness => (shown.brightness.unwrap_or(0), false),
-                        _ => shown
+                        Part::Volume => shown
                             .volume
                             .map_or((0, false), |volume| (volume.percent, volume.muted)),
+                        _ => shown
+                            .microphone
+                            .map_or((0, false), |volume| (volume.percent, volume.muted)),
                     };
-                    draw_slider(
-                        &cr,
-                        &colors,
-                        shown.dark,
-                        (x, center, w),
-                        if muted {
-                            0.0
-                        } else {
-                            f64::from(level.min(100)) / 100.0
-                        },
-                    );
+                    let level = if muted {
+                        0.0
+                    } else {
+                        f64::from(level.min(100)) / 100.0
+                    };
+                    draw_slider(&cr, &colors, shown.dark, (x, center, w), level);
                 }
-                Part::Output => {
-                    let current = shown
-                        .sinks
-                        .iter()
-                        .find(|sink| sink.default)
-                        .or(shown.sinks.first());
-                    draw_speaker(&cr, x + 8.0, center, colors.ink);
-                    if let Some(sink) = current {
-                        show_text(&cr, &sink.description, &label, x + 34.0, center, colors.ink);
+                Part::Output | Part::Input => {
+                    let (devices, open) = match part {
+                        Part::Output => (&shown.sinks, shown.output_open),
+                        _ => (&shown.sources, shown.input_open),
+                    };
+                    let current = devices.iter().find(|device| device.default).or(devices.first());
+                    if *part == Part::Output {
+                        draw_speaker(&cr, x + 8.0, center, colors.ink);
+                    } else {
+                        draw_icon(
+                            &cr,
+                            "audio-input-microphone-symbolic",
+                            x + 8.0,
+                            center,
+                            colors.ink,
+                        );
                     }
-                    draw_chevron(
-                        &cr,
-                        x + w - 16.0,
-                        center,
-                        f64::from(shown.expansion) / 1000.0,
-                        colors.ink_3,
-                    );
+                    if let Some(device) = current {
+                        show_line(
+                            &cr,
+                            &device.description,
+                            &label,
+                            (x + 34.0, center, w - 64.0),
+                            colors.ink,
+                        );
+                    }
+                    let turn = f64::from(open) / 1000.0;
+                    draw_chevron(&cr, x + w - 16.0, center, turn, colors.ink_3);
+                    if open > 0 {
+                        rule(&cr, &colors, x, y + h + f64::from(LIST_RULE / 2), w);
+                    }
                 }
-                Part::Sink(index) => {
-                    let sink = &shown.sinks[*index];
-                    let lit = shown.hovered == Some(*part);
-                    if lit {
-                        text::rounded_rectangle(&cr, x, y, w, h, 6.0);
-                        cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
-                        let _ = cr.fill();
-                    }
-                    let color = if lit { colors.on_ink } else { colors.ink };
-                    if sink.default {
+                Part::Sink(index) | Part::Source(index) => {
+                    let devices = if matches!(part, Part::Sink(_)) {
+                        &shown.sinks
+                    } else {
+                        &shown.sources
+                    };
+                    let Some(device) = devices.get(index) else {
+                        continue;
+                    };
+                    let color = list_row(&cr, *part, *area);
+                    if device.default {
                         show_text(&cr, "✓", &label, x + 10.0, center, color);
                     }
-                    show_text(&cr, &sink.description, &label, x + 34.0, center, color);
+                    show_line(
+                        &cr,
+                        &device.description,
+                        &label,
+                        (x + 34.0, center, w - 44.0),
+                        color,
+                    );
                 }
-            }
-        }
-        // The rule between the output and the list, under the list as it opens.
-        if let Some((_, output)) = layout.parts.iter().find(|(part, _)| *part == Part::Output) {
-            if shown.expansion > 0 {
-                cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.12);
-                let y = output.loc.y + output.size.h + SINK_RULE / 2;
-                cr.rectangle(
-                    f64::from(output.loc.x + 4),
-                    f64::from(y),
-                    f64::from(output.size.w - 8),
-                    1.0,
-                );
-                let _ = cr.fill();
+                Part::Player => {
+                    let Some(player) = shown.player.as_ref() else {
+                        continue;
+                    };
+                    let art = f64::from(ART);
+                    match self.art() {
+                        Some(cover) => {
+                            let (cover_w, cover_h) = text::points(cover);
+                            cr.save().ok();
+                            text::rounded_rectangle(&cr, x, y, art, art, 6.0);
+                            cr.clip();
+                            let _ = cr.set_source_surface(
+                                cover,
+                                x + (art - cover_w) / 2.0,
+                                y + (art - cover_h) / 2.0,
+                            );
+                            let _ = cr.paint();
+                            cr.restore().ok();
+                        }
+                        None => {
+                            well(&cr, rect(x as i32, y as i32, ART, ART), 6.0);
+                            let middle = x + (art - f64::from(ICON)) / 2.0;
+                            draw_icon(&cr, "audio-x-generic-symbolic", middle, center, colors.ink_3);
+                        }
+                    }
+                    let left = x + art + 10.0;
+                    let width = w - art - 10.0;
+                    show_line(
+                        &cr,
+                        &player.title,
+                        &label,
+                        (left, center - 8.0, width),
+                        colors.ink,
+                    );
+                    let by = if player.artist.is_empty() {
+                        &player.app
+                    } else {
+                        &player.artist
+                    };
+                    show_line(&cr, by, &small, (left, center + 9.0, width), colors.ink_3);
+                }
+                button @ (Part::Previous | Part::PlayPause | Part::Next) => {
+                    if shown.hovered == Some(button) {
+                        well(&cr, *area, 6.0);
+                    }
+                    let playing = shown.player.as_ref().is_some_and(|player| player.playing);
+                    let icon = match button {
+                        Part::Previous => "media-skip-backward-symbolic",
+                        Part::Next => "media-skip-forward-symbolic",
+                        _ if playing => "media-playback-pause-symbolic",
+                        _ => "media-playback-start-symbolic",
+                    };
+                    draw_icon(&cr, icon, x + (w - f64::from(ICON)) / 2.0, center, colors.ink);
+                }
+                _ => {}
             }
         }
         drop(cr);
         self.picture = text::picture(surface);
+    }
+}
+
+/// A tile's look: whether it is on, its icon, its title and what it says under the title.
+fn tile_face(
+    tile: Part,
+    shown: &Shown,
+    bluetooth: bool,
+) -> (bool, &'static str, &'static str, Option<String>) {
+    match tile {
+        Part::Network => {
+            let network = shown.network.as_ref();
+            let title = match network {
+                Some(network) if network.wireless => "Wi-Fi",
+                Some(_) => "乙太網路",
+                None => "網路",
+            };
+            let connected = network.is_some_and(|network| network.connected);
+            let icon = network.map_or("network-offline-symbolic", network_icon);
+            let active = shown
+                .wifi
+                .as_ref()
+                .and_then(|wifi| wifi.networks.iter().find(|network| network.active));
+            let (on, detail) = match (&shown.wifi, active) {
+                (Some(wifi), _) if !wifi.on => (false, "已關閉".to_string()),
+                (Some(_), Some(active)) => (true, active.ssid.clone()),
+                _ => (connected, if connected { "已連線" } else { "未連線" }.to_string()),
+            };
+            (on, icon, title, Some(detail))
+        }
+        Part::Bluetooth => {
+            let (icon, detail) = if bluetooth {
+                ("bluetooth-symbolic", "未連線")
+            } else {
+                ("bluetooth-disabled-symbolic", "沒有裝置")
+            };
+            (false, icon, "藍牙", Some(detail.to_string()))
+        }
+        Part::Quiet => (shown.quiet, "notifications-disabled-symbolic", "勿擾", None),
+        Part::Dark => (shown.dark, "weather-clear-night-symbolic", "深色", None),
+        Part::Night => (shown.night, "night-light-symbolic", "夜覽", None),
+        _ => (false, "applets-screenshooter-symbolic", "截圖", None),
     }
 }
 
@@ -408,6 +802,32 @@ fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
         f64::from(area.size.w),
         f64::from(area.size.h),
     )
+}
+
+/// One line of text, cut short with an ellipsis where it would pass `width`.
+fn show_line(
+    cr: &Context,
+    line: &str,
+    font: &pango::FontDescription,
+    (x, center, width): (f64, f64, f64),
+    color: (f64, f64, f64),
+) {
+    let layout = text::new_layout(cr);
+    layout.set_font_description(Some(font));
+    layout.set_text(line);
+    layout.set_width((width.max(0.0) * f64::from(pango::SCALE)) as i32);
+    layout.set_ellipsize(pango::EllipsizeMode::End);
+    let (_, height) = layout.pixel_size();
+    cr.set_source_rgb(color.0, color.1, color.2);
+    cr.move_to(x, center - f64::from(height) / 2.0);
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// The rule between a list's row and the rows under it.
+fn rule(cr: &Context, colors: &Colors, x: f64, y: f64, width: f64) {
+    cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.12);
+    cr.rectangle(x + 4.0, y.floor(), width - 8.0, 1.0);
+    let _ = cr.fill();
 }
 
 /// A symbolic icon from the theme, its left edge at `x`, centred on `center`.
@@ -442,7 +862,7 @@ fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f
     text::rounded_rectangle(cr, x, center - 2.0, at - x, 4.0, 2.0);
     cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
     let _ = cr.fill();
-    cr.arc(at, center, 7.25, 0.0, std::f64::consts::TAU);
+    cr.arc(at, center, f64::from(KNOB), 0.0, std::f64::consts::TAU);
     cr.set_source_rgb(colors.on_ink.0, colors.on_ink.1, colors.on_ink.2);
     let _ = cr.fill_preserve();
     cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
@@ -483,6 +903,16 @@ pub(crate) fn draw_bar_icon(cr: &Context, x: f64, y: f64, size: f64, color: (f64
     cr.restore().ok();
 }
 
+/// Takes a picture of the whole screen into Pictures, once the panel is gone from it, and
+/// says where it went.
+const SCREENSHOT: &str = r#"dir=$(xdg-user-dir PICTURES 2>/dev/null || echo "$HOME")
+mkdir -p "$dir"
+file="$dir/截圖 $(date '+%Y-%m-%d %H.%M.%S').png"
+sleep 0.2
+grim "$file" && gdbus call --session --dest org.freedesktop.Notifications \
+  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify \
+  截圖 0 "$file" 已儲存截圖 "$(basename "$file")" '[]' '{}' 5000 >/dev/null"#;
+
 impl Nekoland {
     /// Opens the control center under its icon in the bar, or closes it.
     pub(crate) fn toggle_control_center(&mut self, anchor: Rectangle<i32, Logical>) {
@@ -498,24 +928,49 @@ impl Nekoland {
 
     /// Takes in what was read for it, and draws it again when anything it shows changed.
     pub(crate) fn refresh_control_center(&mut self) {
-        let shown_volume = self.menu_bar.sound;
+        let volume = self.menu_bar.sound;
         let dark = self.menu_bar.dark;
         let network = self.menu_bar.network.clone();
+        let in_use = self.menu_bar.in_use;
+        let quiet = self.notices.quiet;
+        let (night, night_available) = (self.night_shift, self.night_shift_available);
         let Some(control) = self.menu_bar.control.as_mut() else {
             return;
         };
-        if let Some(found) = control.found.as_ref().and_then(|found| found.try_recv().ok()) {
-            control.brightness = found.brightness;
-            control.sinks = found.sinks;
-            control.found = None;
+        if let Some(found) = control.found.as_ref().and_then(|found| found.try_iter().last()) {
+            let dragging = control.dragging.map(|(part, _)| part);
+            if dragging != Some(Part::Brightness) {
+                control.brightness = found.brightness;
+            }
+            if dragging != Some(Part::Microphone) {
+                control.microphone = found.microphone;
+            }
+            (control.sinks, control.sources) = found.devices;
+            control.wifi = found.wifi;
+            control.player = found.player;
+            if control.wifi.is_none() && control.open == Some(List::Wifi) {
+                control.open = None;
+            }
         }
+        control.in_use = in_use;
+        control.night_available = night_available;
+        control.has_volume = volume.is_some();
         let shown = Shown {
             dark,
+            quiet,
+            night,
+            in_use,
             network,
-            volume: shown_volume,
+            wifi: control.wifi.clone(),
+            volume,
+            microphone: control.microphone,
             brightness: control.brightness,
             sinks: control.sinks.clone(),
-            expansion: (control.expansion() * 1000.0).round() as u32,
+            sources: control.sources.clone(),
+            player: control.player.clone(),
+            wifi_open: (control.expansion(List::Wifi) * 1000.0).round() as u32,
+            output_open: (control.expansion(List::Output) * 1000.0).round() as u32,
+            input_open: (control.expansion(List::Input) * 1000.0).round() as u32,
             pressed: control.pressed,
             hovered: control.hovered,
         };
@@ -553,23 +1008,19 @@ impl Nekoland {
         let Some(at) = self.control_local(local) else {
             return false;
         };
-        let volume = self.menu_bar.sound.is_some();
         let Some(control) = self.menu_bar.control.as_mut() else {
             return false;
         };
-        let part = control.part_at(at, volume);
+        let part = control.part_at(at);
         match part {
-            Some(slider @ (Part::Brightness | Part::Volume)) => {
+            Some(slider) if slider.is_slider() => {
                 control.dragging = Some((slider, Instant::now() - SET_EVERY));
                 self.control_drag(at, false);
             }
-            // The wired network has nothing to turn off.
-            Some(Part::Network)
-                if !self
-                    .menu_bar
-                    .network
-                    .as_ref()
-                    .is_some_and(|network| network.wireless) => {}
+            // Nothing to do there: what is recording, Bluetooth, and what plays. The network
+            // has its list only with NetworkManager to list it.
+            Some(Part::InUse | Part::Bluetooth | Part::Player) => {}
+            Some(Part::Network) if control.wifi.is_none() => {}
             _ => control.pressed = part,
         }
         true
@@ -593,10 +1044,9 @@ impl Nekoland {
             self.control_drag(at, false);
             return;
         }
-        let volume = self.menu_bar.sound.is_some();
         let inside = self.control_local(local).is_some();
         if let Some(control) = self.menu_bar.control.as_mut() {
-            control.hovered = inside.then(|| control.part_at(at, volume)).flatten();
+            control.hovered = inside.then(|| control.part_at(at)).flatten();
         }
     }
 
@@ -612,10 +1062,7 @@ impl Nekoland {
             }
             return;
         }
-        let volume = self.menu_bar.sound.is_some();
-        let under = self
-            .control_local(local)
-            .and_then(|at| control.part_at(at, volume));
+        let under = self.control_local(local).and_then(|at| control.part_at(at));
         let pressed = self
             .menu_bar
             .control
@@ -636,8 +1083,7 @@ impl Nekoland {
         let Some((slider, told)) = control.dragging else {
             return;
         };
-        let layout = control.layout(volume.is_some());
-        let Some((_, track)) = layout.parts.iter().find(|(part, _)| *part == slider) else {
+        let Some(track) = control.layout().find(slider) else {
             return;
         };
         let level = (f64::from(at.x - track.loc.x) / f64::from(track.size.w)).clamp(0.0, 1.0);
@@ -651,6 +1097,22 @@ impl Nekoland {
                 control.brightness = Some(percent);
                 if tell {
                     config::spawn(&format!("brightnessctl --class=backlight set {percent}%"));
+                }
+            }
+            Part::Microphone => {
+                let muted = control.microphone.is_some_and(|volume| volume.muted);
+                control.microphone = Some(Volume {
+                    percent,
+                    muted: false,
+                });
+                if tell {
+                    system::run(
+                        "wpctl",
+                        &["set-volume", system::DEFAULT_SOURCE, &format!("{percent}%")],
+                    );
+                    if muted {
+                        system::run("wpctl", &["set-mute", system::DEFAULT_SOURCE, "0"]);
+                    }
                 }
             }
             _ => {
@@ -675,18 +1137,32 @@ impl Nekoland {
     }
 
     fn control_activate(&mut self, part: Part) {
+        let Some(control) = self.menu_bar.control.as_mut() else {
+            return;
+        };
         match part {
-            Part::Network => {
-                let connected = self
-                    .menu_bar
-                    .network
-                    .as_ref()
-                    .is_some_and(|network| network.connected);
-                config::spawn(&format!(
-                    "nmcli radio wifi {}",
-                    if connected { "off" } else { "on" }
-                ));
+            Part::Network => control.toggle(List::Wifi),
+            Part::Wifi(index) => {
+                let Some(network) = control.wifi.as_ref().and_then(|wifi| wifi.networks.get(index)) else {
+                    return;
+                };
+                if !network.active {
+                    system::run("nmcli", &["device", "wifi", "connect", &network.ssid]);
+                }
+                control.toggle(List::Wifi);
             }
+            Part::WifiPower => {
+                let Some(wifi) = control.wifi.as_mut() else {
+                    return;
+                };
+                wifi.on = !wifi.on;
+                if !wifi.on {
+                    wifi.networks.clear();
+                }
+                system::run("nmcli", &["radio", "wifi", if wifi.on { "on" } else { "off" }]);
+                control.hovered = None;
+            }
+            Part::Quiet => self.notices.quiet = !self.notices.quiet,
             Part::Dark => {
                 let dark = !self.menu_bar.dark;
                 let scheme = if dark { "prefer-dark" } else { "default" };
@@ -696,6 +1172,11 @@ impl Nekoland {
                 // The portal says so too, a moment later.
                 self.menu_bar.dark = dark;
             }
+            Part::Night => self.night_shift = !self.night_shift,
+            Part::Screenshot => {
+                self.menu_bar.control = None;
+                config::spawn(SCREENSHOT);
+            }
             Part::Mute => {
                 config::spawn(&self.config.volume_mute);
                 if let Some(volume) = self.menu_bar.sound.as_mut() {
@@ -703,26 +1184,48 @@ impl Nekoland {
                     self.menu_bar.items_revision += 1;
                 }
             }
-            Part::Output => {
-                if let Some(control) = self.menu_bar.control.as_mut() {
-                    control.expanded = !control.expanded;
-                    control.toggled = Some(Instant::now());
+            Part::MicrophoneMute => {
+                system::run("wpctl", &["set-mute", system::DEFAULT_SOURCE, "toggle"]);
+                if let Some(volume) = control.microphone.as_mut() {
+                    volume.muted = !volume.muted;
                 }
             }
-            Part::Sink(index) => {
-                if let Some(control) = self.menu_bar.control.as_mut() {
-                    if let Some(id) = control.sinks.get(index).map(|sink| sink.id) {
-                        config::spawn(&format!("wpctl set-default {id}"));
-                        for (other, sink) in control.sinks.iter_mut().enumerate() {
-                            sink.default = other == index;
-                        }
+            Part::Output => control.toggle(List::Output),
+            Part::Input => control.toggle(List::Input),
+            Part::Sink(index) | Part::Source(index) => {
+                let (devices, list) = match part {
+                    Part::Sink(_) => (&mut control.sinks, List::Output),
+                    _ => (&mut control.sources, List::Input),
+                };
+                if let Some(id) = devices.get(index).map(|device| device.id) {
+                    system::run("wpctl", &["set-default", &id.to_string()]);
+                    for (other, device) in devices.iter_mut().enumerate() {
+                        device.default = other == index;
                     }
-                    control.expanded = false;
-                    control.toggled = Some(Instant::now());
-                    control.hovered = None;
                 }
+                control.toggle(list);
             }
-            Part::Brightness | Part::Volume => {}
+            Part::Previous | Part::PlayPause | Part::Next => {
+                let Some(player) = control.player.as_mut() else {
+                    return;
+                };
+                let method = match part {
+                    Part::Previous => "Previous",
+                    Part::Next => "Next",
+                    _ => {
+                        player.playing = !player.playing;
+                        "PlayPause"
+                    }
+                };
+                let bus = player.bus.clone();
+                std::thread::spawn(move || system::player_command(&bus, method));
+            }
+            Part::InUse
+            | Part::Bluetooth
+            | Part::Brightness
+            | Part::Volume
+            | Part::Microphone
+            | Part::Player => {}
         }
     }
 }
