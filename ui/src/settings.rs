@@ -199,12 +199,17 @@ thread_local! {
     static RESTART: RefCell<Option<&'static str>> = const { RefCell::new(None) };
     /// Nekoland's `glass_opacity`, which the look gives GTK's menus too.
     static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
+    /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
+    static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build);
     let code = app.run();
+    if let Some(monitor) = SOUND_MONITOR.take() {
+        monitor.force_exit();
+    }
     if let Some(page) = RESTART.with_borrow(|page| *page) {
         use std::os::unix::process::CommandExt;
         // The new program takes the application's name on the bus as this one's goes.
@@ -869,19 +874,47 @@ fn sound_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let shown = Rc::new(SoundPage::default());
     fill_sound_page(&page, shown.clone());
-    // shortcut: looks every two seconds while the page is on screen; `pw-dump --monitor`
-    // would say at once, for a process kept running beside Settings.
-    let weak = page.downgrade();
-    glib::timeout_add_seconds_local(2, move || {
-        let Some(page) = weak.upgrade() else {
-            return glib::ControlFlow::Break;
-        };
-        if page.is_mapped() && device_names(&audio_nodes()) != *shown.devices.borrow() {
-            fill_sound_page(&page, shown.clone());
-        }
-        glib::ControlFlow::Continue
-    });
+    follow_devices(&page, shown);
     page
+}
+
+/// Puts the devices on the page again when one comes or goes, as `pw-dump --monitor` says
+/// PipeWire changed: once it has been quiet for half a second, so that a restarting
+/// WirePlumber, whose devices go and come back, is looked at only once it is back. A
+/// restarted PipeWire ends the monitor, which starts again while the page is there.
+fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
+    let argv = ["pw-dump", "--monitor", "--no-colors"].map(std::ffi::OsStr::new);
+    let child = match gio::Subprocess::newv(&argv, gio::SubprocessFlags::STDOUT_PIPE) {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("pw-dump --monitor: {err}");
+            return;
+        }
+    };
+    let Some(changes) = child.stdout_pipe() else { return };
+    SOUND_MONITOR.set(Some(child.clone()));
+    let weak = page.downgrade();
+    let quiet: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    glib::spawn_future_local(async move {
+        while let Ok(bytes) = changes.read_bytes_future(64 * 1024, glib::Priority::DEFAULT).await {
+            let Some(page) = weak.upgrade().filter(|_| !bytes.is_empty()) else { break };
+            if let Some(waiting) = quiet.take() {
+                waiting.remove();
+            }
+            let (shown, quiet_then) = (shown.clone(), quiet.clone());
+            let waiting = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                quiet_then.take();
+                if device_names(&audio_nodes()) != *shown.devices.borrow() {
+                    fill_sound_page(&page, shown);
+                }
+            });
+            *quiet.borrow_mut() = Some(waiting);
+        }
+        child.force_exit();
+        if let Some(page) = weak.upgrade() {
+            glib::timeout_add_seconds_local_once(1, move || follow_devices(&page, shown));
+        }
+    });
 }
 
 /// What the sound page shows: its groups, and the devices they were made for.
