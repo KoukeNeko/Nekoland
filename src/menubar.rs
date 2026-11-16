@@ -268,6 +268,7 @@ pub(crate) struct Drawn {
     menus: u64,
     open: Option<usize>,
     dark: bool,
+    background: bool,
     minute: i64,
     items: u64,
 }
@@ -293,6 +294,9 @@ pub struct MenuBar {
     pub open: Option<OpenMenu>,
     picture: Option<Picture>,
     pub(crate) drawn: Option<Drawn>,
+    /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
+    /// the output's size it was found for.
+    wallpaper_dark: Option<(WallpaperKey, bool)>,
     bar_id: Id,
     menu_ids: Vec<Id>,
 }
@@ -317,6 +321,7 @@ impl Default for MenuBar {
             open: None,
             picture: None,
             drawn: None,
+            wallpaper_dark: None,
             bar_id: Id::new(),
             menu_ids: Vec::new(),
         }
@@ -346,6 +351,48 @@ struct Colors {
 }
 
 // The design language's ink, paper and glass, in both themes.
+/// The wallpaper, how it is drawn, and the output it is drawn on.
+type WallpaperKey = (Option<String>, config::WallpaperMode, Size<i32, Logical>);
+
+/// Whether the strip of `output` the bar covers is dark on average, with `image`, a copy of
+/// one `original` pixels in size, drawn as swaybg draws it in `mode`; what it leaves bare
+/// is swaybg's black.
+fn strip_is_dark(
+    image: &gdk_pixbuf::Pixbuf,
+    (width, height): (i32, i32),
+    mode: config::WallpaperMode,
+    output: Size<i32, Logical>,
+) -> bool {
+    let (w, h) = (f64::from(output.w), f64::from(output.h));
+    let (iw, ih) = (f64::from(width), f64::from(height));
+    // shortcut: centred images are taken at one pixel a point, which a scaled output is not.
+    let scale = match mode {
+        config::WallpaperMode::Fill => (w / iw).max(h / ih),
+        config::WallpaperMode::Fit => (w / iw).min(h / ih),
+        config::WallpaperMode::Center => 1.0,
+    };
+    let (left, top) = ((w - iw * scale) / 2.0, (h - ih * scale) / 2.0);
+    let to_small = f64::from(image.width()) / iw;
+    let pixels = image.read_pixel_bytes();
+    let (stride, channels) = (image.rowstride() as usize, image.n_channels() as usize);
+    let (columns, rows) = (64, 4);
+    let mut sum = 0.0;
+    for row in 0..rows {
+        for column in 0..columns {
+            let x = (f64::from(column) + 0.5) / f64::from(columns) * w;
+            let y = (f64::from(row) + 0.5) / f64::from(rows) * f64::from(MENU_BAR_HEIGHT);
+            let (ix, iy) = (((x - left) / scale * to_small), ((y - top) / scale * to_small));
+            if ix < 0.0 || iy < 0.0 || ix >= f64::from(image.width()) || iy >= f64::from(image.height()) {
+                continue;
+            }
+            let at = iy as usize * stride + ix as usize * channels;
+            let [r, g, b] = [0, 1, 2].map(|c| f64::from(pixels[at + c]) / 255.0);
+            sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        }
+    }
+    sum / f64::from(columns * rows) < 0.5
+}
+
 fn colors(dark: bool) -> Colors {
     if dark {
         Colors {
@@ -553,9 +600,10 @@ impl MenuBar {
         icon
     }
 
-    /// Lays the bar out and draws it.
-    fn draw_bar(&mut self, width: i32, titles: Vec<(Source, Option<String>)>, clock: &str) {
-        let colors = colors(self.dark);
+    /// Lays the bar out and draws it, its text for a `dark` background, on glass when it has
+    /// a `background`.
+    fn draw_bar(&mut self, width: i32, titles: Vec<(Source, Option<String>)>, clock: &str, (dark, background): (bool, bool)) {
+        let colors = colors(dark);
         let open = self.open.as_ref().and_then(|open| open.title);
         let title_font = font("Medium", 10.0);
         let app_font = font("Bold", 10.0);
@@ -566,9 +614,11 @@ impl MenuBar {
         let Ok(cr) = Context::new(&surface) else {
             return;
         };
-        let (r, g, b, a) = crate::glass::tint(self.dark, Tier::Bar);
-        cr.set_source_rgba(r, g, b, a);
-        let _ = cr.paint();
+        if background {
+            let (r, g, b, a) = crate::glass::tint(dark, Tier::Bar);
+            cr.set_source_rgba(r, g, b, a);
+            let _ = cr.paint();
+        }
 
         let center = f64::from(MENU_BAR_HEIGHT) / 2.0;
         let highlight = |cr: &Context, rect: Rectangle<i32, Logical>| {
@@ -981,6 +1031,35 @@ impl Nekoland {
     }
 
     /// Brings the bar and any open menu up to date before a frame.
+    /// Whether the wallpaper is dark where the bar is over it, found again only when the
+    /// wallpaper, how it is drawn or the output changes. Without a wallpaper, swaybg's black.
+    fn wallpaper_dark_under_bar(&mut self, output: Size<i32, Logical>) -> bool {
+        let key = (self.config.wallpaper.clone(), self.config.wallpaper_mode, output);
+        if let Some((found, dark)) = &self.menu_bar.wallpaper_dark {
+            if *found == key {
+                return *dark;
+            }
+        }
+        let dark = key.0.as_ref().is_none_or(|path| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let path = path.replacen('~', &home, 1);
+            // A smaller copy is enough to tell light from dark.
+            let image = gdk_pixbuf::Pixbuf::file_info(&path).and_then(|(_, width, height)| {
+                let small = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, 512, -1, true).ok()?;
+                Some((small, (width, height)))
+            });
+            match image {
+                Some((image, original)) => strip_is_dark(&image, original, key.1, output),
+                None => {
+                    tracing::warn!("{path}: could not read the wallpaper");
+                    self.menu_bar.dark
+                }
+            }
+        });
+        self.menu_bar.wallpaper_dark = Some((key, dark));
+        dark
+    }
+
     pub fn refresh_menu_bar(&mut self) {
         let Some(output) = self.output_area() else {
             return;
@@ -1006,12 +1085,19 @@ impl Nekoland {
         }
 
         let (minute, clock) = clock(&self.config);
+        let background = self.config.menu_bar_background;
+        let dark = if background {
+            self.menu_bar.dark
+        } else {
+            self.wallpaper_dark_under_bar(output.size)
+        };
         let drawn = Drawn {
             width: output.size.w,
             app: app.clone(),
             menus: self.menu_bar.menus_revision,
             open: self.menu_bar.open.as_ref().and_then(|open| open.title),
-            dark: self.menu_bar.dark,
+            dark,
+            background,
             minute,
             items: self.menu_bar.items_revision,
         };
@@ -1026,7 +1112,7 @@ impl Nekoland {
                 self.menu_bar.open = None;
             }
             let titles = self.left_titles();
-            self.menu_bar.draw_bar(output.size.w, titles, &clock);
+            self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, background));
             self.menu_bar.drawn = Some(Drawn {
                 open: self.menu_bar.open.as_ref().and_then(|open| open.title),
                 ..drawn
@@ -1074,7 +1160,7 @@ impl Nekoland {
                 fade: 1.0,
                 id: &bar.bar_id,
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
-                glass: Some((Tier::Bar, 0)),
+                glass: self.config.menu_bar_background.then_some((Tier::Bar, 0)),
                 alpha: 1.0,
                 picture,
             });
@@ -1997,6 +2083,21 @@ mod tests {
 
     fn output() -> Size<i32, Logical> {
         Size::from((1920, 1080))
+    }
+
+    /// The bar reads the strip of wallpaper under it, wherever the way it is drawn puts it.
+    #[test]
+    fn the_wallpaper_under_the_bar_is_told_light_or_dark() {
+        // Light along its top tenth, dark below, at the output's shape.
+        let image = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 192, 108).unwrap();
+        image.fill(0x101010ff);
+        image.new_subpixbuf(0, 0, 192, 10).fill(0xf0f0f0ff);
+        let original = (1920, 1080);
+        assert!(!strip_is_dark(&image, original, config::WallpaperMode::Fill, output()));
+        assert!(!strip_is_dark(&image, original, config::WallpaperMode::Fit, output()));
+        // Centred on a taller output, its light top is below the bar, which is over black.
+        let tall = Size::from((1920, 1600));
+        assert!(strip_is_dark(&image, original, config::WallpaperMode::Center, tall));
     }
 
     fn entries() -> Vec<Entry> {

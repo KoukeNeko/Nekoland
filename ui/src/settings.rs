@@ -634,18 +634,22 @@ fn appearance_page(config: &Config) -> adw::PreferencesPage {
             }
         }
     };
-    page.add(&glass_group(config, "選單列", ("menu_bar", 0.5), |_| {}));
-    page.add(&glass_group(config, "側邊欄", ("sidebar", 0.8), gtk_opacity(&SIDEBAR_OPACITY)));
-    page.add(&glass_group(config, "選單", ("menu", 0.8), gtk_opacity(&MENU_OPACITY)));
+    // Without its background, the bar has no glass to set.
+    let background = switch_row(config, "背景", "menu_bar_background");
+    page.add(&glass_group(config, "選單列", ("menu_bar", 0.5), Some(background), |_| {}));
+    page.add(&glass_group(config, "側邊欄", ("sidebar", 0.8), None, gtk_opacity(&SIDEBAR_OPACITY)));
+    page.add(&glass_group(config, "選單", ("menu", 0.8), None, gtk_opacity(&MENU_OPACITY)));
     page
 }
 
-/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
-/// `opacity_changed` is told each new opacity once Nekoland has it.
+/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`,
+/// shown only while `shown_by`, first in the group, is on; `opacity_changed` is told each
+/// new opacity once Nekoland has it.
 fn glass_group(
     config: &Config,
     title: &str,
     (key, opacity): (&'static str, f64),
+    shown_by: Option<adw::SwitchRow>,
     opacity_changed: impl Fn(f64) + 'static,
 ) -> adw::PreferencesGroup {
     let glass = group(title);
@@ -664,6 +668,12 @@ fn glass_group(
         (0.0, 1.0, 0.05),
         move |blur| set(&format!("{key}_blur = {blur:.2}")),
     );
+    if let Some(switch) = shown_by {
+        for row in [&opacity_row, &blur_row] {
+            switch.bind_property("active", row, "visible").sync_create().build();
+        }
+        glass.add(&switch);
+    }
     glass.add(&opacity_row);
     glass.add(&blur_row);
     glass

@@ -40,6 +40,7 @@ wallpaper and an input method. Every key is optional:
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
 | `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
+| `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `menu_bar_opacity`, `menu_bar_blur`, `menu_opacity`, `menu_blur`, `sidebar_opacity`, `sidebar_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar, the Dock and the overview's bar; of menus, notifications and the Dock's popups, GTK's among them; and of windows' glass, which GTK's sidebars show. 0.5, 0.8 and 0.8, each blurred 0.5, unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
