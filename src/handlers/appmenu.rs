@@ -149,6 +149,9 @@ impl Dispatch<GtkSurface1, WlSurface> for Nekoland {
                 unique_bus_name,
                 ..
             } => {
+                if let Some(path) = &window_object_path {
+                    state.hover.set_gtk_window(surface, path.clone());
+                }
                 // Only a menubar is worth showing; the old separate app menu is not used anymore.
                 if let (Some(bus), Some(menubar)) = (unique_bus_name, menubar_path) {
                     state.set_app_menu_address(

@@ -104,6 +104,7 @@ impl Nekoland {
                     self.menu_bar_motion(pos);
                     self.dock_motion(pos);
                     self.desktop_motion(pos);
+                    self.hover_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
@@ -145,6 +146,7 @@ impl Nekoland {
                     self.menu_bar_motion(pos);
                     self.dock_motion(pos);
                     self.desktop_motion(pos);
+                    self.hover_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
@@ -256,6 +258,9 @@ impl Nekoland {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
+        if self.hover_press(pos) {
+            return;
+        }
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
         self.close_launcher_unless(clicked.as_ref());
         self.desktop_pointer_pressed(pos);
@@ -325,6 +330,9 @@ impl Nekoland {
         } = *modifiers;
         let focused = self.focused_window();
 
+        if self.hover_key(sym, typed) {
+            return true;
+        }
         if self.menu_bar.control.is_some() && sym == Keysym::Escape {
             self.close_menu();
             return true;

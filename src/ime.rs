@@ -209,7 +209,7 @@ impl crate::state::Nekoland {
         use smithay::input::keyboard::Keysym;
         let sym = keysym.modified_sym();
         // Ctrl+Space switches the input method; other shortcuts stay the compositor's.
-        let renaming = self.desktop.renaming.is_some();
+        let renaming = self.desktop.renaming.is_some() || self.hover.note_mut().is_some();
         let typing = (self.overview.is_some() || renaming)
             && self.menu_bar.open.is_none()
             && !(modifiers.alt || modifiers.logo)
@@ -230,12 +230,14 @@ impl crate::state::Nekoland {
             return false;
         };
         let focused = match (
+            self.hover.note_mut(),
             &mut self.desktop.renaming,
             self.overview.as_mut().and_then(|overview| overview.apps.as_mut()),
         ) {
-            (Some(rename), _) => &mut rename.ime_focused,
-            (None, Some(apps)) => &mut apps.ime_focused,
-            (None, None) => return false,
+            (Some(note), _, _) => &mut note.ime_focused,
+            (None, Some(rename), _) => &mut rename.ime_focused,
+            (None, None, Some(apps)) => &mut apps.ime_focused,
+            (None, None, None) => return false,
         };
         let state = u32::from(modifiers.shift)
             | u32::from(modifiers.caps_lock) << 1
@@ -260,6 +262,18 @@ impl crate::state::Nekoland {
     /// the applications' text field.
     pub fn ime_event(&mut self, event: ImeEvent) {
         use smithay::input::keyboard::Keysym;
+        if let Some(note) = self.hover.note_mut() {
+            match event {
+                ImeEvent::Commit(text) => self.hover_note_commit(&text),
+                ImeEvent::Key(raw) => {
+                    let sym = Keysym::from(raw);
+                    self.hover_key(sym, sym.key_char());
+                }
+                ImeEvent::Preedit(text) => note.preedit = text,
+                ImeEvent::Candidates(candidates) => self.hover.candidates = candidates,
+            }
+            return;
+        }
         if let Some(rename) = self.desktop.renaming.as_mut() {
             match event {
                 ImeEvent::Commit(text) => self.rename_commit(&text),

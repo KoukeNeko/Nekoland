@@ -138,6 +138,7 @@ pub fn init_winit(
                 state.dock_ids();
                 state.refresh_dock();
                 state.refresh_desktop();
+                state.refresh_hover();
                 state.refresh_apps();
                 state.refresh_notices();
 

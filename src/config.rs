@@ -75,6 +75,30 @@ pub struct Config {
     pub desktop_sort: Sort,
     /// Whether the files stay where they are dragged on the desktop instead of in order.
     pub desktop_free: bool,
+    /// Whether resting the pointer on a file on the desktop or in a Dock folder shows a
+    /// panel of what it is and holds, after how many seconds, and in which style.
+    pub hover_info: bool,
+    pub hover_delay: f64,
+    pub hover_style: HoverStyle,
+    /// Whether the panel moves with the pointer over its file, and how far from the
+    /// pointer it is.
+    pub hover_follow: bool,
+    pub hover_offset_x: i32,
+    pub hover_offset_y: i32,
+    /// The panel's sections left out: `icon`, `type`, `source`, `dates`, `file`,
+    /// `location`, `notes` and `tags`; a kind by its name, or a field as `name/label`.
+    pub hover_hide: Vec<String>,
+    /// Whether the panel goes as soon as the pointer leaves its file, rather than when it
+    /// rests on another; and whether large text is left unread, as FinderHover has them.
+    pub hover_auto_hide: bool,
+    pub hover_large_file_protection: bool,
+    /// The panel on glass, or a plain one this opaque; its width, its text's size in
+    /// points, and its spacing made tighter.
+    pub hover_glass: bool,
+    pub hover_opacity: f64,
+    pub hover_width: i32,
+    pub hover_font_size: f64,
+    pub hover_compact: bool,
     pub clock_24h: bool,
     pub clock_weekday: bool,
     pub clock_seconds: bool,
@@ -193,6 +217,16 @@ impl From<TimeOfDay> for String {
     fn from(time: TimeOfDay) -> String {
         format!("{:02}:{:02}", time.0 / 60, time.0 % 60)
     }
+}
+
+/// How the hover panel shows a file: all it holds, as the Mac's FinderHover, or its kind,
+/// size and date alone, as Windows' tooltip.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HoverStyle {
+    #[default]
+    Full,
+    Tooltip,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
@@ -455,6 +489,23 @@ impl Default for Config {
             desktop_icons: true,
             desktop_sort: Sort::Name,
             desktop_free: false,
+            hover_info: true,
+            // FinderHover's own, after the pointer stops.
+            hover_delay: 0.1,
+            hover_style: HoverStyle::Full,
+            hover_follow: false,
+            hover_offset_x: 15,
+            hover_offset_y: 15,
+            // FinderHover leaves the attribute change date out until it is asked for.
+            hover_hide: vec!["file/屬性修改日期".into()],
+            hover_auto_hide: true,
+            hover_large_file_protection: true,
+            hover_glass: true,
+            // FinderHover's own defaults, but for the width, which it starts at 400.
+            hover_opacity: 0.98,
+            hover_width: 300,
+            hover_font_size: 11.0,
+            hover_compact: false,
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,

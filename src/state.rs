@@ -94,6 +94,7 @@ pub struct Nekoland {
     pub menu_bar: MenuBar,
     pub dock: Dock,
     pub desktop: crate::desktop::Desktop,
+    pub hover: crate::hover::Hover,
     pub notices: Notices,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
@@ -209,6 +210,7 @@ impl Nekoland {
             menu_bar: MenuBar::default(),
             dock: Dock::new(),
             desktop: Default::default(),
+            hover: Default::default(),
             notices: Notices::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),
@@ -304,7 +306,11 @@ impl Nekoland {
             return self.lock_surface_under(pos);
         }
         // The menu bar and its menus are the compositor's own, above everything.
-        if self.menu_bar_covers(pos) || self.dock_covers(pos) || self.notice_covers(pos) {
+        if self.menu_bar_covers(pos)
+            || self.dock_covers(pos)
+            || self.notice_covers(pos)
+            || self.hover_covers(pos)
+        {
             return None;
         }
         let layer_surface_under = |layers| {

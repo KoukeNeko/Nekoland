@@ -27,7 +27,9 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 xwayland swaylock swaybg foot
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     pipewire pipewire-pulse wireplumber brightnessctl
     fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
-    ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator"
+    ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
+    file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3
+    libharfbuzz-bin at-spi2-core"
 
 say "Installing packages"
 sudo true

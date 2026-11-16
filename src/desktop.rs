@@ -498,6 +498,21 @@ impl Nekoland {
         }
     }
 
+    /// The item under `pos` while nothing goes on there: no window over it, no press, box
+    /// or drag, no name being typed and no Quick Look.
+    pub(crate) fn desktop_resting_item(&self, pos: Point<f64, Logical>) -> Option<Item> {
+        let desktop = &self.desktop;
+        let busy = desktop.press.is_some()
+            || desktop.band.is_some()
+            || desktop.drag_picture.is_some()
+            || desktop.renaming.is_some()
+            || desktop.looking;
+        if busy || self.space.element_under(pos).is_some() {
+            return None;
+        }
+        self.desktop_item_at(pos)
+    }
+
     fn desktop_item_at(&self, pos: Point<f64, Logical>) -> Option<Item> {
         let pos = pos.to_i32_round();
         self.desktop

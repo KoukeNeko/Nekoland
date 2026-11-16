@@ -58,6 +58,12 @@ wallpaper and an input method. Every key is optional:
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
 | `desktop_icons`, `desktop_sort`, `desktop_free` | Whether the files in the Desktop folder show on the desktop, on unless set; their order: `name` (the default), `added`, `modified`, `created` or `kind`; and whether they stay where they are dragged instead, off unless set |
+| `hover_info`, `hover_delay`, `hover_style` | Whether resting on a file shows its panel, on unless set; after how many seconds, 0.1 unless set; and `full` (the default) or `tooltip`, only its kind, size and date |
+| `hover_follow`, `hover_offset_x`, `hover_offset_y` | Whether the panel moves with the pointer, off unless set, and how far right of and below it, 15 pixels each unless set |
+| `hover_auto_hide`, `hover_large_file_protection` | Whether the panel goes as soon as the pointer leaves its file, or stays until it rests on another, and whether text over 8 MB is left unread (256 MB without it); both on unless set |
+| `hover_glass`, `hover_opacity` | Whether the panel is on glass, on unless set, or plain and this opaque, 0.7 to 1, 0.98 unless set |
+| `hover_width`, `hover_font_size`, `hover_compact` | The panel's width, 300 to 600 pixels, 300 unless set; its text's size, 9 to 14 points, 11 unless set; and whether its spacing is tighter, off unless set |
+| `hover_hide` | The parts of the panel left out, of `icon`, `type`, `source`, `dates`, `file`, `location`, `notes` and `tags`; a kind's part, by its name such as `照片`; or one field, as `照片/焦距` or `dates/建立`; `file/屬性修改日期` unless set |
 | `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `clock_flash` | Whether the colon between the clock's hours and minutes flashes each second; off unless set |
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
@@ -214,6 +220,20 @@ Escape. A right click on a file opens its menu, with the same and the applicatio
 open it; on the desktop itself, to make a new folder, paste, sort the files or change
 the wallpaper. Sorting by 無 keeps each file where it is dragged to, in the cell nearest,
 remembered in `desktop-places.toml` beside the configuration.
+
+Resting the pointer on a file on the desktop, in a stack opened from the Dock or in a
+Nautilus window, shows
+what is known of it on glass, as FinderHover does on the Mac: by kind, a photo's camera,
+lens and exposure, a video's or song's streams, a document's pages, an archive's or
+disk image's contents, a font's glyphs, a folder's git branch and changes, a program's
+architecture, the lines of code, and so on; then where it was downloaded from, its
+dates, its details, where it is with how full the disk is, its tags and a note, kept in
+the `user.xdg.comment` attribute. Clicks go through the panel to what is under it;
+holding Alt keeps it still to click a value and copy it, or the note to type in it. What is read comes from exiftool, ffprobe,
+pdfinfo, bsdtar, sqlite3, git and file, and a font's sample from HarfBuzz's hb-view, each
+left out when it is not installed. Which file in Nautilus is pointed at is read from its
+accessibility tree, through at-spi2-core. Settings lists each kind's fields, beside the
+panel as it would show, to leave any of them out.
 
 ## Overview
 

@@ -12,8 +12,9 @@ use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, 
 use crate::CalloopData;
 
 const SOCKET_ENV: &str = "NEKOLAND_SOCKET";
-// Longer than any command; a client that sends more is dropped.
-const MAX_MESSAGE: u64 = 256;
+// Longer than any command, a list of what the hover panel leaves out among them; a client
+// that sends more is dropped.
+const MAX_MESSAGE: u64 = 16 << 10;
 
 fn socket_path(display: &std::ffi::OsStr) -> Option<PathBuf> {
     let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
@@ -117,6 +118,11 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                 return Some(format!("{err}\n"));
             }
             state.reload_config();
+        }
+        // What the hover panel can leave out, and the panel for a kind's sample as a PNG.
+        "hover fields" => return Some(crate::fileinfo::catalogue()),
+        preview if preview.starts_with("hover preview ") => {
+            return state.hover_preview(&preview["hover preview ".len()..]);
         }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),

@@ -559,6 +559,16 @@ impl Dock {
         }
     }
 
+    /// The item pointed at in the folder opened from the Dock.
+    fn hovered_item(&self) -> Option<&Item> {
+        let stack = self.stack.as_ref()?;
+        let index = match &stack.view {
+            Opened::Fan { .. } => stack.hovered?,
+            Opened::Grid { grid, scroll } => scroll * grid.columns + stack.hovered?,
+        };
+        stack.items.get(index)
+    }
+
     /// The open folder, or the `closing` one.
     fn stack_mut(&mut self, closing: bool) -> Option<&mut OpenStack> {
         if closing {
@@ -2382,6 +2392,10 @@ impl Nekoland {
 
     /// Whether the Dock, or the pictures over it, are at a position, so that it is not a
     /// window's.
+    pub(crate) fn stack_hovered_item(&self) -> Option<Item> {
+        self.dock.hovered_item().cloned()
+    }
+
     pub fn dock_covers(&self, pos: Point<f64, Logical>) -> bool {
         self.dock_shown()
             && (self
