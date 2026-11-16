@@ -52,6 +52,10 @@ pub const BELOW_WINDOWS: [Layer; 2] = [Layer::Bottom, Layer::Background];
 pub struct Nekoland {
     pub start_time: std::time::Instant,
     pub config: Config,
+    /// The swaybg drawing the configured wallpaper.
+    pub wallpaper: Option<std::process::Child>,
+    /// The pointing devices libinput gave, to set as the configuration says.
+    pub pointer_devices: Vec<smithay::reexports::input::Device>,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
@@ -143,6 +147,8 @@ impl Nekoland {
         Self {
             start_time,
             config: Config::load(),
+            wallpaper: None,
+            pointer_devices: Vec::new(),
             display_handle: dh,
 
             space,
@@ -301,4 +307,39 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+impl Nekoland {
+    /// Reads the configuration again and applies what changed that is not read anew each
+    /// time it is used: the wallpaper and the pointing devices.
+    pub fn reload_config(&mut self) {
+        let old_wallpaper = (self.config.wallpaper.clone(), self.config.wallpaper_mode);
+        self.config = Config::load();
+        if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
+            if let Some(mut swaybg) = self.wallpaper.take() {
+                if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {
+                    tracing::warn!("swaybg: {err}");
+                }
+            }
+            self.wallpaper = crate::config::start_wallpaper(&self.config);
+        }
+        let devices = std::mem::take(&mut self.pointer_devices);
+        for device in devices {
+            self.add_pointer_device(device);
+        }
+    }
+
+    /// Sets a pointing device as the configuration says, and keeps it for when that changes.
+    pub fn add_pointer_device(&mut self, mut device: smithay::reexports::input::Device) {
+        use smithay::reexports::input::DeviceCapability;
+        if !device.has_capability(DeviceCapability::Pointer) {
+            return;
+        }
+        // A device that cannot do one of these says so, and is left as it is.
+        let _ = device.config_tap_set_enabled(self.config.tap_to_click);
+        let _ = device.config_scroll_set_natural_scroll_enabled(self.config.natural_scroll);
+        let _ = device.config_accel_set_speed(self.config.pointer_speed.clamp(-1.0, 1.0));
+        self.pointer_devices.retain(|known| *known != device);
+        self.pointer_devices.push(device);
+    }
 }

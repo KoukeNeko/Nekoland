@@ -36,8 +36,12 @@ pub fn listen(handle: &LoopHandle<'static, CalloopData>, display: &std::ffi::OsS
                     let mut message = String::new();
                     // A local client that stalls must not stall the compositor.
                     stream.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
-                    if stream.take(MAX_MESSAGE).read_to_string(&mut message).is_ok() {
-                        run(&mut data.state, message.trim());
+                    if (&stream).take(MAX_MESSAGE).read_to_string(&mut message).is_ok() {
+                        if let Some(reply) = run(&mut data.state, message.trim()) {
+                            if let Err(err) = (&stream).write_all(reply.as_bytes()) {
+                                tracing::warn!("answering {message:?}: {err}");
+                            }
+                        }
                     }
                 }
                 Ok(PostAction::Continue)
@@ -47,8 +51,38 @@ pub fn listen(handle: &LoopHandle<'static, CalloopData>, display: &std::ffi::OsS
     Ok(())
 }
 
-fn run(state: &mut crate::Nekoland, message: &str) {
+/// Does what a message asks; a question gets its answer back.
+fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
     match message {
+        // The configuration changed: the settings application wrote it.
+        "reload" => state.reload_config(),
+        // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ.
+        "modes" => {
+            let output = state.space.outputs().next()?;
+            let name = |mode: smithay::output::Mode| {
+                format!("{}x{}@{}", mode.size.w, mode.size.h, (mode.refresh + 500) / 1000)
+            };
+            let current = output.current_mode().map(name).unwrap_or_default();
+            let mut lines = vec![current];
+            for mode in output.modes() {
+                let line = name(mode);
+                if !lines[1..].contains(&line) {
+                    lines.push(line);
+                }
+            }
+            return Some(lines.join("\n") + "\n");
+        }
+        // The settings in effect, as TOML, with what is not in the file at its default.
+        "config" => {
+            return Some(toml::to_string(&state.config).unwrap_or_else(|err| format!("# {err}\n")));
+        }
+        // `set KEY = VALUE`: one setting changed, kept in the file, and put in effect.
+        set if set.starts_with("set ") => {
+            if let Err(err) = crate::config::set(&set["set ".len()..]) {
+                return Some(format!("{err}\n"));
+            }
+            state.reload_config();
+        }
         "overview" => state.toggle_overview(),
         "workspace-add" => {
             state.add_workspace();
@@ -59,10 +93,18 @@ fn run(state: &mut crate::Nekoland, message: &str) {
         "quit" => state.loop_signal.stop(),
         other => tracing::warn!("unknown message: {other}"),
     }
+    None
 }
 
-/// The client side: sends one message to the compositor this program was started from.
+/// The client side: sends one message to the compositor this program was started from,
+/// and prints what it answers.
 pub fn send(message: &str) -> std::io::Result<()> {
     let path = std::env::var_os(SOCKET_ENV).ok_or(std::io::ErrorKind::NotFound)?;
-    UnixStream::connect(path)?.write_all(message.as_bytes())
+    let mut stream = UnixStream::connect(path)?;
+    stream.write_all(message.as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    print!("{reply}");
+    Ok(())
 }

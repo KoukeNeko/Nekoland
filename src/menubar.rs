@@ -430,8 +430,9 @@ fn draw_logo(cr: &Context, x: f64, y: f64, color: Rgb) {
     let _ = cr.fill();
 }
 
-/// The minute it is now, and the clock as the bar shows it.
-fn clock() -> (i64, String) {
+/// The minute it is now, or the second when seconds are shown, and the clock as the bar
+/// shows it, as the configuration asks.
+fn clock(config: &config::Config) -> (i64, String) {
     // SAFETY: localtime_r only writes the tm it is given.
     let tm = unsafe {
         let now = libc::time(std::ptr::null_mut());
@@ -440,16 +441,31 @@ fn clock() -> (i64, String) {
         tm
     };
     let minute = ((i64::from(tm.tm_yday) * 24 + i64::from(tm.tm_hour)) * 60) + i64::from(tm.tm_min);
-    let weekday = WEEKDAYS[tm.tm_wday.rem_euclid(7) as usize];
-    let text = format!(
-        "{}月{}日 週{} {:02}:{:02}",
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        weekday,
-        tm.tm_hour,
-        tm.tm_min
-    );
-    (minute, text)
+    let key = if config.clock_seconds {
+        minute * 60 + i64::from(tm.tm_sec)
+    } else {
+        minute
+    };
+    let weekday = if config.clock_weekday {
+        format!("週{} ", WEEKDAYS[tm.tm_wday.rem_euclid(7) as usize])
+    } else {
+        String::new()
+    };
+    let time = if config.clock_24h {
+        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+    } else {
+        let half = if tm.tm_hour < 12 { "上午" } else { "下午" };
+        format!("{half} {}:{:02}", (tm.tm_hour + 11) % 12 + 1, tm.tm_min)
+    };
+    let seconds = if config.clock_seconds {
+        format!(":{:02}", tm.tm_sec)
+    } else {
+        String::new()
+    };
+    (
+        key,
+        format!("{}月{}日 {weekday}{time}{seconds}", tm.tm_mon + 1, tm.tm_mday),
+    )
 }
 
 fn is_help(label: &str) -> bool {
@@ -989,7 +1005,7 @@ impl Nekoland {
             }
         }
 
-        let (minute, clock) = clock();
+        let (minute, clock) = clock(&self.config);
         let drawn = Drawn {
             width: output.size.w,
             app: app.clone(),

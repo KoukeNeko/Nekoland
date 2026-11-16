@@ -124,12 +124,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
+        let wallpaper = config::start_wallpaper(config);
         match &command {
             Some(command) => config::spawn(command),
             // Something to start from, when nothing else was asked for.
             None if config.autostart.is_empty() => config::spawn(&config.terminal),
             None => {}
         }
+        data.state.wallpaper = wallpaper;
     });
 
     event_loop.run(None, &mut data, move |_| {

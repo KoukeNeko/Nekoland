@@ -2,9 +2,9 @@
 
 use std::{collections::HashMap, path::PathBuf, process::Command};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The display mode to ask for, as `WIDTHxHEIGHT`; the display's preferred one otherwise.
@@ -27,10 +27,41 @@ pub struct Config {
     pub dock: Vec<String>,
     /// The folders kept at the Dock's right end, before the Trash.
     pub stacks: Vec<Stack>,
+    /// The picture on the desktop, drawn by swaybg, and how it fills the output.
+    pub wallpaper: Option<String>,
+    pub wallpaper_mode: WallpaperMode,
+    pub clock_24h: bool,
+    pub clock_weekday: bool,
+    pub clock_seconds: bool,
+    /// Whether the Dock is drawn on glass, or on its tint alone.
+    pub dock_glass: bool,
+    pub natural_scroll: bool,
+    pub tap_to_click: bool,
+    /// From -1, slowest, to 1, fastest.
+    pub pointer_speed: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WallpaperMode {
+    #[default]
+    Fill,
+    Fit,
+    Center,
+}
+
+impl WallpaperMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            WallpaperMode::Fill => "fill",
+            WallpaperMode::Fit => "fit",
+            WallpaperMode::Center => "center",
+        }
+    }
 }
 
 /// A folder in the Dock, and how it shows what is in it, as the Mac's stacks do.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Stack {
     /// Where the folder is; `~` stands for the home folder.
@@ -43,7 +74,7 @@ pub struct Stack {
     pub view: View,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Sort {
     Name,
@@ -55,7 +86,7 @@ pub enum Sort {
 }
 
 /// What the Dock shows for the folder: the folder's own icon, or its newest items piled up.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Show {
     Folder,
@@ -64,7 +95,7 @@ pub enum Show {
 }
 
 /// How the folder's items open from the Dock.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum View {
     #[default]
@@ -164,6 +195,15 @@ impl Default for Config {
             .map(String::from)
             .to_vec(),
             stacks: vec![Stack::new(downloads())],
+            wallpaper: None,
+            wallpaper_mode: WallpaperMode::default(),
+            clock_24h: true,
+            clock_weekday: true,
+            clock_seconds: false,
+            dock_glass: true,
+            natural_scroll: false,
+            tap_to_click: true,
+            pointer_speed: 0.0,
         }
     }
 }
@@ -209,12 +249,16 @@ pub fn config_file(name: &str) -> Option<PathBuf> {
 /// Writes the Dock's kept applications back to the configuration file.
 pub fn save_dock(dock: &[String]) {
     let quoted: Vec<String> = dock.iter().map(|app_id| format!("{app_id:?}")).collect();
-    save_setting("dock", &format!("dock = [{}]", quoted.join(", ")));
+    if let Err(err) = save_setting("dock", &format!("dock = [{}]", quoted.join(", "))) {
+        tracing::warn!("{err}");
+    }
 }
 
 /// Writes the Dock's folders back to the configuration file.
 pub fn save_stacks(stacks: &[Stack]) {
-    save_setting("stacks", &stacks_line(stacks));
+    if let Err(err) = save_setting("stacks", &stacks_line(stacks)) {
+        tracing::warn!("{err}");
+    }
 }
 
 fn stacks_line(stacks: &[Stack]) -> String {
@@ -233,26 +277,32 @@ fn stacks_line(stacks: &[Stack]) -> String {
     format!("stacks = [{}]", tables.join(", "))
 }
 
-/// Puts `line` in the configuration file in place of the setting `key`, or at its end.
+/// Changes one setting, given as a line of TOML, for the settings application.
+pub fn set(line: &str) -> Result<(), String> {
+    let table: toml::Table = toml::from_str(line).map_err(|err| err.to_string())?;
+    match table.keys().collect::<Vec<_>>()[..] {
+        [key] => save_setting(key, line),
+        _ => Err(format!("not one setting: {line}")),
+    }
+}
+
+/// Puts `line` in the configuration file in place of the setting `key`, or before its
+/// first table, if the file still reads as a configuration with it.
 // shortcut: edits the file as text, so a setting written across several lines other than
 // one item per line is left as it is; a TOML writer if that comes up.
-fn save_setting(key: &str, line: &str) {
-    let Some(path) = config_path() else {
-        return;
-    };
+fn save_setting(key: &str, line: &str) -> Result<(), String> {
+    let path = config_path().ok_or("no home folder")?;
+    let failed = |err: std::io::Error| format!("{}: {err}", path.display());
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => {
-            tracing::warn!("{}: {err}", path.display());
-            return;
-        }
+        Err(err) => return Err(failed(err)),
     };
-    if let Err(err) = std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|_| std::fs::write(&path, with_setting(&text, key, line)))
-    {
-        tracing::warn!("{}: {err}", path.display());
-    }
+    let changed = with_setting(&text, key, line);
+    toml::from_str::<Config>(&changed).map_err(|err| format!("{line}: {err}"))?;
+    std::fs::create_dir_all(path.parent().unwrap_or(&path))
+        .and_then(|_| std::fs::write(&path, changed))
+        .map_err(failed)
 }
 
 /// The configuration text with its `key = [...]` setting, on one line or several, replaced.
@@ -261,11 +311,16 @@ fn with_setting(text: &str, key: &str, line: &str) -> String {
     let mut lines = text.lines();
     let mut replaced = false;
     while let Some(current) = lines.next() {
-        let name = current.split('=').next().unwrap_or_default().trim();
-        if name == key && !replaced {
+        // Top-level settings end where the first table starts.
+        if !replaced && current.trim_start().starts_with('[') {
+            out.push(line.to_string());
+            replaced = true;
+        }
+        let (name, value) = current.split_once('=').unwrap_or((current, ""));
+        if name.trim() == key && !replaced {
             // An array that goes on past this line ends at the line closing it.
             let mut rest = current.to_string();
-            while !rest.trim_end().ends_with(']') {
+            while value.trim_start().starts_with('[') && !rest.trim_end().ends_with(']') {
                 match lines.next() {
                     Some(next) => rest = next.to_string(),
                     None => break,
@@ -286,6 +341,18 @@ fn with_setting(text: &str, key: &str, line: &str) -> String {
 /// Text quoted for a shell, as one word.
 pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Draws the wallpaper with swaybg, if one is set; the program is returned, to be stopped
+/// when the wallpaper changes.
+pub fn start_wallpaper(config: &Config) -> Option<std::process::Child> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = config.wallpaper.as_ref()?.replacen('~', &home, 1);
+    Command::new("swaybg")
+        .args(["-m", config.wallpaper_mode.name(), "-i", &path])
+        .spawn()
+        .inspect_err(|err| tracing::warn!("swaybg: {err}"))
+        .ok()
 }
 
 /// Starts a shell command as a client of this compositor.
@@ -309,6 +376,19 @@ mod tests {
         assert_eq!(
             with_setting("terminal = \"foot\"\n", "dock", "dock = []"),
             "terminal = \"foot\"\ndock = []\n"
+        );
+    }
+
+    #[test]
+    fn a_plain_setting_is_replaced_alone_and_added_before_tables() {
+        let text = "clock_24h = true\ndock = [\n    \"a\",\n]\n[glass]\nwaybar = 12\n";
+        assert_eq!(
+            with_setting(text, "clock_24h", "clock_24h = false"),
+            "clock_24h = false\ndock = [\n    \"a\",\n]\n[glass]\nwaybar = 12\n"
+        );
+        assert_eq!(
+            with_setting(text, "dock_glass", "dock_glass = false"),
+            "clock_24h = true\ndock = [\n    \"a\",\n]\ndock_glass = false\n[glass]\nwaybar = 12\n"
         );
     }
 

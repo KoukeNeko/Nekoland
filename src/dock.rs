@@ -319,6 +319,7 @@ impl Preview {
 #[derive(PartialEq)]
 struct Drawn {
     dark: bool,
+    glass: bool,
     width: i32,
     tiles: Vec<(Tile, i32, u8, u8, u8)>,
 }
@@ -947,8 +948,10 @@ impl Nekoland {
             self.dock.bounce = None;
         }
         let width = self.dock.shown_width.round() as i32;
+        let glass = self.config.dock_glass;
         let drawn = Drawn {
             dark,
+            glass,
             width,
             tiles: self
                 .dock
@@ -978,13 +981,14 @@ impl Nekoland {
             let Ok(cr) = Context::new(&surface) else {
                 return;
             };
+            // Without glass under it, its tint is the more solid one, to read on.
             paint_pane(
                 &cr,
                 f64::from(width),
                 f64::from(HEIGHT),
                 f64::from(RADIUS),
                 dark,
-                false,
+                !glass,
             );
             let (r, g, b) = ink(dark);
             for (tile, x, lift, scale, alpha) in &drawn.tiles {
@@ -1470,7 +1474,7 @@ impl Nekoland {
             fade: 1.0,
             id: &ids.dock,
             rect,
-            glass: Some(RADIUS),
+            glass: self.config.dock_glass.then_some(RADIUS),
             alpha: 1.0,
             picture,
         });

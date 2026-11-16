@@ -6,6 +6,7 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Mutex, time::Duration};
 
 use smithay::{
+    backend::input::InputEvent,
     backend::{
         allocator::{
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
@@ -216,6 +217,9 @@ pub fn init_udev(
         .udev_assign_seat(&seat)
         .map_err(|()| "libinput could not take the seat")?;
     handle.insert_source(LibinputInputBackend::new(libinput.clone()), |event, _, data| {
+        if let InputEvent::DeviceAdded { device } = &event {
+            data.state.add_pointer_device(device.clone());
+        }
         data.state.process_input_event(event)
     })?;
 

@@ -35,6 +35,12 @@ wallpaper and an input method. Every key is optional:
 | `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw: `{ nekoland-launcher = 16 }` unless set |
 | `dock` | The applications kept in the Dock, by desktop entry name; the Dock writes it back when they are rearranged |
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
+| `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
+| `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
+| `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
+| `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+
+`nekoland msg reload` reads the file again once it is changed.
 
 The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 
@@ -161,7 +167,10 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 ## From other programs
 
 `nekoland msg WORD` talks to the running compositor: `overview`, `workspace-add`,
-`workspace-next`, `workspace-previous`, `quit`.
+`workspace-next`, `workspace-previous`, `quit`; `reload` reads the configuration again,
+`config` prints the settings in effect, `modes` the display's mode and then all it has,
+and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
+it in effect, or says why not.
 
 ## Not there yet
 
