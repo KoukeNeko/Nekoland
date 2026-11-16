@@ -3016,6 +3016,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cairo-rs",
  "gdk-pixbuf",
+ "gio",
  "libc",
  "pango",
  "pangocairo",

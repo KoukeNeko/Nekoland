@@ -211,7 +211,10 @@ pub fn pixmap_icon(width: i32, height: i32, argb: &[u8]) -> Option<ImageSurface>
     Some(surface)
 }
 
-fn pixbuf_surface(pixbuf: &gdk_pixbuf::Pixbuf, tint: Option<(f64, f64, f64)>) -> Option<ImageSurface> {
+pub(crate) fn pixbuf_surface(
+    pixbuf: &gdk_pixbuf::Pixbuf,
+    tint: Option<(f64, f64, f64)>,
+) -> Option<ImageSurface> {
     let (width, height) = (pixbuf.width(), pixbuf.height());
     let channels = pixbuf.n_channels() as usize;
     let rowstride = pixbuf.rowstride() as usize;

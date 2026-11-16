@@ -15,6 +15,7 @@ mod menubar;
 mod notices;
 mod overview;
 mod render;
+mod stacks;
 mod state;
 mod system;
 mod text;

@@ -7,21 +7,34 @@
 //! or brings its windows; the icon breathes until a started application shows a window; a
 //! right click opens a menu of its windows and what can be done with it; kept icons are
 //! dragged to reorder them, out of the Dock to take them off, and a running one dragged in
-//! among them is kept. As on Windows, resting on a running application shows a picture of
-//! each of its windows, to pick one or close it.
+//! among them is kept. At the right end are the kept folders, which open as a fan, a grid or
+//! a list, and the Trash; a folder dragged in from a file manager is kept there, files
+//! dropped on the Trash go to it, and files dropped on an application open in it. As on
+//! Windows, resting on a running application shows a picture of each of its windows, to
+//! pick one or close it.
 
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    os::fd::{AsFd, FromRawFd, OwnedFd},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use cairo::{Context, Format, ImageSurface};
+use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
     desktop::Window,
+    reexports::wayland_server::protocol::wl_data_source::WlDataSource,
     utils::{IsAlive, Logical, Point, Rectangle, Size},
+    wayland::selection::data_device::with_source_metadata,
 };
 
 use crate::{
-    config,
+    config::{self, Show, Sort, Stack, View},
     menubar::{close, Command, Entry, Overlay},
+    stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
     Nekoland,
@@ -69,6 +82,12 @@ const MINIMIZE_TIME: f64 = 0.24;
 /// How long names and window pictures take to fade in, and an icon let go off the Dock
 /// to fade away.
 const FADE_IN_TIME: f64 = 0.14;
+/// How long a fan takes to come out of its folder.
+const FAN_TIME: f64 = 0.22;
+/// How often a kept folder and the Trash are looked at again for changes.
+const FOLDER_CHECK: Duration = Duration::from_secs(1);
+/// How many of a folder's items its list shows, each subfolder's too.
+const LIST_MAX: usize = 30;
 const FADE_OUT_TIME: f64 = 0.2;
 
 const CARD_WIDTH: i32 = 220;
@@ -82,6 +101,7 @@ const CLOSE: i32 = 20;
 const LABEL_HEIGHT: i32 = 26;
 const LABEL_RADIUS: i32 = 8;
 const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
+const CONFIRM_APP_ID: &str = "nekoland-confirm";
 
 #[derive(Clone, PartialEq)]
 enum Tile {
@@ -101,6 +121,17 @@ enum Tile {
         title: String,
         icon: Option<String>,
     },
+    /// A kept folder, by its place among them, with the items its icon piles up.
+    Stack {
+        index: usize,
+        path: PathBuf,
+        name: String,
+        show: Show,
+        covers: Vec<Item>,
+    },
+    Trash {
+        full: bool,
+    },
 }
 
 /// What stays the same of a tile from frame to frame, for its animation.
@@ -110,6 +141,8 @@ enum Key {
     App(String),
     Separator(&'static str),
     Window(Window),
+    Stack(PathBuf),
+    Trash,
 }
 
 impl Tile {
@@ -119,6 +152,8 @@ impl Tile {
             Tile::App { app_id, .. } => Key::App(app_id.clone()),
             Tile::Separator(name) => Key::Separator(name),
             Tile::Window { window, .. } => Key::Window(window.clone()),
+            Tile::Stack { path, .. } => Key::Stack(path.clone()),
+            Tile::Trash { .. } => Key::Trash,
         }
     }
 
@@ -135,6 +170,8 @@ impl Tile {
             Tile::Apps => Some("應用程式"),
             Tile::App { name, .. } => Some(name),
             Tile::Window { title, .. } => Some(title),
+            Tile::Stack { name, .. } => Some(name),
+            Tile::Trash { .. } => Some("垃圾桶"),
             Tile::Separator(_) => None,
         }
     }
@@ -147,6 +184,50 @@ pub enum DockCommand {
     TogglePin(String),
     Hide(String),
     Quit(String),
+    Open(PathBuf),
+    StackSort(usize, Sort),
+    StackShow(usize, Show),
+    StackView(usize, View),
+    RemoveStack(usize),
+    RevealStack(usize),
+    OpenTrash,
+    EmptyTrash,
+}
+
+/// What is in a kept folder, as last read.
+struct Folder {
+    path: PathBuf,
+    sort: Sort,
+    /// When the folder last changed, and when that was looked at.
+    changed: i64,
+    checked: Instant,
+    items: Vec<Item>,
+}
+
+/// A kept folder opened over the Dock.
+struct OpenStack {
+    folder: PathBuf,
+    name: String,
+    items: Vec<Item>,
+    view: Opened,
+    rect: Rectangle<i32, Logical>,
+    opened: Instant,
+    hovered: Option<usize>,
+    button_hovered: bool,
+    picture: Option<Picture>,
+    drawn: Option<(Option<usize>, bool, bool, usize, u8)>,
+}
+
+enum Opened {
+    /// The items rising from the folder, newest nearest, and a line to open the folder;
+    /// `anchor` is the top middle of the folder's icon.
+    Fan {
+        fan: Fan,
+        anchor: Point<f64, Logical>,
+        labels: Vec<String>,
+    },
+    /// A page of the items at a time, `scroll` rows down.
+    Grid { grid: Grid, scroll: usize },
 }
 
 /// Where a tile is drawn now, on its way to where it goes.
@@ -163,16 +244,32 @@ struct Press {
     at: Instant,
 }
 
-/// A kept or running application's icon being dragged.
+/// An icon being dragged within the Dock or out of it.
 struct Drag {
-    app_id: String,
-    icon: Option<String>,
+    what: Dragged,
+    /// Whether letting it go away from the Dock takes it off.
     kept: bool,
     /// Where in the icon it was taken.
     grab: Point<f64, Logical>,
-    /// Among the kept applications, where it would go if let go now; none when it would
-    /// be taken off the Dock instead.
+    /// Among its kind, where it would go if let go now; none when it would be taken off
+    /// the Dock instead.
     slot: Option<usize>,
+}
+
+enum Dragged {
+    /// A kept or running application, which goes among the kept ones.
+    App { app_id: String, icon: Option<String> },
+    /// A kept folder, which goes among the folders.
+    Stack { index: usize, path: PathBuf },
+}
+
+impl Dragged {
+    fn key(&self) -> Key {
+        match self {
+            Dragged::App { app_id, .. } => Key::App(app_id.clone()),
+            Dragged::Stack { path, .. } => Key::Stack(path.clone()),
+        }
+    }
 }
 
 /// The pictures of a running application's windows, over its icon.
@@ -220,6 +317,7 @@ struct Ids {
     dock: Id,
     label: Id,
     preview: Id,
+    stack: Id,
     held: Id,
     tag: Id,
 }
@@ -254,11 +352,20 @@ pub struct Dock {
     drawn: Option<Drawn>,
     ids: Option<Ids>,
     last_tick: Option<Instant>,
+    folders: Vec<Folder>,
+    trash: Option<(bool, Instant)>,
+    stack: Option<OpenStack>,
+    /// Pictures of files and folders, by path.
+    file_icons: Vec<(PathBuf, bool, Option<ImageSurface>)>,
+    /// What a file manager is dragging, once it has said: the paths of the files.
+    dnd: Option<Arc<Mutex<Option<Vec<PathBuf>>>>>,
+    /// Where the pointer last moved to.
+    pointer: Option<Point<f64, Logical>>,
 }
 
 type Rgb = (f64, f64, f64);
 
-fn ink(dark: bool) -> Rgb {
+pub(crate) fn ink(dark: bool) -> Rgb {
     if dark {
         (0.945, 0.937, 0.918)
     } else {
@@ -286,7 +393,7 @@ fn tint(dark: bool, solid: bool) -> (f64, f64, f64, f64) {
 }
 
 /// A rounded pane of tinted glass with its thin rim, the size of the surface.
-fn paint_pane(cr: &Context, width: f64, height: f64, radius: f64, dark: bool, solid: bool) {
+pub(crate) fn paint_pane(cr: &Context, width: f64, height: f64, radius: f64, dark: bool, solid: bool) {
     let (r, g, b, a) = tint(dark, solid);
     text::rounded_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0, radius);
     cr.set_source_rgba(r, g, b, a);
@@ -430,7 +537,9 @@ impl Nekoland {
         let mut running: Vec<String> = Vec::new();
         for window in self.all_windows().filter(|window| is_managed(window)) {
             let app_id = window_names(window).1;
-            if !app_id.is_empty() && app_id != LAUNCHER_APP_ID && !running.contains(&app_id) {
+            // Nekoland's own launcher and dialogs are part of the desktop, not applications.
+            let own = app_id == LAUNCHER_APP_ID || app_id == CONFIRM_APP_ID;
+            if !app_id.is_empty() && !own && !running.contains(&app_id) {
                 running.push(app_id);
             }
         }
@@ -466,10 +575,27 @@ impl Nekoland {
             }
         }
 
+        // The right end: kept folders, minimized windows, and the Trash last.
+        tiles.push(Tile::Separator("right"));
+        for (index, stack) in self.config.stacks.clone().into_iter().enumerate() {
+            let path = stack.folder();
+            let covers = self
+                .folder_items(&path, stack.sort)
+                .iter()
+                .take(3)
+                .cloned()
+                .collect();
+            tiles.push(Tile::Stack {
+                index,
+                name: stacks::folder_name(&path),
+                show: stack.show,
+                covers,
+                path,
+            });
+        }
         self.minimized.retain(|(window, _)| window.alive());
         let minimized: Vec<Window> = self.minimized.iter().map(|(window, _)| window.clone()).collect();
-        if !minimized.is_empty() {
-            tiles.push(Tile::Separator("minimized"));
+        {
             for window in minimized {
                 let (title, app_id) = window_names(&window);
                 let info = self.apps.info(&app_id).clone();
@@ -484,7 +610,82 @@ impl Nekoland {
                 });
             }
         }
+        tiles.push(Tile::Trash {
+            full: self.trash_full(),
+        });
         tiles
+    }
+
+    /// What is in a kept folder, read again when it has changed since it was last read.
+    fn folder_items(&mut self, path: &Path, sort: Sort) -> &[Item] {
+        let index = match self.dock.folders.iter().position(|folder| folder.path == path) {
+            Some(index) => index,
+            None => {
+                self.dock.folders.push(Folder {
+                    path: path.to_path_buf(),
+                    sort,
+                    changed: i64::MIN,
+                    checked: Instant::now() - FOLDER_CHECK,
+                    items: Vec::new(),
+                });
+                self.dock.folders.len() - 1
+            }
+        };
+        let folder = &mut self.dock.folders[index];
+        if folder.sort != sort || folder.checked.elapsed() >= FOLDER_CHECK {
+            use std::os::unix::fs::MetadataExt;
+            let changed =
+                std::fs::metadata(path).map_or(0, |meta| meta.mtime_nsec() + meta.mtime() * 1_000_000_000);
+            if folder.sort != sort || changed != folder.changed {
+                folder.items = stacks::read_folder(path, sort);
+                folder.sort = sort;
+                folder.changed = changed;
+            }
+            folder.checked = Instant::now();
+        }
+        &self.dock.folders[index].items
+    }
+
+    /// Whether anything is in the Trash, looked at again now and then.
+    fn trash_full(&mut self) -> bool {
+        if let Some((full, at)) = self.dock.trash {
+            if at.elapsed() < FOLDER_CHECK {
+                return full;
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let full = std::fs::read_dir(format!("{home}/.local/share/Trash/files"))
+            .is_ok_and(|mut entries| entries.next().is_some());
+        self.dock.trash = Some((full, Instant::now()));
+        full
+    }
+
+    /// A file's or folder's picture, kept for the next frame.
+    fn file_icon(&mut self, item: &Item, dark: bool) -> Option<ImageSurface> {
+        if let Some((.., icon)) = self
+            .dock
+            .file_icons
+            .iter()
+            .find(|(path, cached_dark, _)| *path == item.path && *cached_dark == dark)
+        {
+            return icon.clone();
+        }
+        // shortcut: forgets every picture once there are many, rather than the oldest.
+        if self.dock.file_icons.len() > 400 {
+            self.dock.file_icons.clear();
+        }
+        let icon = stacks::item_icon(item, 64, ink(dark));
+        self.dock.file_icons.push((item.path.clone(), dark, icon.clone()));
+        icon
+    }
+
+    /// A folder's own icon, as its file manager shows it, trimmed as an application's is.
+    fn folder_icon(&mut self, path: &Path, size: i32, dark: bool) -> Option<ImageSurface> {
+        let names = stacks::icon_names(path);
+        names
+            .iter()
+            .chain(std::iter::once(&"folder".to_string()))
+            .find_map(|name| self.dock_icon(name, size, dark))
     }
 
     fn dock_shown(&self) -> bool {
@@ -588,21 +789,30 @@ impl Nekoland {
             .minimizing
             .retain(|(window, _, at)| window.alive() && at.elapsed().as_secs_f64() < MINIMIZE_TIME);
 
-        // A dragged icon leaves its place, and the kept ones make room where it would go.
+        // A dragged icon leaves its place, and the others of its kind make room where it
+        // would go: kept applications after the button for all of them, folders after the
+        // line at the right end.
         let mut gap = None;
         if let Some(drag) = &self.dock.drag {
-            tiles.retain(|tile| !matches!(tile, Tile::App { app_id, .. } if *app_id == drag.app_id));
-            let kept = tiles
-                .iter()
-                .skip(1)
-                .take_while(|tile| matches!(tile, Tile::App { kept: true, .. }))
-                .count();
+            let key = drag.what.key();
+            tiles.retain(|tile| tile.key() != key);
+            let (start, alike): (usize, fn(&Tile) -> bool) = match drag.what {
+                Dragged::App { .. } => (1, |tile| matches!(tile, Tile::App { kept: true, .. })),
+                Dragged::Stack { .. } => (
+                    tiles
+                        .iter()
+                        .position(|tile| *tile == Tile::Separator("right"))
+                        .map_or(tiles.len(), |at| at + 1),
+                    |tile| matches!(tile, Tile::Stack { .. }),
+                ),
+            };
+            let count = tiles[start..].iter().take_while(|tile| alike(tile)).count();
             let (spans, width) = Self::lay_out(&tiles, None);
             let slot = match (pointer, self.dock_rect_of(width)) {
                 (Some(pos), Some(rect)) if pos.y >= f64::from(rect.loc.y) - REMOVE_DISTANCE => {
                     let x = pos.x - f64::from(rect.loc.x);
                     Some(
-                        spans[1..=kept]
+                        spans[start..start + count]
                             .iter()
                             .filter(|(start, width)| f64::from(start + width / 2) < x)
                             .count(),
@@ -610,7 +820,7 @@ impl Nekoland {
                 }
                 _ => None,
             };
-            gap = slot.map(|slot| slot + 1);
+            gap = slot.map(|slot| slot + start);
             if let Some(drag) = self.dock.drag.as_mut() {
                 drag.slot = slot;
             }
@@ -679,7 +889,11 @@ impl Nekoland {
         self.dock.spans = spans;
         self.dock.width = width;
 
+        if self.dock.stack.is_some() && (menu_open || !self.dock_shown()) {
+            self.dock.stack = None;
+        }
         self.refresh_preview(pointer, dark, menu_open, now);
+        self.refresh_stack(pointer, dark);
         self.draw_dock(dark, now);
         self.refresh_dock_popups(dark, menu_open);
     }
@@ -831,6 +1045,48 @@ impl Nekoland {
                         cr.set_source_rgba(r, g, b, 0.10);
                         let _ = cr.fill();
                     }
+                    Tile::Stack {
+                        path, show, covers, ..
+                    } => {
+                        // As a stack, its newest items piled up, the newest on top.
+                        let images: Vec<ImageSurface> = if *show == Show::Stack {
+                            covers
+                                .iter()
+                                .filter_map(|item| self.file_icon(item, dark))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        if images.is_empty() {
+                            if let Some(icon) = self.folder_icon(path, ART, dark) {
+                                let _ = cr.save();
+                                cr.translate(ax, ay);
+                                stacks::paint_fitted(&cr, &icon, size, alpha);
+                                let _ = cr.restore();
+                            }
+                        }
+                        for (index, image) in images.iter().enumerate().rev() {
+                            let (turn, shrink) = [(0.0, 1.0), (-0.08, 0.9), (0.08, 0.82)][index];
+                            let piece = size * shrink;
+                            let _ = cr.save();
+                            cr.translate(ax + size / 2.0, ay + size / 2.0 - index as f64 * 2.0);
+                            cr.rotate(turn);
+                            cr.translate(-piece / 2.0, -piece / 2.0);
+                            stacks::paint_fitted(&cr, image, piece, alpha);
+                            let _ = cr.restore();
+                        }
+                    }
+                    Tile::Trash { full } => {
+                        let name = if *full { "user-trash-full" } else { "user-trash" };
+                        if let Some(icon) = self.dock_icon(name, ART, dark) {
+                            let _ = cr.save();
+                            cr.translate(ax, ay);
+                            cr.scale(scale, scale);
+                            let _ = cr.set_source_surface(&icon, 0.0, 0.0);
+                            let _ = cr.paint_with_alpha(alpha);
+                            let _ = cr.restore();
+                        }
+                    }
                 }
             }
         }
@@ -849,6 +1105,8 @@ impl Nekoland {
         let quiet = !menu_open
             && self.dock.press.is_none()
             && self.dock.drag.is_none()
+            && self.dock.stack.is_none()
+            && self.dock.dnd.is_none()
             && self.overview.is_none()
             && self.dock_shown();
         let candidate =
@@ -1011,7 +1269,12 @@ impl Nekoland {
         let named = self
             .dock
             .hovered
-            .filter(|_| !menu_open && self.dock.drag.is_none() && self.dock.preview.is_none())
+            .filter(|_| {
+                !menu_open
+                    && self.dock.drag.is_none()
+                    && self.dock.preview.is_none()
+                    && self.dock.stack.is_none()
+            })
             .and_then(|index| self.dock.tiles.get(index))
             .and_then(|tile| Some((tile.key(), tile.name()?.to_string())));
         self.dock.label = match named {
@@ -1043,9 +1306,19 @@ impl Nekoland {
         let removing = drag.slot.is_none() && drag.kept;
         if self.dock.held.is_none() {
             let size = (f64::from(ART) * HELD_SCALE).round() as i32;
-            let icon = drag.icon.clone();
-            let name = drag.app_id.clone();
-            let image = icon.as_deref().and_then(|icon| self.dock_icon(icon, size, dark));
+            let (image, name) = match &drag.what {
+                Dragged::App { app_id, icon } => {
+                    let (icon, name) = (icon.clone(), app_id.clone());
+                    (
+                        icon.as_deref().and_then(|icon| self.dock_icon(icon, size, dark)),
+                        name,
+                    )
+                }
+                Dragged::Stack { path, .. } => {
+                    let path = path.clone();
+                    (self.folder_icon(&path, size, dark), stacks::folder_name(&path))
+                }
+            };
             self.dock.held = ImageSurface::create(Format::ARgb32, size, size)
                 .ok()
                 .and_then(|surface| {
@@ -1079,6 +1352,26 @@ impl Nekoland {
             return Vec::new();
         };
         let mut overlays = Vec::new();
+        if let Some((stack, picture)) = self
+            .dock
+            .stack
+            .as_ref()
+            .and_then(|stack| Some((stack, stack.picture.as_ref()?)))
+        {
+            let grid = matches!(stack.view, Opened::Grid { .. });
+            overlays.push(Overlay {
+                fade: if grid {
+                    ease_out(stack.opened.elapsed().as_secs_f64() / FADE_IN_TIME) as f32
+                } else {
+                    1.0
+                },
+                id: &ids.stack,
+                rect: stack.rect,
+                glass: grid.then_some(stacks::GRID_RADIUS),
+                alpha: 1.0,
+                picture,
+            });
+        }
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
         if let (Some(drag), Some(held), Some(pos)) = (&self.dock.drag, &self.dock.held, pointer) {
             let at = Point::from((
@@ -1195,12 +1488,7 @@ impl Nekoland {
                     .iter()
                     .find(|(minimizing, ..)| minimizing == window)
                 {
-                    let t = ease_out(at.elapsed().as_secs_f64() / MINIMIZE_TIME);
-                    let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
-                    rect = Rectangle::new(
-                        (mix(from.loc.x, rect.loc.x), mix(from.loc.y, rect.loc.y)).into(),
-                        (mix(from.size.w, rect.size.w), mix(from.size.h, rect.size.h)).into(),
-                    );
+                    rect = mix_rect(*from, rect, ease_out(at.elapsed().as_secs_f64() / MINIMIZE_TIME));
                 }
                 thumbnails.push((window.clone(), rect));
             }
@@ -1285,6 +1573,7 @@ impl Nekoland {
                 dock: Id::new(),
                 label: Id::new(),
                 preview: Id::new(),
+                stack: Id::new(),
                 held: Id::new(),
                 tag: Id::new(),
             });
@@ -1301,7 +1590,12 @@ impl Nekoland {
                     .dock
                     .preview
                     .as_ref()
-                    .is_some_and(|preview| preview.rect.to_f64().contains(pos)))
+                    .is_some_and(|preview| preview.rect.to_f64().contains(pos))
+                || self
+                    .dock
+                    .stack
+                    .as_ref()
+                    .is_some_and(|stack| stack.rect.to_f64().contains(pos)))
     }
 
     fn dock_tile_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
@@ -1320,6 +1614,7 @@ impl Nekoland {
     /// The pointer moved: the icon under it lifts and is named, a press far enough becomes
     /// a drag.
     pub fn dock_motion(&mut self, pos: Point<f64, Logical>) {
+        self.dock.pointer = Some(pos);
         let hovered = if self.dock_shown() && self.menu_bar.open.is_none() {
             self.dock_tile_at(pos)
         } else {
@@ -1334,13 +1629,26 @@ impl Nekoland {
             return;
         };
         let moved = (pos.x - press.start.x).hypot(pos.y - press.start.y) > DRAG_THRESHOLD;
-        if let (
-            true,
+        let what = match &press.tile {
             Tile::App {
                 app_id, icon, kept, ..
-            },
-        ) = (moved, &press.tile)
-        {
+            } => Some((
+                Dragged::App {
+                    app_id: app_id.clone(),
+                    icon: icon.clone(),
+                },
+                *kept,
+            )),
+            Tile::Stack { index, path, .. } => Some((
+                Dragged::Stack {
+                    index: *index,
+                    path: path.clone(),
+                },
+                true,
+            )),
+            _ => None,
+        };
+        if let (true, Some((what, kept))) = (moved, what) {
             let grab = self
                 .dock
                 .tiles
@@ -1352,9 +1660,8 @@ impl Nekoland {
                     |rect| press.start - rect.loc.to_f64(),
                 );
             self.dock.drag = Some(Drag {
-                app_id: app_id.clone(),
-                icon: icon.clone(),
-                kept: *kept,
+                what,
+                kept,
                 grab,
                 slot: None,
             });
@@ -1367,6 +1674,46 @@ impl Nekoland {
     pub fn dock_press(&mut self, pos: Point<f64, Logical>, right: bool) -> bool {
         if !self.dock_shown() {
             return false;
+        }
+        // An open folder: an item opens and the folder closes; anywhere else only closes it.
+        if let Some(stack) = self.dock.stack.take() {
+            if stack.rect.to_f64().contains(pos) && !right {
+                let open = match &stack.view {
+                    Opened::Fan { fan, anchor, .. } => fan.hit(pos - *anchor).map(|index| {
+                        stack
+                            .items
+                            .get(index)
+                            .filter(|_| index < stacks::FAN_MAX)
+                            .map_or(stack.folder.clone(), |item| item.path.clone())
+                    }),
+                    Opened::Grid { grid, scroll } => {
+                        let local = (pos - stack.rect.loc.to_f64()).to_i32_round();
+                        if grid.button(&open_label(&stack.name)).contains(local) {
+                            Some(stack.folder.clone())
+                        } else {
+                            (0..grid.columns * grid.rows)
+                                .find(|&index| grid.cell(index).contains(local))
+                                .and_then(|index| stack.items.get(scroll * grid.columns + index))
+                                .map(|item| item.path.clone())
+                        }
+                    }
+                };
+                match open {
+                    Some(path) => open_path(&path),
+                    // Between the items of a fan, or on the grid's glass: it stays open.
+                    None if matches!(stack.view, Opened::Grid { .. }) => self.dock.stack = Some(stack),
+                    None => {}
+                }
+                return true;
+            }
+            // A click on the folder's own icon only closes it.
+            let own = self
+                .dock_tile_at(pos)
+                .and_then(|index| self.dock.tiles.get(index))
+                .is_some_and(|tile| matches!(tile, Tile::Stack { path, .. } if *path == stack.folder));
+            if own || !self.dock_covers(pos) {
+                return true;
+            }
         }
         // On the pictures of the windows: the close button, or a picture to go to it.
         if let Some(preview) = self
@@ -1410,12 +1757,19 @@ impl Nekoland {
             } = &tile
             {
                 let entries = self.dock_menu(app_id, *running, *kept);
-                if let Some(anchor) = self.tile_rect(index) {
-                    let dock = self.dock_rect().unwrap_or(anchor);
-                    let anchor =
-                        Rectangle::new((anchor.loc.x, dock.loc.y).into(), (anchor.size.w, HEIGHT).into());
-                    self.open_menu_above(entries, anchor, POPUP_GAP);
-                }
+                self.open_tile_menu(index, entries);
+            }
+            if let Tile::Stack { index: stack, .. } = &tile {
+                let entries = self.stack_menu(*stack);
+                self.open_tile_menu(index, entries);
+            }
+            if let Tile::Trash { full } = &tile {
+                let entries = vec![
+                    Entry::item("打開", Command::Dock(DockCommand::OpenTrash)),
+                    Entry::separator(),
+                    Entry::item("清空垃圾桶", Command::Dock(DockCommand::EmptyTrash)).enabled(*full),
+                ];
+                self.open_tile_menu(index, entries);
             }
             return true;
         }
@@ -1432,29 +1786,47 @@ impl Nekoland {
     /// put where it was let go, or taken off the Dock.
     pub fn dock_release(&mut self, pos: Point<f64, Logical>) {
         if let Some(drag) = self.dock.drag.take() {
-            let same = |kept: &String| kept.eq_ignore_ascii_case(&drag.app_id);
-            let mut kept: Vec<String> = self
-                .config
-                .dock
-                .iter()
-                .filter(|app_id| !same(app_id))
-                .cloned()
-                .collect();
-            match drag.slot {
-                Some(slot) => kept.insert(slot.min(kept.len()), drag.app_id.clone()),
-                // Let go away from the Dock: a kept one comes off it, another stays as it was.
-                None if !drag.kept => return,
-                None => {
-                    let at = Point::from((
-                        (pos.x - drag.grab.x * HELD_SCALE).round() as i32,
-                        (pos.y - drag.grab.y * HELD_SCALE).round() as i32,
-                    ));
-                    self.dock.poof = self.dock.held.take().map(|held| (held, at, Instant::now()));
+            // Let go away from the Dock: a kept one comes off it, fading where it was let go;
+            // another stays as it was.
+            if drag.slot.is_none() {
+                if !drag.kept {
+                    return;
                 }
+                let at = Point::from((
+                    (pos.x - drag.grab.x * HELD_SCALE).round() as i32,
+                    (pos.y - drag.grab.y * HELD_SCALE).round() as i32,
+                ));
+                self.dock.poof = self.dock.held.take().map(|held| (held, at, Instant::now()));
             }
-            if kept != self.config.dock {
-                self.config.dock = kept;
-                config::save_dock(&self.config.dock);
+            match drag.what {
+                Dragged::App { app_id, .. } => {
+                    let mut kept: Vec<String> = self
+                        .config
+                        .dock
+                        .iter()
+                        .filter(|kept| !kept.eq_ignore_ascii_case(&app_id))
+                        .cloned()
+                        .collect();
+                    if let Some(slot) = drag.slot {
+                        kept.insert(slot.min(kept.len()), app_id);
+                    }
+                    if kept != self.config.dock {
+                        self.config.dock = kept;
+                        config::save_dock(&self.config.dock);
+                    }
+                }
+                Dragged::Stack { index, .. } if index < self.config.stacks.len() => {
+                    let mut stacks = self.config.stacks.clone();
+                    let stack = stacks.remove(index);
+                    if let Some(slot) = drag.slot {
+                        stacks.insert(slot.min(stacks.len()), stack);
+                    }
+                    if stacks != self.config.stacks {
+                        self.config.stacks = stacks;
+                        config::save_stacks(&self.config.stacks);
+                    }
+                }
+                Dragged::Stack { .. } => {}
             }
             return;
         }
@@ -1481,6 +1853,8 @@ impl Nekoland {
                 }
             }
             Tile::Window { window, .. } => self.reveal_window(&window),
+            Tile::Stack { index, .. } => self.open_stack(index),
+            Tile::Trash { .. } => open_uri("trash:///"),
             Tile::Separator(_) => {}
         }
     }
@@ -1549,6 +1923,30 @@ impl Nekoland {
                 }
             }
             DockCommand::Quit(app_id) => self.quit_app(&app_id),
+            DockCommand::Open(path) => open_path(&path),
+            DockCommand::StackSort(index, sort) => self.change_stack(index, |stack| stack.sort = sort),
+            DockCommand::StackShow(index, show) => self.change_stack(index, |stack| stack.show = show),
+            DockCommand::StackView(index, view) => self.change_stack(index, |stack| stack.view = view),
+            DockCommand::RemoveStack(index) => {
+                if index < self.config.stacks.len() {
+                    self.config.stacks.remove(index);
+                    config::save_stacks(&self.config.stacks);
+                }
+            }
+            DockCommand::RevealStack(index) => {
+                if let Some(stack) = self.config.stacks.get(index) {
+                    let uri = gio::File::for_path(stack.folder()).uri();
+                    // The file manager shows the folder selected in the one it is in.
+                    config::spawn(&format!(
+                        "gdbus call --session --dest org.freedesktop.FileManager1 \
+                         --object-path /org/freedesktop/FileManager1 \
+                         --method org.freedesktop.FileManager1.ShowItems \"['{uri}']\" ''"
+                    ));
+                }
+            }
+            DockCommand::OpenTrash => open_uri("trash:///"),
+            // Asked first, in a dialog of its own: what is in the Trash cannot come back.
+            DockCommand::EmptyTrash => config::spawn("nekoland-confirm empty-trash"),
         }
     }
 
@@ -1558,6 +1956,410 @@ impl Nekoland {
             .minimizing
             .retain(|(minimizing, ..)| minimizing != window);
         self.dock.minimizing.push((window.clone(), rect, Instant::now()));
+    }
+
+    fn change_stack(&mut self, index: usize, change: impl FnOnce(&mut Stack)) {
+        if let Some(stack) = self.config.stacks.get_mut(index) {
+            change(stack);
+            config::save_stacks(&self.config.stacks);
+        }
+    }
+
+    /// Opens a menu over a tile of the Dock, from the Dock's top edge.
+    fn open_tile_menu(&mut self, index: usize, entries: Vec<Entry>) {
+        if let (Some(tile), Some(dock)) = (self.tile_rect(index), self.dock_rect()) {
+            let anchor = Rectangle::new((tile.loc.x, dock.loc.y).into(), (tile.size.w, HEIGHT).into());
+            self.open_menu_above(entries, anchor, POPUP_GAP);
+        }
+    }
+
+    /// The menu of a kept folder: how its items are sorted, how it shows in the Dock and
+    /// how it opens, and the way to open it.
+    fn stack_menu(&mut self, index: usize) -> Vec<Entry> {
+        let Some(stack) = self.config.stacks.get(index).cloned() else {
+            return Vec::new();
+        };
+        let item = |label: &str, command: DockCommand, checked: bool| {
+            Entry::item(label, Command::Dock(command)).checked(checked)
+        };
+        let mut entries = vec![Entry::note("排序方式")];
+        for (sort, label) in [
+            (Sort::Name, "名稱"),
+            (Sort::Added, "加入日期"),
+            (Sort::Modified, "修改日期"),
+            (Sort::Created, "建立日期"),
+            (Sort::Kind, "種類"),
+        ] {
+            entries.push(item(
+                label,
+                DockCommand::StackSort(index, sort),
+                stack.sort == sort,
+            ));
+        }
+        entries.push(Entry::separator());
+        entries.push(Entry::note("顯示為"));
+        for (show, label) in [(Show::Folder, "檔案夾"), (Show::Stack, "疊放")] {
+            entries.push(item(
+                label,
+                DockCommand::StackShow(index, show),
+                stack.show == show,
+            ));
+        }
+        entries.push(Entry::separator());
+        entries.push(Entry::note("檢視內容為"));
+        for (view, label) in [
+            (View::Fan, "扇形"),
+            (View::Grid, "格狀"),
+            (View::List, "列表"),
+            (View::Auto, "自動"),
+        ] {
+            entries.push(item(
+                label,
+                DockCommand::StackView(index, view),
+                stack.view == view,
+            ));
+        }
+        entries.push(Entry::separator());
+        entries.push(Entry::submenu(
+            "選項",
+            vec![
+                Entry::item("從 Dock 移除", Command::Dock(DockCommand::RemoveStack(index))),
+                Entry::item("在檔案中顯示", Command::Dock(DockCommand::RevealStack(index))),
+            ],
+        ));
+        entries.push(Entry::separator());
+        let folder = stack.folder();
+        entries.push(Entry::item(
+            open_label(&stacks::folder_name(&folder)),
+            Command::Dock(DockCommand::Open(folder)),
+        ));
+        entries
+    }
+
+    /// Opens a kept folder over its icon, as its view asks.
+    fn open_stack(&mut self, index: usize) {
+        let Some(stack) = self.config.stacks.get(index).cloned() else {
+            return;
+        };
+        let folder = stack.folder();
+        let items = self.folder_items(&folder, stack.sort).to_vec();
+        let name = stacks::folder_name(&folder);
+        let Some(tile) = self
+            .dock
+            .tiles
+            .iter()
+            .position(|tile| matches!(tile, Tile::Stack { index: at, .. } if *at == index))
+        else {
+            return;
+        };
+        let (Some(dock), Some(output), Some((start, width))) = (
+            self.dock_rect_of(self.dock.width),
+            self.output_rect(),
+            self.dock.spans.get(tile).copied(),
+        ) else {
+            return;
+        };
+        self.dock.preview = None;
+        let view = match stack.view {
+            View::Auto if items.len() <= stacks::AUTO_FAN => View::Fan,
+            View::Auto => View::Grid,
+            view => view,
+        };
+        let center = dock.loc.x + start + width / 2;
+        let (opened, rect) = match view {
+            View::List => {
+                let entries = self.list_entries(&items, &folder, &name, stack.sort);
+                self.open_tile_menu(tile, entries);
+                return;
+            }
+            View::Fan => {
+                let shown = items.len().min(stacks::FAN_MAX);
+                let mut labels: Vec<String> = items[..shown].iter().map(|item| item.name.clone()).collect();
+                labels.push(if items.len() > shown {
+                    format!(
+                        "在檔案中打開其他 {} 個項目",
+                        stacks::count_text(items.len() - shown)
+                    )
+                } else {
+                    "在檔案中打開".to_string()
+                });
+                let fan = Fan::new(&labels);
+                let anchor = Point::from((f64::from(center), f64::from(dock.loc.y + TOP)));
+                let rect = Rectangle::new((anchor + fan.origin).to_i32_round(), fan.size);
+                (Opened::Fan { fan, anchor, labels }, rect)
+            }
+            View::Grid | View::Auto => {
+                let grid = Grid::new(items.len());
+                let x = (center - grid.size.w / 2)
+                    .min(output.loc.x + output.size.w - 12 - grid.size.w)
+                    .max(output.loc.x + 12);
+                let rect = Rectangle::new((x, dock.loc.y - POPUP_GAP - grid.size.h).into(), grid.size);
+                (Opened::Grid { grid, scroll: 0 }, rect)
+            }
+        };
+        self.dock.stack = Some(OpenStack {
+            folder,
+            name,
+            items,
+            view: opened,
+            rect,
+            opened: Instant::now(),
+            hovered: None,
+            button_hovered: false,
+            picture: None,
+            drawn: None,
+        });
+    }
+
+    /// A folder's items as menu entries with their icons, a subfolder's as its submenu.
+    fn list_entries(&mut self, items: &[Item], folder: &Path, name: &str, sort: Sort) -> Vec<Entry> {
+        let mut entries: Vec<Entry> = items
+            .iter()
+            .take(LIST_MAX)
+            .map(|item| {
+                let icon = stacks::icon_names(&item.path);
+                if item.is_dir {
+                    let mut children = vec![
+                        Entry::item(
+                            open_label(&item.name),
+                            Command::Dock(DockCommand::Open(item.path.clone())),
+                        ),
+                        Entry::separator(),
+                    ];
+                    children.extend(
+                        stacks::read_folder(&item.path, sort)
+                            .into_iter()
+                            .take(LIST_MAX)
+                            .map(|child| {
+                                Entry::item(
+                                    child.name.clone(),
+                                    Command::Dock(DockCommand::Open(child.path.clone())),
+                                )
+                                .with_icon(stacks::icon_names(&child.path))
+                            }),
+                    );
+                    Entry::submenu(item.name.clone(), children).with_icon(icon)
+                } else {
+                    Entry::item(
+                        item.name.clone(),
+                        Command::Dock(DockCommand::Open(item.path.clone())),
+                    )
+                    .with_icon(icon)
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            entries.push(Entry::separator());
+        }
+        let rest = items.len().saturating_sub(LIST_MAX);
+        let open = if rest > 0 {
+            format!("在檔案中打開其他 {} 個項目", stacks::count_text(rest))
+        } else {
+            open_label(name)
+        };
+        entries.push(Entry::item(
+            open,
+            Command::Dock(DockCommand::Open(folder.to_path_buf())),
+        ));
+        entries
+    }
+
+    /// Lights what the pointer is on in the open folder, and draws it again when that, or
+    /// how far the fan has come out, changed.
+    fn refresh_stack(&mut self, pointer: Option<Point<f64, Logical>>, dark: bool) {
+        let Some(stack) = self.dock.stack.as_mut() else {
+            return;
+        };
+        let progress = ease_out(stack.opened.elapsed().as_secs_f64() / FAN_TIME);
+        let (hovered, button_hovered, scroll) = match &stack.view {
+            Opened::Fan { fan, anchor, .. } => (pointer.and_then(|pos| fan.hit(pos - *anchor)), false, 0),
+            Opened::Grid { grid, scroll } => {
+                let local = pointer.map(|pos| (pos - stack.rect.loc.to_f64()).to_i32_round());
+                let cell = local.and_then(|local| {
+                    (0..grid.columns * grid.rows)
+                        .find(|&index| grid.cell(index).contains(local))
+                        .filter(|index| scroll * grid.columns + index < stack.items.len())
+                });
+                let on_button =
+                    local.is_some_and(|local| grid.button(&open_label(&stack.name)).contains(local));
+                (cell, on_button, *scroll)
+            }
+        };
+        stack.hovered = hovered;
+        stack.button_hovered = button_hovered;
+        let key = (
+            hovered,
+            button_hovered,
+            dark,
+            scroll,
+            (progress * 40.0).round() as u8,
+        );
+        if stack.drawn == Some(key) && stack.picture.is_some() {
+            return;
+        }
+        stack.drawn = Some(key);
+        let shown: Vec<Item> = match &stack.view {
+            Opened::Fan { labels, .. } => stack.items.iter().take(labels.len() - 1).cloned().collect(),
+            Opened::Grid { grid, scroll } => stack
+                .items
+                .iter()
+                .skip(scroll * grid.columns)
+                .take(grid.columns * grid.rows)
+                .cloned()
+                .collect(),
+        };
+        let icons: Vec<Option<ImageSurface>> = shown.iter().map(|item| self.file_icon(item, dark)).collect();
+        let Some(stack) = self.dock.stack.as_mut() else {
+            return;
+        };
+        stack.picture = match &stack.view {
+            Opened::Fan { fan, labels, .. } => fan.draw(labels, &icons, progress, hovered, dark),
+            Opened::Grid { grid, .. } => {
+                let cells: Vec<(String, Option<ImageSurface>)> =
+                    shown.iter().map(|item| item.name.clone()).zip(icons).collect();
+                grid.draw(
+                    &stack.name,
+                    &open_label(&stack.name),
+                    &cells,
+                    hovered,
+                    button_hovered,
+                    dark,
+                )
+            }
+        };
+    }
+
+    /// The wheel over an open grid turns its pages, a row at a time. Returns whether it
+    /// was taken.
+    pub fn dock_scroll(&mut self, pos: Point<f64, Logical>, amount: f64) -> bool {
+        let Some(stack) = self
+            .dock
+            .stack
+            .as_mut()
+            .filter(|stack| stack.rect.to_f64().contains(pos))
+        else {
+            return false;
+        };
+        if let Opened::Grid { grid, scroll } = &mut stack.view {
+            let rows = stack.items.len().div_ceil(grid.columns);
+            let last = rows.saturating_sub(grid.rows);
+            *scroll = if amount > 0.0 {
+                (*scroll + 1).min(last)
+            } else if amount < 0.0 {
+                scroll.saturating_sub(1)
+            } else {
+                *scroll
+            };
+        }
+        true
+    }
+
+    /// Closes an open folder. Returns whether one was open.
+    pub fn close_dock_stack(&mut self) -> bool {
+        self.dock.stack.take().is_some()
+    }
+
+    /// A file manager started dragging: what it drags is asked for at once, as a list of
+    /// files, so that the Dock knows it if it is dropped there.
+    pub fn dock_drag_started(&mut self, source: Option<&WlDataSource>) {
+        self.dock.dnd = None;
+        let Some(source) = source else {
+            return;
+        };
+        let offers = with_source_metadata(source, |meta| {
+            meta.mime_types.iter().any(|mime| mime == "text/uri-list")
+        })
+        .unwrap_or(false);
+        if !offers {
+            return;
+        }
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            tracing::warn!("pipe: {}", std::io::Error::last_os_error());
+            return;
+        }
+        // SAFETY: pipe2 just made these two descriptors, which nothing else owns.
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        source.send("text/uri-list".into(), write.as_fd());
+        drop(write);
+        let found = Arc::new(Mutex::new(None));
+        let into = found.clone();
+        // The program writes it when it reads its socket, after this frame's events go out.
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Err(err) = std::fs::File::from(read).read_to_string(&mut text) {
+                tracing::warn!("reading a drag's files: {err}");
+            }
+            if let Ok(mut found) = into.lock() {
+                *found = Some(uri_paths(&text));
+            }
+        });
+        self.dock.dnd = Some(found);
+    }
+
+    /// A drag ended. Dropped on the Dock, where no program took it: on an application, the
+    /// files open in it; on the Trash, they go there; elsewhere, folders are kept.
+    pub fn dock_dropped(&mut self, validated: bool) {
+        let Some(found) = self.dock.dnd.take() else {
+            return;
+        };
+        // Where the pointer was last seen: the drag holds the pointer while this runs, and
+        // asking it where it is now would wait on itself.
+        let Some(pos) = self.dock.pointer else {
+            return;
+        };
+        if validated || !self.dock_covers(pos) {
+            return;
+        }
+        let paths = found
+            .lock()
+            .ok()
+            .and_then(|found| found.clone())
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return;
+        }
+        let tile = self
+            .dock_tile_at(pos)
+            .and_then(|index| self.dock.tiles.get(index))
+            .cloned();
+        match tile {
+            Some(Tile::App { app_id, .. }) => {
+                let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
+                match gio::DesktopAppInfo::new(&format!("{app_id}.desktop")) {
+                    Some(app) => {
+                        if let Err(err) = app.launch(&files, None::<&gio::AppLaunchContext>) {
+                            tracing::warn!("{app_id}: {err}");
+                        }
+                    }
+                    None => tracing::warn!("{app_id}: no desktop entry to open files with"),
+                }
+            }
+            Some(Tile::Trash { .. }) => {
+                for path in &paths {
+                    if let Err(err) = gio::File::for_path(path).trash(gio::Cancellable::NONE) {
+                        tracing::warn!("{}: {err}", path.display());
+                    }
+                }
+                self.dock.trash = None;
+            }
+            _ => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                let before = self.config.stacks.len();
+                for path in paths.iter().filter(|path| path.is_dir()) {
+                    let written = match path.strip_prefix(&home) {
+                        Ok(rest) if !home.is_empty() => format!("~/{}", rest.display()),
+                        _ => path.display().to_string(),
+                    };
+                    if !self.config.stacks.iter().any(|stack| stack.folder() == *path) {
+                        self.config.stacks.push(Stack::new(written));
+                    }
+                }
+                if self.config.stacks.len() != before {
+                    config::save_stacks(&self.config.stacks);
+                }
+            }
+        }
     }
 
     /// Starts an application from its desktop entry, or by its ID when it has none.
@@ -1588,6 +2390,39 @@ impl Nekoland {
             self.reveal_window(&window);
         }
     }
+}
+
+fn mix_rect(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
+    let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
+    Rectangle::new(
+        (mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y)).into(),
+        (mix(from.size.w, to.size.w), mix(from.size.h, to.size.h)).into(),
+    )
+}
+
+/// The menu entry and button that open a folder in the file manager.
+fn open_label(name: &str) -> String {
+    format!("打開「{name}」")
+}
+
+/// Opens a file or folder in the program the desktop opens it with.
+fn open_path(path: &Path) {
+    open_uri(&gio::File::for_path(path).uri());
+}
+
+fn open_uri(uri: &str) {
+    if let Err(err) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>) {
+        tracing::warn!("{uri}: {err}");
+    }
+}
+
+/// The local files in a `text/uri-list`, as dragged out of a file manager.
+fn uri_paths(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|uri| gio::File::for_uri(uri).path())
+        .collect()
 }
 
 /// The pane of window pictures: a card for each window with its icon and title, the card
@@ -1701,6 +2536,16 @@ mod tests {
         let (spans, width_with_gap) = Nekoland::lay_out(&tiles, Some(1));
         assert_eq!(spans[1].0, SIDE + (ART + GAP) * 2);
         assert_eq!(width_with_gap, width + ART + GAP);
+    }
+
+    #[test]
+    fn dragged_files_are_read_from_their_uris() {
+        let text =
+            "# from a file manager\r\nfile:///home/neko/%E4%B8%8B%E8%BC%89\r\nfile:///tmp/a%20b.txt\r\n";
+        assert_eq!(
+            uri_paths(text),
+            [PathBuf::from("/home/neko/下載"), PathBuf::from("/tmp/a b.txt")]
+        );
     }
 
     #[test]

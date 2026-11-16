@@ -8,6 +8,7 @@ rust-version = "1.82"
 bitflags = "2.2.1"
 cairo-rs = { version = "0.20", features = ["png"] }
 gdk-pixbuf = "0.20"
+gio = "0.20"
 libc = "0.2"
 pango = "0.20"
 pangocairo = "0.20"

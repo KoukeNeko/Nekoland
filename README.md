@@ -34,14 +34,15 @@ wallpaper and an input method. Every key is optional:
 | `volume_up`, `volume_down`, `volume_mute`, `brightness_up`, `brightness_down` | Commands behind the media keys |
 | `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw: `{ nekoland-launcher = 16 }` unless set |
 | `dock` | The applications kept in the Dock, by desktop entry name; the Dock writes it back when they are rearranged |
+| `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
 
 The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 
 ## Dock, notifications and launcher
 
 - The Dock has a button for all applications, the ones kept in it, after a line the
-  others with windows open, and after another the minimized windows, each a live
-  picture to click back. Icons are trimmed of the margins their theme draws and shown
+  others with windows open, and after another the kept folders, the minimized windows,
+  each a live picture to click back, and the Trash. Icons are trimmed of the margins their theme draws and shown
   at one size, as the Mac's are. A dot marks those that run, a longer one the active
   one. Pointing at an icon lifts it and names it; a click starts the application, which
   breathes until its window shows, or brings its windows forward, from another desktop
@@ -50,6 +51,12 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   new window, keeping it in the Dock, hiding and quitting. Kept icons are dragged to
   reorder them, out of the Dock to take them off, and a running one dragged among them
   is kept. A minimized window shrinks into its place in the Dock.
+- A kept folder shows as its newest items piled up or as its own icon, and opens as a
+  fan rising from it, a grid of pages to scroll, or a list with submenus for folders; a
+  right click sets its order, how it shows and how it opens. A folder dragged in from a
+  file manager is kept there, and folders are dragged to reorder or take them off. Files
+  dropped on the Trash go to it, and files dropped on an application open in it; the
+  Trash is emptied from its right-click menu after asking.
 - Notifications are shown by Nekoland, which serves `org.freedesktop.Notifications`:
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.

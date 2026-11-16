@@ -119,6 +119,8 @@ pub struct Entry {
     checked: Option<bool>,
     command: Option<Command>,
     children: Vec<Entry>,
+    /// The names of an icon drawn before the label, the first the themes have.
+    icon: Vec<String>,
 }
 
 impl Entry {
@@ -132,7 +134,23 @@ impl Entry {
             checked: None,
             command: Some(command),
             children: Vec::new(),
+            icon: Vec::new(),
         }
+    }
+
+    /// An entry opening a submenu of these.
+    pub(crate) fn submenu(label: impl Into<String>, children: Vec<Entry>) -> Self {
+        Self {
+            command: None,
+            children,
+            ..Self::note(label)
+        }
+        .enabled(true)
+    }
+
+    pub(crate) fn with_icon(mut self, names: Vec<String>) -> Self {
+        self.icon = names;
+        self
     }
 
     /// A line of information, not something to choose.
@@ -163,7 +181,7 @@ impl Entry {
         self
     }
 
-    fn enabled(mut self, enabled: bool) -> Self {
+    pub(crate) fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
@@ -183,6 +201,7 @@ impl Entry {
             checked: entry.checked,
             command: entry.action.clone().map(Command::Invoke),
             children: entry.children.iter().map(Entry::from_menu).collect(),
+            icon: Vec::new(),
         }
     }
 
@@ -789,6 +808,13 @@ impl MenuBar {
             };
             if entry.checked == Some(true) {
                 show_text(&cr, "✓", &label_font, x + 6.0, center, color);
+            } else if let Some(icon) = entry
+                .icon
+                .iter()
+                .find_map(|name| text::named_icon(name, "", 16, color))
+            {
+                let _ = cr.set_source_surface(&icon, x + 3.0, center - 8.0);
+                let _ = cr.paint();
             }
             show_text(
                 &cr,

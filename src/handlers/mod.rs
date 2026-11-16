@@ -13,6 +13,7 @@ use crate::{focus::KeyFocus, Nekoland};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
@@ -63,7 +64,15 @@ impl DataDeviceHandler for Nekoland {
     }
 }
 
-impl ClientDndGrabHandler for Nekoland {}
+impl ClientDndGrabHandler for Nekoland {
+    fn started(&mut self, source: Option<WlDataSource>, _icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.dock_drag_started(source.as_ref());
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        self.dock_dropped(validated);
+    }
+}
 impl ServerDndGrabHandler for Nekoland {}
 
 delegate_data_device!(Nekoland);

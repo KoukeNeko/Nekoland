@@ -188,6 +188,9 @@ impl Nekoland {
                 }
 
                 let pointer = self.seat.get_pointer().unwrap();
+                if self.dock_scroll(pointer.current_location(), vertical_amount) {
+                    return;
+                }
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
@@ -271,6 +274,10 @@ impl Nekoland {
 
         if self.menu_bar.open.is_some() {
             self.menu_bar_key(sym, typed);
+            return true;
+        }
+
+        if sym == Keysym::Escape && self.close_dock_stack() {
             return true;
         }
 
