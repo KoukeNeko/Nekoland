@@ -3,6 +3,7 @@
 // takes effect at once.
 
 import { Theme, IconButton, Button, Switch, Segmented, Slider, TextField, Rows, Row, NavItem, SmoothRect } from "widgets.slint";
+import { DesignLanguage } from "gallery.slint";
 
 export struct Fact {
     title: string,
@@ -244,7 +245,7 @@ component Column {
 
 export component Settings inherits Window {
     in-out property <bool> dark <=> Theme.dark;
-    // 0 desktop, 1 appearance, 2 mouse, 3 sound, 4 startup, 5 about.
+    // 0 desktop, 1 appearance, 2 mouse, 3 sound, 4 startup, 5 about, 6 design language.
     in-out property <int> page;
 
     in-out property <int> apps-view;
@@ -294,7 +295,7 @@ export component Settings inherits Window {
     callback maximize();
     callback close-window();
 
-    property <[string]> pages: ["桌面", "外觀", "滑鼠與觸控板", "聲音", "啟動項目", "關於"];
+    property <[string]> pages: ["桌面", "外觀", "滑鼠與觸控板", "聲音", "啟動項目", "關於", "設計語言"];
     property <[string]> parts: ["應用程式", "Dock", "選單列", "桌布"];
     property <string> clock: month + "月" + day + "日 " + (clock-weekday ? "週" + weekday + " " : "")
         + (clock-24h ? (hour < 10 ? "0" : "") + hour : (hour < 12 ? "上午 " : "下午 ") + (mod(hour + 11, 12) + 1))
@@ -369,6 +370,11 @@ export component Settings inherits Window {
                     clicked => { page = 5; }
                 }
                 Rectangle { }
+                NavItem {
+                    text: pages[6];
+                    current: page == 6;
+                    clicked => { page = 6; }
+                }
             }
             Rectangle {
                 width: 1px;
@@ -875,6 +881,12 @@ export component Settings inherits Window {
                                     }
                                 }
                             }
+                        }
+
+                        // What Nekoland's own interfaces are made of, to look at and try.
+                        if page == 6: DesignLanguage {
+                            heading: false;
+                            margin: 28px;
                         }
                     }
                 }
