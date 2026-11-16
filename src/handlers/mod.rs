@@ -56,7 +56,9 @@ delegate_seat!(Nekoland);
 
 // A Wayland program's selection is offered to X11 programs, and read for them.
 impl SelectionHandler for Nekoland {
-    type SelectionUserData = ();
+    /// Files copied from the desktop, which Nekoland itself gives out; none for what an
+    /// X11 program copied.
+    type SelectionUserData = Option<Vec<std::path::PathBuf>>;
 
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
         if let Some(xwm) = self.xwm.as_mut() {
@@ -72,9 +74,11 @@ impl SelectionHandler for Nekoland {
         mime_type: String,
         fd: std::os::fd::OwnedFd,
         _seat: Seat<Self>,
-        _user_data: &(),
+        copied: &Option<Vec<std::path::PathBuf>>,
     ) {
-        if let Some(xwm) = self.xwm.as_mut() {
+        if let Some(paths) = copied {
+            crate::desktop::send_copied(&mime_type, paths, fd);
+        } else if let Some(xwm) = self.xwm.as_mut() {
             if let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone()) {
                 tracing::warn!("reading the {ty:?} selection from an X11 program: {err}");
             }

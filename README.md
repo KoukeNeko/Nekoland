@@ -57,7 +57,7 @@ wallpaper and an input method. Every key is optional:
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
-| `desktop_icons`, `desktop_sort` | Whether the files in the Desktop folder show on the desktop, on unless set, and their order: `name` (the default), `added`, `modified`, `created` or `kind` |
+| `desktop_icons`, `desktop_sort`, `desktop_free` | Whether the files in the Desktop folder show on the desktop, on unless set; their order: `name` (the default), `added`, `modified`, `created` or `kind`; and whether they stay where they are dragged instead, off unless set |
 | `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `clock_flash` | Whether the colon between the clock's hours and minutes flashes each second; off unless set |
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
@@ -204,9 +204,16 @@ desktop, onto the Dock (the Trash, an application, a kept folder) or into a wind
 With the desktop chosen, the arrows and a typed letter move the choice; Return or F2
 renames in place (the name without its extension is chosen, and the input method
 types into it); Super O opens, Delete or Super Backspace puts in the Trash, Super I
-shows the file's properties in Files, and Super Shift N makes a new folder. A right
-click on a file opens its menu, with the same and the applications that open it; on
-the desktop itself, to make a new folder, sort the files or change the wallpaper.
+shows the file's properties in Files, and Super Shift N makes a new folder. Super C
+copies the files for pasting in Files or a window, Super V pastes what was copied or
+cut there into the Desktop folder, Super D makes a copy beside each, and Super A, with
+something chosen, chooses everything; Ctrl does the same as Super. Space or Super Y shows the last
+file chosen in Quick Look, a panel over the windows with the picture, the start of the
+text or the kind, size and date, which follows the arrows and closes with Space or
+Escape. A right click on a file opens its menu, with the same and the applications that
+open it; on the desktop itself, to make a new folder, paste, sort the files or change
+the wallpaper. Sorting by 無 keeps each file where it is dragged to, in the cell nearest,
+remembered in `desktop-places.toml` beside the configuration.
 
 ## Overview
 

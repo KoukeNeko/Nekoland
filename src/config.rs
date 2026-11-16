@@ -73,6 +73,8 @@ pub struct Config {
     /// the top right corner down.
     pub desktop_icons: bool,
     pub desktop_sort: Sort,
+    /// Whether the files stay where they are dragged on the desktop instead of in order.
+    pub desktop_free: bool,
     pub clock_24h: bool,
     pub clock_weekday: bool,
     pub clock_seconds: bool,
@@ -452,6 +454,7 @@ impl Default for Config {
             wallpaper_mode: WallpaperMode::default(),
             desktop_icons: true,
             desktop_sort: Sort::Name,
+            desktop_free: false,
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,

@@ -273,18 +273,28 @@ impl XwmHandler for Nekoland {
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
         match selection {
-            SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, ()),
-            SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, ()),
+            SelectionTarget::Clipboard => {
+                set_data_device_selection(&self.display_handle, &self.seat, mime_types, None)
+            }
+            SelectionTarget::Primary => {
+                set_primary_selection(&self.display_handle, &self.seat, mime_types, None)
+            }
         }
     }
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
-        // Only what X11 set: a Wayland program's selection stays.
+        // Only what X11 set: a Wayland program's selection, or files copied from the desktop,
+        // stays.
         match selection {
-            SelectionTarget::Clipboard if current_data_device_selection_userdata(&self.seat).is_some() => {
+            SelectionTarget::Clipboard
+                if current_data_device_selection_userdata(&self.seat)
+                    .is_some_and(|copied| copied.is_none()) =>
+            {
                 clear_data_device_selection(&self.display_handle, &self.seat)
             }
-            SelectionTarget::Primary if current_primary_selection_userdata(&self.seat).is_some() => {
+            SelectionTarget::Primary
+                if current_primary_selection_userdata(&self.seat).is_some_and(|copied| copied.is_none()) =>
+            {
                 clear_primary_selection(&self.display_handle, &self.seat)
             }
             _ => {}

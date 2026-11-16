@@ -3597,7 +3597,7 @@ fn open_uri(uri: &str) {
 }
 
 /// The local files in a `text/uri-list`, as dragged out of a file manager.
-fn uri_paths(text: &str) -> Vec<PathBuf> {
+pub(crate) fn uri_paths(text: &str) -> Vec<PathBuf> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))

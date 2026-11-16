@@ -6,8 +6,8 @@
 //! the menus a right click opens.
 
 use std::{
-    io::Write,
-    os::fd::OwnedFd,
+    io::{Read, Write},
+    os::fd::{FromRawFd, OwnedFd},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -21,15 +21,21 @@ use smithay::{
     input::{keyboard::Keysym, keyboard::ModifiersState, pointer::GrabStartData},
     reexports::wayland_server::protocol::wl_data_device_manager::DndAction,
     utils::{Logical, Point, Rectangle, Serial, Size},
-    wayland::selection::data_device::{start_dnd, SourceMetadata},
+    wayland::selection::{
+        data_device::{
+            current_data_device_selection_userdata, request_data_device_client_selection,
+            set_data_device_selection, start_dnd, SelectionRequestError, SourceMetadata,
+        },
+        SelectionTarget,
+    },
 };
 
 use crate::{
     appgrid::draw_candidates,
     config::{self, Sort},
-    dock::{ask_file_manager, move_into, open_path, reveal_path},
+    dock::{ask_file_manager, move_into, open_path, reveal_path, uri_paths},
     ime::Candidates,
-    menubar::{Command, Entry, MENU_BAR_HEIGHT},
+    menubar::{self, Command, Entry, MENU_BAR_HEIGHT},
     render::{SceneElement, OUTLINE_COLOR},
     stacks::{self, Item},
     state::Nekoland,
@@ -53,6 +59,18 @@ const RENAME_ROOM: i32 = 48;
 /// The name a new folder is given, numbered after the first.
 const NEW_FOLDER: &str = "未命名檔案夾";
 const URI_LIST: &str = "text/uri-list";
+/// Where the items were put, beside the configuration.
+const PLACES: &str = "desktop-places.toml";
+/// Quick Look's panel: its title strip, corners, the icon of what it has no picture of,
+/// and how much of a text file it shows.
+const LOOK_TITLE: i32 = 36;
+const LOOK_RADIUS: f64 = 12.0;
+const LOOK_ICON: i32 = 128;
+const LOOK_TEXT_BYTES: u64 = 32 << 10;
+const LOOK_TEXT_LINES: usize = 60;
+/// How GNOME's file manager copies and cuts files: `copy` or `cut`, then a URI a line.
+const COPIED_FILES: &str = "x-special/gnome-copied-files";
+const PLAIN_TEXT: &str = "text/plain;charset=utf-8";
 // evdev's BTN_LEFT
 const BUTTON_LEFT: u32 = 0x110;
 
@@ -65,8 +83,19 @@ pub enum DesktopCommand {
     Trash(Vec<PathBuf>),
     Info(Vec<PathBuf>),
     Rename(PathBuf),
+    /// Onto the clipboard, for pasting here or in the file manager.
+    Copy(Vec<PathBuf>),
+    /// What is on the clipboard, into the Desktop folder.
+    Paste,
+    /// A copy beside each one.
+    Duplicate(Vec<PathBuf>),
+    SelectAll,
+    /// Shows the last item chosen in a panel, or puts the panel away.
+    QuickLook,
     NewFolder,
     Sort(Sort),
+    /// Items stay where they are dragged, starting from where they are now.
+    KeepPlaces,
     Wallpaper,
 }
 
@@ -94,9 +123,28 @@ pub struct Desktop {
     pub renaming: Option<Rename>,
     pub candidates: Option<Candidates>,
     candidates_picture: Option<(Candidates, Picture)>,
+    /// Whether the last item chosen is shown in Quick Look, and its panel as drawn for
+    /// that item, theme and output.
+    looking: bool,
+    quick_look: Option<(Looked, Picture)>,
+    /// Where the items were put, read once the desktop keeps them there.
+    places: Option<Places>,
+    /// Where the pointer was when the drag off the desktop started.
+    drag_from: Point<f64, Logical>,
 }
 
-type Drawn = (Vec<Item>, Vec<PathBuf>, Option<Rename>, Size<i32, Logical>);
+type Looked = (PathBuf, bool, Size<i32, Logical>);
+
+/// The cell each item was put in, by name, as column from the right and row from the top.
+type Places = std::collections::BTreeMap<String, [i32; 2]>;
+
+type Drawn = (
+    Vec<Item>,
+    Vec<PathBuf>,
+    Option<Rename>,
+    Size<i32, Logical>,
+    Option<Places>,
+);
 
 struct Press {
     from: Point<f64, Logical>,
@@ -204,18 +252,85 @@ fn desktop_folder() -> Option<PathBuf> {
 /// Where each of `count` items goes on an output of `size`: down from the top right corner,
 /// then down the column to the left of it.
 fn cells(count: usize, size: Size<i32, Logical>) -> Vec<Rectangle<i32, Logical>> {
-    let top = MENU_BAR_HEIGHT + MARGIN;
-    let rows = ((size.h - top - MARGIN) / CELL_HEIGHT).max(1) as usize;
-    (0..count)
-        .map(|index| {
-            let (column, row) = ((index / rows) as i32, (index % rows) as i32);
-            let x = size.w - MARGIN - (column + 1) * CELL_WIDTH;
-            Rectangle::new(
-                Point::from((x, top + row * CELL_HEIGHT)),
-                Size::from((CELL_WIDTH, CELL_HEIGHT)),
+    let rows = grid(size)[1];
+    (0..count as i32)
+        .map(|index| cell_rect([index / rows, index % rows], size))
+        .collect()
+}
+
+/// How many columns and rows of cells the desktop has room for.
+fn grid(size: Size<i32, Logical>) -> [i32; 2] {
+    [
+        ((size.w - MARGIN * 2) / CELL_WIDTH).max(1),
+        ((size.h - MENU_BAR_HEIGHT - MARGIN * 2) / CELL_HEIGHT).max(1),
+    ]
+}
+
+/// The cell in `column` from the right and `row` from the top.
+fn cell_rect([column, row]: [i32; 2], size: Size<i32, Logical>) -> Rectangle<i32, Logical> {
+    let x = size.w - MARGIN - (column + 1) * CELL_WIDTH;
+    let y = MENU_BAR_HEIGHT + MARGIN + row * CELL_HEIGHT;
+    Rectangle::new(Point::from((x, y)), Size::from((CELL_WIDTH, CELL_HEIGHT)))
+}
+
+/// The column and row of the cell nearest to a cell's corner at `loc`.
+fn cell_of(loc: Point<i32, Logical>, size: Size<i32, Logical>) -> [i32; 2] {
+    let column = f64::from(size.w - MARGIN - CELL_WIDTH - loc.x) / f64::from(CELL_WIDTH);
+    let row = f64::from(loc.y - MENU_BAR_HEIGHT - MARGIN) / f64::from(CELL_HEIGHT);
+    [column.round() as i32, row.round() as i32]
+}
+
+/// Where items go when they stay where they were put: each in the cell kept for its name,
+/// the rest in the free cells in order, in columns from the top right.
+fn placed_cells(items: &[Item], places: &Places, size: Size<i32, Logical>) -> Vec<Rectangle<i32, Logical>> {
+    let [columns, rows] = grid(size);
+    let mut taken = std::collections::HashSet::new();
+    let kept: Vec<Option<[i32; 2]>> = items
+        .iter()
+        .map(|item| {
+            places
+                .get(&item.name)
+                .copied()
+                .filter(|&[column, row]| column < columns && row < rows && taken.insert([column, row]))
+        })
+        .collect();
+    let mut free = (0..)
+        .map(|index| [index / rows, index % rows])
+        .filter(|cell| !taken.contains(cell));
+    kept.into_iter()
+        .map(|cell| {
+            cell_rect(
+                cell.unwrap_or_else(|| free.next().expect("cells never run out")),
+                size,
             )
         })
         .collect()
+}
+
+fn read_places() -> Places {
+    config::config_file(PLACES)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| {
+            toml::from_str(&text)
+                .inspect_err(|err| tracing::warn!("{PLACES}: {err}"))
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+fn write_places(places: &Places) {
+    let Some(path) = config::config_file(PLACES) else {
+        return;
+    };
+    let written = toml::to_string(places)
+        .map_err(std::io::Error::other)
+        .and_then(|text| {
+            std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
+            std::fs::write(&path, text)
+        });
+    if let Err(err) = written {
+        tracing::warn!("{}: {err}", path.display());
+    }
 }
 
 /// The part of a cell that is drawn on: the icon and the name under it.
@@ -252,11 +367,27 @@ impl Nekoland {
             None => Vec::new(),
         };
         let size = self.output_size();
+        let dark = self.menu_bar_dark();
+        let free = self.config.desktop_free;
         let desktop = &mut self.desktop;
+        if free && desktop.places.is_none() {
+            desktop.places = Some(read_places());
+        }
         // What went away is no longer chosen.
         desktop
             .selected
             .retain(|path| items.iter().any(|item| item.path == *path));
+        let looked = desktop.selected.last().filter(|_| desktop.looking);
+        desktop.looking = looked.is_some();
+        match looked.and_then(|path| items.iter().find(|item| item.path == *path)) {
+            None => desktop.quick_look = None,
+            Some(item) => {
+                let wanted = (item.path.clone(), dark, size);
+                if desktop.quick_look.as_ref().map(|(drawn, _)| drawn) != Some(&wanted) {
+                    desktop.quick_look = draw_quick_look(item, size, dark).map(|picture| (wanted, picture));
+                }
+            }
+        }
         if desktop.candidates.as_ref() != desktop.candidates_picture.as_ref().map(|(drawn, _)| drawn) {
             desktop.candidates_picture = desktop
                 .candidates
@@ -269,12 +400,16 @@ impl Nekoland {
             .chain(&desktop.drop_target)
             .cloned()
             .collect();
-        let wanted = (items, marked, desktop.renaming.clone(), size);
+        let places = desktop.places.clone().filter(|_| free);
+        let wanted = (items, marked, desktop.renaming.clone(), size, places);
         if desktop.drawn.as_ref() == Some(&wanted) {
             return;
         }
-        let (items, selected, renaming, _) = &wanted;
-        let places = cells(items.len(), size);
+        let (items, selected, renaming, _, places) = &wanted;
+        let places = match places {
+            Some(places) => placed_cells(items, places, size),
+            None => cells(items.len(), size),
+        };
         desktop.items = items.iter().cloned().zip(places.iter().copied()).collect();
         desktop.picture = draw_items(&desktop.items, selected, renaming.as_ref());
         desktop.drawn = Some(wanted);
@@ -308,16 +443,55 @@ impl Nekoland {
             .collect()
     }
 
-    /// The icon of what is being dragged off the desktop, over everything.
-    pub fn desktop_drag_element(
+    /// The icon of what is being dragged off the desktop, and the Quick Look panel, over
+    /// everything.
+    pub fn desktop_front_elements(
         &self,
         renderer: &mut GlesRenderer,
         output_loc: Point<i32, Logical>,
         scale: f64,
-    ) -> Option<SceneElement> {
-        let (picture, offset) = self.desktop.drag_picture.as_ref()?;
-        let at = self.desktop.pointer.to_i32_round() + *offset - output_loc;
-        picture_element(renderer, picture, at, scale)
+    ) -> Vec<SceneElement> {
+        let dragged = self
+            .desktop
+            .drag_picture
+            .as_ref()
+            .map(|(picture, offset)| (picture, self.desktop.pointer.to_i32_round() + *offset));
+        let looked = self
+            .desktop
+            .quick_look
+            .as_ref()
+            .zip(self.quick_look_area())
+            .map(|((_, picture), area)| (picture, area.loc));
+        dragged
+            .into_iter()
+            .chain(looked)
+            .filter_map(|(picture, at)| picture_element(renderer, picture, at - output_loc, scale))
+            .collect()
+    }
+
+    /// Where the Quick Look panel is: in the middle of the output.
+    fn quick_look_area(&self) -> Option<Rectangle<i32, Logical>> {
+        let (_, picture) = self.desktop.quick_look.as_ref()?;
+        let output = self.output_area()?;
+        let loc = output.loc
+            + Point::from((
+                (output.size.w - picture.size.w) / 2,
+                (output.size.h - picture.size.h) / 2,
+            ));
+        Some(Rectangle::new(loc, picture.size))
+    }
+
+    /// A press anywhere ends typing a name, and, off the desktop's items and the panel,
+    /// Quick Look.
+    pub fn desktop_pointer_pressed(&mut self, pos: Point<f64, Logical>) {
+        self.end_rename();
+        let on_panel = self
+            .quick_look_area()
+            .is_some_and(|area| area.to_f64().contains(pos));
+        let on_item = self.space.element_under(pos).is_none() && self.desktop_item_at(pos).is_some();
+        if !on_panel && !on_item {
+            self.desktop.looking = false;
+        }
     }
 
     fn desktop_item_at(&self, pos: Point<f64, Logical>) -> Option<Item> {
@@ -338,7 +512,7 @@ impl Nekoland {
 
     /// A press on the desktop, where no window is: an item is chosen, opened on the second
     /// click, or given its menu; the desktop itself gets its own menu, or starts a box.
-    /// Returns whether the press was on an item or opened a menu.
+    /// Returns whether the desktop takes the keyboard: whenever it shows items or a menu.
     pub fn desktop_press(&mut self, pos: Point<f64, Logical>, right: bool, serial: Serial) -> bool {
         let item = self.desktop_item_at(pos);
         let modifiers = self.modifiers();
@@ -377,7 +551,8 @@ impl Nekoland {
         });
         let Some(item) = item else {
             self.desktop.last_click = None;
-            return false;
+            // The desktop takes the keyboard as the Mac's Finder does, for pasting there.
+            return !self.desktop.items.is_empty();
         };
         let twice = self
             .desktop
@@ -444,6 +619,7 @@ impl Nekoland {
             return;
         };
         self.desktop.dragged = self.desktop.selected.clone();
+        self.desktop.drag_from = press.from;
         let icon_at = cell.loc + Point::from(((CELL_WIDTH - ICON) / 2, ICON_TOP));
         self.desktop.drag_picture = draw_dragged(item, self.desktop.dragged.len())
             .map(|picture| (picture, icon_at - press.from.to_i32_round()));
@@ -462,18 +638,7 @@ impl Nekoland {
 
     /// A window asked for what is dragged off the desktop.
     pub fn desktop_drag_send(&mut self, fd: OwnedFd) {
-        let list: String = self
-            .desktop
-            .dragged
-            .iter()
-            .map(|path| format!("{}\r\n", gio::File::for_path(path).uri()))
-            .collect();
-        // On a thread: the program reads it when it gets to its socket.
-        std::thread::spawn(move || {
-            if let Err(err) = std::fs::File::from(fd).write_all(list.as_bytes()) {
-                tracing::warn!("sending dragged files: {err}");
-            }
-        });
+        send_copied(URI_LIST, &self.desktop.dragged, fd);
     }
 
     /// The drag off the desktop ended, taken by a window or not.
@@ -492,7 +657,48 @@ impl Nekoland {
         }
         if let Some(folder) = self.desktop_folder_at(pos) {
             move_into(&paths, &folder.path);
+        } else if self.config.desktop_free
+            && self.space.element_under(pos).is_none()
+            && !self.dock_covers(pos)
+        {
+            self.place_dragged((pos - self.desktop.drag_from).to_i32_round());
         }
+    }
+
+    /// What was dragged stays as far from where it was as it was dragged, in the cells
+    /// nearest, unless one of them is taken or off the desktop.
+    fn place_dragged(&mut self, by: Point<i32, Logical>) {
+        let size = self.output_size();
+        let [columns, rows] = grid(size);
+        let desktop = &mut self.desktop;
+        let dragged = |item: &Item| desktop.dragged.contains(&item.path);
+        let moved: Vec<(String, [i32; 2])> = desktop
+            .items
+            .iter()
+            .filter(|(item, _)| dragged(item))
+            .map(|(item, rect)| (item.name.clone(), cell_of(rect.loc + by, size)))
+            .collect();
+        let others: Vec<[i32; 2]> = desktop
+            .items
+            .iter()
+            .filter(|(item, _)| !dragged(item))
+            .map(|(_, rect)| cell_of(rect.loc, size))
+            .collect();
+        let refused = moved.iter().any(|(_, cell @ [column, row])| {
+            !(0..columns).contains(column) || !(0..rows).contains(row) || others.contains(cell)
+        });
+        if refused {
+            return;
+        }
+        // Every item is kept where it is now, so that only what was dragged moves.
+        let mut places: Places = desktop
+            .items
+            .iter()
+            .map(|(item, rect)| (item.name.clone(), cell_of(rect.loc, size)))
+            .collect();
+        places.extend(moved);
+        write_places(&places);
+        desktop.places = Some(places);
     }
 
     /// A folder on the desktop at `pos`, not under a window or the Dock, that what is
@@ -520,13 +726,23 @@ impl Nekoland {
             return false;
         }
         let chosen = self.desktop.selected.clone();
+        // Ctrl too, as Linux programs copy and paste with it and no window takes it here.
+        let command_key = (modifiers.logo || modifiers.ctrl) && !modifiers.alt && !modifiers.shift;
         let command = match sym {
             Keysym::n if modifiers.logo && modifiers.shift => DesktopCommand::NewFolder,
+            Keysym::Escape if plain && self.desktop.looking => DesktopCommand::QuickLook,
+            Keysym::v if command_key => DesktopCommand::Paste,
             Keysym::Up | Keysym::Down | Keysym::Left | Keysym::Right if plain => {
                 self.move_choice(sym);
                 return true;
             }
             _ if chosen.is_empty() => return false,
+            // Only once something is chosen: Super A with nothing chosen shows the apps.
+            Keysym::a if command_key => DesktopCommand::SelectAll,
+            Keysym::space if plain => DesktopCommand::QuickLook,
+            Keysym::y if command_key => DesktopCommand::QuickLook,
+            Keysym::c if command_key => DesktopCommand::Copy(chosen),
+            Keysym::d if command_key => DesktopCommand::Duplicate(chosen),
             Keysym::o | Keysym::Down if modifiers.logo => DesktopCommand::Open(chosen),
             Keysym::i if modifiers.logo => DesktopCommand::Info(chosen),
             Keysym::BackSpace if modifiers.logo => DesktopCommand::Trash(chosen),
@@ -627,13 +843,22 @@ impl Nekoland {
         // shortcut: a taken or refused name is only logged, as the Mac's alert is not
         // drawn; add one if renaming over an existing name turns out to matter.
         match gio::File::for_path(&rename.path).set_display_name(name, gio::Cancellable::NONE) {
-            Ok(renamed) => self.desktop.selected = renamed.path().into_iter().collect(),
+            Ok(renamed) => {
+                self.desktop.selected = renamed.path().into_iter().collect();
+                if let (Some(places), Some(old)) = (self.desktop.places.as_mut(), rename.path.file_name()) {
+                    if let Some(cell) = places.remove(&*old.to_string_lossy()) {
+                        places.insert(name.to_string(), cell);
+                        write_places(places);
+                    }
+                }
+            }
             Err(err) => tracing::warn!("{}: {err}", rename.path.display()),
         }
     }
 
     fn desktop_menu(&self) -> Vec<Entry> {
         let sort = self.config.desktop_sort;
+        let free = self.config.desktop_free;
         let sorts = [
             (Sort::Name, "名稱"),
             (Sort::Added, "加入日期"),
@@ -642,10 +867,18 @@ impl Nekoland {
             (Sort::Kind, "種類"),
         ]
         .into_iter()
-        .map(|(by, label)| Entry::item(label, Command::Desktop(DesktopCommand::Sort(by))).checked(sort == by))
-        .collect();
+        .map(|(by, label)| {
+            Entry::item(label, Command::Desktop(DesktopCommand::Sort(by))).checked(!free && sort == by)
+        });
+        let sorts =
+            std::iter::once(Entry::item("無", Command::Desktop(DesktopCommand::KeepPlaces)).checked(free))
+                .chain(std::iter::once(Entry::separator()))
+                .chain(sorts)
+                .collect();
         vec![
             Entry::item("新增檔案夾", Command::Desktop(DesktopCommand::NewFolder)).shortcut("Super Shift N"),
+            Entry::separator(),
+            Entry::item("貼上", Command::Desktop(DesktopCommand::Paste)).shortcut("Super V"),
             Entry::separator(),
             Entry::submenu("排序方式", sorts),
             Entry::separator(),
@@ -680,7 +913,54 @@ impl Nekoland {
                 command(DesktopCommand::Reveal(path.clone())),
             ));
         }
+        entries.extend([
+            Entry::item("製作複本", command(DesktopCommand::Duplicate(chosen.clone()))).shortcut("Super D"),
+            Entry::item("快速查看", command(DesktopCommand::QuickLook)).shortcut("Space"),
+            Entry::separator(),
+            Entry::item("拷貝", command(DesktopCommand::Copy(chosen))).shortcut("Super C"),
+        ]);
         entries
+    }
+
+    /// Files copied here, or copied or cut in a file manager, go into the Desktop folder.
+    fn paste_files(&mut self) {
+        let Some(folder) = desktop_folder() else {
+            return;
+        };
+        let copied = current_data_device_selection_userdata(&self.seat).and_then(|copied| copied.clone());
+        if let Some(paths) = copied {
+            copy_into(&paths, &folder);
+            return;
+        }
+        for mime_type in [COPIED_FILES, URI_LIST] {
+            let mut fds = [0; 2];
+            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                tracing::warn!("pipe: {}", std::io::Error::last_os_error());
+                return;
+            }
+            // SAFETY: pipe2 just made these two descriptors, which nothing else owns.
+            let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+            match request_data_device_client_selection(&self.seat, mime_type.into(), write) {
+                Err(SelectionRequestError::InvalidMimetype) => continue,
+                Err(_) => return,
+                Ok(()) => {}
+            }
+            let folder = folder.clone();
+            // The program writes it when it reads its socket, after this frame's events go out.
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                if let Err(err) = std::fs::File::from(read).read_to_string(&mut text) {
+                    tracing::warn!("reading pasted files: {err}");
+                }
+                let paths = uri_paths(&text);
+                if text.lines().next() == Some("cut") {
+                    move_into(&paths, &folder);
+                } else if !paths.is_empty() {
+                    copy_into(&paths, &folder);
+                }
+            });
+            return;
+        }
     }
 
     pub fn run_desktop_command(&mut self, command: DesktopCommand) {
@@ -723,6 +1003,33 @@ impl Nekoland {
                 self.desktop.selected = vec![path];
                 self.set_keyboard_focus(None);
             }
+            DesktopCommand::Copy(paths) => {
+                let mime_types: Vec<String> = [COPIED_FILES, URI_LIST, PLAIN_TEXT].map(String::from).into();
+                if let Some(xwm) = self.xwm.as_mut() {
+                    if let Err(err) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types.clone()))
+                    {
+                        tracing::warn!("offering copied files to X11 programs: {err}");
+                    }
+                }
+                set_data_device_selection(&self.display_handle, &self.seat, mime_types, Some(paths));
+            }
+            DesktopCommand::Paste => self.paste_files(),
+            DesktopCommand::Duplicate(paths) => {
+                for path in &paths {
+                    if let Some(folder) = path.parent() {
+                        copy_into(std::slice::from_ref(path), folder);
+                    }
+                }
+            }
+            DesktopCommand::QuickLook => self.desktop.looking = !self.desktop.looking,
+            DesktopCommand::SelectAll => {
+                self.desktop.selected = self
+                    .desktop
+                    .items
+                    .iter()
+                    .map(|(item, _)| item.path.clone())
+                    .collect();
+            }
             DesktopCommand::NewFolder => {
                 let Some(folder) = desktop_folder() else {
                     return;
@@ -735,7 +1042,25 @@ impl Nekoland {
             }
             DesktopCommand::Sort(sort) => {
                 self.config.desktop_sort = sort;
-                if let Err(err) = config::set(&format!("desktop_sort = {:?}", sort.name())) {
+                self.config.desktop_free = false;
+                let saved = config::set(&format!("desktop_sort = {:?}", sort.name()))
+                    .and_then(|()| config::unset("desktop_free"));
+                if let Err(err) = saved {
+                    tracing::warn!("{err}");
+                }
+            }
+            DesktopCommand::KeepPlaces => {
+                let size = self.output_size();
+                let places: Places = self
+                    .desktop
+                    .items
+                    .iter()
+                    .map(|(item, rect)| (item.name.clone(), cell_of(rect.loc, size)))
+                    .collect();
+                write_places(&places);
+                self.desktop.places = Some(places);
+                self.config.desktop_free = true;
+                if let Err(err) = config::set("desktop_free = true") {
                     tracing::warn!("{err}");
                 }
             }
@@ -784,6 +1109,180 @@ fn picture_element(
     )
     .ok()
     .map(SceneElement::Picture)
+}
+
+/// Quick Look's panel for `item`, at most seven tenths of `output`: its name over the
+/// picture it is, the start of the text it holds, or else its icon, kind, size and date.
+// shortcut: a picture is read and scaled on the compositor's thread, which a camera's
+// largest photos make wait a moment; read it on a thread if that shows.
+fn draw_quick_look(item: &Item, output: Size<i32, Logical>, dark: bool) -> Option<Picture> {
+    let colors = menubar::colors(dark);
+    let room = Size::<i32, Logical>::from((output.w * 7 / 10, output.h * 7 / 10 - LOOK_TITLE));
+    let scale = text::picture_scale();
+    let image = item
+        .kind
+        .starts_with("image/")
+        .then(|| {
+            gdk_pixbuf::Pixbuf::from_file_at_scale(&item.path, room.w * scale, room.h * scale, true).ok()
+        })
+        .flatten()
+        .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None));
+    let shown = (!item.is_dir && gio::content_type_is_a(&item.kind, "text/plain"))
+        .then(|| {
+            let mut start = Vec::new();
+            std::fs::File::open(&item.path)
+                .and_then(|file| file.take(LOOK_TEXT_BYTES).read_to_end(&mut start))
+                .ok()?;
+            Some(
+                String::from_utf8_lossy(&start)
+                    .lines()
+                    .take(LOOK_TEXT_LINES)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })
+        .flatten();
+    let body: Size<i32, Logical> = match (&image, &shown) {
+        (Some(image), _) => {
+            image.set_device_scale(f64::from(scale), f64::from(scale));
+            let (w, h) = text::points(image);
+            (w.ceil() as i32, h.ceil() as i32).into()
+        }
+        (None, Some(_)) => (room.w.min(720), room.h.min(540)).into(),
+        (None, None) => (440, 168).into(),
+    };
+    let size = Size::<i32, Logical>::from((body.w.max(320), body.h + LOOK_TITLE));
+    let surface = text::canvas(size.w, size.h).ok()?;
+    let cr = cairo::Context::new(&surface).ok()?;
+    let (w, h) = (f64::from(size.w), f64::from(size.h));
+    text::rounded_rectangle(&cr, 0.5, 0.5, w - 1.0, h - 1.0, LOOK_RADIUS);
+    let (r, g, b) = colors.sheet;
+    cr.set_source_rgb(r, g, b);
+    let _ = cr.fill_preserve();
+    let (r, g, b, a) = colors.edge;
+    cr.set_source_rgba(r, g, b, a);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+    let ink = |cr: &cairo::Context, (r, g, b): (f64, f64, f64)| cr.set_source_rgb(r, g, b);
+
+    let title = text::new_layout(&cr);
+    title.set_font_description(Some(&text::font("Semibold 11")));
+    title.set_text(&item.name);
+    title.set_width((size.w - 32) * pango::SCALE);
+    title.set_ellipsize(pango::EllipsizeMode::Middle);
+    title.set_alignment(pango::Alignment::Center);
+    let (_, logical) = title.pixel_extents();
+    ink(&cr, colors.ink);
+    cr.move_to(16.0, f64::from(LOOK_TITLE - logical.height()) / 2.0);
+    pangocairo::functions::show_layout(&cr, &title);
+    let (r, g, b) = colors.ink;
+    cr.set_source_rgba(r, g, b, 0.12);
+    cr.rectangle(0.0, f64::from(LOOK_TITLE) - 1.0, w, 1.0);
+    let _ = cr.fill();
+
+    let top = f64::from(LOOK_TITLE);
+    if let Some(image) = &image {
+        let _ = cr.save();
+        // The picture's corners go under the panel's rounded ones.
+        text::rounded_rectangle(&cr, 0.0, 0.0, w, h, LOOK_RADIUS);
+        cr.clip();
+        let _ = cr.set_source_surface(image, (w - f64::from(body.w)) / 2.0, top);
+        let _ = cr.paint();
+        let _ = cr.restore();
+    } else if let Some(shown) = &shown {
+        let layout = text::new_layout(&cr);
+        layout.set_font_description(Some(&text::font("Monospace 10")));
+        layout.set_text(shown);
+        layout.set_width((body.w - 32) * pango::SCALE);
+        layout.set_height((body.h - 24) * pango::SCALE);
+        layout.set_wrap(pango::WrapMode::WordChar);
+        layout.set_ellipsize(pango::EllipsizeMode::End);
+        ink(&cr, colors.ink);
+        cr.move_to(16.0, top + 12.0);
+        pangocairo::functions::show_layout(&cr, &layout);
+    } else {
+        if let Some(icon) = stacks::item_icon(item, LOOK_ICON, colors.ink) {
+            let _ = cr.save();
+            cr.translate(20.0, top + 20.0);
+            stacks::paint_fitted(&cr, &icon, f64::from(LOOK_ICON), 1.0);
+            let _ = cr.restore();
+        }
+        let meta = std::fs::metadata(&item.path).ok();
+        let modified = meta
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| gio::glib::DateTime::from_unix_local(since.as_secs() as i64).ok())
+            .and_then(|time| time.format("%Y/%m/%d %H:%M").ok());
+        let size_text = meta
+            .filter(|meta| !meta.is_dir())
+            .map(|meta| gio::glib::format_size(meta.len()));
+        let lines = [
+            Some(gio::content_type_get_description(&item.kind)),
+            size_text,
+            modified,
+        ];
+        let x = f64::from(20 + LOOK_ICON + 20);
+        let width = (size.w - 20 - LOOK_ICON - 40) * pango::SCALE;
+        let name = text::new_layout(&cr);
+        name.set_font_description(Some(&text::font("Semibold 13")));
+        name.set_text(&item.name);
+        name.set_width(width);
+        name.set_ellipsize(pango::EllipsizeMode::Middle);
+        ink(&cr, colors.ink);
+        cr.move_to(x, top + 40.0);
+        pangocairo::functions::show_layout(&cr, &name);
+        let mut y = top + 40.0 + f64::from(name.pixel_extents().1.height()) + 6.0;
+        ink(&cr, colors.ink_3);
+        for line in lines.into_iter().flatten() {
+            let layout = text::new_layout(&cr);
+            layout.set_font_description(Some(&text::font("11")));
+            layout.set_text(&line);
+            layout.set_width(width);
+            layout.set_ellipsize(pango::EllipsizeMode::End);
+            cr.move_to(x, y);
+            pangocairo::functions::show_layout(&cr, &layout);
+            y += f64::from(layout.pixel_extents().1.height()) + 2.0;
+        }
+    }
+    drop(cr);
+    text::picture(surface)
+}
+
+/// Writes files copied or dragged off the desktop in the form `mime_type` asks for, on a
+/// thread: the program reads it when it gets to its socket.
+pub fn send_copied(mime_type: &str, paths: &[PathBuf], fd: OwnedFd) {
+    let uris: Vec<String> = paths
+        .iter()
+        .map(|path| gio::File::for_path(path).uri().into())
+        .collect();
+    let text = match mime_type {
+        COPIED_FILES => format!("copy\n{}", uris.join("\n")),
+        URI_LIST => uris.iter().map(|uri| format!("{uri}\r\n")).collect(),
+        _ => paths
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    std::thread::spawn(move || {
+        if let Err(err) = std::fs::File::from(fd).write_all(text.as_bytes()) {
+            tracing::warn!("sending copied files: {err}");
+        }
+    });
+}
+
+/// Copies `paths` into `folder` in Nekoland's file operation window, which asks about a
+/// name already taken there; a copy into the folder a file is in goes beside it.
+fn copy_into(paths: &[PathBuf], folder: &Path) {
+    let spawned = std::process::Command::new("nekoland-fileop")
+        .arg("copy")
+        .arg(folder)
+        .args(paths)
+        .spawn();
+    if let Err(err) = spawned {
+        tracing::warn!("nekoland-fileop: {err}");
+    }
 }
 
 /// The first of `未命名檔案夾`, `未命名檔案夾 2`, … not taken in `folder`.
@@ -996,6 +1495,25 @@ mod tests {
         assert_eq!(places[2].loc, Point::from((right, top + CELL_HEIGHT * 2)));
         // The fourth starts the column to the left.
         assert_eq!(places[3].loc, Point::from((right - CELL_WIDTH, top)));
+    }
+
+    #[test]
+    fn placed_items_keep_their_cells_and_the_rest_fill_the_free_ones() {
+        let size = Size::from((1000, MENU_BAR_HEIGHT + MARGIN * 2 + CELL_HEIGHT * 3));
+        let folder = std::env::temp_dir().join(format!("nekoland-places-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(folder.join(name), "").unwrap();
+        }
+        let items = stacks::read_folder(&folder, Sort::Name);
+        std::fs::remove_dir_all(&folder).unwrap();
+        // `c` asks for `a`'s cell, which `a` came first to; it goes where `a` would have.
+        let places = Places::from([("a".into(), [0, 1]), ("c".into(), [0, 1])]);
+        let cells = placed_cells(&items, &places, size);
+        assert_eq!(cells[0], cell_rect([0, 1], size));
+        assert_eq!(cells[1], cell_rect([0, 0], size));
+        assert_eq!(cells[2], cell_rect([0, 2], size));
+        assert_eq!(cell_of(cells[2].loc + Point::from((30, -30)), size), [0, 2]);
     }
 
     #[test]

@@ -258,7 +258,7 @@ impl Nekoland {
 
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
         self.close_launcher_unless(clicked.as_ref());
-        self.end_rename();
+        self.desktop_pointer_pressed(pos);
         if self.menu_bar_press(pos) {
             return;
         }

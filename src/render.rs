@@ -122,7 +122,7 @@ pub fn scene_elements(
             without_top_panel: false,
         };
         let mut elements: Vec<SceneElement> = state
-            .desktop_drag_element(renderer, output_geometry.loc, scale)
+            .desktop_front_elements(renderer, output_geometry.loc, scale)
             .into_iter()
             .collect();
         elements.extend(dock_front(state, renderer, output_geometry.loc, scale));
