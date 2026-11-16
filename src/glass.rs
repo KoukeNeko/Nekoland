@@ -161,6 +161,16 @@ impl Glass {
                     Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, scaled)
                 })
                 .collect::<Result<_, _>>()?;
+            // New textures hold whatever memory they were given; the passes only write
+            // around the panes, so the rest has to start out empty.
+            for level in &mut self.levels {
+                let level_size = level.size();
+                let area = Rectangle::<i32, Physical>::from_size((level_size.w, level_size.h).into());
+                let mut target = renderer.bind(level)?;
+                let mut frame = renderer.render(&mut target, area.size, OFFSCREEN)?;
+                frame.clear(Color32F::TRANSPARENT, &[area])?;
+                let _ = frame.finish()?;
+            }
             self.tracker = Some(OutputDamageTracker::new(size, 1.0, OFFSCREEN));
             self.areas.clear();
         }
@@ -212,6 +222,7 @@ impl Glass {
                 &self.down,
                 &regions,
                 full,
+                (level + 1) % 2 == 1,
             )?;
         }
         for level in (1..LEVELS).rev() {
@@ -223,6 +234,7 @@ impl Glass {
                 &self.up,
                 &regions,
                 full,
+                level % 2 == 1,
             )?;
         }
         self.commit.increment();
@@ -268,6 +280,7 @@ fn pass(
     program: &GlesTexProgram,
     regions: &[Rectangle<i32, Physical>],
     full: Size<i32, Buffer>,
+    upright: bool,
 ) -> Result<(), GlesError> {
     let from = source.size();
     let to = target.size();
@@ -276,14 +289,25 @@ fn pass(
         f64::from(to.w) / f64::from(full.w),
         f64::from(to.h) / f64::from(full.h),
     );
+    // Each pass turns the picture upside down: the scene drawn first is, the first half
+    // size is not, and so on. The frame flips what it is told too, so a region goes where
+    // it is in an upright target only if it is named mirrored, and as it is otherwise.
     let parts: Vec<_> = regions
         .iter()
         .filter_map(|region| {
-            region
+            let part = region
                 .to_f64()
                 .upscale(scale)
                 .to_i32_up::<i32>()
-                .intersection(area)
+                .intersection(area)?;
+            Some(if upright {
+                Rectangle::new(
+                    (part.loc.x, area.size.h - part.loc.y - part.size.h).into(),
+                    part.size,
+                )
+            } else {
+                part
+            })
         })
         .collect();
     let mut target = renderer.bind(target)?;
