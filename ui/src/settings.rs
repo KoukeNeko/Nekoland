@@ -24,6 +24,7 @@ const WALLPAPER_DIRS: [&str; 3] = [
 ];
 const WALLPAPERS: usize = 8;
 const SINK: &str = "@DEFAULT_AUDIO_SINK@";
+const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 
 /// What a program printed, or None when it could not be run or failed.
 fn output(program: &str, args: &[&str]) -> Option<String> {
@@ -133,9 +134,9 @@ fn facts() -> Vec<(&'static str, String)> {
     facts
 }
 
-/// The default output's volume, 0 to 100, and whether it is muted; None without sound.
-fn volume() -> Option<(f32, bool)> {
-    let text = output("wpctl", &["get-volume", SINK])?;
+/// A default device's volume, 0 to 100, and whether it is muted; None without one.
+fn volume(device: &str) -> Option<(f32, bool)> {
+    let text = output("wpctl", &["get-volume", device])?;
     let level: f32 = text.split_whitespace().nth(1)?.parse().ok()?;
     Some((level * 100.0, text.contains("[MUTED]")))
 }
@@ -832,28 +833,270 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
 
 fn sound_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    let output_group = group("");
-    match volume() {
-        Some((level, muted)) => {
-            output_group.add(&scale_row(
-                "音量",
-                f64::from(level.round()),
-                (0.0, 100.0, 5.0),
-                |level| run("wpctl", &["set-volume", SINK, &format!("{:.2}", level / 100.0)]),
-            ));
-            let mute = adw::SwitchRow::builder().title("靜音").active(muted).build();
-            mute.connect_active_notify(|row| {
-                run(
-                    "wpctl",
-                    &["set-mute", SINK, if row.is_active() { "1" } else { "0" }],
-                )
-            });
-            output_group.add(&mute);
-        }
-        None => output_group.add(&adw::ActionRow::builder().title("沒有音訊輸出").build()),
-    }
-    page.add(&output_group);
+    fill_sound_page(&page, Rc::default());
     page
+}
+
+/// Puts each kind of sound device on the page, again after the default one changes.
+fn fill_sound_page(page: &adw::PreferencesPage, groups: Rc<RefCell<Vec<adw::PreferencesGroup>>>) {
+    for group in groups.take() {
+        page.remove(&group);
+    }
+    let weak = page.downgrade();
+    let again = {
+        let groups = groups.clone();
+        Rc::new(move || {
+            if let Some(page) = weak.upgrade() {
+                let groups = groups.clone();
+                // Not while the row that changed is still handling it.
+                glib::idle_add_local_once(move || fill_sound_page(&page, groups));
+            }
+        }) as Rc<dyn Fn()>
+    };
+    let nodes = audio_nodes();
+    for (title, class, default, none) in [
+        ("輸出", "Audio/Sink", SINK, "沒有音訊輸出"),
+        ("輸入", "Audio/Source", SOURCE, "沒有音訊輸入"),
+    ] {
+        let devices = nodes.iter().filter(|device| device.class == class).cloned().collect();
+        let group = device_group(title, default, devices, none, again.clone());
+        page.add(&group);
+        groups.borrow_mut().push(group);
+    }
+}
+
+/// One kind of sound device: which is the default, its volume and whether it is muted, and
+/// the format a sound card is opened with.
+fn device_group(
+    title: &str,
+    default: &'static str,
+    devices: Vec<AudioDevice>,
+    none: &str,
+    changed: Rc<dyn Fn()>,
+) -> adw::PreferencesGroup {
+    let group = group(title);
+    let Some(current) = devices.iter().find(|device| device.default).or(devices.first()).cloned() else {
+        group.add(&adw::ActionRow::builder().title(none).build());
+        return group;
+    };
+    let names: Vec<&str> = devices.iter().map(|device| device.description.as_str()).collect();
+    let chosen = adw::ComboRow::builder()
+        .title("裝置")
+        .model(&gtk::StringList::new(&names))
+        .selected(devices.iter().position(|device| device.name == current.name).unwrap_or(0) as u32)
+        .build();
+    chosen.connect_selected_notify(move |row| {
+        let Some(name) = devices.get(row.selected() as usize).map(|device| &device.name) else {
+            return;
+        };
+        // Looked up again: restarting WirePlumber numbers the devices anew.
+        match audio_nodes().into_iter().find(|device| device.name == *name) {
+            Some(device) => run("wpctl", &["set-default", &device.id.to_string()]),
+            None => eprintln!("{name}: no longer there"),
+        }
+        changed();
+    });
+    group.add(&chosen);
+
+    let (level, muted) = volume(default).unwrap_or_default();
+    group.add(&scale_row("音量", f64::from(level.round()), (0.0, 100.0, 5.0), move |level| {
+        run("wpctl", &["set-volume", default, &format!("{:.2}", level / 100.0)])
+    }));
+    let mute = adw::SwitchRow::builder().title("靜音").active(muted).build();
+    mute.connect_active_notify(move |row| {
+        run("wpctl", &["set-mute", default, if row.is_active() { "1" } else { "0" }])
+    });
+    group.add(&mute);
+
+    if current.alsa {
+        add_format_rows(&group, current);
+    }
+    group
+}
+
+/// Bit depths a sound card may be opened with, as PipeWire names them.
+const SAMPLE_FORMATS: [(&str, &str); 6] = [
+    ("U8", "8 位元"),
+    ("S16LE", "16 位元"),
+    ("S24LE", "24 位元"),
+    ("S24_32LE", "24 位元"),
+    ("S32LE", "32 位元"),
+    ("F32LE", "32 位元浮點"),
+];
+
+/// The sample rate and bit depth a sound card is opened with, each "自動" to leave it to
+/// PipeWire, which resamples between it and the other devices.
+fn add_format_rows(group: &adw::PreferencesGroup, device: AudioDevice) {
+    let mut formats: Vec<(&str, &str)> =
+        SAMPLE_FORMATS.into_iter().filter(|(name, _)| device.formats.iter().any(|f| f == name)).collect();
+    // A card with both kinds of 24 bits is opened with the first.
+    formats.dedup_by_key(|(_, label)| *label);
+    let rates = device.rates.clone();
+    let chosen = Rc::new(RefCell::new((device.rate, device.format.clone())));
+
+    let mut labels = vec!["自動".to_string()];
+    labels.extend(rates.iter().map(|rate| format!("{} kHz", f64::from(*rate) / 1000.0)));
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let rate_row = adw::ComboRow::builder()
+        .title("取樣率")
+        .model(&gtk::StringList::new(&labels))
+        .selected(rates.iter().position(|rate| *rate == device.rate).map_or(0, |at| at as u32 + 1))
+        .build();
+    let name = device.name.clone();
+    let rate_chosen = chosen.clone();
+    rate_row.connect_selected_notify(move |row| {
+        let rate = (row.selected() as usize).checked_sub(1).and_then(|at| rates.get(at));
+        rate_chosen.borrow_mut().0 = rate.copied().unwrap_or(0);
+        let (rate, format) = &*rate_chosen.borrow();
+        save_device_format(&name, *rate, format);
+    });
+    group.add(&rate_row);
+
+    let mut labels = vec!["自動"];
+    labels.extend(formats.iter().map(|(_, label)| *label));
+    let depth_row = adw::ComboRow::builder()
+        .title("位元深度")
+        .model(&gtk::StringList::new(&labels))
+        .selected(formats.iter().position(|(name, _)| *name == device.format).map_or(0, |at| at as u32 + 1))
+        .build();
+    depth_row.connect_selected_notify(move |row| {
+        let format = (row.selected() as usize).checked_sub(1).and_then(|at| formats.get(at));
+        chosen.borrow_mut().1 = format.map(|(name, _)| name.to_string()).unwrap_or_default();
+        let (rate, format) = &*chosen.borrow();
+        save_device_format(&device.name, *rate, format);
+    });
+    group.add(&depth_row);
+}
+
+/// Keeps the format a sound card is opened with as a WirePlumber rule of its own, none when
+/// both are left to PipeWire, and restarts WirePlumber, which reads its rules only then.
+fn save_device_format(name: &str, rate: u32, format: &str) {
+    let path = home()
+        .join(".config/wireplumber/wireplumber.conf.d")
+        .join(format!("51-nekoland-{}.conf", name.replace('/', "_")));
+    let mut props = Vec::new();
+    if rate != 0 {
+        props.push(format!("audio.rate = {rate}"));
+    }
+    if !format.is_empty() {
+        props.push(format!("audio.format = {format:?}"));
+    }
+    let saved = if props.is_empty() {
+        std::fs::remove_file(&path).or_else(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(err),
+        })
+    } else {
+        let rule = format!(
+            "# Written by Nekoland's Settings.\n\
+             monitor.alsa.rules = [\n  {{\n    matches = [ {{ node.name = {name:?} }} ]\n    \
+             actions = {{ update-props = {{ {} }} }}\n  }}\n]\n",
+            props.join(", ")
+        );
+        std::fs::create_dir_all(path.parent().unwrap_or(&path)).and_then(|()| std::fs::write(&path, rule))
+    };
+    match saved {
+        Ok(()) => run("systemctl", &["--user", "restart", "wireplumber"]),
+        Err(err) => eprintln!("{}: {err}", path.display()),
+    }
+}
+
+#[derive(Clone)]
+struct AudioDevice {
+    id: u32,
+    /// What PipeWire knows it by, which stays the same across restarts.
+    name: String,
+    description: String,
+    /// "Audio/Sink" or "Audio/Source".
+    class: String,
+    default: bool,
+    /// Whether it is a sound card, whose format can be chosen.
+    alsa: bool,
+    /// The sample rates and formats it can be opened with, and the ones it is set to: 0 and
+    /// "" for PipeWire's choice.
+    rates: Vec<u32>,
+    formats: Vec<String>,
+    rate: u32,
+    format: String,
+}
+
+fn audio_nodes() -> Vec<AudioDevice> {
+    output("pw-dump", &[]).map(|dump| parse_audio_nodes(&dump)).unwrap_or_default()
+}
+
+/// Sample rates offered when a card takes any in a range.
+const COMMON_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+/// The audio devices in `pw-dump`'s output.
+fn parse_audio_nodes(dump: &str) -> Vec<AudioDevice> {
+    use serde_json::Value;
+    let objects: Vec<Value> = match serde_json::from_str(dump) {
+        Ok(objects) => objects,
+        Err(err) => {
+            eprintln!("pw-dump: {err}");
+            return Vec::new();
+        }
+    };
+    // The defaults are kept by name, as metadata.
+    let default_of = |key: &str| {
+        objects
+            .iter()
+            .filter(|object| object["props"]["metadata.name"] == "default")
+            .flat_map(|object| object["metadata"].as_array().into_iter().flatten())
+            .find(|entry| entry["key"] == key)
+            .and_then(|entry| entry["value"]["name"].as_str())
+            .map(String::from)
+    };
+    let defaults = [default_of("default.audio.sink"), default_of("default.audio.source")];
+    // A choice is a plain value, or {"default", "alt1", ...}, or {"default", "min", "max"}.
+    let choices = |value: &Value| -> Vec<Value> {
+        match value.as_object() {
+            None => vec![value.clone()],
+            Some(choice) => {
+                choice.iter().filter(|(key, _)| *key != "default").map(|(_, value)| value.clone()).collect()
+            }
+        }
+    };
+    let mut devices = Vec::new();
+    for object in &objects {
+        let info = &object["info"];
+        let props = &info["props"];
+        let class = props["media.class"].as_str().unwrap_or_default();
+        if class != "Audio/Sink" && class != "Audio/Source" {
+            continue;
+        }
+        let (Some(id), Some(name)) = (object["id"].as_u64(), props["node.name"].as_str()) else {
+            continue;
+        };
+        let (mut rates, mut formats) = (Vec::new(), Vec::new());
+        for format in info["params"]["EnumFormat"].as_array().into_iter().flatten() {
+            let rate = &format["rate"];
+            match (rate["min"].as_u64(), rate["max"].as_u64()) {
+                (Some(min), Some(max)) => {
+                    rates.extend(COMMON_RATES.into_iter().filter(|r| (min..=max).contains(&u64::from(*r))))
+                }
+                _ => rates.extend(choices(rate).iter().filter_map(Value::as_u64).map(|r| r as u32)),
+            }
+            formats.extend(choices(&format["format"]).iter().filter_map(Value::as_str).map(String::from));
+        }
+        rates.sort_unstable();
+        rates.dedup();
+        formats.sort_unstable();
+        formats.dedup();
+        devices.push(AudioDevice {
+            id: id as u32,
+            name: name.into(),
+            description: props["node.description"].as_str().unwrap_or(name).into(),
+            class: class.into(),
+            default: defaults.iter().flatten().any(|default| default == name),
+            alsa: props["device.api"] == "alsa",
+            rates,
+            formats,
+            rate: props["audio.rate"].as_u64().unwrap_or(0) as u32,
+            format: props["audio.format"].as_str().unwrap_or_default().into(),
+        });
+    }
+    devices
 }
 
 /// What starts at login, each to be taken off, and a field to add another.
@@ -1973,6 +2216,34 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_nodes_are_read_with_their_formats_and_defaults() {
+        let dump = r#"[
+            {"id": 0, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
+             "metadata": [{"key": "default.audio.sink", "value": {"name": "alsa_output.usb"}}]},
+            {"id": 59, "info": {"props": {"media.class": "Audio/Sink", "node.name": "alsa_output.usb",
+              "node.description": "USB DAC", "device.api": "alsa", "audio.rate": 96000},
+             "params": {"EnumFormat": [{"format": {"default": "S16LE", "alt1": "S16LE", "alt2": "S24_32LE"},
+              "rate": {"default": 48000, "min": 44100, "max": 96000}}]}}},
+            {"id": 60, "info": {"props": {"media.class": "Audio/Source", "node.name": "bluez_input.x",
+              "device.api": "bluez5"}, "params": {"EnumFormat": [{"format": "S16LE",
+              "rate": {"default": 16000, "alt1": 16000}}]}}},
+            {"id": 61, "info": {"props": {"media.class": "Stream/Output/Audio", "node.name": "firefox"}}}
+        ]"#;
+        let devices = parse_audio_nodes(dump);
+        let summary: Vec<_> = devices
+            .iter()
+            .map(|d| (d.id, d.description.as_str(), d.default, d.alsa, d.rates.clone(), d.formats.join(" "), d.rate))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (59, "USB DAC", true, true, vec![44_100, 48_000, 88_200, 96_000], "S16LE S24_32LE".into(), 96_000),
+                (60, "bluez_input.x", false, false, vec![16_000], "S16LE".into(), 0),
+            ]
+        );
+    }
 
     #[test]
     fn xkb_layouts_are_each_followed_by_their_variants() {

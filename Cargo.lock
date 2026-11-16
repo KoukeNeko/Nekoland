@@ -3213,6 +3213,7 @@ version = "0.1.0"
 dependencies = [
  "gtk4",
  "libadwaita",
+ "serde_json",
  "slint",
  "slint-build",
  "toml 0.8.23",

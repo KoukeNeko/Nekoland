@@ -81,7 +81,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
   the keyboard, the mouse and touchpad, the sound and what starts at login, show what the
   computer is, and show GTK's own widgets as the system style draws them. Each change
-  takes effect at once. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  takes effect at once. The sound page picks the output and input, and the sample rate and
+  bit depth each sound card is opened with, apart from the others: a WirePlumber rule of
+  its own in `~/.config/wireplumber/wireplumber.conf.d/`, which restarts WirePlumber and so
+  stops the sound for a moment. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
   user's language too, and takes an input method. Clicking the search field of the
