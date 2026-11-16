@@ -54,7 +54,7 @@ fn data(window: &Window) -> &WindowData {
     window.user_data().get_or_insert(WindowData::default)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Side {
     Left,
     Right,
@@ -319,6 +319,19 @@ impl Nekoland {
         self.put_window(window, area, &[ToplevelState::Maximized]);
     }
 
+    /// With `edge_tiling`, a window let go of at a side of the display fills that half, and
+    /// at its top, all of it, as on GNOME and the Mac.
+    pub fn tile_at_edge(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        let Some(display) = self.space.outputs().next().and_then(|output| self.space.output_geometry(output)) else {
+            return;
+        };
+        match edge_at(display.to_f64(), pos) {
+            Some(Edge::Side(side)) if self.config.edge_tiling => self.tile(window, side),
+            Some(Edge::Top) if self.config.edge_tiling => self.maximize(window),
+            _ => {}
+        }
+    }
+
     pub fn tile(&mut self, window: &Window, side: Side) {
         let Some(area) = self.usable_area() else {
             return;
@@ -433,5 +446,40 @@ impl Nekoland {
         if had_focus {
             self.focus_top_window();
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Edge {
+    Side(Side),
+    Top,
+}
+
+/// The edge of `display` the pointer is at, which it cannot pass.
+fn edge_at(display: Rectangle<f64, Logical>, pos: Point<f64, Logical>) -> Option<Edge> {
+    if pos.y < display.loc.y + 1.0 {
+        Some(Edge::Top)
+    } else if pos.x < display.loc.x + 1.0 {
+        Some(Edge::Side(Side::Left))
+    } else if pos.x >= display.loc.x + display.size.w - 1.0 {
+        Some(Edge::Side(Side::Right))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_displays_top_and_sides_tile() {
+        let display = Rectangle::new((0.0, 0.0).into(), (1920.0, 1080.0).into());
+        let at = |x, y| edge_at(display, (x, y).into());
+        assert_eq!(at(0.0, 500.0), Some(Edge::Side(Side::Left)));
+        assert_eq!(at(1919.0, 500.0), Some(Edge::Side(Side::Right)));
+        assert_eq!(at(800.0, 0.0), Some(Edge::Top));
+        assert_eq!(at(800.0, 1079.0), None);
+        assert_eq!(at(800.0, 500.0), None);
     }
 }

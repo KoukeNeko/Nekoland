@@ -61,6 +61,7 @@ impl PointerGrab<Nekoland> for MoveSurfaceGrab {
         const BTN_LEFT: u32 = 0x110;
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
+            data.tile_at_edge(&self.window, handle.current_location());
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
