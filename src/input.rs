@@ -137,6 +137,7 @@ impl Nekoland {
                     self.pointer_pressed(button, serial);
                 } else if ButtonState::Released == button_state {
                     self.menu_bar_release(pointer.current_location());
+                    self.dock_release(pointer.current_location());
                     self.overview_release(pointer.current_location());
                 }
 
@@ -197,6 +198,7 @@ impl Nekoland {
 
 // evdev's BTN_LEFT
 const BUTTON_LEFT: u32 = 0x110;
+const BUTTON_RIGHT: u32 = 0x111;
 
 impl Nekoland {
     /// Gives the keyboard to what was clicked, and starts moving a window dragged with Super held.
@@ -209,7 +211,10 @@ impl Nekoland {
         if self.menu_bar_press(pos) {
             return;
         }
-        if button == BUTTON_LEFT && (self.dock_press(pos) || self.notice_press(pos)) {
+        let left_or_right = button == BUTTON_LEFT || button == BUTTON_RIGHT;
+        if (left_or_right && self.dock_press(pos, button == BUTTON_RIGHT))
+            || (button == BUTTON_LEFT && self.notice_press(pos))
+        {
             return;
         }
         if self.overview.is_some() && self.overview_covers(pos) {

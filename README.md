@@ -33,16 +33,23 @@ wallpaper and an input method. Every key is optional:
 | `launcher_search` | What the launcher takes before the text to search for |
 | `volume_up`, `volume_down`, `volume_mute`, `brightness_up`, `brightness_down` | Commands behind the media keys |
 | `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw: `{ nekoland-launcher = 16 }` unless set |
-| `dock` | The applications kept in the Dock, by desktop entry name |
+| `dock` | The applications kept in the Dock, by desktop entry name; the Dock writes it back when they are rearranged |
 
 The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 
 ## Dock, notifications and launcher
 
-- The Dock has a button for all applications, the ones kept in it, and after a line
-  the others with windows open. A dot marks those that run, a longer one the active
-  one. Pointing at an icon lifts it and names it; a click starts the application or
-  brings its windows forward, from another desktop or minimized too.
+- The Dock has a button for all applications, the ones kept in it, after a line the
+  others with windows open, and after another the minimized windows, each a live
+  picture to click back. Icons are trimmed of the margins their theme draws and shown
+  at one size, as the Mac's are. A dot marks those that run, a longer one the active
+  one. Pointing at an icon lifts it and names it; a click starts the application, which
+  breathes until its window shows, or brings its windows forward, from another desktop
+  or minimized too. Resting on a running application shows a live picture of each of
+  its windows, to go to one or close it. A right click lists its windows and offers a
+  new window, keeping it in the Dock, hiding and quitting. Kept icons are dragged to
+  reorder them, out of the Dock to take them off, and a running one dragged among them
+  is kept. A minimized window shrinks into its place in the Dock.
 - Notifications are shown by Nekoland, which serves `org.freedesktop.Notifications`:
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.
@@ -143,9 +150,8 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 - One GPU and one output; displays are not hot-plugged.
 - No screen capture, screen lock, or idle handling.
 - X11 windows have no title bars, and X11 and Wayland programs do not share a clipboard.
-- The Dock has no menu on a right click and its icons cannot be dragged into place;
-  notifications keep no history and show no buttons for their actions; the launcher
-  finds applications only.
+- A window brought back from the Dock appears without growing out of it; notifications keep no history and show no buttons for
+  their actions; the launcher finds applications only.
 
 ## Origin
 

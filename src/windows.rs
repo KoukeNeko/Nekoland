@@ -303,6 +303,7 @@ impl Nekoland {
         let Some(location) = self.space.element_location(window) else {
             return;
         };
+        self.dock_minimizing(window, Rectangle::new(location, window.geometry().size));
         self.space.unmap_elem(window);
         self.minimized.push((window.clone(), location));
         self.focus_top_window();

@@ -34,6 +34,7 @@ use smithay::{
 use crate::{
     config,
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
+    dock::DockCommand,
     system::{self, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, Side, LAUNCHER_APP_ID},
@@ -99,6 +100,8 @@ pub enum Command {
     TileRight,
     MoveToDesktop(usize),
     BringAllToFront,
+    /// What the Dock's menu for an application offers.
+    Dock(DockCommand),
     Focus(Window),
     VolumeUp,
     VolumeDown,
@@ -119,7 +122,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    fn item(label: impl Into<String>, command: Command) -> Self {
+    pub(crate) fn item(label: impl Into<String>, command: Command) -> Self {
         Self {
             label: label.into(),
             shortcut: String::new(),
@@ -133,7 +136,7 @@ impl Entry {
     }
 
     /// A line of information, not something to choose.
-    fn note(label: impl Into<String>) -> Self {
+    pub(crate) fn note(label: impl Into<String>) -> Self {
         Self {
             command: None,
             enabled: false,
@@ -141,7 +144,7 @@ impl Entry {
         }
     }
 
-    fn separator() -> Self {
+    pub(crate) fn separator() -> Self {
         Self {
             separator: true,
             ..Self::note("")
@@ -165,7 +168,7 @@ impl Entry {
         self
     }
 
-    fn checked(mut self, checked: bool) -> Self {
+    pub(crate) fn checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self
     }
@@ -225,7 +228,8 @@ struct Level {
 }
 
 pub struct OpenMenu {
-    title: usize,
+    /// The bar's title it opened from; none for one opened elsewhere, as the Dock's.
+    title: Option<usize>,
     levels: Vec<Level>,
     /// For a Help menu: what has been typed into its search field, and what it shows
     /// when nothing has.
@@ -520,7 +524,7 @@ impl MenuBar {
     /// Lays the bar out and draws it.
     fn draw_bar(&mut self, width: i32, titles: Vec<(Source, Option<String>)>, clock: &str) {
         let colors = colors(self.dark);
-        let open = self.open.as_ref().map(|open| open.title);
+        let open = self.open.as_ref().and_then(|open| open.title);
         let title_font = font("Medium", 10.0);
         let app_font = font("Bold", 10.0);
 
@@ -864,7 +868,7 @@ impl Nekoland {
             .unwrap_or_default()
     }
 
-    fn app_windows(&self, app_id: &str) -> Vec<Window> {
+    pub(crate) fn app_windows(&self, app_id: &str) -> Vec<Window> {
         self.space
             .elements()
             .filter(|window| is_managed(window) && window_names(window).1 == app_id)
@@ -964,7 +968,7 @@ impl Nekoland {
             width: output.size.w,
             app: app.clone(),
             menus: self.menu_bar.menus_revision,
-            open: self.menu_bar.open.as_ref().map(|open| open.title),
+            open: self.menu_bar.open.as_ref().and_then(|open| open.title),
             dark: self.menu_bar.dark,
             minute,
             items: self.menu_bar.items_revision,
@@ -982,7 +986,7 @@ impl Nekoland {
             let titles = self.left_titles();
             self.menu_bar.draw_bar(output.size.w, titles, &clock);
             self.menu_bar.drawn = Some(Drawn {
-                open: self.menu_bar.open.as_ref().map(|open| open.title),
+                open: self.menu_bar.open.as_ref().and_then(|open| open.title),
                 ..drawn
             });
         }
@@ -1112,18 +1116,19 @@ impl Nekoland {
     }
 
     fn reopen_app_menu(&mut self) {
-        let Some(open) = self.menu_bar.open.as_ref() else {
+        let Some((open, title)) = self
+            .menu_bar
+            .open
+            .as_ref()
+            .and_then(|open| Some((open, open.title?)))
+        else {
             return;
         };
-        let source = self
-            .menu_bar
-            .titles
-            .get(open.title)
-            .map(|title| title.source.clone());
+        let source = self.menu_bar.titles.get(title).map(|title| title.source.clone());
         if open.levels.len() == 1 && matches!(source, Some(Source::AppMenu(_))) {
             let highlighted = open.levels[0].highlighted;
             let search = open.search.as_ref().map(|(query, _)| query.clone());
-            self.open_menu(open.title, false);
+            self.open_menu(title, false);
             if let Some(open) = self.menu_bar.open.as_mut() {
                 if let Some(query) = search {
                     if let Some((typed, _)) = open.search.as_mut() {
@@ -1217,7 +1222,7 @@ impl Nekoland {
             .then(|| entries.iter().position(Entry::reachable))
             .flatten();
         self.menu_bar.open = Some(OpenMenu {
-            title,
+            title: Some(title),
             levels: vec![Level {
                 entries,
                 rect,
@@ -1227,6 +1232,35 @@ impl Nekoland {
                 drawn: None,
             }],
             search,
+            last_pointer: None,
+        });
+    }
+
+    /// Opens a menu of these entries centered over `anchor`, as the Dock's are over an icon.
+    pub fn open_menu_above(&mut self, entries: Vec<Entry>, anchor: Rectangle<i32, Logical>, gap: i32) {
+        let output = self.output_size();
+        let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, output);
+        let loc = Point::from((
+            (anchor.loc.x + anchor.size.w / 2 - rect.size.w / 2)
+                .min(output.w - rect.size.w - 6)
+                .max(6),
+            (anchor.loc.y - gap - rect.size.h).max(MENU_BAR_HEIGHT + GAP_BELOW_BAR),
+        ));
+        let shift = loc - rect.loc;
+        self.menu_bar.open = Some(OpenMenu {
+            title: None,
+            levels: vec![Level {
+                entries,
+                rect: Rectangle::new(loc, rect.size),
+                rows: rows
+                    .into_iter()
+                    .map(|row| Rectangle::new(row.loc + shift, row.size))
+                    .collect(),
+                highlighted: None,
+                picture: None,
+                drawn: None,
+            }],
+            search: None,
             last_pointer: None,
         });
     }
@@ -1299,7 +1333,13 @@ impl Nekoland {
         let Some(open) = self.menu_bar.open.as_mut() else {
             return;
         };
-        let anchor = self.menu_bar.titles[open.title].rect;
+        let Some(anchor) = open
+            .title
+            .and_then(|title| self.menu_bar.titles.get(title))
+            .map(|title| title.rect)
+        else {
+            return;
+        };
         let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, size);
         let highlighted = (!query.is_empty())
             .then(|| entries.iter().position(Entry::reachable))
@@ -1515,7 +1555,7 @@ impl Nekoland {
                 .menu_bar
                 .open
                 .as_ref()
-                .is_some_and(|open| open.title == title)
+                .is_some_and(|open| open.title == Some(title))
             {
                 self.close_menu();
             } else {
@@ -1544,7 +1584,7 @@ impl Nekoland {
                 .menu_bar
                 .open
                 .as_ref()
-                .is_some_and(|open| open.title != title)
+                .is_some_and(|open| open.title.is_some_and(|open_title| open_title != title))
             {
                 self.open_menu(title, false);
             }
@@ -1663,13 +1703,21 @@ impl Nekoland {
                     open.levels.truncate(depth);
                 }
             }
-            Keysym::Left => self.open_menu((title + titles - 1) % titles, true),
+            Keysym::Left => {
+                if let Some(title) = title {
+                    self.open_menu((title + titles - 1) % titles, true);
+                }
+            }
             Keysym::Right if opens_submenu => {
                 if let Some(row) = highlighted {
                     self.open_submenu(depth, row, true);
                 }
             }
-            Keysym::Right => self.open_menu((title + 1) % titles, true),
+            Keysym::Right => {
+                if let Some(title) = title {
+                    self.open_menu((title + 1) % titles, true);
+                }
+            }
             Keysym::Down | Keysym::Up => {
                 if let Some(open) = self.menu_bar.open.as_mut() {
                     let level = &mut open.levels[depth];
@@ -1735,6 +1783,26 @@ impl Nekoland {
         }
     }
 
+    /// Ends an application: through its quit action if it exports one, else by closing
+    /// every window it has, which is how such a program ends.
+    pub(crate) fn quit_app(&mut self, app_id: &str) {
+        let quits = self
+            .menu_bar
+            .actions
+            .get(app_id)
+            .is_some_and(|actions| actions.iter().any(|action| action == "quit"));
+        match &self.menu_bar.bus {
+            Some(bus) if quits => bus.send(Request::Activate {
+                app_id: app_id.to_string(),
+                action: "quit".into(),
+            }),
+            _ => self
+                .all_windows()
+                .filter(|window| is_managed(window) && window_names(window).1 == app_id)
+                .for_each(close),
+        }
+    }
+
     fn run_menu_command(&mut self, command: Command) {
         let app = self.active_app();
         let focused = self.focused_window().filter(is_managed);
@@ -1786,21 +1854,8 @@ impl Nekoland {
                 }
             }
             Command::Quit => {
-                let quits = app
-                    .as_ref()
-                    .and_then(|(app_id, _)| self.menu_bar.actions.get(app_id))
-                    .is_some_and(|actions| actions.iter().any(|action| action == "quit"));
-                match app {
-                    Some((app_id, _)) if quits => send(
-                        &self.menu_bar,
-                        Request::Activate {
-                            app_id,
-                            action: "quit".into(),
-                        },
-                    ),
-                    // Without a quit action, closing every window is how such a program ends.
-                    Some((app_id, _)) => self.app_windows(&app_id).iter().for_each(close),
-                    None => {}
+                if let Some((app_id, _)) = app {
+                    self.quit_app(&app_id);
                 }
             }
             Command::CloseWindow => {
@@ -1856,10 +1911,8 @@ impl Nekoland {
                     self.focus_window(&window);
                 }
             }
-            Command::Focus(window) => {
-                self.unminimize(&window);
-                self.focus_window(&window);
-            }
+            Command::Focus(window) => self.reveal_window(&window),
+            Command::Dock(command) => self.run_dock_command(command),
             Command::VolumeUp => config::spawn(&self.config.volume_up),
             Command::VolumeDown => config::spawn(&self.config.volume_down),
             Command::Mute => config::spawn(&self.config.volume_mute),
@@ -1876,7 +1929,7 @@ fn is_maximized(window: &Window) -> bool {
     }
 }
 
-fn close(window: &Window) {
+pub(crate) fn close(window: &Window) {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => toplevel.send_close(),
         WindowSurface::X11(surface) => {

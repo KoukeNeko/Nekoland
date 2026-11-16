@@ -99,7 +99,8 @@ pub fn scene_elements(
             windows: &floating,
             without_top_panel: false,
         };
-        let mut elements = floating_elements(state, renderer, output, glass, &under, &on_top);
+        let mut elements = dock_front(state, renderer, output_geometry.loc);
+        elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
         return Ok(elements);
     };
@@ -238,6 +239,7 @@ pub fn scene_elements(
             .and_then(|(rect, button)| picture(renderer, button, rect.loc)),
     );
     scene.extend(desktop_thumbnails(state, renderer, output, output_geometry.loc));
+    scene.extend(dock_front(state, renderer, output_geometry.loc));
     scene.extend(floating);
     scene.extend(elements);
     Ok(scene)
@@ -300,6 +302,71 @@ fn desktop_thumbnails(
         }));
     }
     elements
+}
+
+/// What the Dock shows live over its glass, front first: the icons at the corners of the
+/// minimized windows' tiles, and the windows themselves, each fitted to its place.
+fn dock_front(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output_loc: Point<i32, Logical>,
+) -> Vec<SceneElement> {
+    let mut elements: Vec<SceneElement> = state
+        .dock_badge_pictures()
+        .into_iter()
+        .filter_map(|(badge, at)| {
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (at - output_loc).to_physical(1).to_f64(),
+                &badge.buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture)
+        })
+        .collect();
+    for (window, rect) in state.dock_thumbnails() {
+        elements.extend(window_fitted(renderer, &window, rect, output_loc));
+    }
+    elements
+}
+
+/// A window scaled down to fit `rect`, in the middle of it, its shadow cut off.
+fn window_fitted(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    rect: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+) -> Vec<SceneElement> {
+    let geometry = window.geometry();
+    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+        return Vec::new();
+    }
+    let scale = (f64::from(rect.size.w) / f64::from(geometry.size.w))
+        .min(f64::from(rect.size.h) / f64::from(geometry.size.h));
+    let size = Size::from((
+        (f64::from(geometry.size.w) * scale).round() as i32,
+        (f64::from(geometry.size.h) * scale).round() as i32,
+    ));
+    let at = rect.loc + Point::from(((rect.size.w - size.w) / 2, (rect.size.h - size.h) / 2)) - output_loc;
+    let crop = Rectangle::new(at, size).to_physical(1);
+    AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+        window,
+        renderer,
+        Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1),
+        Scale::from(1.0),
+        1.0,
+    )
+    .into_iter()
+    .filter_map(|surface| {
+        let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
+        let placed = RelocateRenderElement::from_element(scaled, at.to_physical(1), Relocate::Relative);
+        CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop)
+    })
+    .collect()
 }
 
 /// What goes over the windows: the compositor's own overlays, windows on glass, and the

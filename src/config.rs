@@ -86,6 +86,59 @@ fn config_path() -> Option<PathBuf> {
     Some(base.join("nekoland/config.toml"))
 }
 
+/// Writes the Dock's kept applications back to the configuration file, in place of the
+/// `dock` line there, or at its end.
+// shortcut: edits the file as text, so a `dock` array written across several lines in a
+// different style than one per line is left as it is; a TOML writer if that comes up.
+pub fn save_dock(dock: &[String]) {
+    let Some(path) = config_path() else {
+        return;
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            tracing::warn!("{}: {err}", path.display());
+            return;
+        }
+    };
+    let quoted: Vec<String> = dock.iter().map(|app_id| format!("{app_id:?}")).collect();
+    let line = format!("dock = [{}]", quoted.join(", "));
+    if let Err(err) = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+        .and_then(|_| std::fs::write(&path, with_dock_line(&text, &line)))
+    {
+        tracing::warn!("{}: {err}", path.display());
+    }
+}
+
+/// The configuration text with its `dock = [...]` setting, on one line or several, replaced.
+fn with_dock_line(text: &str, line: &str) -> String {
+    let mut out = Vec::new();
+    let mut lines = text.lines();
+    let mut replaced = false;
+    while let Some(current) = lines.next() {
+        let key = current.split('=').next().unwrap_or_default().trim();
+        if key == "dock" && !replaced {
+            // An array that goes on past this line ends at the line closing it.
+            let mut rest = current.to_string();
+            while !rest.contains(']') {
+                match lines.next() {
+                    Some(next) => rest = next.to_string(),
+                    None => break,
+                }
+            }
+            out.push(line.to_string());
+            replaced = true;
+        } else {
+            out.push(current.to_string());
+        }
+    }
+    if !replaced {
+        out.push(line.to_string());
+    }
+    out.join("\n") + "\n"
+}
+
 /// Starts a shell command as a client of this compositor.
 pub fn spawn(command: &str) {
     if let Err(err) = Command::new("sh").arg("-c").arg(command).spawn() {
@@ -96,6 +149,19 @@ pub fn spawn(command: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dock_line_is_replaced_where_it_is() {
+        let text = "terminal = \"foot\"\ndock = [\n    \"a\",\n    \"b\",\n]\nmode = \"1920x1080\"\n";
+        assert_eq!(
+            with_dock_line(text, "dock = [\"b\"]"),
+            "terminal = \"foot\"\ndock = [\"b\"]\nmode = \"1920x1080\"\n"
+        );
+        assert_eq!(
+            with_dock_line("terminal = \"foot\"\n", "dock = []"),
+            "terminal = \"foot\"\ndock = []\n"
+        );
+    }
 
     #[test]
     fn mode_size_parses_width_and_height() {
