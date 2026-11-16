@@ -7,4 +7,4 @@ autostart = [
     "fcitx5 -d --replace",
 ]
 terminal = "foot"
-dock = ["org.gnome.Nautilus", "org.gnome.TextEditor", "org.gnome.Calculator", "foot"]
+dock = ["org.gnome.Nautilus", "org.gnome.TextEditor", "org.gnome.Calculator", "foot", "io.github.koukeneko.Nekoland.Store"]

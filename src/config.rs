@@ -416,6 +416,7 @@ impl Default for Config {
                 "org.gnome.TextEditor",
                 "org.gnome.Calculator",
                 "foot",
+                "io.github.koukeneko.Nekoland.Store",
             ]
             .map(String::from)
             .to_vec(),
