@@ -66,8 +66,9 @@ struct Udev {
     manager: OutputManager,
     surfaces: HashMap<crtc::Handle, (Surface, Output)>,
     cursors: Cursors,
-    /// None when the GPU could not build the glass shaders.
-    glass: Option<Glass>,
+    /// Each output's, as what it blurs is what that output shows; none when the GPU could
+    /// not build the glass shaders.
+    glass: HashMap<crtc::Handle, Glass>,
 }
 
 type SharedUdev = Rc<RefCell<Udev>>;
@@ -181,9 +182,15 @@ pub fn init_udev(
     }
 
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
-        glass: Glass::new(&mut renderer)
-            .inspect_err(|err| warn!("no glass: {err}"))
-            .ok(),
+        glass: surfaces
+            .keys()
+            .filter_map(|crtc| {
+                Glass::new(&mut renderer)
+                    .inspect_err(|err| warn!("no glass: {err}"))
+                    .ok()
+                    .map(|glass| (*crtc, glass))
+            })
+            .collect(),
         renderer,
         manager,
         surfaces,
@@ -308,7 +315,8 @@ fn render(
         return;
     };
 
-    let queued = draw(state, renderer, surface, output, cursors, glass).unwrap_or_else(|err| {
+    let frames = state.take_screencopy(output);
+    let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
         warn!("render: {err}");
         false
     });
@@ -338,7 +346,8 @@ fn draw(
     surface: &mut Surface,
     output: &Output,
     cursors: &mut Cursors,
-    glass: &mut Option<Glass>,
+    glass: Option<&mut Glass>,
+    screencopy: Vec<crate::screencopy::Frame>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let output_origin = state
         .space
@@ -354,12 +363,16 @@ fn draw(
 
     // Front to back: the cursor is above everything else.
     let mut elements = cursor_elements(state, renderer, cursors, pointer);
-    elements.extend(scene_elements(state, renderer, output, glass.as_mut())?);
+    let cursor = elements.len();
+    elements.extend(scene_elements(state, renderer, output, glass)?);
 
     let is_empty = surface
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
         .map_err(|err| err.to_string())?
         .is_empty;
+    if !screencopy.is_empty() {
+        crate::screencopy::copy(renderer, output, &elements, cursor, screencopy);
+    }
     if is_empty {
         return Ok(false);
     }

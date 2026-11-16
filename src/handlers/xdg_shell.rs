@@ -252,9 +252,16 @@ impl Nekoland {
             return;
         };
 
-        let output = self.space.outputs().next().unwrap();
-        let output_geo = self.space.output_geometry(output).unwrap();
         let window_geo = self.space.element_geometry(window).unwrap();
+        // The popup stays on the output its window is on.
+        let output = self
+            .space
+            .outputs_for_element(window)
+            .into_iter()
+            .next()
+            .or_else(|| self.space.outputs().next().cloned())
+            .unwrap();
+        let output_geo = self.space.output_geometry(&output).unwrap();
 
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.

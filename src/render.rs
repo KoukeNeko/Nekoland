@@ -6,7 +6,7 @@ use smithay::{
             memory::MemoryRenderBufferRenderElement,
             render_elements,
             solid::SolidColorRenderElement,
-            surface::WaylandSurfaceRenderElement,
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
             AsRenderElements, Id, Kind,
         },
@@ -55,6 +55,18 @@ pub fn scene_elements(
     output: &Output,
     mut glass: Option<&mut Glass>,
 ) -> Result<Vec<SceneElement>, Box<dyn std::error::Error>> {
+    // Locked, the locker's surface is all there is; until it has one, the clear colour.
+    if state.lock.is_some() {
+        return Ok(state
+            .lock_surface(output)
+            .map(|surface| {
+                render_elements_from_surface_tree(renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified)
+                    .into_iter()
+                    .map(SceneElement::Surface)
+                    .collect()
+            })
+            .unwrap_or_default());
+    }
     let Some(overview) = &state.overview else {
         // A fullscreen window is all there is to see, under the overlay layer.
         if let Some(window) = state.fullscreen_window() {

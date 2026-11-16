@@ -16,7 +16,8 @@ cargo run
 
 It needs the development files of Wayland, libinput, libseat, libudev, GBM, EGL,
 xkbcommon, Cairo, Pango and gdk-pixbuf, GTK 4 and libadwaita for the settings, and at
-run time `Xwayland` for X11 programs and a D-Bus session bus for the menu bar.
+run time `Xwayland` for X11 programs, `swaylock` to lock the screen, and a D-Bus
+session bus for the menu bar.
 
 With no configuration it starts a terminal. `-c COMMAND` starts something else.
 
@@ -93,8 +94,8 @@ Programs learn whether to be dark from `xdg-desktop-portal`. With
 
 Nekoland draws the bar along the top itself, as the Mac does:
 
-- The cat on the left opens the system menu: Settings, sleep, restart, shut down and log out.
-  The last three ask first, in a dialog (`nekoland-confirm`, from `ui/`).
+- The cat on the left opens the system menu: Settings, sleep, restart, shut down, lock
+  the screen and log out. Restart, shut down and log out ask first, in a dialog (`nekoland-confirm`, from `ui/`).
 - Then the active application's menu, by its name, built from the actions it
   exports on D-Bus (About, Settings, Keyboard Shortcuts, Quit) and what Nekoland
   does for any program (hide, hide others, show all).
@@ -163,7 +164,28 @@ whole output has square corners.
 
 Behind every window is glass of the wallpaper alone, blurred, as Windows' Mica is: what a
 window leaves see-through, as sidebars in Nekoland's GTK look, shows it, and the windows
-behind do not. The wallpaper seldom changes, so it is seldom blurred again.
+behind do not. The wallpaper seldom changes, so it is seldom blurred again. Each display
+blurs its own. In the test VM, with eight GTK windows on the glass, the overview's
+animation draws as fast as without it.
+
+## Screen lock and capture
+
+The menu, Super+L and `nekoland msg lock` lock the screen, and so does sleeping and,
+when Settings' 鎖定螢幕 says so, or `lock_after` in seconds, a time without input, unless a
+program such as a video player keeps the screen awake. A locker program locks it through
+`ext-session-lock`, swaylock in Nekoland's dark paper unless `lock` names another; while
+it is locked only the locker is drawn and takes keys, except for switching virtual
+terminals and quitting. A locker that goes away leaves the screen locked, and a key
+starts it again.
+
+Screenshots and screen sharing go through `wlr-screencopy`: `grim` takes pictures, and
+`xdg-desktop-portal-wlr`, which `shell/nekoland-portals.conf` picks, takes them and shares
+the screen for programs that ask the portal, such as browsers. Copy and paste works
+between X11 and Wayland programs.
+
+Programs in a sandbox such as Flatpak's connect through `security-context-v1` and are
+kept from what reaches other programs: input methods, virtual keyboards, the clipboard
+manager protocol, other programs' windows, screen capture and the lock.
 
 ## GTK applications
 
@@ -175,10 +197,11 @@ buttons, switches, sliders, fields, segmented controls, menus, calendars, tabs, 
 selection, dialogs, toasts and tooltips as the design language has them; and leaves sidebars see-through, on the glass Nekoland
 draws behind every window. Settings' 設計語言 page shows all of it, after the design,
 in this look whether or not it is turned on. Settings' 外觀 page
-turns it on: it puts the file beside `~/.config/gtk-4.0/gtk.css` and imports it from
-there, keeping what else that file has, and keeps it up to date with Settings. GTK reads
+turns it on: it puts the file in `~/.config/gtk-4.0/nekoland/` and imports it from
+`~/.config/gtk-4.0/gtk.css`, keeping what else that file has, and keeps it up to date with Settings. GTK reads
 that file as an application starts, so others take the change when opened again;
-Settings shows it at once, and turned off it opens again without it.
+Settings shows it at once, and turned off it opens again without it. It needs GTK 4.20
+or later, the first to read CSS variables and `prefers-color-scheme` in a stylesheet.
 
 `nekoland-calendar`, from `ui/`, is a small calendar of GTK's and libadwaita's own widgets
 with no styling of its own: a month, the chosen day's events, kept in
@@ -205,6 +228,7 @@ application draws itself.
 | Super+Up / Down | Maximize / restore |
 | Super+Left / Right | Tile to a half |
 | Super+H | Minimize |
+| Super+L | Lock the screen |
 | F11 | Fullscreen |
 | Alt+F4, Super+Q | Close |
 | Super+drag | Move a window |
@@ -220,7 +244,7 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 
 ## From other programs
 
-`nekoland msg WORD` talks to the running compositor: `overview`, `workspace-add`,
+`nekoland msg WORD` talks to the running compositor: `overview`, `lock`, `workspace-add`,
 `workspace-next`, `workspace-previous`, `quit`; `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
@@ -234,9 +258,12 @@ it in effect, or says why not.
   GNOME's own programs export no menus, so they get the menus Nekoland makes.
 - Settings does not change the display's mode or the keyboard. A wallpaper started by
   `autostart` stays under one chosen in Settings until the session ends.
-- One GPU and one output; displays are not hot-plugged.
-- No screen capture, screen lock, or idle handling.
-- X11 windows have no title bars, and X11 and Wayland programs do not share a clipboard.
+- One GPU. A second display takes the pointer and windows, but the menu bar, Dock and
+  overview stay on the first, no display is scaled, and displays are
+  not hot-plugged.
+- Screen capture copies through the CPU, not dmabufs, and the screen does not turn off
+  when idle.
+- X11 windows have no title bars.
 - Notifications keep no history and show no buttons for
   their actions; the launcher finds applications only.
 

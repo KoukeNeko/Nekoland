@@ -20,6 +20,10 @@ pub struct Config {
     pub volume_mute: String,
     pub brightness_up: String,
     pub brightness_down: String,
+    /// The locker the screen is locked with.
+    pub lock: String,
+    /// Seconds without input after which the screen locks; 0 for never.
+    pub lock_after: u64,
     /// Layer surfaces and windows drawn on glass, by the namespace or application ID they
     /// give, with the corner radius they draw themselves with.
     pub glass: HashMap<String, i32>,
@@ -213,6 +217,9 @@ impl Default for Config {
             volume_mute: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
             brightness_up: "brightnessctl set 5%+".into(),
             brightness_down: "brightnessctl set 5%-".into(),
+            // Nekoland's dark paper.
+            lock: "swaylock -c 1b1b1e".into(),
+            lock_after: 0,
             glass: HashMap::from([("nekoland-launcher".into(), 16)]),
             dock: [
                 "org.gnome.Nautilus",

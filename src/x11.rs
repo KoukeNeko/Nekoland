@@ -1,9 +1,9 @@
 //! X11 programs, through XWayland: this is their window manager.
 //!
-//! shortcut: no clipboard shared with Wayland programs, and X11 windows are resized
-//! from their own edges only by programs that do it themselves.
+//! shortcut: X11 windows are resized from their own edges only by programs that do it
+//! themselves.
 
-use std::process::Stdio;
+use std::{os::fd::OwnedFd, process::Stdio};
 
 use smithay::{
     delegate_xwayland_shell,
@@ -11,14 +11,27 @@ use smithay::{
     input::pointer::{Focus, GrabStartData},
     reexports::calloop::LoopHandle,
     utils::{Logical, Rectangle, SERIAL_COUNTER},
-    wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    wayland::{
+        selection::{
+            data_device::{
+                clear_data_device_selection, current_data_device_selection_userdata,
+                request_data_device_client_selection, set_data_device_selection,
+            },
+            primary_selection::{
+                clear_primary_selection, current_primary_selection_userdata,
+                request_primary_client_selection, set_primary_selection,
+            },
+            SelectionTarget,
+        },
+        xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    },
     xwayland::{
         xwm::{Reorder, ResizeEdge, XwmId},
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
     },
 };
 
-use crate::{grabs::MoveSurfaceGrab, CalloopData, Nekoland};
+use crate::{focus::KeyFocus, grabs::MoveSurfaceGrab, CalloopData, Nekoland};
 
 /// Starts XWayland, and calls `then` once programs can be told where it is, or once
 /// it is clear that it will not come up.
@@ -233,6 +246,50 @@ impl XwmHandler for Nekoland {
         };
         pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
     }
+
+    // The clipboard and the primary selection are one for X11 and Wayland programs: what
+    // one side copies, the compositor offers to the other.
+    fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
+        // Only the X11 window typed into reads it, as only the focused Wayland one does.
+        matches!(
+            self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus()),
+            Some(KeyFocus::X11(surface)) if surface.xwm_id() == Some(xwm)
+        )
+    }
+
+    fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
+        let sent = match selection {
+            SelectionTarget::Clipboard => {
+                request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| err.to_string())
+            }
+            SelectionTarget::Primary => {
+                request_primary_client_selection(&self.seat, mime_type, fd).map_err(|err| err.to_string())
+            }
+        };
+        if let Err(err) = sent {
+            tracing::warn!("X11 program reading the {selection:?} selection: {err}");
+        }
+    }
+
+    fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        match selection {
+            SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, ()),
+            SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, ()),
+        }
+    }
+
+    fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+        // Only what X11 set: a Wayland program's selection stays.
+        match selection {
+            SelectionTarget::Clipboard if current_data_device_selection_userdata(&self.seat).is_some() => {
+                clear_data_device_selection(&self.display_handle, &self.seat)
+            }
+            SelectionTarget::Primary if current_primary_selection_userdata(&self.seat).is_some() => {
+                clear_primary_selection(&self.display_handle, &self.seat)
+            }
+            _ => {}
+        }
+    }
 }
 
 // The window manager is driven by the event loop, whose data is what it calls into.
@@ -300,5 +357,17 @@ impl XwmHandler for CalloopData {
     }
     fn move_request(&mut self, xwm: XwmId, window: X11Surface, button: u32) {
         self.state.move_request(xwm, window, button)
+    }
+    fn allow_selection_access(&mut self, xwm: XwmId, selection: SelectionTarget) -> bool {
+        self.state.allow_selection_access(xwm, selection)
+    }
+    fn send_selection(&mut self, xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
+        self.state.send_selection(xwm, selection, mime_type, fd)
+    }
+    fn new_selection(&mut self, xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        XwmHandler::new_selection(&mut self.state, xwm, selection, mime_types)
+    }
+    fn cleared_selection(&mut self, xwm: XwmId, selection: SelectionTarget) {
+        self.state.cleared_selection(xwm, selection)
     }
 }

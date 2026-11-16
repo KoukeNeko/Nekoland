@@ -21,6 +21,8 @@ use crate::{
 
 impl Nekoland {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        self.last_input = std::time::Instant::now();
+        let locked = self.lock.is_some();
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -36,6 +38,9 @@ impl Nekoland {
                     |state, modifiers, keysym| {
                         let code = keysym.raw_code();
                         let pressed = key_state == KeyState::Pressed;
+                        if locked {
+                            return state.locked_key(modifiers, keysym.modified_sym(), pressed);
+                        }
                         if state.ime_key(modifiers, &keysym, pressed, time) {
                             if pressed {
                                 state.suppressed_keys.insert(code);
@@ -76,17 +81,23 @@ impl Nekoland {
             }
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
-                let output = self.space.outputs().next().unwrap();
-                let bounds = self.space.output_geometry(output).unwrap().to_f64();
+                let from = pointer.current_location();
+                let geometry = |output| self.space.output_geometry(output).unwrap().to_f64();
+                let mut pos = from + event.delta();
+                // It goes on to the output it moves onto, or stops at the edge of the one it is on.
+                if !self.space.outputs().any(|output| geometry(output).contains(pos)) {
+                    let output = self.space.outputs().find(|output| geometry(output).contains(from));
+                    let bounds = geometry(output.or(self.space.outputs().next()).unwrap());
+                    pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
+                    pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
+                }
 
-                let mut pos = pointer.current_location() + event.delta();
-                pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
-                pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
-
-                self.menu_bar_motion(pos);
-                self.dock_motion(pos);
-                self.notice_motion(pos);
-                self.overview_motion(pos);
+                if !locked {
+                    self.menu_bar_motion(pos);
+                    self.dock_motion(pos);
+                    self.notice_motion(pos);
+                    self.overview_motion(pos);
+                }
                 let under = self.surface_under(pos);
                 pointer.motion(
                     self,
@@ -119,10 +130,12 @@ impl Nekoland {
 
                 let pointer = self.seat.get_pointer().unwrap();
 
-                self.menu_bar_motion(pos);
-                self.dock_motion(pos);
-                self.notice_motion(pos);
-                self.overview_motion(pos);
+                if !locked {
+                    self.menu_bar_motion(pos);
+                    self.dock_motion(pos);
+                    self.notice_motion(pos);
+                    self.overview_motion(pos);
+                }
                 let under = self.surface_under(pos);
 
                 pointer.motion(
@@ -142,7 +155,9 @@ impl Nekoland {
                 let button = event.button_code();
                 let button_state = event.state();
 
-                if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+                if locked {
+                    self.focus_lock();
+                } else if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
                     self.super_tap = false;
                     self.pointer_pressed(button, serial);
                 } else if ButtonState::Released == button_state {
@@ -198,8 +213,9 @@ impl Nekoland {
                 }
 
                 let pointer = self.seat.get_pointer().unwrap();
-                if self.dock_scroll(pointer.current_location(), vertical_amount)
-                    || self.apps_scroll(vertical_amount + horizontal_amount)
+                if !locked
+                    && (self.dock_scroll(pointer.current_location(), vertical_amount)
+                        || self.apps_scroll(vertical_amount + horizontal_amount))
                 {
                     return;
                 }
@@ -312,6 +328,7 @@ impl Nekoland {
             Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
             Keysym::Return if logo => config::spawn(&self.config.terminal),
             Keysym::a if logo => self.show_apps(""),
+            Keysym::l if logo => self.lock_screen(),
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
@@ -360,14 +377,21 @@ impl Nekoland {
             Keysym::XF86_AudioMute => config::spawn(&self.config.volume_mute),
             Keysym::XF86_MonBrightnessUp => config::spawn(&self.config.brightness_up),
             Keysym::XF86_MonBrightnessDown => config::spawn(&self.config.brightness_down),
-            // Ctrl+Alt+F1 and so on, which the keymap turns into these.
-            _ if (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw()).contains(&sym.raw()) => {
-                let vt = (sym.raw() - Keysym::XF86_Switch_VT_1.raw() + 1) as i32;
-                if let Some(switch_vt) = self.switch_vt.as_mut() {
-                    switch_vt(vt);
-                }
-            }
+            _ if self.vt_key(sym) => {}
             _ => return false,
+        }
+        true
+    }
+
+    /// Ctrl+Alt+F1 and so on, which the keymap turns into these, switch the virtual
+    /// terminal. Returns whether the key was one.
+    pub fn vt_key(&mut self, sym: Keysym) -> bool {
+        if !(Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw()).contains(&sym.raw()) {
+            return false;
+        }
+        let vt = (sym.raw() - Keysym::XF86_Switch_VT_1.raw() + 1) as i32;
+        if let Some(switch_vt) = self.switch_vt.as_mut() {
+            switch_vt(vt);
         }
         true
     }

@@ -78,14 +78,20 @@ pub fn init_winit(
                 state.refresh_dock();
                 state.refresh_apps();
                 state.refresh_notices();
-                {
+                let elements = {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
                     let elements = scene_elements(state, renderer, &output, glass.as_mut()).unwrap();
                     damage_tracker
                         .render_output(renderer, &mut framebuffer, 0, &elements, CLEAR_COLOR)
                         .unwrap();
-                }
+                    elements
+                };
                 backend.submit(Some(&[damage])).unwrap();
+                // The host draws the cursor: none is among the elements.
+                let frames = state.take_screencopy(&output);
+                if !frames.is_empty() {
+                    crate::screencopy::copy(backend.renderer(), &output, &elements, 0, frames);
+                }
 
                 state.finish_frame(&output);
                 let _ = display.flush_clients();

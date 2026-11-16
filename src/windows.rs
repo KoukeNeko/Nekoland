@@ -151,6 +151,10 @@ impl Nekoland {
     }
 
     pub fn set_keyboard_focus(&mut self, focus: Option<KeyFocus>) {
+        // Nothing takes the keyboard from the locker.
+        if self.lock.is_some() {
+            return self.focus_lock();
+        }
         let keep = self
             .space
             .elements()

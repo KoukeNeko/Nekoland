@@ -218,7 +218,7 @@ fn build(app: &adw::Application) {
     }
     // A look turned on before keeps up with this version of it.
     if gtk_look_on() {
-        if let Err(err) = std::fs::write(gtk_dir().join("nekoland.css"), GTK_LOOK) {
+        if let Err(err) = set_gtk_look(true) {
             eprintln!("GTK look: {err}");
         }
     }
@@ -349,6 +349,9 @@ fn scale_row(
     row
 }
 
+/// The choices of how long, in seconds, the screen waits idle before it locks.
+const LOCK_AFTER: [i64; 6] = [0, 60, 300, 900, 1800, 3600];
+
 fn group(title: &str) -> adw::PreferencesGroup {
     adw::PreferencesGroup::builder().title(title).build()
 }
@@ -395,6 +398,21 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     bar.add(&switch_row(config, "星期", "clock_weekday"));
     bar.add(&switch_row(config, "秒數", "clock_seconds"));
     page.add(&bar);
+
+    let lock = group("鎖定螢幕");
+    let current = config.0.get("lock_after").and_then(toml::Value::as_integer).unwrap_or(0);
+    let idle = adw::ComboRow::builder()
+        .title("閒置後鎖定")
+        .model(&gtk::StringList::new(&["永不", "1 分鐘", "5 分鐘", "15 分鐘", "30 分鐘", "1 小時"]))
+        .selected(LOCK_AFTER.iter().position(|seconds| *seconds == current).unwrap_or(0) as u32)
+        .build();
+    idle.connect_selected_notify(|row| {
+        if let Some(seconds) = LOCK_AFTER.get(row.selected() as usize) {
+            set(&format!("lock_after = {seconds}"));
+        }
+    });
+    lock.add(&idle);
+    page.add(&lock);
 
     let wall = group("桌布");
     // Without a wallpaper of Nekoland's own, the one swaybg is started with at login.
@@ -534,6 +552,10 @@ fn appearance_page() -> adw::PreferencesPage {
         .subtitle("GTK app 重新開啟後套用")
         .active(gtk_look_on())
         .build();
+    if gtk::minor_version() < GTK_LOOK_MINOR {
+        look.set_sensitive(false);
+        look.set_subtitle(&format!("需要 GTK 4.{GTK_LOOK_MINOR} 以上"));
+    }
     // GTK reads its user stylesheet as an application starts: other applications take the
     // change when opened again, and Settings shows it at once with a stylesheet of its own.
     let provider = gtk::CssProvider::new();
@@ -581,8 +603,14 @@ fn appearance_page() -> adw::PreferencesPage {
 /// Nekoland's design language for GTK 4 and libadwaita applications, as libadwaita's
 /// variables; see the file for what it reaches.
 const GTK_LOOK: &str = include_str!("../../shell/gtk/nekoland.css");
+/// Where Nekoland's look goes, in a folder of its own beside GTK's user stylesheet.
+const GTK_LOOK_FILE: &str = "nekoland/look.css";
 /// What GTK's own user stylesheet imports it with, the rest of that file left as it is.
-const GTK_IMPORT: &str = "@import url(\"nekoland.css\");";
+const GTK_IMPORT: &str = "@import url(\"nekoland/look.css\");";
+/// The import of earlier versions, from beside that stylesheet; taken out for the one above.
+const OLD_GTK_IMPORT: &str = "@import url(\"nekoland.css\");";
+/// The first GTK whose stylesheets read the look's variables and its dark media query.
+const GTK_LOOK_MINOR: u32 = 20;
 
 /// The look for a stylesheet Settings loads itself, which GTK reads light whatever the
 /// system is: when dark, its dark colours are put in outside their media query.
@@ -604,8 +632,18 @@ fn gtk_dir() -> PathBuf {
 }
 
 fn gtk_look_on() -> bool {
-    std::fs::read_to_string(gtk_dir().join("gtk.css"))
-        .is_ok_and(|text| text.lines().any(|line| line.trim() == GTK_IMPORT))
+    std::fs::read_to_string(gtk_dir().join("gtk.css")).is_ok_and(|text| {
+        text.lines().any(|line| [GTK_IMPORT, OLD_GTK_IMPORT].contains(&line.trim()))
+    })
+}
+
+/// Writes a file whole or not at all, so a crash midway leaves the one there before.
+fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    // A stylesheet linked from a dotfiles folder is written there, the link kept.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let partial = path.with_extension("css.partial");
+    std::fs::write(&partial, text)?;
+    std::fs::rename(&partial, path)
 }
 
 /// Imports Nekoland's look into GTK's user stylesheet, or takes it out again, keeping
@@ -618,13 +656,17 @@ fn set_gtk_look(on: bool) -> std::io::Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(err),
     };
-    let mut lines: Vec<&str> = text.lines().filter(|line| line.trim() != GTK_IMPORT).collect();
+    let mut lines: Vec<&str> = text
+        .lines()
+        .filter(|line| ![GTK_IMPORT, OLD_GTK_IMPORT].contains(&line.trim()))
+        .collect();
+    let look = dir.join(GTK_LOOK_FILE);
     if on {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("nekoland.css"), GTK_LOOK)?;
+        std::fs::create_dir_all(look.parent().expect("a folder"))?;
+        write_atomic(&look, GTK_LOOK)?;
         // An import counts only before any rule.
         lines.insert(0, GTK_IMPORT);
-    } else if let Err(err) = std::fs::remove_file(dir.join("nekoland.css")) {
+    } else if let Err(err) = std::fs::remove_file(&look) {
         if err.kind() != std::io::ErrorKind::NotFound {
             return Err(err);
         }
@@ -635,7 +677,7 @@ fn set_gtk_look(on: bool) -> std::io::Result<()> {
             _ => Ok(()),
         };
     }
-    std::fs::write(&user, lines.join("\n") + "\n")
+    write_atomic(&user, &(lines.join("\n") + "\n"))
 }
 
 fn mouse_page(config: &Config) -> adw::PreferencesPage {
@@ -1796,6 +1838,28 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turning the look on and off keeps the user's own rules, and moves an earlier import.
+    #[test]
+    fn gtk_look_keeps_user_rules() {
+        let config = std::env::temp_dir().join(format!("nekoland-gtk-{}", std::process::id()));
+        let dir = config.join("gtk-4.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config);
+        let user = dir.join("gtk.css");
+        std::fs::write(&user, format!("{OLD_GTK_IMPORT}\nlabel {{ color: red; }}\n")).unwrap();
+
+        set_gtk_look(true).unwrap();
+        let on = std::fs::read_to_string(&user).unwrap();
+        assert_eq!(on, format!("{GTK_IMPORT}\nlabel {{ color: red; }}\n"));
+        assert!(gtk_look_on());
+        assert_eq!(std::fs::read_to_string(dir.join(GTK_LOOK_FILE)).unwrap(), GTK_LOOK);
+
+        set_gtk_look(false).unwrap();
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), "label { color: red; }\n");
+        assert!(!gtk_look_on() && !dir.join(GTK_LOOK_FILE).exists());
+        std::fs::remove_dir_all(&config).unwrap();
+    }
 
     /// The GTK look keeps the colours the Slint widgets take from theme.slint, light and dark.
     /// A scoped stylesheet sets the root's variables on the scope and keeps every other

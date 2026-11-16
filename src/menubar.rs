@@ -82,6 +82,7 @@ pub enum Command {
     Sleep,
     Restart,
     ShutDown,
+    Lock,
     LogOut,
     /// One of the actions the active application exports, by name.
     Action(String),
@@ -1419,6 +1420,7 @@ impl Nekoland {
                 Entry::item("重新開機⋯", Command::Restart),
                 Entry::item("關機⋯", Command::ShutDown),
                 Entry::separator(),
+                Entry::item("鎖定螢幕", Command::Lock).shortcut("Super L"),
                 Entry::item("登出⋯", Command::LogOut),
             ],
             Source::App => {
@@ -1859,7 +1861,12 @@ impl Nekoland {
             }
         };
         match command {
-            Command::Sleep => config::spawn("systemctl suspend"),
+            Command::Sleep => {
+                // Locked as it wakes: the locker is given a moment to take the screen first.
+                self.lock_screen();
+                config::spawn("sleep 1; systemctl suspend");
+            }
+            Command::Lock => self.lock_screen(),
             // Asked first, in a dialog of its own: these lose what is not saved.
             Command::Settings => config::spawn("nekoland-settings"),
             Command::Restart => config::spawn("nekoland-confirm restart"),

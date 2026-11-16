@@ -2,15 +2,15 @@ use std::{collections::HashSet, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
-    desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
     input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatState},
     output::Output,
     reexports::{
-        calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
+        calloop::{generic::Generic, EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction},
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Display, DisplayHandle,
+            Client, Display, DisplayHandle,
         },
     },
     utils::{Logical, Point},
@@ -19,6 +19,7 @@ use smithay::{
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
         output::OutputManagerState,
+        security_context::{SecurityContext, SecurityContextHandler, SecurityContextListenerSource},
         selection::data_device::DataDeviceState,
         shell::{
             wlr_layer::{Layer, WlrLayerShellState},
@@ -61,6 +62,15 @@ pub struct Nekoland {
     pub ime: Option<crate::ime::Ime>,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
+    pub loop_handle: LoopHandle<'static, CalloopData>,
+    /// Set from when a locker locks the screen until it unlocks it.
+    pub lock: Option<crate::lock::Lock>,
+    pub locker_started: Option<std::time::Instant>,
+    pub last_input: std::time::Instant,
+    /// Surfaces of programs that keep the screen from locking while it is idle.
+    pub idle_inhibitors: Vec<WlSurface>,
+    /// Screen captures waiting for their output to be drawn.
+    pub screencopy: Vec<crate::screencopy::Frame>,
 
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
@@ -105,7 +115,7 @@ pub struct Nekoland {
 }
 
 impl Nekoland {
-    pub fn new(event_loop: &mut EventLoop<CalloopData>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<'static, CalloopData>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -121,6 +131,7 @@ impl Nekoland {
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh);
         crate::handlers::appmenu::create_globals(&dh);
+        crate::screencopy::create_global(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
@@ -155,6 +166,12 @@ impl Nekoland {
             events: None,
             ime: None,
             display_handle: dh,
+            loop_handle: event_loop.handle(),
+            lock: None,
+            locker_started: None,
+            last_input: start_time,
+            idle_inhibitors: Vec::new(),
+            screencopy: Vec::new(),
 
             space,
             minimized: Vec::new(),
@@ -252,6 +269,9 @@ impl Nekoland {
     /// The surface at a position: overlay and top layers come before windows, the
     /// bottom and background layers after them.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.lock.is_some() {
+            return self.lock_surface_under(pos);
+        }
         // The menu bar and its menus are the compositor's own, above everything.
         if self.menu_bar_covers(pos) || self.dock_covers(pos) || self.notice_covers(pos) {
             return None;
@@ -297,6 +317,9 @@ impl Nekoland {
             .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
         layers.cleanup();
         drop(layers);
+        if let Some(surface) = self.lock_surface(output) {
+            send_frames_surface_tree(surface.wl_surface(), output, time, throttle, |_, _| Some(output.clone()));
+        }
 
         self.space.refresh();
         self.popups.cleanup();
@@ -307,7 +330,32 @@ impl Nekoland {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set for a client a sandbox such as Flatpak connected through its own socket.
+    pub security_context: Option<SecurityContext>,
 }
+
+/// Whether a client may use what reaches other programs: their input, their clipboard,
+/// their windows. Clients without a `ClientState`, such as XWayland, are Nekoland's own.
+pub fn unsandboxed(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_none_or(|data| data.security_context.is_none())
+}
+
+impl SecurityContextHandler for Nekoland {
+    fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
+        let inserted = self.loop_handle.insert_source(source, move |stream, _, data| {
+            let client = ClientState { security_context: Some(context.clone()), ..Default::default() };
+            if let Err(err) = data.state.display_handle.insert_client(stream, Arc::new(client)) {
+                tracing::warn!("sandboxed client: {err}");
+            }
+        });
+        if let Err(err) = inserted {
+            tracing::warn!("security context: {err}");
+        }
+    }
+}
+smithay::delegate_security_context!(Nekoland);
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}

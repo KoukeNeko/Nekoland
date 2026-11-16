@@ -13,10 +13,12 @@ mod ime;
 mod grabs;
 mod input;
 mod ipc;
+mod lock;
 mod menubar;
 mod notices;
 mod overview;
 mod render;
+mod screencopy;
 mod stacks;
 mod state;
 mod system;
@@ -99,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(err) = ipc::listen(&event_loop.handle(), &data.state.socket_name) {
         tracing::warn!("no control socket: {err}");
     }
+    lock::watch_idle(&event_loop.handle());
     // So that what is started from here finds `nekoland msg`.
     if let Some(directory) = std::env::current_exe()
         .ok()

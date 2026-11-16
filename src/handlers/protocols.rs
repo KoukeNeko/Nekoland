@@ -13,6 +13,9 @@ use smithay::{
     wayland::{
         compositor::with_states,
         fractional_scale::{with_fractional_scale, FractionalScaleHandler, FractionalScaleManagerState},
+        idle_inhibit::IdleInhibitManagerState,
+        security_context::SecurityContextState,
+        session_lock::SessionLockManagerState,
         input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as ImePopupSurface},
         selection::{
             primary_selection::{PrimarySelectionHandler, PrimarySelectionState},
@@ -32,7 +35,7 @@ use smithay::{
     },
 };
 
-use crate::Nekoland;
+use crate::{state::unsandboxed, Nekoland};
 
 /// How long after it was made a client may still use a token to bring a window forward.
 const ACTIVATION_TOKEN_LIFETIME_SECS: u64 = 10;
@@ -46,24 +49,32 @@ pub struct Protocols {
     _fractional_scale: FractionalScaleManagerState,
     _viewporter: ViewporterState,
     _single_pixel_buffer: SinglePixelBufferState,
+    _security_context: SecurityContextState,
+    pub session_lock: SessionLockManagerState,
+    _idle_inhibit: IdleInhibitManagerState,
 }
 
 impl Protocols {
     pub fn new(dh: &DisplayHandle) -> Self {
-        // Input methods: the globals are all there is to keep.
+        // Input methods: the globals are all there is to keep. A sandboxed client cannot be
+        // one, nor type into or read the clipboard of other programs.
         TextInputManagerState::new::<Nekoland>(dh);
-        InputMethodManagerState::new::<Nekoland, _>(dh, |_client| true);
-        VirtualKeyboardManagerState::new::<Nekoland, _>(dh, |_client| true);
+        InputMethodManagerState::new::<Nekoland, _>(dh, unsandboxed);
+        VirtualKeyboardManagerState::new::<Nekoland, _>(dh, unsandboxed);
 
         let primary_selection = PrimarySelectionState::new::<Nekoland>(dh);
         Self {
-            data_control: DataControlState::new::<Nekoland, _>(dh, Some(&primary_selection), |_client| true),
+            data_control: DataControlState::new::<Nekoland, _>(dh, Some(&primary_selection), unsandboxed),
             primary_selection,
             xdg_activation: XdgActivationState::new::<Nekoland>(dh),
             _xdg_decoration: XdgDecorationState::new::<Nekoland>(dh),
             _fractional_scale: FractionalScaleManagerState::new::<Nekoland>(dh),
             _viewporter: ViewporterState::new::<Nekoland>(dh),
             _single_pixel_buffer: SinglePixelBufferState::new::<Nekoland>(dh),
+            // A sandbox inside a sandbox would shed the outer one's limits.
+            _security_context: SecurityContextState::new::<Nekoland, _>(dh, unsandboxed),
+            session_lock: SessionLockManagerState::new::<Nekoland, _>(dh, unsandboxed),
+            _idle_inhibit: IdleInhibitManagerState::new::<Nekoland>(dh),
         }
     }
 }

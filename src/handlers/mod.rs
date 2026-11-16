@@ -22,7 +22,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{delegate_cursor_shape, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat};
 
@@ -54,8 +54,32 @@ delegate_seat!(Nekoland);
 // Wl Data Device
 //
 
+// A Wayland program's selection is offered to X11 programs, and read for them.
 impl SelectionHandler for Nekoland {
     type SelectionUserData = ();
+
+    fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(err) = xwm.new_selection(ty, source.map(|source| source.mime_types())) {
+                tracing::warn!("offering the {ty:?} selection to X11 programs: {err}");
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::fd::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone()) {
+                tracing::warn!("reading the {ty:?} selection from an X11 program: {err}");
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for Nekoland {

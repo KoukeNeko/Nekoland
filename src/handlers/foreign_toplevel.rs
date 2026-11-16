@@ -208,6 +208,11 @@ impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for Nekoland {
         }
         state.foreign_toplevels.managers.push(manager);
     }
+
+    // It closes and raises other programs' windows.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        crate::state::unsandboxed(&client)
+    }
 }
 
 impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Nekoland {
