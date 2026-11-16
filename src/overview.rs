@@ -269,6 +269,8 @@ pub struct Overview {
     pub outline: [Id; 4],
     /// The applications, shown in place of the windows.
     pub apps: Option<AppGrid>,
+    /// Only this application's windows, as the Dock's 顯示所有視窗 asks.
+    only: Option<String>,
 }
 
 impl Overview {
@@ -407,11 +409,18 @@ impl Nekoland {
         match &self.overview {
             Some(overview) if overview.closing => {}
             Some(_) => self.close_overview(None),
-            None => self.open_overview(),
+            None => self.open_overview(None),
         }
     }
 
-    fn open_overview(&mut self) {
+    /// The overview of only `app_id`'s windows, as the Mac's App Exposé.
+    pub fn show_app_windows(&mut self, app_id: &str) {
+        if self.overview.is_none() {
+            self.open_overview(Some(app_id.to_string()));
+        }
+    }
+
+    fn open_overview(&mut self, only: Option<String>) {
         self.close_menu();
         let Some(output) = self
             .space
@@ -437,6 +446,7 @@ impl Nekoland {
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
             apps: None,
+            only,
         });
         self.rebuild_overview();
         // Nothing has the keyboard in the overview; what is typed starts a search.
@@ -465,11 +475,16 @@ impl Nekoland {
         };
         let area = area_under(output.loc.y + MENU_BAR_HEIGHT + BAR_GAP);
         let open_area = area_under(output.loc.y + expanded_height(output) + BAR_GAP);
+        let only = self.overview.as_ref().and_then(|overview| overview.only.clone());
 
         let windows: Vec<(Window, Rectangle<i32, Logical>)> = self
             .space
             .elements()
             .filter(|window| is_managed(window))
+            .filter(|window| {
+                only.as_deref()
+                    .is_none_or(|app_id| window_names(window).1.eq_ignore_ascii_case(app_id))
+            })
             .filter_map(|window| {
                 let location = self.space.element_location(window)?;
                 Some((window.clone(), Rectangle::new(location, window.geometry().size)))

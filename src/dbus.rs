@@ -27,6 +27,9 @@ const REGISTRAR_PATH: &str = "/com/canonical/AppMenu/Registrar";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 const DBUSMENU: &str = "com.canonical.dbusmenu";
+/// What applications say of their Dock icon: a count, how far something has come, and
+/// that they ask for attention, as Ubuntu's dock and KDE's task manager take it.
+const LAUNCHER_ENTRY: &str = "com.canonical.Unity.LauncherEntry";
 const GTK_MENUS: &str = "org.gtk.Menus";
 const GTK_ACTIONS: &str = "org.gtk.Actions";
 
@@ -134,6 +137,24 @@ pub enum Event {
     /// Whether a microphone or a camera is open; the screen's sharing is the compositor's own.
     InUse(crate::privacy::InUse),
     Ime(crate::ime::ImeEvent),
+    /// An application said what its Dock icon is to show, from `sender`.
+    Launcher {
+        sender: String,
+        app_id: String,
+        update: LauncherUpdate,
+    },
+    /// A bus name went away, and with it what its application said of its icon.
+    LauncherGone(String),
+}
+
+/// What an application changed of its Dock icon; what it left out stays as it was.
+#[derive(Clone, Debug, Default)]
+pub struct LauncherUpdate {
+    pub count: Option<i64>,
+    pub count_visible: Option<bool>,
+    pub progress: Option<f64>,
+    pub progress_visible: Option<bool>,
+    pub urgent: Option<bool>,
 }
 
 /// A notification as a program sent it.
@@ -542,6 +563,11 @@ fn listen(
             .interface("org.freedesktop.portal.Settings")?
             .member("SettingChanged")?
             .build(),
+        MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface(LAUNCHER_ENTRY)?
+            .member("Update")?
+            .build(),
     ];
     for rule in rules {
         let messages = MessageIterator::for_match_rule(rule, connection, Some(64))?;
@@ -567,6 +593,7 @@ fn listen(
                                 message.body().deserialize::<(String, String, String)>()
                             {
                                 if new.is_empty() {
+                                    let _ = events.send(Event::LauncherGone(name.clone()));
                                     let _ = requests.send(Request::Gone(name));
                                 }
                             }
@@ -578,6 +605,27 @@ fn listen(
                                 if namespace == "org.freedesktop.appearance" && key == "color-scheme" {
                                     let _ = events.send(Event::Dark(u32::try_from(value).ok() == Some(1)));
                                 }
+                            }
+                        }
+                        "Update" if header.interface().is_some_and(|name| name.as_str() == LAUNCHER_ENTRY) => {
+                            if let Ok((uri, properties)) =
+                                message.body().deserialize::<(String, HashMap<String, OwnedValue>)>()
+                            {
+                                let app_id = uri.trim_start_matches("application://").trim_end_matches(".desktop");
+                                let read = |key: &str| properties.get(key).and_then(|value| value.try_clone().ok());
+                                let update = LauncherUpdate {
+                                    count: read("count").and_then(|value| i64::try_from(value).ok()),
+                                    count_visible: read("count-visible").and_then(|value| bool::try_from(value).ok()),
+                                    progress: read("progress").and_then(|value| f64::try_from(value).ok()),
+                                    progress_visible: read("progress-visible")
+                                        .and_then(|value| bool::try_from(value).ok()),
+                                    urgent: read("urgent").and_then(|value| bool::try_from(value).ok()),
+                                };
+                                let _ = events.send(Event::Launcher {
+                                    sender: sender.clone(),
+                                    app_id: app_id.to_string(),
+                                    update,
+                                });
                             }
                         }
                         // A menu changing says so on the menu's path, an item on its own.

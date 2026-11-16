@@ -9,11 +9,13 @@
 //! dragged to reorder them, out of the Dock to take them off, and a running one dragged in
 //! among them is kept. At the right end are the kept folders, which open as a fan, a grid or
 //! a list, and the Trash; a folder dragged in from a file manager is kept there, files
-//! dropped on the Trash go to it, and files dropped on an application open in it. As on
-//! Windows, resting on a running application shows a picture of each of its windows, to
-//! pick one or close it.
+//! dropped on the Trash go to it, on a kept folder move into it, and on an application
+//! open in it. An application's icon shows the count and the progress it says, and jumps
+//! while it asks for attention. As on Windows, resting on a running application shows a
+//! picture of each of its windows, to pick one or close it.
 
 use std::{
+    collections::HashMap,
     io::Read,
     os::fd::{AsFd, FromRawFd, OwnedFd},
     path::{Path, PathBuf},
@@ -21,19 +23,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cairo::{Context, Format, ImageSurface, Matrix};
+use cairo::{Context, Format, ImageSurface, Matrix, Operator};
 use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
     desktop::Window,
-    input::pointer::{CursorIcon, CursorImageStatus},
+    input::{
+        keyboard::Keysym,
+        pointer::{CursorIcon, CursorImageStatus},
+    },
     reexports::wayland_server::protocol::wl_data_source::WlDataSource,
     utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::selection::data_device::with_source_metadata,
 };
 
 use crate::{
-    config::{self, DockPosition, Show, Sort, Stack, View},
+    config::{self, DockPosition, MinimizeEffect, Show, Sort, Stack, View},
+    dbus::LauncherUpdate,
     glass::Tier,
     menubar::{close, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
@@ -207,6 +213,19 @@ const PRESS_TIME: f64 = 0.09;
 const BOUNCE_TIME: f64 = 0.18;
 const PRESSED_SCALE: f64 = 0.92;
 const BREATHE_TIME: f64 = 1.2;
+/// How many applications quit lately the Dock keeps, as the Mac's.
+const RECENTS: usize = 3;
+/// Where they are kept, one application ID a line, beside the configuration.
+const RECENTS_FILE: &str = "dock-recents";
+/// How long dragged files are held over a folder before it opens, as the Mac's.
+const SPRING_TIME: f64 = 0.7;
+/// How long an icon asking for attention takes to jump and land, and how near its name it
+/// may come: the design language's smallest step.
+const HOP_TIME: f64 = 0.7;
+const HOP_CLEARANCE: f64 = 4.0;
+/// How tall an icon's badge is, and how far over its top it stands, in icons.
+const BADGE_HEIGHT: f64 = 0.4;
+const BADGE_OVERHANG: f64 = BADGE_HEIGHT * 0.3;
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 const PREVIEW_DELAY: Duration = Duration::from_millis(400);
 const PREVIEW_LINGER: Duration = Duration::from_millis(300);
@@ -249,6 +268,11 @@ enum Tile {
         running: bool,
         active: bool,
         kept: bool,
+        /// What the application said its icon shows: a count, how far something has come
+        /// in thousandths, and since when it has asked for attention.
+        badge: Option<String>,
+        progress: Option<u16>,
+        urgent: Option<Instant>,
     },
     Separator(&'static str),
     /// A minimized window.
@@ -318,8 +342,12 @@ impl Tile {
 pub enum DockCommand {
     NewWindow(String),
     TogglePin(String),
+    ToggleLogin(String),
+    RevealApp(String),
+    ShowWindows(String),
     Hide(String),
     Quit(String),
+    ForceQuit(String),
     Open(PathBuf),
     StackSort(usize, Sort),
     StackShow(usize, Show),
@@ -331,6 +359,7 @@ pub enum DockCommand {
     ToggleMagnify,
     ToggleAutohide,
     Position(DockPosition),
+    MinimizeEffect(MinimizeEffect),
 }
 
 /// What is in a kept folder, as last read.
@@ -481,8 +510,12 @@ pub(crate) struct Drawn {
     art: i32,
     width: i32,
     rise: i32,
-    /// Each tile, where it is, how lifted, pressed, solid and magnified.
-    tiles: Vec<(Tile, i32, u8, u8, u8, u16)>,
+    /// Each tile, where it is, how lifted in quarter points, pressed, solid and magnified.
+    tiles: Vec<(Tile, i32, u16, u8, u8, u16)>,
+    /// The tile files being dragged from a file manager would be dropped on.
+    target: Option<Key>,
+    /// The tile the keyboard is on.
+    focused: Option<Key>,
 }
 
 struct Ids {
@@ -496,7 +529,36 @@ struct Ids {
     tag: Id,
 }
 
+/// What an application said its Dock icon shows, from the bus name it said it from.
+#[derive(Default)]
+struct Launcher {
+    sender: String,
+    count: i64,
+    count_visible: bool,
+    progress: f64,
+    progress_visible: bool,
+    urgent: Option<Instant>,
+}
+
 impl Dock {
+    pub fn new() -> Self {
+        let recents = config::config_file(RECENTS_FILE)
+            .and_then(|path| match std::fs::read_to_string(&path) {
+                Ok(text) => Some(text),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    tracing::warn!("{}: {err}", path.display());
+                    None
+                }
+            })
+            .map(|text| text.lines().filter(|line| !line.is_empty()).map(String::from).collect())
+            .unwrap_or_default();
+        Self {
+            recents,
+            ..Self::default()
+        }
+    }
+
     /// The open folder, or the `closing` one.
     fn stack_mut(&mut self, closing: bool) -> Option<&mut OpenStack> {
         if closing {
@@ -518,6 +580,8 @@ pub struct Dock {
     motions: Vec<Motion>,
     hovered: Option<usize>,
     hovered_since: Option<Instant>,
+    /// The tile the keyboard is on, from Ctrl+F3 until it leaves the Dock.
+    keyboard: Option<Key>,
     press: Option<Press>,
     bounce: Option<(Key, Instant)>,
     drag: Option<Drag>,
@@ -556,12 +620,20 @@ pub struct Dock {
     stack: Option<OpenStack>,
     /// A folder closed, on its way back into its tile.
     closing: Option<OpenStack>,
+    /// What applications said their icons show, by application ID in lowercase.
+    launchers: HashMap<String, Launcher>,
+    /// The applications running when the tiles were last laid out, and those not kept
+    /// that were quit since, the latest first, kept in `RECENTS_FILE` between sessions.
+    was_running: Vec<String>,
+    recents: Vec<String>,
     /// Pictures of files and folders, by path.
     file_icons: Vec<(PathBuf, bool, Option<ImageSurface>)>,
     /// What a file manager is dragging, once it has said: the paths of the files.
     dnd: Option<Arc<Mutex<Option<Vec<PathBuf>>>>>,
     /// Where the pointer last moved to.
     pointer: Option<Point<f64, Logical>>,
+    /// The folder dragged files are held over, since when, and whether it was opened.
+    spring: Option<(PathBuf, Instant, bool)>,
 }
 
 type Rgb = (f64, f64, f64);
@@ -708,6 +780,45 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
     pangocairo::functions::show_layout(cr, &layout);
 }
 
+/// How far something has come, on a line across the bottom of an icon `size` big: ink
+/// over the sheet, as the design language's sliders are, edged in the sheet to stand out
+/// on any icon.
+fn draw_progress(cr: &Context, x: f64, y: f64, size: f64, progress: f64, dark: bool) {
+    let height = (size * 0.12).max(4.0);
+    let (left, width, top) = (x + size * 0.1, size * 0.8, y + size * 0.86 - height);
+    let (sheet, ink) = (ink(!dark), ink(dark));
+    text::rounded_rectangle(cr, left, top, width, height, height / 2.0);
+    cr.set_source_rgb(sheet.0, sheet.1, sheet.2);
+    let _ = cr.fill();
+    text::rounded_rectangle(cr, left, top, (width * progress).max(height), height, height / 2.0);
+    cr.set_source_rgb(ink.0, ink.1, ink.2);
+    let _ = cr.fill();
+    text::rounded_rectangle(cr, left - 0.5, top - 0.5, width + 1.0, height + 1.0, height / 2.0 + 0.5);
+    cr.set_source_rgb(sheet.0, sheet.1, sheet.2);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+}
+
+/// A count over the top right corner `(right, top)` of an icon `size` big: the design
+/// language's solid badge.
+fn draw_badge(cr: &Context, right: f64, top: f64, size: f64, text: &str, dark: bool) {
+    let height = (size * BADGE_HEIGHT).round();
+    let layout = text::new_layout(cr);
+    layout.set_font_description(Some(&text::font(&format!("Medium {}", (height * 0.6).round()))));
+    layout.set_text(text);
+    let (text_width, text_height) = layout.pixel_size();
+    let width = (f64::from(text_width) + height * 0.6).max(height);
+    let (x, y) = (right - width + height * 0.3, top - size * BADGE_OVERHANG);
+    text::rounded_rectangle(cr, x, y, width, height, height / 2.0);
+    let (r, g, b) = ink(dark);
+    cr.set_source_rgb(r, g, b);
+    let _ = cr.fill();
+    let (r, g, b) = ink(!dark);
+    cr.set_source_rgb(r, g, b);
+    cr.move_to(x + (width - f64::from(text_width)) / 2.0, y + (height - f64::from(text_height)) / 2.0);
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
 /// A name on a small pane of glass, as shown over a pointed-at icon.
 fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) -> Option<Picture> {
     let font = text::font(&points.to_string());
@@ -757,9 +868,41 @@ impl Nekoland {
             }
         }
         let same = |one: &str, other: &str| one.eq_ignore_ascii_case(other);
+        // As the Mac's recent applications: those not kept that ran and were quit, the
+        // latest first, if launchers list them.
+        let recents = self.dock.recents.clone();
+        for app_id in std::mem::take(&mut self.dock.was_running) {
+            let quit = !running.iter().any(|now| same(now, &app_id));
+            let kept = self.config.dock.iter().any(|kept| same(kept, &app_id));
+            let listed = gio::DesktopAppInfo::new(&format!("{app_id}.desktop"))
+                .is_some_and(|info| info.should_show());
+            if quit && !kept && listed {
+                self.dock.recents.retain(|recent| !same(recent, &app_id));
+                self.dock.recents.insert(0, app_id);
+                self.dock.recents.truncate(RECENTS);
+            }
+        }
+        if self.dock.recents != recents {
+            if let Some(path) = config::config_file(RECENTS_FILE) {
+                let written = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+                    .and_then(|_| std::fs::write(&path, self.dock.recents.join("\n")));
+                if let Err(err) = written {
+                    tracing::warn!("{}: {err}", path.display());
+                }
+            }
+        }
+        self.dock.was_running = running.clone();
+        // An application brought forward has been attended to.
+        if let Some(launcher) = active
+            .as_ref()
+            .and_then(|active| self.dock.launchers.get_mut(&active.to_lowercase()))
+        {
+            launcher.urgent = None;
+        }
 
         let mut tile = |app_id: &str, is_running: bool, kept: bool| {
             let info = self.apps.info(app_id).clone();
+            let launcher = self.dock.launchers.get(&app_id.to_lowercase());
             Tile::App {
                 app_id: app_id.to_string(),
                 name: info
@@ -769,6 +912,13 @@ impl Nekoland {
                 running: is_running,
                 active: active.as_deref().is_some_and(|active| same(active, app_id)),
                 kept,
+                badge: launcher
+                    .filter(|launcher| launcher.count_visible && launcher.count > 0)
+                    .map(|launcher| launcher.count.to_string()),
+                progress: launcher
+                    .filter(|launcher| launcher.progress_visible)
+                    .map(|launcher| (launcher.progress.clamp(0.0, 1.0) * 1000.0).round() as u16),
+                urgent: launcher.and_then(|launcher| launcher.urgent),
             }
         };
         let kept = self.config.dock.clone();
@@ -781,10 +931,23 @@ impl Nekoland {
             .into_iter()
             .filter(|app_id| !kept.iter().any(|kept| same(kept, app_id)))
             .collect();
-        if !others.is_empty() {
+        let recents: Vec<String> = if self.config.dock_recents {
+            self.dock
+                .recents
+                .iter()
+                .filter(|app_id| !kept.iter().chain(&others).any(|shown| same(shown, app_id)))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !others.is_empty() || !recents.is_empty() {
             tiles.push(Tile::Separator("running"));
             for app_id in others {
                 tiles.push(tile(&app_id, true, false));
+            }
+            for app_id in recents {
+                tiles.push(tile(&app_id, false, false));
             }
         }
 
@@ -920,6 +1083,7 @@ impl Nekoland {
             || self.dock.drag.is_some()
             || self.dock.resizing.is_some()
             || self.dock.press.is_some()
+            || self.dock.keyboard.is_some()
             || self.dock.stack.is_some()
             || self.dock.preview.is_some()
             || !self.dock.minimizing.is_empty()
@@ -993,7 +1157,7 @@ impl Nekoland {
         (offsets, extra)
     }
 
-    /// How far the magnified icons stand above the Dock.
+    /// How far the icons stand above the Dock: magnified, jumping, and with their badges.
     fn dock_rise(&self) -> i32 {
         let zoom = self
             .dock
@@ -1001,7 +1165,68 @@ impl Nekoland {
             .iter()
             .map(|motion| motion.zoom)
             .fold(1.0, f64::max);
-        (f64::from(self.dock_sizes().art) * (zoom - 1.0)).ceil() as i32
+        let art = f64::from(self.dock_sizes().art);
+        let apps = self.dock.tiles.iter().filter_map(|tile| match tile {
+            Tile::App { badge, urgent, .. } => Some((badge.is_some(), urgent.is_some())),
+            _ => None,
+        });
+        let (badged, hopping) = apps.fold((false, false), |(badged, hopping), (badge, urgent)| {
+            (badged || badge, hopping || urgent)
+        });
+        let hop = if hopping { self.hop_height(false) } else { 0.0 };
+        // Room too for what stands over a magnified icon's top: its badge.
+        let overhang = if badged { zoom * BADGE_OVERHANG } else { 0.0 };
+        (art * (zoom - 1.0 + overhang) + hop).ceil() as i32
+    }
+
+    /// How high an icon asking for attention jumps: in the room between it, lifted or
+    /// magnified, and its name over it, which stays where it is, with its badge.
+    fn hop_height(&self, badged: bool) -> f64 {
+        let s = self.dock_sizes();
+        let overhang = if badged {
+            f64::from(s.art) * self.magnify_scale() * BADGE_OVERHANG
+        } else {
+            0.0
+        };
+        (f64::from(s.pad + POPUP_GAP) - LIFT - overhang - HOP_CLEARANCE).max(0.0)
+    }
+
+    /// How high an icon asking for attention is in its jump: it jumps until its
+    /// application is brought forward, as the Mac's do.
+    fn hop(&self, tile: &Tile) -> f64 {
+        let Tile::App { urgent: Some(since), badge, .. } = tile else {
+            return 0.0;
+        };
+        let t = (since.elapsed().as_secs_f64() / HOP_TIME).fract();
+        self.hop_height(badge.is_some()) * (std::f64::consts::PI * t).sin()
+    }
+
+    /// Takes what an application said its icon is to show.
+    pub fn dock_launcher(&mut self, sender: String, app_id: String, update: LauncherUpdate) {
+        let launcher = self.dock.launchers.entry(app_id.to_lowercase()).or_default();
+        launcher.sender = sender;
+        if let Some(count) = update.count {
+            launcher.count = count;
+        }
+        if let Some(visible) = update.count_visible {
+            launcher.count_visible = visible;
+        }
+        if let Some(progress) = update.progress {
+            launcher.progress = progress;
+        }
+        if let Some(visible) = update.progress_visible {
+            launcher.progress_visible = visible;
+        }
+        match update.urgent {
+            Some(true) if launcher.urgent.is_none() => launcher.urgent = Some(Instant::now()),
+            Some(false) => launcher.urgent = None,
+            _ => {}
+        }
+    }
+
+    /// Forgets what the program that had the bus name `sender` said, now that it is gone.
+    pub fn dock_launcher_gone(&mut self, sender: &str) {
+        self.dock.launchers.retain(|_, launcher| launcher.sender != sender);
     }
 
     /// Where a tile is drawn now on the output.
@@ -1347,7 +1572,33 @@ impl Nekoland {
         let s = self.dock_sizes();
         let rise = self.dock_rise();
         let offsets = self.magnified_offsets().0;
+        let target = self
+            .dock
+            .dnd
+            .as_ref()
+            .and(self.dock.pointer)
+            .and_then(|pos| self.dock_tile_at(pos))
+            .and_then(|index| self.dock.tiles.get(index))
+            .filter(|tile| matches!(tile, Tile::App { .. } | Tile::Stack { .. } | Tile::Trash { .. }))
+            .map(Tile::key);
+        // Spring-loading: files held over a folder open it in the file manager, where the
+        // drag goes on.
+        let folder = match &target {
+            Some(Key::Stack(path)) => Some(path.clone()),
+            _ => None,
+        };
+        match (&mut self.dock.spring, folder) {
+            (Some((held, at, opened)), Some(folder)) if *held == folder => {
+                if !*opened && at.elapsed().as_secs_f64() >= SPRING_TIME {
+                    *opened = true;
+                    open_path(&folder);
+                }
+            }
+            (spring, folder) => *spring = folder.map(|folder| (folder, Instant::now(), false)),
+        }
         let drawn = Drawn {
+            target,
+            focused: self.dock_keyboard_index().map(|index| self.dock.tiles[index].key()),
             dark,
             glass,
             art: s.art,
@@ -1364,7 +1615,7 @@ impl Nekoland {
                     (
                         tile.clone(),
                         ((motion.x + offset) * 2.0).round() as i32,
-                        (motion.lift * 32.0).round() as u8,
+                        ((motion.lift * LIFT + self.hop(tile)) * 4.0).round() as u16,
                         (scale * 200.0).round() as u8,
                         (alpha * 100.0).round() as u8,
                         (motion.zoom * 1000.0).round() as u16,
@@ -1419,7 +1670,7 @@ impl Nekoland {
                 let x = f64::from(*x) / 2.0;
                 let zoom = f64::from(*zoom) / 1000.0;
                 let art = f64::from(s.art) * zoom;
-                let y = f64::from(rise + s.pad + s.art) - art - f64::from(*lift) / 32.0 * LIFT;
+                let y = f64::from(rise + s.pad + s.art) - art - f64::from(*lift) / 4.0;
                 let (scale, alpha) = (f64::from(*scale) / 200.0, f64::from(*alpha) / 100.0);
                 // Pressed and breathing icons shrink around their middle.
                 let inset = art * (1.0 - scale) / 2.0;
@@ -1456,6 +1707,8 @@ impl Nekoland {
                         icon,
                         running,
                         active,
+                        badge,
+                        progress,
                         ..
                     } => {
                         let image = icon.as_deref().and_then(|icon| self.dock_icon(icon, big, dark));
@@ -1464,6 +1717,12 @@ impl Nekoland {
                         match image {
                             Some(image) => paint_scaled(&cr, &image, ax, ay, size / f64::from(big), alpha),
                             None => draw_initial(&cr, ax, ay, size, name, dark),
+                        }
+                        if let Some(progress) = progress {
+                            draw_progress(&cr, ax, ay, size, f64::from(*progress) / 1000.0, dark);
+                        }
+                        if let Some(badge) = badge {
+                            draw_badge(&cr, ax + size, ay, size, badge, dark);
                         }
                         let _ = cr.restore();
                         if *running && self.config.dock_indicators {
@@ -1529,6 +1788,31 @@ impl Nekoland {
                             let _ = cr.restore();
                         }
                     }
+                }
+                // Where dragged files would go darkens, as on the Mac: only the icon's own
+                // pixels, which are all this picture has there.
+                if drawn.focused.as_ref() == Some(&tile.key()) {
+                    let ring = 1.5;
+                    let out = 3.0 + ring / 2.0;
+                    text::rounded_rectangle(
+                        &cr,
+                        ax - out,
+                        ay - out,
+                        size + 2.0 * out,
+                        size + 2.0 * out,
+                        size * 0.25,
+                    );
+                    cr.set_source_rgb(r, g, b);
+                    cr.set_line_width(ring);
+                    let _ = cr.stroke();
+                }
+                if drawn.target.as_ref() == Some(&tile.key()) {
+                    let _ = cr.save();
+                    cr.set_operator(Operator::Atop);
+                    cr.rectangle(ax, ay, size, size);
+                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+                    let _ = cr.fill();
+                    let _ = cr.restore();
                 }
             }
         }
@@ -1705,8 +1989,8 @@ impl Nekoland {
     /// The name over the pointed-at icon, and the icon being dragged with its tag.
     fn refresh_dock_popups(&mut self, dark: bool, menu_open: bool) {
         let named = self
-            .dock
-            .hovered
+            .dock_keyboard_index()
+            .or(self.dock.hovered)
             .filter(|_| {
                 !menu_open
                     && self.dock.drag.is_none()
@@ -2198,6 +2482,7 @@ impl Nekoland {
 
     /// A button went down. Returns whether the Dock took it.
     pub fn dock_press(&mut self, pos: Point<f64, Logical>, right: bool) -> bool {
+        self.dock.keyboard = None;
         if !self.dock_shown() {
             return false;
         }
@@ -2294,6 +2579,16 @@ impl Nekoland {
                         })
                         .collect(),
                     ),
+                    Entry::submenu(
+                        "最小化效果",
+                        [("精靈效果", MinimizeEffect::Genie), ("縮放效果", MinimizeEffect::Scale)]
+                            .into_iter()
+                            .map(|(label, effect)| {
+                                Entry::item(label, Command::Dock(DockCommand::MinimizeEffect(effect)))
+                                    .checked(self.config.dock_minimize_effect == effect)
+                            })
+                            .collect(),
+                    ),
                     Entry::separator(),
                     Entry::item("Dock 設定⋯", Command::Settings),
                 ];
@@ -2313,28 +2608,7 @@ impl Nekoland {
         let tile = self.dock.tiles[index].clone();
         self.dock.preview = None;
         if right {
-            if let Tile::App {
-                app_id,
-                running,
-                kept,
-                ..
-            } = &tile
-            {
-                let entries = self.dock_menu(app_id, *running, *kept);
-                self.open_tile_menu(index, entries);
-            }
-            if let Tile::Stack { index: stack, .. } = &tile {
-                let entries = self.stack_menu(*stack);
-                self.open_tile_menu(index, entries);
-            }
-            if let Tile::Trash { full } = &tile {
-                let entries = vec![
-                    Entry::item("打開", Command::Dock(DockCommand::OpenTrash)),
-                    Entry::separator(),
-                    Entry::item("清空垃圾桶", Command::Dock(DockCommand::EmptyTrash)).enabled(*full),
-                ];
-                self.open_tile_menu(index, entries);
-            }
+            self.open_menu_of_tile(index);
             return true;
         }
         self.dock.press = Some(Press {
@@ -2344,6 +2618,88 @@ impl Nekoland {
             at: Instant::now(),
         });
         true
+    }
+
+    /// Where the keyboard is on the Dock, unless the overview came over it.
+    fn dock_keyboard_index(&self) -> Option<usize> {
+        let key = self.dock.keyboard.as_ref().filter(|_| self.overview.is_none())?;
+        self.dock.tiles.iter().position(|tile| &tile.key() == key)
+    }
+
+    /// Ctrl+F3: the keyboard moves onto the Dock's first icon.
+    pub fn focus_dock(&mut self) {
+        self.dock.keyboard = self
+            .dock
+            .tiles
+            .iter()
+            .find(|tile| !matches!(tile, Tile::Separator(_)))
+            .map(Tile::key);
+    }
+
+    /// A key while the keyboard is on the Dock: along it moves between icons, outward
+    /// opens the icon's menu, Return or space does what a click does, and Escape leaves.
+    /// Every key stays with the Dock until then. Returns whether the keyboard is on it.
+    pub fn dock_key(&mut self, sym: Keysym) -> bool {
+        if self.dock.keyboard.is_none() {
+            return false;
+        }
+        // The tile went away, or the overview came over the Dock: the keyboard goes back.
+        let Some(index) = self.dock_keyboard_index() else {
+            self.dock.keyboard = None;
+            return false;
+        };
+        let (back, forward, outward) = match self.config.dock_position {
+            DockPosition::Bottom => (Keysym::Left, Keysym::Right, Keysym::Up),
+            DockPosition::Left => (Keysym::Up, Keysym::Down, Keysym::Right),
+            DockPosition::Right => (Keysym::Up, Keysym::Down, Keysym::Left),
+        };
+        let tiles = &self.dock.tiles;
+        let along = |step: isize| {
+            let mut at = index as isize + step;
+            while let Some(tile) = usize::try_from(at).ok().and_then(|at| tiles.get(at)) {
+                if !matches!(tile, Tile::Separator(_)) {
+                    return Some(tile.key());
+                }
+                at += step;
+            }
+            None
+        };
+        match sym {
+            Keysym::Escape => self.dock.keyboard = None,
+            _ if sym == back => self.dock.keyboard = along(-1).or(self.dock.keyboard.take()),
+            _ if sym == forward => self.dock.keyboard = along(1).or(self.dock.keyboard.take()),
+            _ if sym == outward => self.open_menu_of_tile(index),
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                self.dock.keyboard = None;
+                let tile = self.dock.tiles[index].clone();
+                self.open_tile(tile);
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Opens the menu of the tile at `index`, as a right click on it does.
+    fn open_menu_of_tile(&mut self, index: usize) {
+        let Some(tile) = self.dock.tiles.get(index).cloned() else {
+            return;
+        };
+        let entries = match &tile {
+            Tile::App {
+                app_id,
+                running,
+                kept,
+                ..
+            } => self.dock_menu(app_id, *running, *kept),
+            Tile::Stack { index: stack, .. } => self.stack_menu(*stack),
+            Tile::Trash { full } => vec![
+                Entry::item("打開", Command::Dock(DockCommand::OpenTrash)),
+                Entry::separator(),
+                Entry::item("清空垃圾桶", Command::Dock(DockCommand::EmptyTrash)).enabled(*full),
+            ],
+            Tile::Apps | Tile::Window { .. } | Tile::Separator(_) => return,
+        };
+        self.open_tile_menu(index, entries);
     }
 
     /// A button came up: a press let go where it went down is a click; a dragged icon is
@@ -2410,10 +2766,35 @@ impl Nekoland {
         if !here {
             return;
         }
+        // With Super held, as with Command on the Mac: where it is, in the file manager.
+        let logo = self
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.modifier_state().logo);
+        if logo {
+            match &press.tile {
+                Tile::App { app_id, .. } => {
+                    if let Some(path) = desktop_file(app_id) {
+                        reveal_path(&path);
+                    }
+                    return;
+                }
+                Tile::Stack { path, .. } => {
+                    reveal_path(path);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.config.dock_bounce {
             self.dock.bounce = Some((press.key, Instant::now()));
         }
-        match press.tile {
+        self.open_tile(press.tile);
+    }
+
+    /// Does what a click on `tile` does.
+    fn open_tile(&mut self, tile: Tile) {
+        match tile {
             Tile::Apps => self.show_apps(""),
             Tile::App { app_id, running, .. } => {
                 if running {
@@ -2464,19 +2845,60 @@ impl Nekoland {
                 "新增視窗",
                 Command::Dock(DockCommand::NewWindow(id.clone())),
             ));
+            entries.push(Entry::separator());
         }
-        entries.push(
+        let command = self.launch_command(app_id);
+        let at_login = self.config.autostart.contains(&command);
+        let mut options = vec![
             Entry::item("釘選到 Dock", Command::Dock(DockCommand::TogglePin(id.clone()))).checked(kept),
-        );
+            Entry::item("登入時打開", Command::Dock(DockCommand::ToggleLogin(id.clone()))).checked(at_login),
+        ];
+        if desktop_file(app_id).is_some() {
+            options.push(Entry::item("在檔案中顯示", Command::Dock(DockCommand::RevealApp(id.clone()))));
+        }
+        entries.push(Entry::submenu("選項", options));
         if running {
             entries.push(Entry::separator());
+            entries.push(Entry::item(
+                "顯示所有視窗",
+                Command::Dock(DockCommand::ShowWindows(id.clone())),
+            ));
             entries.push(Entry::item("隱藏", Command::Dock(DockCommand::Hide(id.clone()))));
-            entries.push(Entry::item("結束", Command::Dock(DockCommand::Quit(id))));
+            // With Option held, as on the Mac: an application that does not answer ends anyway.
+            let alt = self
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.modifier_state().alt);
+            entries.push(if alt {
+                Entry::item("強制結束", Command::Dock(DockCommand::ForceQuit(id)))
+            } else {
+                Entry::item("結束", Command::Dock(DockCommand::Quit(id)))
+            });
         }
         entries
     }
 
+    /// Option pressed or let go while an application's menu is open: 結束 and 強制結束
+    /// trade places, as on the Mac.
+    pub fn dock_menu_alt(&mut self, alt: bool) {
+        if !self.menu_bar.open.as_ref().is_some_and(|open| open.title.is_none()) {
+            return;
+        }
+        self.change_open_menu(|command| match command {
+            Some(Command::Dock(DockCommand::Quit(id))) if alt => Some(Entry::item(
+                "強制結束",
+                Command::Dock(DockCommand::ForceQuit(id.clone())),
+            )),
+            Some(Command::Dock(DockCommand::ForceQuit(id))) if !alt => {
+                Some(Entry::item("結束", Command::Dock(DockCommand::Quit(id.clone()))))
+            }
+            _ => None,
+        });
+    }
+
     pub fn run_dock_command(&mut self, command: DockCommand) {
+        // Chosen from the keyboard too: the keyboard goes back to the window.
+        self.dock.keyboard = None;
         match command {
             DockCommand::NewWindow(app_id) => self.launch_app(&app_id),
             DockCommand::TogglePin(app_id) => {
@@ -2489,12 +2911,28 @@ impl Nekoland {
                 }
                 config::save_dock(&self.config.dock);
             }
+            DockCommand::ToggleLogin(app_id) => {
+                let command = self.launch_command(&app_id);
+                let before = self.config.autostart.len();
+                self.config.autostart.retain(|kept| *kept != command);
+                if self.config.autostart.len() == before {
+                    self.config.autostart.push(command);
+                }
+                config::save_autostart(&self.config.autostart);
+            }
+            DockCommand::RevealApp(app_id) => {
+                if let Some(path) = desktop_file(&app_id) {
+                    reveal_path(&path);
+                }
+            }
+            DockCommand::ShowWindows(app_id) => self.show_app_windows(&app_id),
             DockCommand::Hide(app_id) => {
                 for window in self.app_windows(&app_id) {
                     self.minimize(&window);
                 }
             }
             DockCommand::Quit(app_id) => self.quit_app(&app_id),
+            DockCommand::ForceQuit(app_id) => self.force_quit_app(&app_id),
             DockCommand::Open(path) => open_path(&path),
             DockCommand::StackSort(index, sort) => self.change_stack(index, |stack| stack.sort = sort),
             DockCommand::StackShow(index, show) => self.change_stack(index, |stack| stack.show = show),
@@ -2523,6 +2961,12 @@ impl Nekoland {
             DockCommand::ToggleAutohide => {
                 self.config.dock_autohide = !self.config.dock_autohide;
                 if let Err(err) = config::set(&format!("dock_autohide = {}", self.config.dock_autohide)) {
+                    tracing::warn!("{err}");
+                }
+            }
+            DockCommand::MinimizeEffect(effect) => {
+                self.config.dock_minimize_effect = effect;
+                if let Err(err) = config::set(&format!("dock_minimize_effect = {:?}", effect.name())) {
                     tracing::warn!("{err}");
                 }
             }
@@ -3032,8 +3476,12 @@ impl Nekoland {
 
     /// Starts an application from its desktop entry, or by its ID when it has none.
     pub fn launch_app(&mut self, app_id: &str) {
-        let exec = self.apps.info(app_id).exec.clone();
-        config::spawn(exec.as_deref().unwrap_or(app_id));
+        config::spawn(&self.launch_command(app_id));
+    }
+
+    /// The command that starts an application: its desktop entry's, or its ID.
+    fn launch_command(&mut self, app_id: &str) -> String {
+        self.apps.info(app_id).exec.clone().unwrap_or_else(|| app_id.to_string())
     }
 
     /// Brings an application's windows forward, on whichever desktop they are, and gives
@@ -3089,6 +3537,11 @@ fn fit_window(window: &Window, rect: Rectangle<i32, Logical>) -> Rectangle<i32, 
 /// The menu entry and button that open a folder in the file manager.
 fn open_label(name: &str) -> String {
     format!("打開「{name}」")
+}
+
+/// Where an application's desktop entry is, to show it in the file manager.
+fn desktop_file(app_id: &str) -> Option<PathBuf> {
+    gio::DesktopAppInfo::new(&format!("{app_id}.desktop"))?.filename()
 }
 
 /// Opens a file or folder in the program the desktop opens it with.

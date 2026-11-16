@@ -1291,6 +1291,8 @@ impl Nekoland {
             Event::Notify(_) | Event::CloseNotification(_) => {}
             // What is typed into the applications' search field.
             Event::Ime(event) => self.ime_event(event),
+            Event::Launcher { sender, app_id, update } => self.dock_launcher(sender, app_id, update),
+            Event::LauncherGone(sender) => self.dock_launcher_gone(&sender),
             Event::Sound(volume) => {
                 bar.sound = volume;
                 bar.items_revision += 1;
@@ -2001,6 +2003,20 @@ impl Nekoland {
         }
     }
 
+    /// Puts what `change` gives in place of entries of the open menu, by their commands,
+    /// without closing it. The menu keeps the width it opened with.
+    pub fn change_open_menu(&mut self, change: impl Fn(Option<&Command>) -> Option<Entry>) {
+        let Some(level) = self.menu_bar.open.as_mut().and_then(|open| open.levels.first_mut()) else {
+            return;
+        };
+        for entry in &mut level.entries {
+            if let Some(changed) = change(entry.command.as_ref()) {
+                *entry = changed;
+                level.drawn = None;
+            }
+        }
+    }
+
     /// Ctrl+F2: the first menu, its first entry lit, for the keyboard.
     pub fn open_first_menu(&mut self) {
         if self.menu_bar_shown() && !self.menu_bar.titles.is_empty() {
@@ -2064,6 +2080,35 @@ impl Nekoland {
                 .all_windows()
                 .filter(|window| is_managed(window) && window_names(window).1 == app_id)
                 .for_each(close),
+        }
+    }
+
+    /// Ends an application at once, whether it answers or not: the processes behind its
+    /// windows are killed.
+    pub(crate) fn force_quit_app(&mut self, app_id: &str) {
+        let mut pids: Vec<i32> = self
+            .all_windows()
+            .filter(|window| is_managed(window) && window_names(window).1 == app_id)
+            .filter_map(|window| match window.underlying_surface() {
+                WindowSurface::Wayland(toplevel) => {
+                    smithay::reexports::wayland_server::Resource::client(toplevel.wl_surface())?
+                        .get_credentials(&self.display_handle)
+                        .ok()
+                        .map(|credentials| credentials.pid)
+                }
+                WindowSurface::X11(surface) => surface.pid().and_then(|pid| i32::try_from(pid).ok()),
+            })
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        // Never the compositor itself, whose own windows are not an application's.
+        let own = i32::try_from(std::process::id()).unwrap_or_default();
+        for pid in pids.into_iter().filter(|pid| *pid > 1 && *pid != own) {
+            // SAFETY: kill only sends a signal; a process that is already gone is an error
+            // it reports, not undefined behaviour.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
+                tracing::warn!("{app_id}: could not end {pid}: {}", std::io::Error::last_os_error());
+            }
         }
     }
 

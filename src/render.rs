@@ -23,7 +23,7 @@ use smithay::{
 };
 
 use crate::{
-    config::DockPosition,
+    config::{DockPosition, MinimizeEffect},
     dock::Frame,
     glass::{Glass, Pane, Tier},
     menubar::Overlay,
@@ -349,10 +349,22 @@ fn dock_front(
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Vec<SceneElement> {
+    let scaled = state.config.dock_minimize_effect == MinimizeEffect::Scale;
     let mut elements: Vec<SceneElement> = state
         .dock_genies()
         .into_iter()
         .flat_map(|genie| {
+            if scaled {
+                // Straight to its place in the Dock, shrinking as it goes.
+                let t = 1.0 - (1.0 - genie.progress.clamp(0.0, 1.0)).powi(3);
+                let mix = |from: i32, to: i32| (f64::from(from) + f64::from(to - from) * t).round() as i32;
+                let (from, into) = (genie.from, genie.into);
+                let rect = Rectangle::new(
+                    (mix(from.loc.x, into.loc.x), mix(from.loc.y, into.loc.y)).into(),
+                    (mix(from.size.w, into.size.w), mix(from.size.h, into.size.h)).into(),
+                );
+                return window_fitted(renderer, &genie.window, rect, output_loc, scale);
+            }
             draw_genie(
                 renderer,
                 genie.frame,

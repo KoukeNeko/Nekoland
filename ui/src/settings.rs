@@ -19,6 +19,7 @@ use gtk::{gdk, gdk_pixbuf::Pixbuf, gio, glib};
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Settings";
 const APPS_VIEWS: [&str; 4] = ["overview", "launchpad", "shelf", "sidebar"];
 const DOCK_POSITIONS: [&str; 3] = ["left", "bottom", "right"];
+const MINIMIZE_EFFECTS: [&str; 2] = ["genie", "scale"];
 const WALLPAPER_MODES: [&str; 3] = ["fill", "fit", "center"];
 /// Where pictures for the desktop are looked for, and how many are offered.
 const WALLPAPER_DIRS: [&str; 3] = [
@@ -744,7 +745,15 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     dock.add(&scale);
     dock.add(&switch_row(config, "執行中指示燈", "dock_indicators"));
     dock.add(&switch_row(config, "開啟動畫", "dock_bounce"));
+    dock.add(&choice_row(
+        config,
+        "最小化效果",
+        "dock_minimize_effect",
+        &MINIMIZE_EFFECTS,
+        &["精靈效果", "縮放效果"],
+    ));
     dock.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
+    dock.add(&switch_row(config, "最近使用的應用程式", "dock_recents"));
     page.add(&dock);
 
     let bar = group("選單列");

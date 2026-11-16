@@ -312,6 +312,9 @@ impl Nekoland {
     /// Runs the shortcut a key press stands for. Returns whether there was one.
     fn key_pressed(&mut self, modifiers: &ModifiersState, sym: Keysym, typed: Option<char>) -> bool {
         self.super_tap = matches!(sym, Keysym::Super_L | Keysym::Super_R);
+        if matches!(sym, Keysym::Alt_L | Keysym::Alt_R) {
+            self.dock_menu_alt(true);
+        }
 
         let ModifiersState {
             ctrl,
@@ -332,6 +335,9 @@ impl Nekoland {
         }
 
         if sym == Keysym::Escape && self.close_dock_stack() {
+            return true;
+        }
+        if self.dock_key(sym) {
             return true;
         }
 
@@ -363,6 +369,7 @@ impl Nekoland {
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
             Keysym::F2 if ctrl => self.open_first_menu(),
+            Keysym::F3 if ctrl => self.focus_dock(),
             Keysym::Up if ctrl && alt => self.toggle_overview(),
             Keysym::Left if ctrl && alt => self.switch_workspace_by(-1),
             Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
@@ -428,6 +435,9 @@ impl Nekoland {
 
     /// Super pressed and let go by itself opens the overview.
     fn key_released(&mut self, sym: Keysym) {
+        if matches!(sym, Keysym::Alt_L | Keysym::Alt_R) {
+            self.dock_menu_alt(false);
+        }
         if self.super_tap && matches!(sym, Keysym::Super_L | Keysym::Super_R) {
             self.super_tap = false;
             self.toggle_overview();

@@ -207,7 +207,7 @@ impl Nekoland {
             minimized: Vec::new(),
             overview: None,
             menu_bar: MenuBar::default(),
-            dock: Dock::default(),
+            dock: Dock::new(),
             desktop: Default::default(),
             notices: Notices::default(),
             workspaces: Workspaces::new(),

@@ -104,6 +104,10 @@ pub struct Config {
     /// Whether a minimized window goes into its application's icon, as the Mac's can, instead
     /// of a tile of its own.
     pub dock_minimize_into_app: bool,
+    /// How a window goes into the Dock and comes back out.
+    pub dock_minimize_effect: MinimizeEffect,
+    /// Whether applications not kept stay in the Dock a while after they quit.
+    pub dock_recents: bool,
     /// How solid the glass's tint is, from 0 to 1, and how strong its blur, from 0, none, to
     /// 1: of the menu bar and the Dock themselves, and of all other glass, menus,
     /// notifications and what shows behind windows, as through GTK's sidebars, whose tint
@@ -290,6 +294,24 @@ impl DockPosition {
     }
 }
 
+/// How a window goes into the Dock: bent down into it as the Mac's Genie, or shrunk.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MinimizeEffect {
+    #[default]
+    Genie,
+    Scale,
+}
+
+impl MinimizeEffect {
+    pub fn name(self) -> &'static str {
+        match self {
+            MinimizeEffect::Genie => "genie",
+            MinimizeEffect::Scale => "scale",
+        }
+    }
+}
+
 /// How the folder's items open from the Dock.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -447,6 +469,8 @@ impl Default for Config {
             dock_indicators: true,
             dock_bounce: true,
             dock_minimize_into_app: false,
+            dock_minimize_effect: MinimizeEffect::Genie,
+            dock_recents: true,
             bar_opacity: 0.5,
             bar_blur: 0.5,
             glass_opacity: 0.8,
@@ -545,6 +569,14 @@ pub fn config_file(name: &str) -> Option<PathBuf> {
 pub fn save_dock(dock: &[String]) {
     let quoted: Vec<String> = dock.iter().map(|app_id| format!("{app_id:?}")).collect();
     if let Err(err) = save_setting("dock", &format!("dock = [{}]", quoted.join(", "))) {
+        tracing::warn!("{err}");
+    }
+}
+
+/// Writes what starts at login back to the configuration file.
+pub fn save_autostart(autostart: &[String]) {
+    let quoted: Vec<String> = autostart.iter().map(|command| format!("{command:?}")).collect();
+    if let Err(err) = save_setting("autostart", &format!("autostart = [{}]", quoted.join(", "))) {
         tracing::warn!("{err}");
     }
 }
