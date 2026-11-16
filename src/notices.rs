@@ -99,7 +99,10 @@ fn draw_banner(notification: &Notification, icon: Option<ImageSurface>, dark: bo
             .pixel_size()
             .1
     };
-    let height = (PADDING * 2 + title_height + 2 + body_height).max(PADDING * 2 + ICON);
+    let text_height = if body_height == 0 { title_height } else { title_height + 2 + body_height };
+    let height = (PADDING * 2 + text_height).max(PADDING * 2 + ICON);
+    // Text shorter than the icon, a title alone, stands in the middle beside it.
+    let top = (height - text_height) / 2;
 
     let surface = text::canvas(WIDTH, height).ok()?;
     {
@@ -144,17 +147,17 @@ fn draw_banner(notification: &Notification, icon: Option<ImageSurface>, dark: bo
         }
 
         cr.set_source_rgb(ink.0, ink.1, ink.2);
-        cr.move_to(f64::from(text_x), f64::from(PADDING));
+        cr.move_to(f64::from(text_x), f64::from(top));
         pangocairo::functions::show_layout(&cr, &layout(&cr, &title, TITLE, text_width - 40, 1));
 
         let time = layout(&cr, "現在", TIME, 40, 1);
         let time_width = time.pixel_size().0;
         cr.set_source_rgb(ink_2.0, ink_2.1, ink_2.2);
-        cr.move_to(f64::from(WIDTH - PADDING - time_width), f64::from(PADDING + 1));
+        cr.move_to(f64::from(WIDTH - PADDING - time_width), f64::from(top + 1));
         pangocairo::functions::show_layout(&cr, &time);
 
         if !notification.body.is_empty() {
-            cr.move_to(f64::from(text_x), f64::from(PADDING + title_height + 2));
+            cr.move_to(f64::from(text_x), f64::from(top + title_height + 2));
             pangocairo::functions::show_layout(
                 &cr,
                 &layout(&cr, &notification.body, BODY, text_width, BODY_LINES),
