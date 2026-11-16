@@ -162,7 +162,8 @@ toggle-group > toggle:checked {
 }
 
 /* A slider: a thin line, ink up to a knob ringed in ink. The knob stays within the line,
- * which runs out to its far side at either end, as the Mac's does. */
+ * which runs out to its far side at either end, as the Mac's does; the line reaches half
+ * a knob into the slider's padding so the knob still travels the old span. */
 scale > trough,
 scale > trough > highlight {
   min-width: 4px;
@@ -171,12 +172,23 @@ scale > trough > highlight {
 scale > trough {
   background-color: var(--nekoland-line);
 }
+scale.horizontal > trough {
+  margin: 0 -9px;
+}
+scale.vertical > trough {
+  margin: -9px 0;
+}
 scale > trough > slider {
   min-width: 18px;
   min-height: 18px;
-  margin: -7px 0;
   background-color: var(--nekoland-sheet);
   box-shadow: 0 0 0 1.5px var(--nekoland-ink);
+}
+scale.horizontal > trough > slider {
+  margin: -7px 0;
+}
+scale.vertical > trough > slider {
+  margin: 0 -7px;
 }
 
 progressbar > trough,
