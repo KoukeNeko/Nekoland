@@ -446,6 +446,12 @@ fn scale_row(
     scale.set_valign(gtk::Align::Center);
     let shown_label = label.clone();
     scale.connect_value_changed(move |scale| {
+        // A click on the trough lands between steps; it is put on the nearest one.
+        let snapped = low + ((scale.value() - low) / step).round() * step;
+        if (snapped - scale.value()).abs() > step / 1000.0 {
+            scale.set_value(snapped);
+            return;
+        }
         shown_label.set_label(&shown(scale.value()));
         changed(scale.value());
     });
