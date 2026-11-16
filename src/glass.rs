@@ -16,7 +16,7 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{Element, Id, Kind, RenderElement},
             gles::{
-                GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+                ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
             },
             utils::CommitCounter,
@@ -164,6 +164,18 @@ impl Glass {
                     Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, scaled)
                 })
                 .collect::<Result<_, _>>()?;
+            // A sample past an edge must read the edge, not wrap around to the other side of
+            // the screen, which GL does by default: the menu bar at the top would blur in
+            // what is at the bottom.
+            for level in &self.levels {
+                let texture = level.tex_id();
+                renderer.with_context(|gl| unsafe {
+                    gl.BindTexture(ffi::TEXTURE_2D, texture);
+                    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+                    gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                    gl.BindTexture(ffi::TEXTURE_2D, 0);
+                })?;
+            }
             // New textures hold whatever memory they were given; the passes only write
             // around the panes, so the rest has to start out empty.
             for level in &mut self.levels {
