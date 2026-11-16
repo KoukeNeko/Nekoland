@@ -377,44 +377,38 @@ fn choice_row(
     row
 }
 
-/// A row with a slider on it, from `low` to `high` in `step`s.
+/// A row with a slider on it, from `low` to `high` in `step`s, its value at its left as
+/// `shown` words it.
 fn scale_row(
     title: &str,
     value: f64,
-    range: (f64, f64, f64),
+    (low, high, step): (f64, f64, f64),
+    shown: fn(f64) -> String,
     changed: impl Fn(f64) + 'static,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(&slider(value, range, changed));
-    row
-}
-
-/// A row with a slider from 0 to 1 on it, its value at its left as a percentage.
-fn percent_row(title: &str, value: f64, changed: impl Fn(f64) + 'static) -> adw::ActionRow {
-    let percent = |value: f64| format!("{:.0}%", value * 100.0);
     let label = gtk::Label::builder()
-        .label(percent(value))
+        .label(shown(value))
         .xalign(1.0)
-        .width_chars(4)
+        .width_chars(shown(low).chars().count().max(shown(high).chars().count()) as i32)
         .css_classes(["dim-label", "numeric"])
         .build();
-    let shown = label.clone();
-    let slider = slider(value, (0.0, 1.0, 0.05), move |value| {
-        shown.set_label(&percent(value));
-        changed(value);
-    });
-    let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(&line(8, &[label.upcast_ref(), slider.upcast_ref()]));
-    row
-}
-
-fn slider(value: f64, (low, high, step): (f64, f64, f64), changed: impl Fn(f64) + 'static) -> gtk::Scale {
     let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, low, high, step);
     scale.set_value(value);
     scale.set_width_request(220);
     scale.set_valign(gtk::Align::Center);
-    scale.connect_value_changed(move |scale| changed(scale.value()));
-    scale
+    let shown_label = label.clone();
+    scale.connect_value_changed(move |scale| {
+        shown_label.set_label(&shown(scale.value()));
+        changed(scale.value());
+    });
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&line(8, &[label.upcast_ref(), scale.upcast_ref()]));
+    row
+}
+
+/// A value from 0 to 1 as a percentage.
+fn percent(value: f64) -> String {
+    format!("{:.0}%", value * 100.0)
 }
 
 /// The choices of how long, in seconds, the computer waits idle before it locks the screen,
@@ -473,6 +467,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         "大小",
         config.number("dock_size", 40.0),
         (24.0, 96.0, 1.0),
+        |size| format!("{size:.0} px"),
         |size| set(&format!("dock_size = {size:.0}")),
     ));
     dock.add(&choice_row(config, "位置", "dock_position", &DOCK_POSITIONS, &["左", "下", "右"]));
@@ -490,6 +485,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         .bind_property("active", &scale, "visible")
         .sync_create()
         .build();
+        |scale| format!("{scale:.1}×"),
     dock.add(&scale);
     page.add(&dock);
 
@@ -1004,7 +1000,7 @@ fn glass_group(
     opacity_changed: impl Fn(f64) + 'static,
 ) -> adw::PreferencesGroup {
     let glass = group(title);
-    glass.add(&percent_row(
+    glass.add(&scale_row(
         "不透明度",
         config.number(&format!("{key}_opacity"), opacity),
         move |opacity| {
@@ -1012,9 +1008,11 @@ fn glass_group(
             opacity_changed(opacity);
         },
     ));
-    glass.add(&percent_row(
+    glass.add(&scale_row(
         "模糊程度",
         config.number(&format!("{key}_blur"), 0.5),
+        (0.0, 1.0, 0.05),
+        percent,
         move |blur| set(&format!("{key}_blur = {blur:.2}")),
     ));
     glass
@@ -1023,6 +1021,8 @@ fn glass_group(
 /// Nekoland's design language for GTK 4 and libadwaita applications, as libadwaita's
 /// variables; see the file for what it reaches.
 const GTK_LOOK: &str = include_str!("../../shell/gtk/nekoland.css");
+        (0.0, 1.0, 0.05),
+        percent,
 /// Where Nekoland's look goes, in a folder of its own beside GTK's user stylesheet.
 const GTK_LOOK_FILE: &str = "nekoland/look.css";
 /// What GTK's own user stylesheet imports it with, the rest of that file left as it is.
@@ -1240,12 +1240,14 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
         (10.0, 60.0, 5.0),
         |rate| set(&format!("repeat_rate = {}", rate.round() as i32)),
     ));
+        |delay| format!("{delay:.0} 毫秒"),
     page.add(&repeat);
     let typing = group("");
     typing.add(&gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink"));
     page.add(&typing);
     page
 }
+        |rate| format!("{rate:.0} 次/秒"),
 
 fn mouse_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
@@ -1262,6 +1264,8 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
         .model(&gtk::StringList::new(&["左", "右"]))
         .selected(u32::from(config.flag("left_handed")))
         .build();
+        // Adding 0 turns the -0 a step just under 0 rounds to into 0.
+        |speed| format!("{:.1}", (speed * 10.0).round() / 10.0 + 0.0),
     primary.connect_selected_notify(|row| set(&format!("left_handed = {}", row.selected() == 1)));
     pointer.add(&primary);
     pointer.add(&switch_row(config, "自然捲動", "natural_scroll"));
@@ -1650,9 +1654,13 @@ fn device_group(
     group.add(&chosen);
 
     let (level, muted) = volume(default).unwrap_or_default();
-    group.add(&scale_row("音量", f64::from(level.round()), (0.0, 100.0, 5.0), move |level| {
-        run("wpctl", &["set-volume", default, &format!("{:.2}", level / 100.0)])
-    }));
+    group.add(&scale_row(
+        "音量",
+        f64::from(level.round()),
+        (0.0, 100.0, 5.0),
+        |level| format!("{level:.0}%"),
+        move |level| run("wpctl", &["set-volume", default, &format!("{:.2}", level / 100.0)]),
+    ));
     let mute = adw::SwitchRow::builder().title("靜音").active(muted).build();
     mute.connect_active_notify(move |row| {
         run("wpctl", &["set-mute", default, if row.is_active() { "1" } else { "0" }])
@@ -2249,6 +2257,7 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
 
 const NIGHT_SHIFT: [&str; 3] = ["off", "on", "scheduled"];
 
+        percent,
 /// A row choosing an hour of the day for a setting kept as `HH:MM`; a time of the file's own
 /// is kept among the choices.
 fn time_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {

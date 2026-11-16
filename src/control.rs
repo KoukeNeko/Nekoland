@@ -47,6 +47,11 @@ const BUTTON: i32 = 28;
 const ICON: i32 = 16;
 /// A slider's knob, its radius.
 const KNOB: i32 = 7;
+/// Room for a slider's value, "100%", at the left of its knob's furthest reach.
+const VALUE: i32 = 36;
+/// Where a slider's track starts in its group: after a group's padding, the icon, the
+/// value, the design language's 8 and the knob.
+const TRACK_START: i32 = 12 + ICON + 12 + VALUE + 8 + KNOB;
 const OPEN_TIME: f64 = 0.16;
 const EXPAND_TIME: f64 = 0.2;
 /// How much a tile shrinks while pressed.
@@ -349,9 +354,8 @@ impl ControlCenter {
             if let Some(icon) = icon {
                 parts.push((icon, rect(PADDING + 8, row, 24, 24)));
             }
-            // The knob stops a group's padding from the icon and from the well's edge.
-            let start = 12 + ICON + 12 + KNOB;
-            parts.push((track, rect(PADDING + start, row, inner - start - 12 - KNOB, 24)));
+            // The knob stops a group's padding from the well's edge.
+            parts.push((track, rect(PADDING + TRACK_START, row, inner - TRACK_START - 12 - KNOB, 24)));
         };
         if self.brightness.is_some() {
             groups.push((rect(PADDING, y, inner, GROUP_HEIGHT), Some("顯示器")));
@@ -620,7 +624,7 @@ impl ControlCenter {
                 }
                 slider if slider.is_slider() => {
                     if slider == Part::Brightness {
-                        draw_icon(&cr, "display-brightness-symbolic", x - f64::from(12 + KNOB + ICON), center, colors.ink);
+                        draw_icon(&cr, "display-brightness-symbolic", x - f64::from(TRACK_START - 12), center, colors.ink);
                     }
                     let (level, muted) = match slider {
                         Part::Brightness => (shown.brightness.unwrap_or(0), false),
@@ -637,6 +641,18 @@ impl ControlCenter {
                         f64::from(level.min(100)) / 100.0
                     };
                     draw_slider(&cr, &colors, shown.dark, (x, center, w), level);
+                    let value = text::new_layout(&cr);
+                    value.set_font_description(Some(&label));
+                    value.set_text(&format!("{:.0}%", level * 100.0));
+                    value.set_width(VALUE * pango::SCALE);
+                    value.set_alignment(pango::Alignment::Right);
+                    let digits = pango::AttrList::new();
+                    digits.insert(pango::AttrFontFeatures::new("tnum 1"));
+                    value.set_attributes(Some(&digits));
+                    let (_, height) = value.pixel_size();
+                    cr.set_source_rgb(colors.ink_3.0, colors.ink_3.1, colors.ink_3.2);
+                    cr.move_to(x - f64::from(KNOB + 8 + VALUE), center - f64::from(height) / 2.0);
+                    pangocairo::functions::show_layout(&cr, &value);
                 }
                 Part::Output | Part::Input => {
                     let (devices, open) = match part {
