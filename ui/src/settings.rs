@@ -3,6 +3,8 @@
 //! for and changes through `nekoland msg`, so the compositor alone reads and writes its file
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
+mod focus;
+
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashSet},
@@ -482,6 +484,7 @@ fn build(app: &adw::Application) {
         glib::ControlFlow::Continue
     });
     window.present();
+    focus::let_fields_go(&window);
 }
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
