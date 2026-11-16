@@ -29,7 +29,10 @@ use smithay::{
     },
 };
 
-use crate::{config::Config, handlers::protocols::Protocols, CalloopData};
+use crate::{
+    config::Config, handlers::protocols::Protocols, overview::Overview, text::Apps, workspaces::Workspaces,
+    CalloopData,
+};
 
 /// Takes a client's GPU buffer; returns whether the renderer can use it.
 pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
@@ -46,6 +49,12 @@ pub struct Nekoland {
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
+    pub overview: Option<Overview>,
+    pub workspaces: Workspaces,
+    /// Names and icons of applications, for the overview.
+    pub apps: Apps,
+    /// Whether Super went down with nothing else pressed since.
+    pub super_tap: bool,
     /// Keys whose press ran a shortcut, so their release is not sent to a client either.
     pub suppressed_keys: HashSet<Keycode>,
     pub loop_signal: LoopSignal,
@@ -119,6 +128,10 @@ impl Nekoland {
 
             space,
             minimized: Vec::new(),
+            overview: None,
+            workspaces: Workspaces::new(),
+            apps: Apps::default(),
+            super_tap: false,
             suppressed_keys: HashSet::new(),
             loop_signal,
             socket_name,
@@ -210,6 +223,10 @@ impl Nekoland {
                 .map(|(s, p)| (s, (p + location).to_f64()))
         };
         let window_under = || {
+            // In the overview, windows are thumbnails to pick, not something to point into.
+            if self.overview.is_some() {
+                return None;
+            }
             self.space.element_under(pos).and_then(|(window, location)| {
                 window
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
@@ -218,7 +235,7 @@ impl Nekoland {
         };
 
         // A fullscreen window covers the panels; only the overlay layer stays above it.
-        if self.fullscreen_window().is_some() {
+        if self.overview.is_none() && self.fullscreen_window().is_some() {
             return layer_surface_under([Layer::Overlay, Layer::Overlay]).or_else(window_under);
         }
         layer_surface_under(ABOVE_WINDOWS)

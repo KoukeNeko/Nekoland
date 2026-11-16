@@ -9,7 +9,7 @@ use smithay::{
         wayland_server::protocol::wl_surface::WlSurface,
     },
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::seat::WaylandFocus,
+    wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
 use crate::{focus::KeyFocus, Nekoland};
@@ -47,6 +47,26 @@ pub fn key_focus_of(window: &Window) -> KeyFocus {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => KeyFocus::Wayland(toplevel.wl_surface().clone()),
         WindowSurface::X11(surface) => KeyFocus::X11(surface.clone()),
+    }
+}
+
+/// A window's title and the identifier of its application.
+pub fn window_names(window: &Window) -> (String, String) {
+    match window.underlying_surface() {
+        WindowSurface::Wayland(toplevel) => with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .map(|data| {
+                    let data = data.lock().unwrap();
+                    (
+                        data.title.clone().unwrap_or_default(),
+                        data.app_id.clone().unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default()
+        }),
+        WindowSurface::X11(surface) => (surface.title(), surface.class()),
     }
 }
 
@@ -105,6 +125,15 @@ impl Nekoland {
     }
 
     pub fn focus_window(&mut self, window: &Window) {
+        // Whatever brought a window forward also picked it from the overview.
+        if self.overview.is_some() {
+            self.close_overview(Some(window.clone()));
+            return;
+        }
+        self.raise_and_focus(window);
+    }
+
+    pub fn raise_and_focus(&mut self, window: &Window) {
         self.space.raise_element(window, true);
         self.set_keyboard_focus(Some(key_focus_of(window)));
     }
@@ -276,9 +305,7 @@ impl Nekoland {
     /// Forgets the window of a surface whose client is gone.
     pub fn window_closed(&mut self, surface: &WlSurface) {
         let window = self
-            .space
-            .elements()
-            .chain(self.minimized.iter().map(|(minimized, _)| minimized))
+            .all_windows()
             .find(|window| window.wl_surface().as_deref() == Some(surface))
             .cloned();
         if let Some(window) = window {
@@ -290,6 +317,7 @@ impl Nekoland {
     pub fn forget_window(&mut self, window: &Window) {
         let had_focus = self.focused_window().as_ref() == Some(window);
         self.minimized.retain(|(minimized, _)| minimized != window);
+        self.workspaces.forget(window);
         self.space.unmap_elem(window);
         if had_focus {
             self.focus_top_window();

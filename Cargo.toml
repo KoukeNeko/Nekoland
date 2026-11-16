@@ -6,6 +6,9 @@ rust-version = "1.82"
 
 [dependencies]
 bitflags = "2.2.1"
+cairo-rs = { version = "0.20", features = ["png"] }
+pango = "0.20"
+pangocairo = "0.20"
 serde = { version = "1", features = ["derive"] }
 smithay-drm-extras = { version = "0.1.0", default-features = false }
 toml = "0.8"

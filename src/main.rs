@@ -7,11 +7,14 @@ mod handlers;
 
 mod grabs;
 mod input;
+mod overview;
 mod render;
 mod state;
+mod text;
 mod udev;
 mod windows;
 mod winit;
+mod workspaces;
 
 use smithay::reexports::{
     calloop::EventLoop,

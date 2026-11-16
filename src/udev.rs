@@ -280,6 +280,7 @@ fn render(
     handle: &LoopHandle<'static, CalloopData>,
 ) {
     let state = &mut data.state;
+    state.tick_overview();
     let mut guard = udev.borrow_mut();
     let Udev {
         renderer,

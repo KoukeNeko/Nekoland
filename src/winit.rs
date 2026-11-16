@@ -68,6 +68,7 @@ pub fn init_winit(
                 let size = backend.window_size();
                 let damage = Rectangle::from_size(size);
 
+                state.tick_overview();
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
                     let elements = scene_elements(state, renderer, &output).unwrap();

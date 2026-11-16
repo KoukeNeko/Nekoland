@@ -44,13 +44,17 @@ impl Nekoland {
                                     Some(raw) if modified.key_char().is_some() => raw,
                                     _ => modified,
                                 };
-                                let handled = state.key_pressed(modifiers, sym);
+                                let handled =
+                                    state.key_pressed(modifiers, sym, keysym.modified_sym().key_char());
                                 if handled {
                                     state.suppressed_keys.insert(code);
                                 }
                                 handled
                             }
-                            KeyState::Released => state.suppressed_keys.remove(&code),
+                            KeyState::Released => {
+                                state.key_released(keysym.modified_sym());
+                                state.suppressed_keys.remove(&code)
+                            }
                         };
                         if handled {
                             FilterResult::Intercept(())
@@ -121,6 +125,7 @@ impl Nekoland {
                 let button_state = event.state();
 
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+                    self.super_tap = false;
                     self.pointer_pressed(button, serial);
                 }
 
@@ -188,8 +193,12 @@ impl Nekoland {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
-        if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {
+        if self.overview.is_some() && self.overview_covers(pos) {
+            self.overview_click(pos);
+        } else if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {
             self.focus_layer(&layer);
+        } else if self.overview.is_some() {
+            self.overview_click(pos);
         } else if let Some((window, location)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
             self.focus_window(&window);
 
@@ -224,7 +233,9 @@ impl Nekoland {
     }
 
     /// Runs the shortcut a key press stands for. Returns whether there was one.
-    fn key_pressed(&mut self, modifiers: &ModifiersState, sym: Keysym) -> bool {
+    fn key_pressed(&mut self, modifiers: &ModifiersState, sym: Keysym, typed: Option<char>) -> bool {
+        self.super_tap = matches!(sym, Keysym::Super_L | Keysym::Super_R);
+
         let ModifiersState {
             ctrl,
             alt,
@@ -233,6 +244,27 @@ impl Nekoland {
             ..
         } = *modifiers;
         let focused = self.focused_window();
+
+        if self.overview.is_some() && !(ctrl || alt || logo) {
+            match typed {
+                _ if sym == Keysym::Escape => self.close_overview(None),
+                // Typing in the overview searches, as it does on GNOME.
+                Some(character) if !character.is_control() => {
+                    self.close_overview(None);
+                    // The command goes through a shell, so the character is quoted for it.
+                    let quoted = match character {
+                        '\'' => r"'\''".to_string(),
+                        other => format!("'{other}'"),
+                    };
+                    config::spawn(&format!(
+                        "{} {}{quoted}",
+                        self.config.launcher, self.config.launcher_search
+                    ));
+                }
+                _ => return false,
+            }
+            return true;
+        }
 
         match sym {
             // The only way out on a bare console.
@@ -243,6 +275,11 @@ impl Nekoland {
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
+            Keysym::Up if ctrl && alt => self.toggle_overview(),
+            Keysym::Left if ctrl && alt => self.switch_workspace_by(-1),
+            Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
+            Keysym::Page_Up if logo => self.switch_workspace_by(-1),
+            Keysym::Page_Down if logo => self.switch_workspace_by(1),
             Keysym::Up if logo => {
                 if let Some(window) = focused {
                     self.maximize(&window);
@@ -292,6 +329,14 @@ impl Nekoland {
             _ => return false,
         }
         true
+    }
+
+    /// Super pressed and let go by itself opens the overview.
+    fn key_released(&mut self, sym: Keysym) {
+        if self.super_tap && matches!(sym, Keysym::Super_L | Keysym::Super_R) {
+            self.super_tap = false;
+            self.toggle_overview();
+        }
     }
 }
 
