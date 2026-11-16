@@ -1246,14 +1246,18 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
         (150.0, 1000.0, 50.0),
         |delay| format!("{delay:.0} 毫秒"),
         |delay| set(&format!("repeat_delay = {}", delay.round() as i32)),
-    ));
-    repeat.add(&scale_row(
+    );
+    let rate = scale_row(
         "重複速度",
         config.number("repeat_rate", 25.0),
         (10.0, 60.0, 5.0),
         |rate| format!("{rate:.0} 次/秒"),
         |rate| set(&format!("repeat_rate = {}", rate.round() as i32)),
-    ));
+    );
+    for row in [&delay, &rate] {
+        repeats.bind_property("active", row, "visible").sync_create().build();
+        repeat.add(row);
+    }
     page.add(&repeat);
     let typing = group("");
     typing.add(&gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink"));
