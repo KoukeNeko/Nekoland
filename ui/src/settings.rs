@@ -1000,10 +1000,18 @@ fn set_interface(key: &str, value: &str) {
     run("gsettings", &["set", INTERFACE, key, value]);
 }
 
+/// Fontconfig's generic families, whose own aliases already reach Chinese.
+const GENERIC_FAMILIES: [&str; 5] = ["sans", "sans-serif", "serif", "monospace", "system-ui"];
+
 /// Sets `label` in `font`, with the Chinese Nekoland's own text falls back to.
 fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
     let mut font = font.clone();
-    if let Some(family) = font.family() {
+    // A family named after a generic one would lose to the fallback, which fontconfig
+    // binds more strongly than the generic family's alias.
+    if let Some(family) = font
+        .family()
+        .filter(|family| !GENERIC_FAMILIES.contains(&family.to_lowercase().as_str()))
+    {
         font.set_family(&format!("{family},Noto Sans CJK TC"));
     }
     let attrs = gtk::pango::AttrList::new();
