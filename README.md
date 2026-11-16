@@ -72,9 +72,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.
 - Settings, `nekoland-settings` from `ui/`, opened from the system menu, draws the
-  desktop small: a click on the Dock's first button, the Dock, the menu bar or the
-  wallpaper shows its settings below, the applications' four ways to be shown among
-  them. Its other pages set light or dark, the mouse and touchpad, the sound, what
+  desktop small over a section for each part of it: the applications, with their four
+  ways to be shown, the Dock, the menu bar and the wallpaper; a click on a part goes to
+  its section. Its other pages set light or dark, the mouse and touchpad, the sound, what
   starts at login, and show what the computer is. Each change takes effect at once.
   Copy `shell/nekoland-settings.desktop` to `~/.local/share/applications/` to find it
   among the applications.
