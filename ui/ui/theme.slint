@@ -1,0 +1,44 @@
+// The design language as values: ink, paper and greys, one red for danger.
+// Colour belongs to content; the interface stays in greys and marks what is
+// selected with solid ink.
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    // Follows the system until something sets it.
+    in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    out property <color> paper: dark ? #1b1b1e : #f4f3f0;
+    out property <color> sheet: dark ? #222226 : #fbfaf8;
+    out property <color> ink: dark ? #f1efea : #17171a;
+    out property <color> ink-2: dark ? #a9a7ab : #5d5c61;
+    out property <color> ink-3: dark ? #939197 : #6f6d72;
+    out property <color> line: dark ? #323237 : #e2e0db;
+    out property <color> fill: dark ? #2c2c31 : #eae8e3;
+    out property <color> on-ink: dark ? #17171a : #fbfaf8;
+    out property <color> danger: dark ? #ff6b5f : #c4372f;
+    out property <color> on-danger: dark ? #17171a : #ffffff;
+    out property <color> scrim: dark ? #00000080 : #17171a52;
+    // What floats over the desktop. The compositor blurs what is behind it.
+    out property <color> glass: dark ? #222226b8 : #fbfaf8b8;
+    out property <color> glass-edge: #ffffff59;
+    out property <color> hover: dark ? #2c2c31 : #eae8e3;
+
+    out property <length> radius-s: 6px;
+    out property <length> radius-m: 8px;
+    out property <length> radius-l: 12px;
+    out property <length> radius-xl: 14px;
+
+    out property <length> text-title: 32px;
+    out property <length> text-page: 20px;
+    out property <length> text-body: 14px;
+    out property <length> text-small: 12px;
+
+    out property <string> font: "Ubuntu Sans";
+    out property <string> mono: "Ubuntu Sans Mono";
+
+    // A press shrinks a little and springs back.
+    out property <duration> quick: 150ms;
+    out property <duration> settle: 260ms;
+    out property <easing> ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}

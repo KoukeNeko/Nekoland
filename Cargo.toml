@@ -30,3 +30,6 @@ features = [
     "xwayland",
     "desktop",
 ]
+
+[workspace]
+members = ["ui"]

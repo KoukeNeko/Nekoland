@@ -1,0 +1,1087 @@
+// Nekoland's widgets. Selected things are solid ink; a press shrinks a little and
+// springs back; what floats over the desktop is glass.
+
+import { Theme } from "theme.slint";
+export { Theme }
+
+// Line icons on a 16-unit grid, 1.5 strokes with round ends.
+export component Icon inherits Path {
+    in property <string> name;
+    width: 16px;
+    height: 16px;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: Theme.ink-2;
+    stroke-width: 1.5px;
+    stroke-line-cap: round;
+    fill: transparent;
+    commands: name == "search" ? "M 7 2.5 A 4.5 4.5 0 1 0 7 11.5 A 4.5 4.5 0 1 0 7 2.5 M 10.5 10.5 L 14 14"
+        : name == "more" ? "M 3.5 8 L 3.6 8 M 8 8 L 8.1 8 M 12.5 8 L 12.6 8"
+        : name == "back" ? "M 10 3 L 5 8 L 10 13"
+        : name == "forward" ? "M 6 3 L 11 8 L 6 13"
+        : name == "down" ? "M 4 6 L 8 10 L 12 6"
+        : name == "plus" ? "M 8 3 L 8 13 M 3 8 L 13 8"
+        : name == "close" ? "M 4 4 L 12 12 M 12 4 L 4 12"
+        : name == "minimize" ? "M 3 12 L 13 12"
+        : name == "maximize" ? "M 3.5 3.5 L 12.5 3.5 L 12.5 12.5 L 3.5 12.5 Z"
+        : name == "check" ? "M 4 8.5 L 7 11.5 L 12.5 5"
+        : "";
+}
+
+// kind: "primary" (one per screen), "secondary", "plain", "danger", or "inverse" on ink.
+export component Button {
+    in property <string> text;
+    in property <string> icon;
+    in property <string> kind: "primary";
+    in property <bool> large;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    property <bool> down: touch.pressed;
+    property <color> foreground: kind == "primary" ? Theme.on-ink
+        : kind == "danger" ? Theme.on-danger
+        : kind == "inverse" ? Theme.on-ink
+        : Theme.ink;
+    property <color> base: kind == "primary" ? Theme.ink
+        : kind == "danger" ? Theme.danger
+        : kind == "secondary" ? Theme.fill
+        : kind == "inverse" ? Theme.on-ink.with-alpha(0.14)
+        : transparent;
+    property <color> lit: kind == "primary" ? Theme.ink.mix(Theme.paper, 0.86)
+        : kind == "danger" ? Theme.danger.mix(Theme.paper, 0.88)
+        : kind == "inverse" ? Theme.on-ink.with-alpha(0.22)
+        : kind == "secondary" ? Theme.fill.mix(Theme.ink, 0.92)
+        : Theme.hover;
+
+    min-width: layout.min-width;
+    preferred-width: layout.preferred-width;
+    min-height: large ? 40px : 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    opacity: enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { clicked(); }
+
+    Rectangle {
+        width: parent.width * (down ? 0.96 : 1);
+        height: parent.height * (down ? 0.92 : 1);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        animate width, height { duration: Theme.quick; easing: Theme.ease; }
+        border-radius: large ? 10px : Theme.radius-m;
+        background: touch.has-hover ? lit : base;
+        animate background { duration: Theme.quick; }
+        border-width: focus.has-focus ? 2px : 0;
+        border-color: kind == "secondary" || kind == "plain" ? Theme.ink : Theme.paper;
+    }
+
+    layout := HorizontalLayout {
+        padding-left: large ? 20px : 14px;
+        padding-right: self.padding-left;
+        spacing: 6px;
+        alignment: center;
+        if icon != "": Icon {
+            name: icon;
+            stroke: foreground;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.text;
+            color: foreground;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component IconButton {
+    in property <string> icon;
+    in property <string> label;
+    in property <length> size: 32px;
+    in property <length> glyph: 16px;
+    callback clicked;
+
+    width: size;
+    height: size;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { clicked(); }
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: touch.pressed ? Theme.line : touch.has-hover ? Theme.fill : transparent;
+        animate background { duration: Theme.quick; }
+        border-width: focus.has-focus ? 2px : 0;
+        border-color: Theme.ink;
+    }
+
+    Icon {
+        name: icon;
+        width: glyph;
+        height: glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        stroke: touch.has-hover ? Theme.ink : Theme.ink-2;
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            clicked => {
+                focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+// The thumb stretches while pressed, as if squeezed by a finger.
+export component Switch {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: 42px;
+    height: 24px;
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: checked;
+    accessible-label: label;
+    accessible-action-default => { toggle(); }
+
+    function toggle() {
+        checked = !checked;
+        toggled(checked);
+    }
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: checked ? Theme.ink : Theme.line;
+        animate background { duration: 200ms; }
+        border-width: focus.has-focus ? 2px : 0;
+        border-color: checked ? Theme.line : Theme.ink;
+    }
+
+    Rectangle {
+        y: 3px;
+        height: 18px;
+        width: touch.pressed ? 22px : 18px;
+        x: checked ? parent.width - self.width - 3px : 3px;
+        border-radius: 9px;
+        background: checked ? Theme.on-ink : Theme.sheet;
+        drop-shadow-blur: 2px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #0000004d;
+        animate x { duration: Theme.settle; easing: Theme.ease; }
+        animate width { duration: Theme.quick; easing: Theme.ease; }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " {
+                toggle();
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                toggle();
+            }
+        }
+    }
+}
+
+export component CheckBox {
+    in-out property <bool> checked;
+    in property <string> text;
+    callback toggled(bool);
+
+    min-height: 24px;
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: checked;
+    accessible-label: text;
+    accessible-action-default => { toggle(); }
+
+    function toggle() {
+        checked = !checked;
+        toggled(checked);
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 5px;
+            border-width: checked ? 0 : 1.5px;
+            border-color: focus.has-focus ? Theme.ink : Theme.ink-3;
+            background: checked ? Theme.ink : transparent;
+            animate background { duration: Theme.quick; }
+            if checked: Icon {
+                name: "check";
+                width: 14px;
+                height: 14px;
+                x: 2px;
+                y: 2px;
+                stroke: Theme.on-ink;
+                stroke-width: 2px;
+            }
+        }
+        Text {
+            text: root.text;
+            color: Theme.ink;
+            vertical-alignment: center;
+        }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " {
+                toggle();
+                return accept;
+            }
+            reject
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                toggle();
+            }
+        }
+    }
+}
+
+// One of a group; the group decides which is checked.
+export component Radio {
+    in property <bool> checked;
+    in property <string> text;
+    callback clicked;
+
+    min-height: 24px;
+    accessible-role: radio-button;
+    accessible-checkable: true;
+    accessible-checked: checked;
+    accessible-label: text;
+    accessible-action-default => { clicked(); }
+
+    HorizontalLayout {
+        spacing: 10px;
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            border-width: checked ? 5px : 1.5px;
+            border-color: checked || focus.has-focus ? Theme.ink : Theme.ink-3;
+            animate border-width { duration: Theme.quick; easing: Theme.ease; }
+        }
+        Text {
+            text: root.text;
+            color: Theme.ink;
+            vertical-alignment: center;
+        }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component Segmented {
+    in property <[string]> options;
+    in-out property <int> current;
+    callback changed(int);
+
+    min-width: layout.min-width;
+    preferred-width: layout.preferred-width;
+    height: 32px;
+    horizontal-stretch: 0;
+
+    Rectangle {
+        background: Theme.fill;
+        border-radius: Theme.radius-m;
+    }
+
+    layout := HorizontalLayout {
+        padding: 2px;
+        for option[index] in options: Rectangle {
+            border-radius: Theme.radius-s;
+            background: index == current ? Theme.ink : option-touch.has-hover ? Theme.line : transparent;
+            animate background { duration: 180ms; }
+            accessible-role: button;
+            accessible-label: option;
+            accessible-checkable: true;
+            accessible-checked: index == current;
+            accessible-action-default => {
+                current = index;
+                changed(index);
+            }
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                Text {
+                    text: option;
+                    color: index == current ? Theme.on-ink : Theme.ink-2;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+
+            option-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    current = index;
+                    changed(index);
+                }
+            }
+        }
+    }
+}
+
+export component Slider {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in-out property <float> value;
+    in property <string> label;
+    callback changed(float);
+
+    property <float> fraction: (value - minimum) / (maximum - minimum);
+    property <length> thumb: 18px;
+
+    height: 24px;
+    min-width: 120px;
+    horizontal-stretch: 1;
+    accessible-role: slider;
+    accessible-label: label;
+    accessible-value: value;
+    accessible-value-minimum: minimum;
+    accessible-value-maximum: maximum;
+    accessible-value-step: step;
+
+    function set(new-value: float) {
+        value = max(minimum, min(maximum, round(new-value / step) * step));
+        changed(value);
+    }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.line;
+    }
+
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: thumb / 2 + fraction * (parent.width - thumb);
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.ink;
+    }
+
+    Rectangle {
+        width: touch.pressed ? 22px : thumb;
+        height: self.width;
+        x: fraction * (parent.width - thumb) - (self.width - thumb) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: Theme.sheet;
+        border-width: focus.has-focus ? 2.5px : 1.5px;
+        border-color: Theme.ink;
+        animate width { duration: Theme.quick; easing: Theme.ease; }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.RightArrow || event.text == Key.UpArrow {
+                set(value + step);
+                return accept;
+            }
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow {
+                set(value - step);
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    focus.focus();
+                    set(minimum + (self.mouse-x - thumb / 2) / (root.width - thumb) * (maximum - minimum));
+                }
+            }
+            moved => {
+                if self.pressed {
+                    set(minimum + (self.mouse-x - thumb / 2) / (root.width - thumb) * (maximum - minimum));
+                }
+            }
+        }
+    }
+}
+
+export component TextField {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <string> error;
+    in property <string> icon;
+    in-out property <string> text;
+    callback edited(string);
+    callback accepted(string);
+
+    property <bool> marked: input.has-focus || error != "";
+
+    horizontal-stretch: 1;
+    accessible-role: text-input;
+    accessible-label: label != "" ? label : placeholder;
+    accessible-value: text;
+
+    VerticalLayout {
+        spacing: 6px;
+        if label != "": Text {
+            text: label;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            color: Theme.ink;
+        }
+        Rectangle {
+            height: 36px;
+            border-radius: Theme.radius-m;
+            background: marked ? Theme.sheet : Theme.fill;
+            border-width: marked ? 1.5px : 0;
+            border-color: error != "" ? Theme.danger : Theme.ink;
+            animate background { duration: Theme.quick; }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                if icon != "": Icon {
+                    name: icon;
+                    stroke: Theme.ink-3;
+                    y: (parent.height - self.height) / 2;
+                }
+                Rectangle {
+                    input := TextInput {
+                        text <=> root.text;
+                        color: Theme.ink;
+                        font-size: Theme.text-body;
+                        single-line: true;
+                        vertical-alignment: center;
+                        selection-background-color: Theme.ink.with-alpha(0.2);
+                        selection-foreground-color: Theme.ink;
+                        edited => { root.edited(self.text); }
+                        accepted => { root.accepted(self.text); }
+                    }
+                    if root.text == "": Text {
+                        x: 0;
+                        text: placeholder;
+                        color: Theme.ink-3;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        if error != "": Text {
+            text: error;
+            font-size: Theme.text-small;
+            color: Theme.danger;
+        }
+    }
+}
+
+export component MenuItem {
+    in property <string> text;
+    in property <string> shortcut;
+    in property <bool> danger;
+    // Under the pointer or the keyboard: solid ink. The current choice of a select is checked instead.
+    in property <bool> highlighted;
+    in property <bool> checked;
+    callback clicked;
+
+    property <bool> lit: touch.has-hover || highlighted;
+
+    height: 30px;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checkable: checked;
+    accessible-checked: checked;
+    accessible-action-default => { clicked(); }
+
+    Rectangle {
+        border-radius: Theme.radius-s;
+        background: lit ? Theme.ink : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        Text {
+            text: root.text;
+            color: lit ? Theme.on-ink : danger ? Theme.danger : Theme.ink;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if shortcut != "": Text {
+            text: shortcut;
+            font-family: Theme.mono;
+            font-size: 11px;
+            color: lit ? Theme.on-ink.with-alpha(0.6) : Theme.ink-3;
+            vertical-alignment: center;
+        }
+        if checked: Icon {
+            name: "check";
+            stroke: lit ? Theme.on-ink : Theme.ink;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MenuSeparator {
+    height: 13px;
+    Rectangle {
+        x: 4px;
+        width: parent.width - 8px;
+        height: 1px;
+        background: Theme.ink.with-alpha(0.12);
+    }
+}
+
+// Floats over the desktop: the compositor blurs what is behind it.
+export component Glass inherits Rectangle {
+    background: Theme.glass;
+    border-width: 0.5px;
+    border-color: Theme.glass-edge;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: #00000059;
+}
+
+export component Menu inherits Glass {
+    in property <bool> solid;
+    width: 220px;
+    border-radius: Theme.radius-l;
+    background: solid ? Theme.sheet : Theme.glass;
+    border-color: solid ? Theme.line : Theme.glass-edge;
+    VerticalLayout {
+        padding: 6px;
+        @children
+    }
+}
+
+export component Select {
+    in property <string> label;
+    in property <[string]> options;
+    in-out property <int> current;
+    callback changed(int);
+
+    horizontal-stretch: 1;
+    accessible-role: combobox;
+    accessible-label: label;
+    accessible-value: options[current];
+    accessible-action-default => { popup.show(); }
+
+    VerticalLayout {
+        spacing: 6px;
+        if label != "": Text {
+            text: label;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            color: Theme.ink;
+        }
+        box := Rectangle {
+            height: 36px;
+            border-radius: Theme.radius-m;
+            background: touch.has-hover ? Theme.line : Theme.fill;
+            border-width: focus.has-focus ? 1.5px : 0;
+            border-color: Theme.ink;
+            animate background { duration: Theme.quick; }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 10px;
+                Text {
+                    text: options[current];
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Icon {
+                    name: "down";
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == " " || event.text == "\n" {
+                        popup.show();
+                        return accept;
+                    }
+                    reject
+                }
+                touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        focus.focus();
+                        popup.show();
+                    }
+                }
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: box.x;
+        y: box.y + box.height + 4px;
+        width: box.width;
+        Menu {
+            solid: true;
+            width: box.width;
+            for option[index] in options: MenuItem {
+                text: option;
+                checked: index == current;
+                clicked => {
+                    current = index;
+                    changed(index);
+                    popup.close();
+                }
+            }
+        }
+    }
+}
+
+// A group of rows on one sheet. Every row but the first draws its own top line.
+export component Rows inherits Rectangle {
+    background: Theme.sheet;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.line;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+export component Row {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> first;
+    in property <bool> link;
+    callback clicked;
+
+    min-height: 50px;
+    accessible-role: list-item;
+    accessible-label: title;
+
+    if link: Rectangle {
+        background: touch.has-hover ? Theme.hover.with-alpha(0.6) : transparent;
+        animate background { duration: Theme.quick; }
+    }
+    if !first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.line;
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 16px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: title;
+                color: Theme.ink;
+            }
+            if subtitle != "": Text {
+                text: subtitle;
+                font-size: Theme.text-small;
+                color: Theme.ink-2;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 6px;
+                @children
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: link;
+        mouse-cursor: link ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component NavItem {
+    in property <string> text;
+    in property <string> detail;
+    in property <bool> current;
+    callback clicked;
+
+    height: 32px;
+    accessible-role: list-item;
+    accessible-label: text;
+    accessible-item-selected: current;
+    accessible-action-default => { clicked(); }
+
+    Rectangle {
+        border-radius: Theme.radius-m;
+        background: current ? Theme.ink : touch.has-hover ? Theme.fill : transparent;
+        animate background { duration: Theme.quick; }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            text: root.text;
+            color: current ? Theme.on-ink : Theme.ink;
+            font-weight: current ? 500 : 400;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if detail != "": Text {
+            text: detail;
+            font-size: Theme.text-small;
+            color: current ? Theme.on-ink.with-alpha(0.6) : Theme.ink-3;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// kind: "neutral", "solid" or "danger".
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "neutral";
+
+    height: 20px;
+    min-width: layout.min-width;
+    horizontal-stretch: 0;
+    border-radius: 10px;
+    background: kind == "solid" ? Theme.ink : kind == "danger" ? Theme.danger.with-alpha(0.14) : Theme.fill;
+
+    layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            vertical-alignment: center;
+            color: kind == "solid" ? Theme.on-ink : kind == "danger" ? Theme.danger : Theme.ink-2;
+        }
+    }
+}
+
+export component ProgressBar {
+    in property <float> progress;
+
+    height: 4px;
+    horizontal-stretch: 1;
+    accessible-role: progress-indicator;
+    accessible-value: round(progress * 100) + "%";
+
+    Rectangle {
+        border-radius: 2px;
+        background: Theme.line;
+    }
+    Rectangle {
+        x: 0;
+        width: parent.width * max(0, min(1, progress));
+        border-radius: 2px;
+        background: Theme.ink;
+        animate width { duration: Theme.settle; easing: Theme.ease; }
+    }
+}
+
+// Only shown while something is loading: it redraws every frame.
+export component Spinner {
+    in property <string> label: "載入中";
+
+    property <angle> turn: mod(animation-tick() / 1ms, 800) / 800 * 360deg;
+
+    width: 18px;
+    height: 18px;
+    accessible-role: progress-indicator;
+    accessible-label: label;
+
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: Theme.line;
+    }
+    Path {
+        viewbox-width: 18;
+        viewbox-height: 18;
+        stroke: Theme.ink;
+        stroke-width: 2px;
+        stroke-line-cap: round;
+        fill: transparent;
+        MoveTo {
+            x: 9 + 8 * cos(turn);
+            y: 9 + 8 * sin(turn);
+        }
+        ArcTo {
+            x: 9 + 8 * cos(turn + 90deg);
+            y: 9 + 8 * sin(turn + 90deg);
+            radius-x: 8;
+            radius-y: 8;
+            sweep: true;
+        }
+    }
+}
+
+export component Tooltip inherits Rectangle {
+    in property <string> text;
+
+    min-width: layout.min-width;
+    min-height: layout.min-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Theme.radius-s;
+    background: Theme.ink;
+
+    layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        Text {
+            text: root.text;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            color: Theme.on-ink;
+        }
+    }
+}
+
+// A short message with one way to undo it.
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> action;
+    callback activated;
+
+    min-height: 48px;
+    border-radius: Theme.radius-l;
+    background: Theme.ink;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-color: #00000066;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+
+    HorizontalLayout {
+        padding: 10px;
+        padding-left: 16px;
+        spacing: 12px;
+        Text {
+            text: root.text;
+            color: Theme.on-ink;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if action != "": Button {
+            text: action;
+            kind: "inverse";
+            clicked => { root.activated(); }
+        }
+    }
+}
+
+export component Notification inherits Glass {
+    in property <string> app;
+    in property <color> app-color;
+    in property <string> title;
+    in property <string> body;
+    in property <string> time;
+
+    width: 360px;
+    border-radius: Theme.radius-xl;
+    accessible-role: AccessibleRole.text;
+    accessible-label: title + "：" + body;
+
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 9px;
+            background: app-color;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Text {
+                text: title;
+                font-weight: 600;
+                color: Theme.ink;
+            }
+            Text {
+                text: body;
+                font-size: 13px;
+                color: Theme.ink-2;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            text: time;
+            font-size: Theme.text-small;
+            color: Theme.ink-3;
+        }
+    }
+}
+
+// A title bar in the same paper as the window: no band of its own.
+export component TitleBar {
+    in property <string> title;
+    in property <bool> active: true;
+    callback minimize;
+    callback maximize;
+    callback close;
+
+    height: 44px;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        spacing: 4px;
+        Text {
+            text: title;
+            font-weight: 600;
+            color: active ? Theme.ink : Theme.ink-3;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        IconButton {
+            icon: "minimize";
+            label: "最小化";
+            size: 28px;
+            glyph: 12px;
+            y: 8px;
+            clicked => { root.minimize(); }
+        }
+        IconButton {
+            icon: "maximize";
+            label: "最大化";
+            size: 28px;
+            glyph: 12px;
+            y: 8px;
+            clicked => { root.maximize(); }
+        }
+        IconButton {
+            icon: "close";
+            label: "關閉";
+            size: 28px;
+            glyph: 12px;
+            y: 8px;
+            clicked => { root.close(); }
+        }
+    }
+}
+
+// A decision: the title asks, the buttons answer.
+export component Dialog inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+
+    width: 360px;
+    border-radius: Theme.radius-xl;
+    background: Theme.sheet;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 60px;
+    drop-shadow-offset-y: 30px;
+    drop-shadow-color: #00000080;
+    accessible-role: groupbox;
+    accessible-label: title;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 6px;
+        Text {
+            text: title;
+            font-size: 16px;
+            font-weight: 600;
+            color: Theme.ink;
+        }
+        Text {
+            text: body;
+            color: Theme.ink-2;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 14px; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            @children
+        }
+    }
+}

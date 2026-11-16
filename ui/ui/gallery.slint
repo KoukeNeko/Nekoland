@@ -1,0 +1,653 @@
+// Every widget in one window, to check them against the design language in both themes.
+
+import {
+    Theme, Icon, Button, IconButton, Switch, CheckBox, Radio, Segmented, Slider, TextField, Select,
+    MenuItem, MenuSeparator, Glass, Menu, Rows, Row, NavItem, Badge, ProgressBar, Spinner, Tooltip,
+    Toast, Notification, TitleBar, Dialog,
+} from "widgets.slint";
+
+component Section {
+    in property <string> title;
+    in property <string> note;
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: title;
+            font-size: Theme.text-page;
+            font-weight: 600;
+            color: Theme.ink;
+        }
+        if note != "": Text {
+            text: note;
+            color: Theme.ink-2;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 12px; }
+        @children
+    }
+}
+
+component Card inherits Rectangle {
+    in property <string> caption;
+    background: Theme.sheet;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.line;
+    horizontal-stretch: 1;
+    // Cards in a row share its width by their stretch, not by how long their text is.
+    preferred-width: 0;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        if caption != "": Text {
+            text: caption;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            color: Theme.ink-3;
+        }
+        @children
+    }
+}
+
+component Swatch inherits Card {
+    in property <string> name;
+    in property <color> swatch;
+    in property <string> use;
+    Rectangle {
+        height: 64px;
+        border-radius: Theme.radius-m;
+        background: swatch;
+        border-width: 1px;
+        border-color: Theme.line;
+    }
+    VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: name;
+            font-weight: 500;
+            color: Theme.ink;
+        }
+        Text {
+            text: use;
+            font-size: Theme.text-small;
+            color: Theme.ink-2;
+        }
+    }
+}
+
+component TypeSample {
+    in property <string> spec;
+    in property <string> sample;
+    in property <length> size: Theme.text-body;
+    in property <int> weight: 400;
+    in property <color> tone: Theme.ink;
+    in property <string> family: Theme.font;
+    HorizontalLayout {
+        spacing: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        Text {
+            width: 140px;
+            text: spec;
+            font-size: Theme.text-small;
+            color: Theme.ink-3;
+            vertical-alignment: center;
+        }
+        Text {
+            text: sample;
+            font-size: size;
+            font-weight: weight;
+            font-family: family;
+            color: tone;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Corner {
+    in property <length> radius;
+    in property <string> use;
+    VerticalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 72px;
+            height: 56px;
+            border-radius: radius;
+            background: Theme.fill;
+            border-width: 1.5px;
+            border-color: Theme.ink;
+        }
+        Text {
+            text: use;
+            font-size: Theme.text-small;
+            color: Theme.ink-3;
+        }
+    }
+}
+
+component DockIcon {
+    in property <color> tint;
+    in property <bool> running;
+    in property <bool> active;
+    width: 44px;
+    height: 44px;
+    Rectangle {
+        y: touch.has-hover ? -4px : 0;
+        animate y { duration: 200ms; easing: Theme.ease; }
+        border-radius: 11px;
+        background: tint;
+    }
+    if running: Rectangle {
+        width: active ? 14px : 4px;
+        height: 4px;
+        x: (parent.width - self.width) / 2;
+        y: parent.height + 2px;
+        border-radius: 2px;
+        background: Theme.ink;
+    }
+    touch := TouchArea { }
+}
+
+component Space {
+    in property <string> name;
+    in property <bool> current;
+    VerticalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 120px;
+            height: 68px;
+            border-radius: Theme.radius-s;
+            border-width: current ? 2px : 0;
+            border-color: Theme.ink;
+            background: @linear-gradient(140deg, #f3b47a 0%, #d4577b 50%, #4b3f8f 100%);
+        }
+        Text {
+            text: name;
+            font-size: Theme.text-small;
+            font-weight: 500;
+            color: Theme.ink;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component MockWindow inherits Rectangle {
+    in property <string> title;
+    in property <bool> active: true;
+    border-radius: Theme.radius-xl;
+    background: Theme.paper;
+    clip: true;
+    border-width: 1px;
+    border-color: #0000001f;
+    drop-shadow-blur: 40px;
+    drop-shadow-offset-y: 20px;
+    drop-shadow-color: #00000059;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        TitleBar {
+            title: title;
+            active: active;
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.line;
+        }
+        Rectangle {
+            height: 120px;
+            background: Theme.sheet;
+        }
+    }
+}
+
+export component Gallery inherits Window {
+    title: "元件";
+    default-font-family: Theme.font;
+    default-font-size: Theme.text-body;
+    background: Theme.paper;
+    preferred-width: 1120px;
+    preferred-height: 860px;
+    min-width: 900px;
+
+    in-out property <bool> dark <=> Theme.dark;
+
+    property <int> dock-side: 1;
+    property <int> placement: 0;
+    property <float> volume: 60;
+
+    Flickable {
+        content-height: content.preferred-height;
+        content := VerticalLayout {
+            width: parent.width;
+            padding: 40px;
+            padding-bottom: 80px;
+            spacing: 56px;
+
+            HorizontalLayout {
+                spacing: 24px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+                    Text {
+                        text: "Nekoland 元件";
+                        font-size: Theme.text-title;
+                        font-weight: 700;
+                        color: Theme.ink;
+                    }
+                    Text {
+                        text: "介面只用墨色、紙色和灰階，選中就是實心墨色。顏色留給桌布、照片和視窗內容；需要警示時才出現紅色。";
+                        color: Theme.ink-2;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: end;
+                    Segmented {
+                        options: ["淺色", "深色"];
+                        current: Theme.dark ? 1 : 0;
+                        changed(index) => { Theme.dark = index == 1; }
+                    }
+                }
+            }
+
+            Section {
+                title: "顏色";
+                VerticalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Swatch { name: "紙"; swatch: Theme.paper; use: "視窗底色"; }
+                        Swatch { name: "頁"; swatch: Theme.sheet; use: "卡片、清單"; }
+                        Swatch { name: "墨"; swatch: Theme.ink; use: "文字、選中"; }
+                        Swatch { name: "墨 2"; swatch: Theme.ink-2; use: "次要文字"; }
+                    }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Swatch { name: "墨 3"; swatch: Theme.ink-3; use: "說明、停用"; }
+                        Swatch { name: "線"; swatch: Theme.line; use: "分隔、外框"; }
+                        Swatch { name: "填"; swatch: Theme.fill; use: "輸入框、未選中"; }
+                        Swatch { name: "警示"; swatch: Theme.danger; use: "刪除、錯誤"; }
+                    }
+                }
+            }
+
+            Section {
+                title: "字體";
+                note: "Ubuntu Sans 加 Noto Sans CJK TC；數值、路徑和快速鍵用 Ubuntu Sans Mono。";
+                Card {
+                    TypeSample { spec: "標題 32 / 700"; sample: "桌面與 Dock"; size: Theme.text-title; weight: 700; }
+                    TypeSample { spec: "頁面標題 20 / 600"; sample: "顯示器"; size: Theme.text-page; weight: 600; }
+                    TypeSample { spec: "視窗標題 14 / 600"; sample: "設定"; weight: 600; }
+                    TypeSample { spec: "正文 14 / 400"; sample: "拖到螢幕邊緣時，視窗會貼齊到那一半。"; }
+                    TypeSample { spec: "說明 12 / 400"; sample: "重新登入後生效"; size: Theme.text-small; tone: Theme.ink-2; }
+                    TypeSample { spec: "群組標題 12 / 500"; sample: "系統"; size: Theme.text-small; weight: 500; tone: Theme.ink-3; }
+                    TypeSample { spec: "數值 13 等寬"; sample: "6016 × 3384 · 60 Hz · Ctrl+Alt+T"; size: 13px; family: Theme.mono; }
+                }
+            }
+
+            Section {
+                title: "圓角";
+                note: "越大的面越圓。";
+                Card {
+                    HorizontalLayout {
+                        spacing: 20px;
+                        alignment: start;
+                        Corner { radius: 6px; use: "6 · 小按鈕、提示"; }
+                        Corner { radius: 8px; use: "8 · 按鈕、輸入框"; }
+                        Corner { radius: 12px; use: "12 · 卡片、選單"; }
+                        Corner { radius: 14px; use: "14 · 視窗、對話框"; }
+                        Corner { radius: 28px; use: "全圓 · 開關、標籤"; }
+                    }
+                }
+            }
+
+            Section {
+                title: "按鈕";
+                note: "一個畫面只有一個主要按鈕。按鈕寫出動作本身，不寫「確定」。";
+                HorizontalLayout {
+                    spacing: 16px;
+                    Card {
+                        caption: "種類";
+                        horizontal-stretch: 3;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            Button { text: "儲存"; }
+                            Button { text: "取消"; kind: "secondary"; }
+                            Button { text: "重設"; kind: "plain"; }
+                            Button { text: "刪除"; kind: "danger"; }
+                            Button { text: "儲存"; enabled: false; }
+                            Button { text: "開始使用"; large: true; }
+                            Button { text: "新增"; icon: "plus"; kind: "secondary"; }
+                        }
+                    }
+                    Card {
+                        caption: "圖示按鈕";
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            IconButton { icon: "search"; label: "搜尋"; }
+                            IconButton { icon: "more"; label: "更多"; }
+                            IconButton { icon: "back"; label: "返回"; }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "輸入";
+                HorizontalLayout {
+                    spacing: 16px;
+                    Card {
+                        TextField { label: "裝置名稱"; text: "nekoland"; }
+                    }
+                    Card {
+                        TextField { label: "主機名稱"; text: "neko land"; error: "不能有空格"; }
+                    }
+                    Card {
+                        TextField { label: "搜尋"; placeholder: "搜尋"; icon: "search"; }
+                    }
+                    Card {
+                        Select {
+                            label: "時區";
+                            options: ["台北（GMT+8）", "東京（GMT+9）", "倫敦（GMT+0）"];
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "選擇";
+                HorizontalLayout {
+                    spacing: 16px;
+                    Card {
+                        caption: "開關";
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            Switch { checked: true; label: "開"; }
+                            Switch { label: "關"; }
+                        }
+                    }
+                    Card {
+                        caption: "核取方塊與單選";
+                        CheckBox { text: "開機時啟動"; checked: true; }
+                        CheckBox { text: "在 Dock 顯示"; }
+                        Radio {
+                            text: "置中";
+                            checked: placement == 0;
+                            clicked => { placement = 0; }
+                        }
+                        Radio {
+                            text: "游標所在處";
+                            checked: placement == 1;
+                            clicked => { placement = 1; }
+                        }
+                    }
+                    Card {
+                        caption: "分段選擇";
+                        HorizontalLayout {
+                            alignment: start;
+                            Segmented {
+                                options: ["左側", "底部", "右側"];
+                                current <=> dock-side;
+                            }
+                        }
+                    }
+                    Card {
+                        caption: "滑桿";
+                        Slider {
+                            label: "音量";
+                            value <=> volume;
+                        }
+                        Text {
+                            text: round(volume) + "%";
+                            font-family: Theme.mono;
+                            font-size: Theme.text-small;
+                            color: Theme.ink-3;
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "清單與導覽";
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: stretch;
+                    Rows {
+                        horizontal-stretch: 3;
+                        Row {
+                            title: "毛玻璃";
+                            first: true;
+                            Switch { checked: true; label: "毛玻璃"; }
+                        }
+                        Row {
+                            title: "自動隱藏";
+                            subtitle: "游標移到螢幕底部時出現";
+                            Switch { label: "自動隱藏"; }
+                        }
+                        Row {
+                            title: "解析度";
+                            link: true;
+                            Text {
+                                text: "6016 × 3384";
+                                font-family: Theme.mono;
+                                font-size: 13px;
+                                color: Theme.ink-2;
+                                vertical-alignment: center;
+                            }
+                            Icon {
+                                name: "forward";
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        Row {
+                            title: "藍牙";
+                            Badge {
+                                text: "已關閉";
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    Card {
+                        caption: "側邊欄";
+                        horizontal-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            NavItem { text: "桌面"; current: true; }
+                            NavItem { text: "顯示器"; detail: "6016 × 3384"; }
+                            NavItem { text: "輸入法"; detail: "Project Key"; }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "回饋";
+                HorizontalLayout {
+                    spacing: 16px;
+                    Card {
+                        caption: "標籤";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Badge { text: "3"; }
+                            Badge { text: "使用中"; kind: "solid"; }
+                            Badge { text: "離線"; kind: "danger"; }
+                        }
+                    }
+                    Card {
+                        caption: "進度";
+                        ProgressBar { progress: 0.62; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Spinner { }
+                            Text {
+                                text: "正在下載";
+                                color: Theme.ink-2;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Card {
+                        caption: "提示";
+                        HorizontalLayout {
+                            alignment: start;
+                            Tooltip { text: "Ctrl+Alt+T"; }
+                        }
+                    }
+                    Card {
+                        caption: "浮動訊息";
+                        Toast {
+                            text: "已移到桌面 2";
+                            action: "復原";
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "浮在桌面上的";
+                note: "面板、Dock、通知和選單用同一層玻璃。模糊由合成器畫，這裡只有半透明。";
+                Rectangle {
+                    border-radius: Theme.radius-l;
+                    clip: true;
+                    background: @linear-gradient(140deg, #f3b47a 0%, #d4577b 42%, #4b3f8f 78%, #1f2a5c 100%);
+                    VerticalLayout {
+                        padding: 28px;
+                        spacing: 24px;
+                        alignment: start;
+
+                        Glass {
+                            height: 32px;
+                            border-radius: Theme.radius-m;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                Text {
+                                    text: "活動";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: Theme.ink;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    alignment: center;
+                                    Rectangle { width: 18px; height: 6px; y: 13px; border-radius: 3px; background: Theme.ink; }
+                                    Rectangle { width: 6px; height: 6px; y: 13px; border-radius: 3px; background: Theme.ink-3; }
+                                    Rectangle { width: 6px; height: 6px; y: 13px; border-radius: 3px; background: Theme.ink-3; }
+                                }
+                                Text {
+                                    text: "11月16日 週一 09:41";
+                                    font-family: Theme.mono;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: Theme.ink;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 20px;
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: start;
+                                Notification {
+                                    app-color: #3f8f6b;
+                                    title: "檔案";
+                                    body: "「設計稿.png」已複製到下載項目";
+                                    time: "現在";
+                                }
+                            }
+                            Menu {
+                                MenuItem { text: "開新視窗"; shortcut: "Ctrl N"; }
+                                MenuItem { text: "釘選到 Dock"; highlighted: true; }
+                                MenuItem { text: "移到桌面 2"; }
+                                MenuSeparator { }
+                                MenuItem { text: "結束"; shortcut: "Ctrl Q"; danger: true; }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            Glass {
+                                border-radius: Theme.radius-l;
+                                HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: 10px;
+                                    Space { name: "桌面 1"; current: true; }
+                                    Space { name: "桌面 2"; }
+                                    Rectangle {
+                                        width: 68px;
+                                        height: 68px;
+                                        border-radius: Theme.radius-s;
+                                        border-width: 1.5px;
+                                        border-color: Theme.ink-3;
+                                        Icon {
+                                            name: "plus";
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            Glass {
+                                border-radius: 16px;
+                                HorizontalLayout {
+                                    padding: 6px;
+                                    padding-bottom: 10px;
+                                    spacing: 6px;
+                                    DockIcon { tint: #f2f0ea; running: true; }
+                                    DockIcon { tint: #2b2b31; running: true; active: true; }
+                                    DockIcon { tint: #e9a23b; }
+                                    DockIcon { tint: #3f8f6b; running: true; }
+                                    DockIcon { tint: #d4577b; }
+                                    DockIcon { tint: #4f6fd8; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                title: "視窗與對話框";
+                note: "標題列和內容同一張紙，沒有分隔的色帶。非作用中的視窗只把標題退成灰色。";
+                VerticalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        MockWindow { title: "設定"; }
+                        MockWindow { title: "檔案"; active: false; }
+                    }
+                    Rectangle {
+                        border-radius: Theme.radius-l;
+                        background: Theme.scrim;
+                        HorizontalLayout {
+                            padding: 32px;
+                            alignment: center;
+                            Dialog {
+                                title: "刪除桌面 2？";
+                                body: "上面的 3 個視窗會移到桌面 1。";
+                                Button { text: "取消"; kind: "secondary"; }
+                                Button { text: "刪除"; kind: "danger"; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

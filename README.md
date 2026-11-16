@@ -60,6 +60,13 @@ Programs learn whether to be dark from `xdg-desktop-portal`. With
 | Ctrl+Alt+F1…F12 | Switch virtual terminal |
 | Ctrl+Alt+Backspace | Quit |
 
+## Widgets
+
+`ui/` holds Nekoland's own widgets, written in [Slint](https://slint.dev): the
+colours and sizes in `ui/ui/theme.slint`, the widgets in `ui/ui/widgets.slint`.
+`cargo run -p nekoland-ui` opens a window with all of them. It follows the
+system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
+
 ## From other programs
 
 `nekoland msg WORD` talks to the running compositor: `overview`, `workspace-add`,
