@@ -32,10 +32,10 @@ use crate::{
 /// different margins, and the same padding then looks cramped around some.
 const ART: i32 = 40;
 const GAP: i32 = 12;
-const SIDE: i32 = 10;
-const TOP: i32 = 10;
-/// Below the art, room for the dot.
-const BOTTOM: i32 = 14;
+/// The same all around the art, the dot of a running application sitting in the bottom.
+const SIDE: i32 = 12;
+const TOP: i32 = 12;
+const BOTTOM: i32 = 12;
 const HEIGHT: i32 = TOP + ART + BOTTOM;
 const RADIUS: i32 = 20;
 const MARGIN: i32 = 8;
