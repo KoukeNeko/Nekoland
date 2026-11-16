@@ -2,6 +2,7 @@
 
 mod config;
 mod cursor;
+mod dbus;
 mod focus;
 mod glass;
 mod handlers;
@@ -9,6 +10,7 @@ mod handlers;
 mod grabs;
 mod input;
 mod ipc;
+mod menubar;
 mod overview;
 mod render;
 mod state;
@@ -55,6 +57,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state,
         display_handle,
     };
+
+    // The menu bar's application menus and status items come over D-Bus, on a thread.
+    let (dbus_events, dbus_channel) = smithay::reexports::calloop::channel::channel();
+    event_loop
+        .handle()
+        .insert_source(dbus_channel, |event, _, data| {
+            if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
+                data.state.menu_bar_event(event);
+            }
+        })
+        .map_err(|err| err.error)?;
+    data.state.menu_bar.bus = dbus::start(dbus_events)
+        .inspect_err(|err| tracing::warn!("the menu bar has no D-Bus: {err}"))
+        .ok();
 
     // Inside another session, be a window in it; on a bare console, drive the display.
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();

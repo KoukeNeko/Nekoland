@@ -232,6 +232,12 @@ impl Glass {
     /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
     pub fn pane(&mut self, surface: &WlSurface, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
         self.ids.retain(|surface, _| surface.alive());
+        let id = self.ids.entry(surface.clone()).or_insert_with(Id::new).clone();
+        self.pane_with(id, rect, radius)
+    }
+
+    /// The glass behind something the compositor draws itself, which names it with `id`.
+    pub fn pane_with(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
         let texture = self.levels.get(1)?.clone();
         let blurred = texture.size();
         let full = self.levels[0].size();
@@ -242,7 +248,7 @@ impl Glass {
             (f64::from(rect.size.w) * scale_x, f64::from(rect.size.h) * scale_y).into(),
         );
         Some(Pane {
-            id: self.ids.entry(surface.clone()).or_insert_with(Id::new).clone(),
+            id,
             commit: self.commit,
             texture,
             program: self.pane.clone(),

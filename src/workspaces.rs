@@ -86,6 +86,19 @@ impl Nekoland {
         }
     }
 
+    /// Sends a window on screen to another desktop.
+    pub fn move_to_workspace(&mut self, window: &Window, index: usize) {
+        if index >= self.workspaces.count() || index == self.workspaces.active {
+            return;
+        }
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+        self.space.unmap_elem(window);
+        self.workspaces.parked[index].push((window.clone(), location));
+        self.focus_top_window();
+    }
+
     /// The desktop to the left or to the right of the one shown, if there is one.
     pub fn switch_workspace_by(&mut self, step: isize) {
         if let Some(index) = self.workspaces.active.checked_add_signed(step) {

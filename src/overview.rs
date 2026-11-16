@@ -203,6 +203,7 @@ impl Nekoland {
     }
 
     fn open_overview(&mut self) {
+        self.close_menu();
         let Some(output) = self
             .space
             .outputs()

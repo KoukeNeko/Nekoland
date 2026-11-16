@@ -73,6 +73,7 @@ impl Nekoland {
                 pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
                 pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
 
+                self.menu_bar_motion(pos);
                 let under = self.surface_under(pos);
                 pointer.motion(
                     self,
@@ -105,6 +106,7 @@ impl Nekoland {
 
                 let pointer = self.seat.get_pointer().unwrap();
 
+                self.menu_bar_motion(pos);
                 let under = self.surface_under(pos);
 
                 pointer.motion(
@@ -127,6 +129,8 @@ impl Nekoland {
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
                     self.super_tap = false;
                     self.pointer_pressed(button, serial);
+                } else if ButtonState::Released == button_state {
+                    self.menu_bar_release(pointer.current_location());
                 }
 
                 pointer.button(
@@ -193,6 +197,9 @@ impl Nekoland {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
+        if self.menu_bar_press(pos) {
+            return;
+        }
         if self.overview.is_some() && self.overview_covers(pos) {
             self.overview_click(pos);
         } else if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {
@@ -245,6 +252,11 @@ impl Nekoland {
         } = *modifiers;
         let focused = self.focused_window();
 
+        if self.menu_bar.open.is_some() {
+            self.menu_bar_key(sym);
+            return true;
+        }
+
         if self.overview.is_some() && !(ctrl || alt || logo) {
             match typed {
                 _ if sym == Keysym::Escape => self.close_overview(None),
@@ -275,6 +287,7 @@ impl Nekoland {
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
+            Keysym::F2 if ctrl => self.open_first_menu(),
             Keysym::Up if ctrl && alt => self.toggle_overview(),
             Keysym::Left if ctrl && alt => self.switch_workspace_by(-1),
             Keysym::Right if ctrl && alt => self.switch_workspace_by(1),

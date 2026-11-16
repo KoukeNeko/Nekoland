@@ -1,4 +1,4 @@
-//! Text and application icons drawn by the compositor itself, for the overview.
+//! Text and icons drawn by the compositor itself, for the overview and the menu bar.
 
 use std::{
     collections::HashMap,
@@ -23,7 +23,7 @@ pub struct Picture {
     pub size: Size<i32, Logical>,
 }
 
-fn picture(mut surface: ImageSurface) -> Option<Picture> {
+pub fn picture(mut surface: ImageSurface) -> Option<Picture> {
     let size = Size::from((surface.width(), surface.height()));
     surface.flush();
     let data = surface.data().ok()?;
@@ -34,7 +34,7 @@ fn picture(mut surface: ImageSurface) -> Option<Picture> {
     })
 }
 
-fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
+pub fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
     use std::f64::consts::{FRAC_PI_2, PI};
     cr.new_sub_path();
     cr.arc(x + width - radius, y + radius, radius, -FRAC_PI_2, 0.0);
@@ -167,6 +167,106 @@ fn draw_icon(cr: &Context, path: &Path, x: f64, y: f64, size: i32) -> Option<()>
     cr.set_source_surface(&icon, 0.0, 0.0).ok()?;
     cr.paint().ok()?;
     cr.restore().ok()
+}
+
+/// An icon by name from the icon themes, or from `extra_dir` first, `size` pixels square.
+/// Symbolic icons are drawn in `tint` instead of their own grey.
+pub fn named_icon(name: &str, extra_dir: &str, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
+    let path = find_named_icon(name, extra_dir)?;
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size, size).ok()?;
+    let symbolic = name.ends_with("-symbolic") || path.to_string_lossy().contains("symbolic");
+    pixbuf_surface(&pixbuf, symbolic.then_some(tint))
+}
+
+/// An icon a program drew itself: ARGB, in network byte order, not premultiplied.
+pub fn pixmap_icon(width: i32, height: i32, argb: &[u8]) -> Option<ImageSurface> {
+    let mut surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let stride = surface.stride() as usize;
+    {
+        let mut data = surface.data().ok()?;
+        for (index, pixel) in argb.chunks_exact(4).enumerate() {
+            let (y, x) = (index / width as usize, index % width as usize);
+            let [a, r, g, b] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            let premultiply = |channel: u8| (u16::from(channel) * u16::from(a) / 255) as u8;
+            let native = u32::from_be_bytes([a, premultiply(r), premultiply(g), premultiply(b)]);
+            let at = y * stride + x * 4;
+            data[at..at + 4].copy_from_slice(&native.to_ne_bytes());
+        }
+    }
+    Some(surface)
+}
+
+fn pixbuf_surface(pixbuf: &gdk_pixbuf::Pixbuf, tint: Option<(f64, f64, f64)>) -> Option<ImageSurface> {
+    let (width, height) = (pixbuf.width(), pixbuf.height());
+    let channels = pixbuf.n_channels() as usize;
+    let rowstride = pixbuf.rowstride() as usize;
+    let bytes = pixbuf.read_pixel_bytes();
+    let mut surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let stride = surface.stride() as usize;
+    {
+        let mut data = surface.data().ok()?;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let pixel = &bytes[y * rowstride + x * channels..];
+                let a = if channels == 4 { pixel[3] } else { 255 };
+                let (r, g, b) = match tint {
+                    Some((r, g, b)) => ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
+                    None => (pixel[0], pixel[1], pixel[2]),
+                };
+                let premultiply = |channel: u8| (u16::from(channel) * u16::from(a) / 255) as u8;
+                let native = u32::from_be_bytes([a, premultiply(r), premultiply(g), premultiply(b)]);
+                let at = y * stride + x * 4;
+                data[at..at + 4].copy_from_slice(&native.to_ne_bytes());
+            }
+        }
+    }
+    Some(surface)
+}
+
+/// Any icon of that name, SVG or PNG, in any size or context of the themes.
+fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if !extra_dir.is_empty() {
+        roots.push(extra_dir.into());
+    }
+    for dir in data_dirs() {
+        roots.extend(ICON_THEMES.iter().map(|theme| dir.join("icons").join(theme)));
+        roots.push(dir.join("pixmaps"));
+    }
+    // shortcut: walks the theme folders on each lookup; callers keep what they draw.
+    roots.iter().find_map(|root| find_file(root, name, 4))
+}
+
+fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
+    let entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    // Scalable first, so that a symbolic SVG beats a small bitmap.
+    let found = ["svg", "png"].iter().find_map(|ext| {
+        entries
+            .iter()
+            .find(|path| {
+                path.file_stem().and_then(|s| s.to_str()) == Some(stem)
+                    && path.extension().and_then(|e| e.to_str()) == Some(ext)
+            })
+            .cloned()
+    });
+    if found.is_some() || depth == 0 {
+        return found;
+    }
+    let mut subdirs: Vec<&PathBuf> = entries.iter().filter(|path| path.is_dir()).collect();
+    subdirs.sort_by_key(|path| {
+        !path.to_string_lossy().contains("scalable") && !path.to_string_lossy().contains("symbolic")
+    });
+    subdirs
+        .into_iter()
+        .find_map(|sub| find_file(sub, stem, depth - 1))
 }
 
 fn data_dirs() -> Vec<PathBuf> {

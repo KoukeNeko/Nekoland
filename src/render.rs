@@ -21,6 +21,7 @@ use smithay::{
 
 use crate::{
     glass::{Glass, Pane},
+    menubar::Overlay,
     overview::{BAR_HEIGHT, ICON_SIZE},
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
@@ -86,7 +87,8 @@ pub fn scene_elements(
             .map(SceneElement::Surface)
             .collect();
         under.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-        let mut elements = floating_elements(state, renderer, output, glass, &under, false);
+        let overlays = state.menu_bar_overlays();
+        let mut elements = floating_elements(state, renderer, output, glass, &under, false, &overlays);
         elements.extend(under);
         return Ok(elements);
     };
@@ -202,12 +204,13 @@ pub fn scene_elements(
         Kind::Unspecified,
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-    let mut scene = floating_elements(state, renderer, output, glass, &elements, true);
+    let mut scene = floating_elements(state, renderer, output, glass, &elements, true, &[]);
     scene.extend(elements);
     Ok(scene)
 }
 
-/// The layers above the windows, each surface the configuration names on glass over `under`.
+/// The compositor's own overlays and the layers above the windows, each overlay and each
+/// surface the configuration names on glass over `under`.
 fn floating_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
@@ -215,6 +218,7 @@ fn floating_elements(
     mut glass: Option<&mut Glass>,
     under: &[SceneElement],
     without_top_panel: bool,
+    overlays: &[Overlay<'_>],
 ) -> Vec<SceneElement> {
     let output_width = state
         .space
@@ -229,10 +233,20 @@ fn floating_elements(
         .cloned()
         .collect();
 
-    let areas: Vec<_> = surfaces
+    let output_loc = state
+        .space
+        .output_geometry(output)
+        .map(|geometry| geometry.loc)
+        .unwrap_or_default();
+    let areas: Vec<_> = overlays
         .iter()
-        .filter(|surface| radius_of(surface).is_some())
-        .map(|surface| map.layer_geometry(surface).unwrap_or_default().to_physical(1))
+        .map(|overlay| Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1))
+        .chain(
+            surfaces
+                .iter()
+                .filter(|surface| radius_of(surface).is_some())
+                .map(|surface| map.layer_geometry(surface).unwrap_or_default().to_physical(1)),
+        )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
         if !areas.is_empty() {
@@ -243,6 +257,28 @@ fn floating_elements(
     }
 
     let mut elements = Vec::new();
+    for overlay in overlays {
+        let rect = Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1);
+        elements.extend(
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                rect.loc.to_f64(),
+                &overlay.picture.buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture),
+        );
+        elements.extend(
+            glass
+                .as_deref_mut()
+                .and_then(|glass| glass.pane_with(overlay.id.clone(), rect, overlay.radius))
+                .map(SceneElement::Glass),
+        );
+    }
     for surface in &surfaces {
         let geometry = map.layer_geometry(surface).unwrap_or_default();
         elements.extend(

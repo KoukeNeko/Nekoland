@@ -10,24 +10,6 @@ window#waybar {
     color: #ffffff;
 }
 
-window.top#waybar {
-    background: rgba(20, 20, 22, 0.45);
-}
-
-window.top#waybar #custom-activities {
-    margin: 4px 8px;
-    padding: 0 12px;
-    border-radius: 14px;
-}
-
-window.top#waybar #custom-activities:hover {
-    background: rgba(255, 255, 255, 0.14);
-}
-
-window.top#waybar #clock {
-    margin-right: 14px;
-}
-
 window.dock#waybar {
     background: rgba(36, 31, 49, 0.40);
     border: 1px solid rgba(255, 255, 255, 0.10);

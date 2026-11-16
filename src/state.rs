@@ -34,6 +34,7 @@ use smithay::{
 use crate::{
     config::Config,
     handlers::{foreign_toplevel::ForeignToplevelState, protocols::Protocols},
+    menubar::MenuBar,
     overview::Overview,
     text::Apps,
     workspaces::Workspaces,
@@ -56,6 +57,7 @@ pub struct Nekoland {
     /// Minimized windows, with where they go back to.
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
     pub overview: Option<Overview>,
+    pub menu_bar: MenuBar,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
     pub apps: Apps,
@@ -141,6 +143,7 @@ impl Nekoland {
             space,
             minimized: Vec::new(),
             overview: None,
+            menu_bar: MenuBar::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),
             super_tap: false,
@@ -231,6 +234,10 @@ impl Nekoland {
     /// The surface at a position: overlay and top layers come before windows, the
     /// bottom and background layers after them.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        // The menu bar and its menus are the compositor's own, above everything.
+        if self.menu_bar_covers(pos) {
+            return None;
+        }
         let layer_surface_under = |layers| {
             let (layer, location) = self.layer_under(pos, layers)?;
             layer

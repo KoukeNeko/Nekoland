@@ -1,37 +1,5 @@
-// The panel and the dock, as two waybar bars.
+// The dock, as a waybar bar. The menu bar along the top is drawn by Nekoland itself.
 [
-    {
-        "name": "top",
-        "layer": "top",
-        "position": "top",
-        "height": 32,
-        "spacing": 14,
-        "modules-left": ["custom/activities"],
-        "modules-right": ["tray", "network", "pulseaudio", "clock"],
-        "custom/activities": {
-            "format": "Activities",
-            "on-click": "nekoland msg overview",
-            "tooltip": false
-        },
-        "tray": { "icon-size": 16, "spacing": 12 },
-        "network": {
-            "format-ethernet": "",
-            "format-wifi": "",
-            "format-disconnected": "",
-            "tooltip-format": "{ifname}: {ipaddr}"
-        },
-        "pulseaudio": {
-            "format": "{icon}",
-            "format-muted": "",
-            "format-icons": ["", "", ""],
-            "tooltip-format": "{volume}%"
-        },
-        "clock": {
-            "format": "{:%a %b %d  %H:%M:%S}",
-            "interval": 1,
-            "tooltip-format": "<tt>{calendar}</tt>"
-        }
-    },
     {
         "name": "dock",
         "layer": "top",

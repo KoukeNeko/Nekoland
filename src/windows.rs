@@ -12,7 +12,7 @@ use smithay::{
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use crate::{focus::KeyFocus, Nekoland};
+use crate::{focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
 
 /// The states that say where a window was put, as opposed to what it is doing.
 const PLACEMENT_STATES: [ToplevelState; 6] = [
@@ -84,7 +84,14 @@ impl Nekoland {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
-        Some(Rectangle::new(geometry.loc + zone.loc, zone.size))
+        let mut area = Rectangle::new(geometry.loc + zone.loc, zone.size);
+        // The menu bar keeps the top for itself.
+        let below_bar = geometry.loc.y + MENU_BAR_HEIGHT;
+        if area.loc.y < below_bar {
+            area.size.h -= below_bar - area.loc.y;
+            area.loc.y = below_bar;
+        }
+        Some(area)
     }
 
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {

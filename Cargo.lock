@@ -1560,6 +1560,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdk-pixbuf"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fd242894c084f4beed508a56952750bce3e96e85eb68fdc153637daa163e10c"
+dependencies = [
+ "gdk-pixbuf-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk-pixbuf-sys"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b34f3b580c988bd217e9543a2de59823fafae369d1a055555e5f95a8b130b96"
+dependencies = [
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2990,6 +3015,8 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "cairo-rs",
+ "gdk-pixbuf",
+ "libc",
  "pango",
  "pangocairo",
  "serde",
@@ -2999,6 +3026,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "xcursor",
+ "zbus",
 ]
 
 [[package]]
