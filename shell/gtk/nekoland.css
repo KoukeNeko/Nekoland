@@ -1,0 +1,71 @@
+/* Nekoland's design language for GTK 4 and libadwaita applications.
+ *
+ * libadwaita draws its windows, header bars, sidebars, cards, popovers and dialogs from
+ * the CSS variables below. GTK loads ~/.config/gtk-4.0/gtk.css over every theme, so this
+ * file, imported from there, gives each of those applications Nekoland's paper and ink,
+ * with what is selected in solid ink, without changing them. Settings imports it when
+ * Nekoland's look is turned on.
+ *
+ * The colours are the tokens of ui/ui/theme.slint; a test in ui/src/settings.rs keeps
+ * them alike. */
+
+:root {
+  --nekoland-paper: #f4f3f0;
+  --nekoland-sheet: #fbfaf8;
+  --nekoland-ink: #17171a;
+  --nekoland-line: #e2e0db;
+  --nekoland-on-ink: #fbfaf8;
+  --nekoland-danger: #c4372f;
+  --nekoland-on-danger: #ffffff;
+
+  --window-bg-color: var(--nekoland-paper);
+  --window-fg-color: var(--nekoland-ink);
+  --view-bg-color: var(--nekoland-sheet);
+  --view-fg-color: var(--nekoland-ink);
+
+  /* The title bar is the window's own paper, without a band of its own. */
+  --headerbar-bg-color: var(--nekoland-paper);
+  --headerbar-backdrop-color: var(--nekoland-paper);
+  --headerbar-fg-color: var(--nekoland-ink);
+  --headerbar-border-color: var(--nekoland-line);
+
+  --sidebar-bg-color: var(--nekoland-paper);
+  --sidebar-backdrop-color: var(--nekoland-paper);
+  --sidebar-fg-color: var(--nekoland-ink);
+  --sidebar-border-color: var(--nekoland-line);
+  --secondary-sidebar-bg-color: var(--nekoland-paper);
+  --secondary-sidebar-backdrop-color: var(--nekoland-paper);
+  --secondary-sidebar-fg-color: var(--nekoland-ink);
+  --secondary-sidebar-border-color: var(--nekoland-line);
+
+  --card-bg-color: var(--nekoland-sheet);
+  --card-fg-color: var(--nekoland-ink);
+  --popover-bg-color: var(--nekoland-sheet);
+  --popover-fg-color: var(--nekoland-ink);
+  --dialog-bg-color: var(--nekoland-sheet);
+  --dialog-fg-color: var(--nekoland-ink);
+
+  /* Selected is solid ink: colour belongs to what the windows show. */
+  --accent-bg-color: var(--nekoland-ink);
+  --accent-fg-color: var(--nekoland-on-ink);
+  --accent-color: var(--nekoland-ink);
+
+  --destructive-bg-color: var(--nekoland-danger);
+  --destructive-fg-color: var(--nekoland-on-danger);
+  --destructive-color: var(--nekoland-danger);
+  --error-color: var(--nekoland-danger);
+
+  --window-radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --nekoland-paper: #1b1b1e;
+    --nekoland-sheet: #222226;
+    --nekoland-ink: #f1efea;
+    --nekoland-line: #323237;
+    --nekoland-on-ink: #17171a;
+    --nekoland-danger: #ff6b5f;
+    --nekoland-on-danger: #17171a;
+  }
+}

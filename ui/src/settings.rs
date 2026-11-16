@@ -194,6 +194,12 @@ fn main() -> glib::ExitCode {
 }
 
 fn build(app: &adw::Application) {
+    // A look turned on before keeps up with this version of it.
+    if gtk_look_on() {
+        if let Err(err) = std::fs::write(gtk_dir().join("nekoland.css"), GTK_LOOK) {
+            eprintln!("GTK look: {err}");
+        }
+    }
     let config = Config::load();
     let autostart = Rc::new(RefCell::new(config.autostart()));
     let pages = [
@@ -495,8 +501,69 @@ fn appearance_page() -> adw::PreferencesPage {
         );
     });
     style.add(&scheme);
+
+    let look = adw::SwitchRow::builder()
+        .title("Nekoland 外觀")
+        .subtitle("GTK app 重新開啟後套用")
+        .active(gtk_look_on())
+        .build();
+    look.connect_active_notify(|row| {
+        if let Err(err) = set_gtk_look(row.is_active()) {
+            eprintln!("GTK look: {err}");
+        }
+    });
+    style.add(&look);
     page.add(&style);
     page
+}
+
+/// Nekoland's design language for GTK 4 and libadwaita applications, as libadwaita's
+/// variables; see the file for what it reaches.
+const GTK_LOOK: &str = include_str!("../../shell/gtk/nekoland.css");
+/// What GTK's own user stylesheet imports it with, the rest of that file left as it is.
+const GTK_IMPORT: &str = "@import url(\"nekoland.css\");";
+
+/// Where GTK 4 reads the user's stylesheet, and where Nekoland's goes beside it.
+fn gtk_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("gtk-4.0")
+}
+
+fn gtk_look_on() -> bool {
+    std::fs::read_to_string(gtk_dir().join("gtk.css"))
+        .is_ok_and(|text| text.lines().any(|line| line.trim() == GTK_IMPORT))
+}
+
+/// Imports Nekoland's look into GTK's user stylesheet, or takes it out again, keeping
+/// whatever else is there.
+fn set_gtk_look(on: bool) -> std::io::Result<()> {
+    let dir = gtk_dir();
+    let user = dir.join("gtk.css");
+    let text = match std::fs::read_to_string(&user) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    let mut lines: Vec<&str> = text.lines().filter(|line| line.trim() != GTK_IMPORT).collect();
+    if on {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("nekoland.css"), GTK_LOOK)?;
+        // An import counts only before any rule.
+        lines.insert(0, GTK_IMPORT);
+    } else if let Err(err) = std::fs::remove_file(dir.join("nekoland.css")) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err);
+        }
+    }
+    if lines.is_empty() && !on {
+        return match std::fs::remove_file(&user) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        };
+    }
+    std::fs::write(&user, lines.join("\n") + "\n")
 }
 
 fn mouse_page(config: &Config) -> adw::PreferencesPage {
@@ -726,4 +793,37 @@ fn design_page() -> adw::PreferencesPage {
 fn save_autostart(autostart: &[String]) {
     let quoted: Vec<String> = autostart.iter().map(|command| format!("{command:?}")).collect();
     set(&format!("autostart = [{}]", quoted.join(", ")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The GTK look keeps the colours the Slint widgets take from theme.slint, light and dark.
+    #[test]
+    fn the_gtk_look_has_the_design_tokens() {
+        let theme = include_str!("../ui/theme.slint");
+        let (light, dark) = GTK_LOOK
+            .split_once("@media (prefers-color-scheme: dark)")
+            .expect("a dark part");
+        for token in ["paper", "sheet", "ink", "line", "on-ink", "danger", "on-danger"] {
+            let line = theme
+                .lines()
+                .find(|line| line.contains(&format!("<color> {token}: dark ? ")))
+                .unwrap_or_else(|| panic!("{token} in theme.slint"));
+            let (_, values) = line.split_once("dark ? ").expect("dark and light");
+            let (dark_value, light_value) = values
+                .trim_end_matches(';')
+                .split_once(" : ")
+                .expect("two colours");
+            assert!(
+                light.contains(&format!("--nekoland-{token}: {light_value};")),
+                "light {token}"
+            );
+            assert!(
+                dark.contains(&format!("--nekoland-{token}: {dark_value};")),
+                "dark {token}"
+            );
+        }
+    }
 }

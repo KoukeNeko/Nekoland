@@ -161,6 +161,21 @@ cat's-eye stone. The surface's own colour goes on top, so it has to be transluce
 for the glass to show; the styles in `shell/` are. Glass behind a bar that spans the
 whole output has square corners.
 
+## GTK applications
+
+Nekoland's design language reaches GTK 4 and libadwaita applications through the system's
+style, as a Mac's controls change when the system does, without changing the applications.
+`shell/gtk/nekoland.css` sets libadwaita's colours to Nekoland's paper and ink, with what
+is selected in solid ink, light and dark, and windows to 12px corners. Settings' 外觀 page
+turns it on: it puts the file beside `~/.config/gtk-4.0/gtk.css` and imports it from
+there, keeping what else that file has, and keeps it up to date with Settings. An
+application takes it when it is opened again.
+
+It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
+cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
+which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an
+application draws itself.
+
 ## Shortcuts
 
 | Keys | Action |
