@@ -262,22 +262,40 @@ fn build(app: &adw::Application) {
         look,
         move |styles| look.load_from_string(&look_for(styles.is_dark()))
     ));
-    let pages: [(&str, gtk::Widget); 14] = [
-        ("桌面", desktop_page(&config, &autostart).upcast()),
-        ("外觀", appearance_page(&config, &look).upcast()),
-        ("顯示", display_page(&config).upcast()),
-        ("字型", fonts_page(&look).upcast()),
-        ("鍵盤", keyboard_page(&config).upcast()),
-        ("滑鼠與觸控板", mouse_page(&config).upcast()),
-        ("聲音", sound_page().upcast()),
-        ("電源", power_page(&config).upcast()),
-        ("隱私", privacy_page().upcast()),
-        ("協助工具", accessibility_page(&config).upcast()),
-        ("預設應用程式", default_apps_page(&config).upcast()),
-        ("啟動項目", startup_page(&autostart).upcast()),
-        ("關於", about_page().upcast()),
-        ("設計語言", design_page().upcast()),
+    // The pages in groups with a line between, as the Mac's System Settings has them.
+    let groups: Vec<Vec<(&str, &str, gtk::Widget)>> = vec![
+        vec![
+            ("外觀", "preferences-desktop-appearance-symbolic", appearance_page(&config, &look).upcast()),
+            ("字型", "preferences-desktop-font-symbolic", fonts_page(&look).upcast()),
+            ("協助工具", "preferences-desktop-accessibility-symbolic", accessibility_page(&config).upcast()),
+            ("隱私", "preferences-system-privacy-symbolic", privacy_page().upcast()),
+        ],
+        vec![
+            ("桌面", "user-desktop-symbolic", desktop_page(&config, &autostart).upcast()),
+            ("顯示", "video-display-symbolic", display_page(&config).upcast()),
+            ("電源", "battery-level-100-symbolic", power_page(&config).upcast()),
+        ],
+        vec![
+            ("聲音", "audio-speakers-symbolic", sound_page().upcast()),
+            ("鍵盤", "input-keyboard-symbolic", keyboard_page(&config).upcast()),
+            ("滑鼠與觸控板", "input-mouse-symbolic", mouse_page(&config).upcast()),
+        ],
+        vec![
+            ("預設應用程式", "preferences-desktop-apps-symbolic", default_apps_page(&config).upcast()),
+            ("啟動項目", "system-run-symbolic", startup_page(&autostart).upcast()),
+            ("關於", "help-about-symbolic", about_page().upcast()),
+        ],
+        vec![("設計語言", "applications-graphics-symbolic", design_page().upcast())],
     ];
+    let starts: Vec<usize> = groups
+        .iter()
+        .scan(0, |at, group| {
+            let start = *at;
+            *at += group.len();
+            Some(start)
+        })
+        .collect();
+    let pages: Vec<(&str, &str, gtk::Widget)> = groups.into_iter().flatten().collect();
 
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
@@ -285,9 +303,27 @@ fn build(app: &adw::Application) {
     let sidebar = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
-    for (name, page) in &pages {
+    sidebar.set_header_func(move |row, _| {
+        let index = row.index() as usize;
+        let line = (index > 0 && starts.contains(&index)).then(|| {
+            gtk::Separator::builder()
+                .margin_top(8)
+                .margin_bottom(8)
+                .margin_start(8)
+                .margin_end(8)
+                .build()
+        });
+        row.set_header(line.as_ref());
+    });
+    for (name, icon, page) in &pages {
         stack.add_named(page, Some(name));
-        sidebar.append(&gtk::Label::builder().label(*name).xalign(0.0).build());
+        sidebar.append(&line(
+            8,
+            &[
+                gtk::Image::builder().icon_name(*icon).pixel_size(16).build().upcast_ref(),
+                gtk::Label::builder().label(*name).xalign(0.0).build().upcast_ref(),
+            ],
+        ));
     }
 
     let content = adw::NavigationPage::builder().title(pages[0].0).build();
@@ -314,7 +350,7 @@ fn build(app: &adw::Application) {
         .content(&content)
         .build();
 
-    let names: Vec<&str> = pages.iter().map(|(name, _)| *name).collect();
+    let names: Vec<&str> = pages.iter().map(|(name, ..)| *name).collect();
     let first = std::env::var(PAGE_ENV)
         .ok()
         .and_then(|page| names.iter().position(|name| *name == page))
