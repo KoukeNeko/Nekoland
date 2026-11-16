@@ -39,6 +39,8 @@ pub struct Config {
     /// computer sleeps; 0 for never.
     pub screen_off_after: u64,
     pub sleep_after: u64,
+    /// How many seconds a notification's banner stays when its program leaves it to Nekoland.
+    pub notification_seconds: u64,
     /// What the power button does, and what closing the lid does with no other display.
     pub power_button: PowerAction,
     pub lid_close: PowerAction,
@@ -355,6 +357,7 @@ impl Default for Config {
             // logind's own: it powers off, which Nekoland asks about first.
             power_button: PowerAction::ShutDown,
             lid_close: PowerAction::Sleep,
+            notification_seconds: 5,
             night_shift: NightShift::Off,
             // The Mac's custom schedule.
             night_shift_from: TimeOfDay(22 * 60),

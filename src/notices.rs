@@ -2,7 +2,7 @@
 //! menu bar, newest first. A banner goes away when its time is up, unless the pointer
 //! rests on it; a click on it does what its program offers for that, or dismisses it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cairo::{Context, Format, ImageSurface};
 use smithay::{
@@ -11,7 +11,7 @@ use smithay::{
 };
 
 use crate::{
-    dbus::{Event, Notification, Request},
+    dbus::{Event, Expiry, Notification, Request},
     glass::Tier,
     menubar::{Overlay, MENU_BAR_HEIGHT},
     text::{self, Picture},
@@ -195,7 +195,13 @@ impl Nekoland {
             // past notifications to show it in.
             Event::Notify(_) if self.notices.quiet => {}
             Event::Notify(notification) => {
-                let deadline = notification.timeout.map(|timeout| Instant::now() + timeout);
+                let deadline = match notification.timeout {
+                    Expiry::UntilDismissed => None,
+                    Expiry::After(timeout) => Some(Instant::now() + timeout),
+                    Expiry::AsSet => {
+                        Some(Instant::now() + Duration::from_secs(self.config.notification_seconds))
+                    }
+                };
                 match self
                     .notices
                     .banners

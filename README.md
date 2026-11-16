@@ -57,6 +57,7 @@ wallpaper and an input method. Every key is optional:
 | `repeat_delay`, `repeat_rate` | Milliseconds a held key waits before it repeats, and how many times a second it then repeats; 200 and 25 unless set |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
+| `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
 
 The Settings application changes most of these while Nekoland runs (see below);
 `nekoland msg reload` reads a file changed by hand.
@@ -95,9 +96,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 - Settings, `nekoland-settings` from `ui/`, opened from the system menu, is a GTK and
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
-  be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the icon and cursor themes, the display's resolution, refresh rate, scale and Night Shift, the fonts, the keyboard,
-  the mouse and touchpad, the sound, the power, which sandboxed applications, as
+  be shown, the Dock, the menu bar, how long notifications stay, what double-clicking a
+  GTK title bar does, and the wallpaper; its other pages set light or dark, the icon and
+  cursor themes, the display's resolution, refresh rate, scale and Night Shift, the
+  fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
   permission store, the cursor size, high contrast and reduced motion, the applications
   that open links and each kind of file, through GIO's defaults, and the terminal,

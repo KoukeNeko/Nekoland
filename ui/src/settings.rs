@@ -486,6 +486,36 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     lock.add(&idle_row(config, "閒置後鎖定", "lock_after"));
     page.add(&lock);
 
+    let notices = group("通知");
+    let current = config.0.get("notification_seconds").and_then(toml::Value::as_integer).unwrap_or(5);
+    let banner = adw::ComboRow::builder()
+        .title("橫幅顯示時間")
+        .model(&gtk::StringList::new(&["3 秒", "5 秒", "10 秒", "20 秒"]))
+        .selected(NOTIFICATION_SECONDS.iter().position(|seconds| *seconds == current).unwrap_or(1) as u32)
+        .build();
+    banner.connect_selected_notify(|row| {
+        if let Some(seconds) = NOTIFICATION_SECONDS.get(row.selected() as usize) {
+            set(&format!("notification_seconds = {seconds}"));
+        }
+    });
+    notices.add(&banner);
+    page.add(&notices);
+
+    let windows = group("視窗");
+    let current = output("gsettings", &["get", WM_PREFERENCES, "action-double-click-titlebar"]).unwrap_or_default();
+    let titlebar = adw::ComboRow::builder()
+        .title("按兩下標題列")
+        .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
+        .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(0) as u32)
+        .build();
+    titlebar.connect_selected_notify(|row| {
+        if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
+            run("gsettings", &["set", WM_PREFERENCES, "action-double-click-titlebar", action]);
+        }
+    });
+    windows.add(&titlebar);
+    page.add(&windows);
+
     let wall = group("桌布");
     // Without a wallpaper of Nekoland's own, the one swaybg is started with at login.
     let current = config
@@ -597,6 +627,11 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
 }
 
 /// A wallpaper as the 桌布 group shows it to be chosen.
+const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
+const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
+/// What double-clicking a GTK title bar does, as GNOME names it.
+const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
+
 fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)

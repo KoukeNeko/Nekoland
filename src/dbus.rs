@@ -23,8 +23,6 @@ const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const REGISTRAR_NAME: &str = "com.canonical.AppMenu.Registrar";
 const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
 const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
-/// How long a notification stays when its program leaves it to the server.
-const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const REGISTRAR_PATH: &str = "/com/canonical/AppMenu/Registrar";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
@@ -151,8 +149,16 @@ pub struct Notification {
     pub body: String,
     /// Action keys and their labels, in pairs.
     pub actions: Vec<String>,
-    /// How long to show it, None for until dismissed.
-    pub timeout: Option<std::time::Duration>,
+    pub timeout: Expiry,
+}
+
+/// How long a notification is shown.
+#[derive(Clone, Copy, Debug)]
+pub enum Expiry {
+    UntilDismissed,
+    After(std::time::Duration),
+    /// The program leaves it to the server, which leaves it to the settings.
+    AsSet,
 }
 
 /// A status item as the menu bar shows it.
@@ -366,9 +372,11 @@ impl Notifications {
             .find_map(|name| hints.get(*name))
             .and_then(image_data);
         let timeout = match expire_timeout {
-            0 => None,
-            milliseconds if milliseconds > 0 => Some(std::time::Duration::from_millis(milliseconds as u64)),
-            _ => Some(DEFAULT_TIMEOUT),
+            0 => Expiry::UntilDismissed,
+            milliseconds if milliseconds > 0 => {
+                Expiry::After(std::time::Duration::from_millis(milliseconds as u64))
+            }
+            _ => Expiry::AsSet,
         };
         let _ = self.events.send(Event::Notify(Notification {
             id,
