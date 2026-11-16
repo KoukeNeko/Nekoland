@@ -6,6 +6,10 @@
 //! Once a frame, everything under the floating layers is drawn into a texture, which is
 //! blurred by halving it a few times and doubling it back (dual Kawase). Each glass surface
 //! then gets an element right behind it that shows its part of the blur, cut to its corners.
+//!
+//! Windows have glass behind them too, of the wallpaper alone, as Windows' Mica is: what
+//! a window leaves see-through, as GTK's sidebars in Nekoland's look, shows the wallpaper
+//! blurred. The wallpaper seldom changes, so that blur is seldom drawn again.
 
 use std::collections::HashMap;
 
@@ -120,13 +124,22 @@ pub struct Glass {
     down: GlesTexProgram,
     up: GlesTexProgram,
     pane: GlesTexProgram,
-    /// The scene behind the glass, then copies of it at half, a quarter, and so on.
+    /// What is under the floating surfaces, blurred.
+    scene: Blur,
+    /// The wallpaper alone, blurred, for behind windows.
+    wallpaper: Blur,
+    ids: HashMap<WlSurface, Id>,
+}
+
+/// Something drawn into a texture and blurred, for panes to show their parts of.
+#[derive(Default)]
+struct Blur {
+    /// What is behind the glass, then copies of it at half, a quarter, and so on.
     levels: Vec<GlesTexture>,
     tracker: Option<OutputDamageTracker>,
-    /// Where the panes were when the scene was last blurred.
+    /// Where the panes were when it was last blurred.
     areas: Vec<Rectangle<i32, Physical>>,
     commit: CommitCounter,
-    ids: HashMap<WlSurface, Id>,
 }
 
 impl Glass {
@@ -153,19 +166,61 @@ impl Glass {
                 ),
                 &pane_uniforms,
             )?,
-            levels: Vec::new(),
-            tracker: None,
-            areas: Vec::new(),
-            commit: CommitCounter::default(),
+            scene: Blur::default(),
+            wallpaper: Blur::default(),
             ids: HashMap::new(),
         })
     }
 
-    /// Draws what is behind the glass and blurs it again, when what changed since the last
-    /// frame is near enough to one of the `areas` the panes cover to show in it.
+    /// Draws what is behind the floating glass and blurs it again, when what changed since
+    /// the last frame is near enough to one of the `areas` the panes cover to show in it.
     pub fn update<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
+        size: Size<i32, Physical>,
+        areas: &[Rectangle<i32, Physical>],
+        behind: &[E],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.scene
+            .update(renderer, (&self.down, &self.up), size, areas, behind)
+    }
+
+    /// The same for the wallpaper behind windows, `wallpaper` its surfaces, `areas` the
+    /// windows.
+    pub fn update_wallpaper<E: RenderElement<GlesRenderer>>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Physical>,
+        areas: &[Rectangle<i32, Physical>],
+        wallpaper: &[E],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.wallpaper
+            .update(renderer, (&self.down, &self.up), size, areas, wallpaper)
+    }
+
+    /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
+    pub fn pane(&mut self, surface: &WlSurface, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+        self.ids.retain(|surface, _| surface.alive());
+        let id = self.ids.entry(surface.clone()).or_insert_with(Id::new).clone();
+        self.pane_with(id, rect, radius)
+    }
+
+    /// The glass behind something the compositor draws itself, which names it with `id`.
+    pub fn pane_with(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+        self.scene.pane(&self.pane, id, rect, radius)
+    }
+
+    /// The wallpaper's glass behind a window, which names it with `id`.
+    pub fn window_pane(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+        self.wallpaper.pane(&self.pane, id, rect, radius)
+    }
+}
+
+impl Blur {
+    fn update<E: RenderElement<GlesRenderer>>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        (down, up): (&GlesTexProgram, &GlesTexProgram),
         size: Size<i32, Physical>,
         areas: &[Rectangle<i32, Physical>],
         behind: &[E],
@@ -248,7 +303,7 @@ impl Glass {
                 renderer,
                 &source,
                 &mut self.levels[level + 1],
-                &self.down,
+                down,
                 &regions,
                 full,
                 (level + 1) % 2 == 1,
@@ -260,7 +315,7 @@ impl Glass {
                 renderer,
                 &source,
                 &mut self.levels[level],
-                &self.up,
+                up,
                 &regions,
                 full,
                 level % 2 == 1,
@@ -270,15 +325,13 @@ impl Glass {
         Ok(())
     }
 
-    /// The glass behind a surface, over `rect` of the output, with corners of `radius`.
-    pub fn pane(&mut self, surface: &WlSurface, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
-        self.ids.retain(|surface, _| surface.alive());
-        let id = self.ids.entry(surface.clone()).or_insert_with(Id::new).clone();
-        self.pane_with(id, rect, radius)
-    }
-
-    /// The glass behind something the compositor draws itself, which names it with `id`.
-    pub fn pane_with(&self, id: Id, rect: Rectangle<i32, Physical>, radius: i32) -> Option<Pane> {
+    fn pane(
+        &self,
+        program: &GlesTexProgram,
+        id: Id,
+        rect: Rectangle<i32, Physical>,
+        radius: i32,
+    ) -> Option<Pane> {
         let texture = self.levels.get(1)?.clone();
         let blurred = texture.size();
         let full = self.levels[0].size();
@@ -292,7 +345,7 @@ impl Glass {
             id,
             commit: self.commit,
             texture,
-            program: self.pane.clone(),
+            program: program.clone(),
             src,
             dst: rect,
             radius: radius.min(rect.size.w / 2).min(rect.size.h / 2),

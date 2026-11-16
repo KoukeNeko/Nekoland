@@ -25,7 +25,7 @@ use crate::{
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
-    windows::window_names,
+    windows::{has_square_corners, window_names},
     Nekoland,
 };
 
@@ -53,7 +53,7 @@ pub fn scene_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
-    glass: Option<&mut Glass>,
+    mut glass: Option<&mut Glass>,
 ) -> Result<Vec<SceneElement>, Box<dyn std::error::Error>> {
     let Some(overview) = &state.overview else {
         // A fullscreen window is all there is to see, under the overlay layer.
@@ -86,9 +86,15 @@ pub fn scene_elements(
             .filter(|window| !floating.contains(window) && !state.dock_draws(window))
             .cloned()
             .collect();
+        let backdrops = window_backdrops(state, renderer, output, glass.as_deref_mut(), &windows);
         let mut under: Vec<SceneElement> = windows
             .iter()
-            .flat_map(|window| window_elements(state, renderer, window, output_geometry.loc))
+            .zip(backdrops)
+            .flat_map(|(window, backdrop)| {
+                let mut elements = window_elements(state, renderer, window, output_geometry.loc);
+                elements.extend(backdrop);
+                elements
+            })
             .collect();
         under.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
         let mut overlays = state.menu_bar_overlays();
@@ -632,6 +638,51 @@ fn window_elements(
     .into_iter()
     .map(SceneElement::Surface)
     .collect()
+}
+
+/// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
+const WINDOW_RADIUS: i32 = 14;
+
+/// The wallpaper's glass behind each of `windows`, for what they leave see-through.
+fn window_backdrops(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    glass: Option<&mut Glass>,
+    windows: &[Window],
+) -> Vec<Option<SceneElement>> {
+    let Some(glass) = glass else {
+        return windows.iter().map(|_| None).collect();
+    };
+    let output_loc = state
+        .space
+        .output_geometry(output)
+        .map(|geometry| geometry.loc)
+        .unwrap_or_default();
+    let areas: Vec<_> = windows
+        .iter()
+        .filter_map(|window| window_area(state, window, output_loc))
+        .collect();
+    if let (false, Some(mode)) = (areas.is_empty(), output.current_mode()) {
+        let wallpaper = layer_elements(renderer, output, BELOW_WINDOWS, false);
+        if let Err(err) = glass.update_wallpaper(renderer, mode.size, &areas, &wallpaper) {
+            tracing::warn!("glass: {err}");
+        }
+    }
+    windows
+        .iter()
+        .map(|window| {
+            let area = window_area(state, window, output_loc)?;
+            let radius = if has_square_corners(window) {
+                0
+            } else {
+                WINDOW_RADIUS
+            };
+            glass
+                .window_pane(window_glass_id(window), area, radius)
+                .map(SceneElement::Glass)
+        })
+        .collect()
 }
 
 /// The part of the output a window covers, without its shadow.

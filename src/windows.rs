@@ -17,6 +17,18 @@ use crate::{dock::DOCK_SPACE, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekolan
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
 
+/// Whether a window is drawn with square corners: one maximized, fullscreen or tiled, as
+/// GTK draws them, or an X11 window, which draws none.
+pub fn has_square_corners(window: &Window) -> bool {
+    match window.underlying_surface() {
+        WindowSurface::Wayland(toplevel) => {
+            let states = toplevel.current_state().states;
+            PLACEMENT_STATES.iter().any(|state| states.contains(*state))
+        }
+        WindowSurface::X11(_) => true,
+    }
+}
+
 /// The states that say where a window was put, as opposed to what it is doing.
 const PLACEMENT_STATES: [ToplevelState; 6] = [
     ToplevelState::Maximized,
