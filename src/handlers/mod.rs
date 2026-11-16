@@ -1,4 +1,5 @@
 mod compositor;
+pub mod foreign_toplevel;
 mod layer_shell;
 pub mod protocols;
 mod xdg_shell;

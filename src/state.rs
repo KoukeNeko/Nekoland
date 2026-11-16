@@ -32,7 +32,11 @@ use smithay::{
 };
 
 use crate::{
-    config::Config, handlers::protocols::Protocols, overview::Overview, text::Apps, workspaces::Workspaces,
+    config::Config,
+    handlers::{foreign_toplevel::ForeignToplevelState, protocols::Protocols},
+    overview::Overview,
+    text::Apps,
+    workspaces::Workspaces,
     CalloopData,
 };
 
@@ -72,6 +76,7 @@ pub struct Nekoland {
     pub popups: PopupManager,
     pub cursor_shape_state: CursorShapeManagerState,
     pub protocols: Protocols,
+    pub foreign_toplevels: ForeignToplevelState,
     pub dmabuf_state: DmabufState,
     /// Hands a client's GPU buffer to the renderer; set by a backend that takes them.
     pub dmabuf_import: Option<DmabufImport>,
@@ -102,6 +107,7 @@ impl Nekoland {
         let popups = PopupManager::default();
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh);
+        let foreign_toplevels = ForeignToplevelState::new(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
         // A seat is a group of keyboards, pointer and touch devices.
@@ -152,6 +158,7 @@ impl Nekoland {
             popups,
             cursor_shape_state,
             protocols,
+            foreign_toplevels,
             dmabuf_state: DmabufState::new(),
             dmabuf_import: None,
             switch_vt: None,
@@ -268,6 +275,7 @@ impl Nekoland {
 
         self.space.refresh();
         self.popups.cleanup();
+        self.refresh_foreign_toplevels();
     }
 }
 
