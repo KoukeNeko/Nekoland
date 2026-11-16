@@ -1211,12 +1211,14 @@ impl Nekoland {
             }
             _ => 1.0,
         };
-        // While a menu opened from the Dock is open, its icons stay as they were, as on the Mac.
-        let held = self
-            .menu_bar
-            .open
-            .as_ref()
-            .is_some_and(|open| open.title.is_none());
+        // While a menu or a stack opened from the Dock is open, its icons stay as they were,
+        // as on the Mac.
+        let held = self.dock.stack.is_some()
+            || self
+                .menu_bar
+                .open
+                .as_ref()
+                .is_some_and(|open| open.title.is_none());
         let follow = if held {
             0.0
         } else {
