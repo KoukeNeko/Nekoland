@@ -161,7 +161,8 @@ toggle-group > toggle:checked {
   box-shadow: none;
 }
 
-/* A slider: a thin line, ink up to a knob ringed in ink. */
+/* A slider: a thin line, ink up to a knob ringed in ink. The knob stays within the line,
+ * which runs out to its far side at either end, as the Mac's does. */
 scale > trough,
 scale > trough > highlight {
   min-width: 4px;
@@ -173,7 +174,7 @@ scale > trough {
 scale > trough > slider {
   min-width: 18px;
   min-height: 18px;
-  margin: -7px;
+  margin: -7px 0;
   background-color: var(--nekoland-sheet);
   box-shadow: 0 0 0 1.5px var(--nekoland-ink);
 }
