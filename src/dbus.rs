@@ -133,6 +133,8 @@ pub enum Event {
     },
     /// The default output's volume, or None when there is no sound server to ask.
     Sound(Option<crate::system::Volume>),
+    /// Whether a microphone or a camera is open; the screen's sharing is the compositor's own.
+    InUse(crate::privacy::InUse),
     Ime(crate::ime::ImeEvent),
 }
 

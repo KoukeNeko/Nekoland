@@ -69,6 +69,8 @@ pub struct Nekoland {
     pub last_input: std::time::Instant,
     /// Whether the displays are turned off, until there is input.
     pub screens_off: bool,
+    /// When a recorder last took a frame of the screen.
+    pub screen_shared_at: Option<std::time::Instant>,
     /// Surfaces of programs that keep the screen from locking while it is idle.
     pub idle_inhibitors: Vec<WlSurface>,
     /// Screen captures waiting for their output to be drawn.
@@ -178,6 +180,7 @@ impl Nekoland {
             locker_started: None,
             last_input: start_time,
             screens_off: false,
+            screen_shared_at: None,
             idle_inhibitors: Vec::new(),
             screencopy: Vec::new(),
 

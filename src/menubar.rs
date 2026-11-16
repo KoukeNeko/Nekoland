@@ -285,8 +285,9 @@ pub struct MenuBar {
     app_menus: HashMap<AppMenuAddress, Vec<MenuEntry>>,
     menus_revision: u64,
     items: Vec<StatusItem>,
-    items_revision: u64,
+    pub(crate) items_revision: u64,
     sound: Option<Volume>,
+    pub(crate) in_use: crate::privacy::InUse,
     network: Option<Network>,
     network_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
@@ -314,6 +315,7 @@ impl Default for MenuBar {
             items: Vec::new(),
             items_revision: 0,
             sound: None,
+            in_use: Default::default(),
             network: None,
             network_read: None,
             icons: HashMap::new(),
@@ -670,6 +672,7 @@ impl MenuBar {
         let mut right = width - 12 - clock_width;
         show_text(&cr, clock, &clock_font, f64::from(right), center, colors.ink);
         right -= 8;
+        right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
         let mut icons: Vec<Icon> = Vec::new();
@@ -1061,6 +1064,7 @@ impl Nekoland {
     }
 
     pub fn refresh_menu_bar(&mut self) {
+        self.refresh_sharing();
         let Some(output) = self.output_area() else {
             return;
         };
@@ -1240,6 +1244,10 @@ impl Nekoland {
             Event::Ime(event) => self.ime_event(event),
             Event::Sound(volume) => {
                 bar.sound = volume;
+                bar.items_revision += 1;
+            }
+            Event::InUse(devices) => {
+                bar.in_use = crate::privacy::InUse { screen: bar.in_use.screen, ..devices };
                 bar.items_revision += 1;
             }
         }

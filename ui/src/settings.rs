@@ -237,13 +237,14 @@ fn build(app: &adw::Application) {
         set_window_buttons(true);
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
-    let pages: [(&str, gtk::Widget); 9] = [
+    let pages: [(&str, gtk::Widget); 10] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
         ("外觀", appearance_page(&config).upcast()),
         ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
         ("聲音", sound_page().upcast()),
         ("電源", power_page(&config).upcast()),
+        ("隱私", privacy_page().upcast()),
         ("啟動項目", startup_page(&autostart).upcast()),
         ("關於", about_page().upcast()),
         ("設計語言", design_page().upcast()),
@@ -1725,6 +1726,124 @@ fn parse_battery(uevent: &str) -> Option<Battery> {
     })
 }
 
+const PERMISSION_STORE: &str = "org.freedesktop.impl.portal.PermissionStore";
+const PERMISSION_STORE_PATH: &str = "/org/freedesktop/impl/portal/PermissionStore";
+
+/// What the portals let each application use, by the table and entry the permission store
+/// keeps it under. Only sandboxed applications, as Flatpak's, are asked and held to it.
+const PERMISSIONS: [(&str, &str, &str); 3] = [
+    ("相機", "devices", "camera"),
+    ("麥克風", "devices", "microphone"),
+    ("定位服務", "location", "location"),
+];
+
+/// The applications that asked for each permission, with whether they have it.
+fn privacy_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .inspect_err(|err| eprintln!("session bus: {err}"))
+        .ok();
+    // shortcut: read once, as the page is made; an application that asks while Settings is
+    // open shows when it opens again.
+    for (title, table, id) in PERMISSIONS {
+        let rows = group(title);
+        let apps = bus.as_ref().map(|bus| app_permissions(bus, table, id)).unwrap_or_default();
+        if apps.is_empty() {
+            rows.add(&adw::ActionRow::builder().title("沒有應用程式").css_classes(["dim-label"]).build());
+        }
+        for (app, permissions) in apps {
+            let info = gio::DesktopAppInfo::new(&format!("{app}.desktop"));
+            let row = adw::SwitchRow::builder()
+                .title(info.as_ref().map_or(app.clone(), |info| info.display_name().to_string()))
+                .active(allowed(table, &permissions))
+                .build();
+            if let Some(icon) = info.and_then(|info| info.icon()) {
+                row.add_prefix(&gtk::Image::builder().gicon(&icon).pixel_size(32).build());
+            }
+            let bus = bus.clone();
+            row.connect_active_notify(move |row| {
+                let Some(bus) = &bus else { return };
+                let changed = with_allowed(table, &permissions, row.is_active());
+                bus.call(
+                    Some(PERMISSION_STORE),
+                    PERMISSION_STORE_PATH,
+                    PERMISSION_STORE,
+                    "SetPermission",
+                    Some(&(table, true, id, app.as_str(), changed).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    -1,
+                    gio::Cancellable::NONE,
+                    |result| {
+                        if let Err(err) = result {
+                            eprintln!("permission store: {err}");
+                        }
+                    },
+                );
+            });
+            rows.add(&row);
+        }
+        page.add(&rows);
+    }
+    page
+}
+
+/// Each application's permissions for one entry, by application ID; none when nothing has
+/// asked for it yet.
+fn app_permissions(bus: &gio::DBusConnection, table: &str, id: &str) -> Vec<(String, Vec<String>)> {
+    let reply = bus.call_sync(
+        Some(PERMISSION_STORE),
+        PERMISSION_STORE_PATH,
+        PERMISSION_STORE,
+        "Lookup",
+        Some(&(table, id).to_variant()),
+        glib::VariantTy::new("(a{sas}v)").ok(),
+        gio::DBusCallFlags::NONE,
+        -1,
+        gio::Cancellable::NONE,
+    );
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(err) => {
+            if gio::DBusError::remote_error(&err).as_deref() != Some("org.freedesktop.portal.Error.NotFound") {
+                eprintln!("permission store: {err}");
+            }
+            return Vec::new();
+        }
+    };
+    let mut apps: Vec<_> = reply
+        .child_value(0)
+        .get::<std::collections::HashMap<String, Vec<String>>>()
+        .unwrap_or_default()
+        .into_iter()
+        // Programs outside a sandbox are kept under no ID; they are never asked.
+        .filter(|(app, _)| !app.is_empty())
+        .collect();
+    apps.sort();
+    apps
+}
+
+/// Whether an application may use it: `yes` for a device, any accuracy but `NONE` for
+/// the location.
+fn allowed(table: &str, permissions: &[String]) -> bool {
+    match (table, permissions.first().map(String::as_str)) {
+        ("location", Some(accuracy)) => accuracy != "NONE",
+        (_, first) => first == Some("yes"),
+    }
+}
+
+/// The permissions with the first, the one that allows or not, set; the location's
+/// others, when it was last used, are kept.
+fn with_allowed(table: &str, permissions: &[String], on: bool) -> Vec<String> {
+    let first = match (table, on) {
+        ("location", true) => "EXACT",
+        ("location", false) => "NONE",
+        (_, true) => "yes",
+        (_, false) => "no",
+    };
+    std::iter::once(first.to_string()).chain(permissions.iter().skip(1).cloned()).collect()
+}
+
 fn about_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let computer = group("");
@@ -2759,6 +2878,22 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_permission_is_allowed_and_set_as_its_table_writes_it() {
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert!(allowed("devices", &words(&["yes"])));
+        assert!(!allowed("devices", &words(&["no"])));
+        assert!(!allowed("devices", &[]));
+        assert!(allowed("location", &words(&["CITY", "1700000000"])));
+        assert!(!allowed("location", &words(&["NONE", "1700000000"])));
+        assert_eq!(with_allowed("devices", &words(&["no"]), true), words(&["yes"]));
+        assert_eq!(
+            with_allowed("location", &words(&["CITY", "1700000000"]), false),
+            words(&["NONE", "1700000000"])
+        );
+        assert_eq!(with_allowed("location", &[], true), words(&["EXACT"]));
+    }
 
     #[test]
     fn a_battery_is_read_in_energy_or_in_charge() {

@@ -18,6 +18,7 @@ mod menubar;
 mod notices;
 mod overview;
 mod power;
+mod privacy;
 mod render;
 mod screencopy;
 mod stacks;
@@ -90,6 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map_err(|err| err.error)?;
     system::watch_sound(dbus_events.clone());
+    privacy::watch_devices(dbus_events.clone());
     data.state.events = Some(dbus_events.clone());
     data.state.menu_bar.bus = dbus::start(dbus_events)
         .inspect_err(|err| tracing::warn!("the menu bar has no D-Bus: {err}"))

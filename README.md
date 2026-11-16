@@ -87,9 +87,11 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the keyboard, the mouse and touchpad, the sound, the power and what starts at login, show
-  what the computer is and how worn its batteries are, and show GTK's own widgets as the
-  system style draws them. Each change takes effect at once. The sound page picks the output and input, and the sample rate and
+  the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications,
+  as Flatpak's, may use the camera, the microphone and the location, through the portals'
+  permission store, and what starts at login, show what the computer is and how worn its
+  batteries are, and show GTK's own widgets as the system style draws them. Each change
+  takes effect at once. The sound page picks the output and input, and the sample rate and
   bit depth each sound card is opened with, apart from the others: a WirePlumber rule of
   its own in `~/.config/wireplumber/wireplumber.conf.d/`, which restarts WirePlumber and so
   stops the sound for a moment. It also makes a multi-output device that plays on the
@@ -220,6 +222,9 @@ Screenshots and screen sharing go through `wlr-screencopy`: `grim` takes picture
 `xdg-desktop-portal-wlr`, which `shell/nekoland-portals.conf` picks, takes them and shares
 the screen for programs that ask the portal, such as browsers. Copy and paste works
 between X11 and Wayland programs.
+
+While any program has a microphone or a camera open, or records the screen, a dot shows
+left of the clock, as on the Mac: orange, green and purple.
 
 Programs in a sandbox such as Flatpak's connect through `security-context-v1` and are
 kept from what reaches other programs: input methods, virtual keyboards, the clipboard

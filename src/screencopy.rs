@@ -206,6 +206,9 @@ impl Nekoland {
             .filter(|frame| frame.frame.is_alive())
             .partition(|frame| frame.data().output.as_ref() == Some(output));
         self.screencopy = rest;
+        if frames.iter().any(|frame| frame.with_damage) {
+            self.note_screen_frame();
+        }
         frames
     }
 }
