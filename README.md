@@ -293,6 +293,19 @@ with no styling of its own: a month, the chosen day's events, kept in
 there to try the look on an application that knows nothing of it;
 `shell/io.github.koukeneko.Nekoland.Calendar.desktop` puts it among the applications.
 
+`nekoland-store`, from `ui/`, is an App Store over apt, Snap, Flathub and Homebrew, and
+over the vendors' own apt repositories. An app found in several shows once, with a row per
+source giving its version, size, how it updates and how it is confined; the picked row is
+the one 安裝 uses, and an installed one can be switched for another. It reads AppStream,
+`apt-cache`, snapd's socket and the `flatpak` and `brew` commands, so a source whose
+command is missing is left out. Flathub apps go to the user's installation; apt and Snap
+need an administrator, which it asks for through `nekoland-askpass` and `sudo -A`, once
+for all a change runs, so the user must be in the `sudo` group. Adding a vendor's
+repository (Ookla, Microsoft, Google) asks first and writes its key to `/etc/apt/keyrings`
+and a `.sources` file to `/etc/apt/sources.list.d`; it is then listed under 其他套件庫,
+where it can be removed. `shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among
+the applications.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

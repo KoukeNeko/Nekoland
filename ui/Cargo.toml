@@ -2,7 +2,7 @@
 name = "nekoland-ui"
 version = "0.1.0"
 edition = "2021"
-description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings and a calendar in GTK"
+description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings, a calendar and the App Store in GTK"
 
 [[bin]]
 name = "nekoland-gallery"
@@ -23,6 +23,14 @@ path = "src/settings.rs"
 [[bin]]
 name = "nekoland-calendar"
 path = "src/calendar.rs"
+
+[[bin]]
+name = "nekoland-store"
+path = "src/store.rs"
+
+[[bin]]
+name = "nekoland-askpass"
+path = "src/askpass.rs"
 
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
