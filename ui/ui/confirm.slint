@@ -1,0 +1,46 @@
+// Asks before something that loses unsaved work. The title asks; the buttons answer.
+
+import { Theme, Button, Dialog } from "widgets.slint";
+
+export component Confirm inherits Window {
+    in property <string> question;
+    in property <string> consequence;
+    in property <string> action;
+    callback confirmed;
+    callback cancelled;
+
+    title: question;
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font;
+    default-font-size: Theme.text-body;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            // Room for the dialog's shadow inside the window.
+            padding: 40px;
+            Dialog {
+                title: question;
+                body: consequence;
+                Button {
+                    text: "取消";
+                    kind: "secondary";
+                    clicked => { root.cancelled(); }
+                }
+                Button {
+                    text: action;
+                    kind: "danger";
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}

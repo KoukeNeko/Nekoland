@@ -8,6 +8,10 @@ description = "Nekoland's own widgets, in Slint, and a window that shows them al
 name = "nekoland-gallery"
 path = "src/main.rs"
 
+[[bin]]
+name = "nekoland-confirm"
+path = "src/confirm.rs"
+
 [dependencies]
 slint = "1.18"
 
