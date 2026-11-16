@@ -1,0 +1,57 @@
+// The panel and the dock, as two waybar bars.
+[
+    {
+        "name": "top",
+        "layer": "top",
+        "position": "top",
+        "height": 32,
+        "spacing": 14,
+        "modules-left": ["custom/activities"],
+        "modules-right": ["tray", "network", "pulseaudio", "clock"],
+        "custom/activities": {
+            "format": "Activities",
+            "on-click": "nekoland msg overview",
+            "tooltip": false
+        },
+        "tray": { "icon-size": 16, "spacing": 12 },
+        "network": {
+            "format-ethernet": "",
+            "format-wifi": "",
+            "format-disconnected": "",
+            "tooltip-format": "{ifname}: {ipaddr}"
+        },
+        "pulseaudio": {
+            "format": "{icon}",
+            "format-muted": "",
+            "format-icons": ["", "", ""],
+            "tooltip-format": "{volume}%"
+        },
+        "clock": {
+            "format": "{:%a %b %d  %H:%M:%S}",
+            "interval": 1,
+            "tooltip-format": "<tt>{calendar}</tt>"
+        }
+    },
+    {
+        "name": "dock",
+        "layer": "top",
+        "position": "bottom",
+        "height": 60,
+        // A width makes waybar center the bar instead of stretching it; it still grows to fit its content.
+        "width": 320,
+        "margin-bottom": 8,
+        "spacing": 6,
+        "modules-center": ["custom/apps", "custom/files", "custom/terminal", "wlr/taskbar"],
+        "custom/apps": { "format": "", "on-click": "fuzzel", "tooltip": false },
+        "custom/files": { "format": "", "on-click": "nautilus", "tooltip": false },
+        "custom/terminal": { "format": "", "on-click": "foot", "tooltip": false },
+        "wlr/taskbar": {
+            "format": "{icon}",
+            "icon-size": 40,
+            "tooltip-format": "{title}",
+            "on-click": "activate",
+            "on-click-middle": "close",
+            "on-click-right": "minimize"
+        }
+    }
+]

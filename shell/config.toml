@@ -1,0 +1,10 @@
+# An example ~/.config/nekoland/config.toml: a top panel, a dock and a wallpaper.
+# The paths assume the repository is at ~/Nekoland.
+
+autostart = [
+    "swaybg -m fill -i /usr/share/backgrounds/warty-final-ubuntu.png",
+    "waybar -c ~/Nekoland/shell/waybar/config.jsonc -s ~/Nekoland/shell/waybar/style.css",
+    "mako -c ~/Nekoland/shell/mako.ini",
+]
+terminal = "foot"
+launcher = "fuzzel --config ~/Nekoland/shell/fuzzel.ini"
