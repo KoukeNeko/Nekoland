@@ -549,6 +549,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     dock.add(&scale);
     dock.add(&switch_row(config, "執行中指示燈", "dock_indicators"));
     dock.add(&switch_row(config, "開啟動畫", "dock_bounce"));
+    dock.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
     page.add(&dock);
 
     let bar = group("選單列");

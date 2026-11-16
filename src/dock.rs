@@ -777,7 +777,7 @@ impl Nekoland {
         }
         self.minimized.retain(|(window, _)| window.alive());
         let minimized: Vec<Window> = self.minimized.iter().map(|(window, _)| window.clone()).collect();
-        {
+        if !self.config.dock_minimize_into_app {
             for window in minimized {
                 let (title, app_id) = window_names(&window);
                 let info = self.apps.info(&app_id).clone();
@@ -1913,12 +1913,7 @@ impl Nekoland {
             return genies;
         };
         for (window, from, at) in &self.dock.minimizing {
-            let tile = self
-                .dock
-                .tiles
-                .iter()
-                .position(|tile| tile.key() == Key::Window(window.clone()))
-                .and_then(|index| self.tile_rect(index));
+            let tile = self.minimized_tile(window).and_then(|index| self.tile_rect(index));
             if let Some(tile) = tile {
                 let progress = at.elapsed().as_secs_f64() / MINIMIZE_TIME;
                 genies.push(Genie {
@@ -2396,21 +2391,7 @@ impl Nekoland {
                     self.dock.launching.push((app_id, Instant::now()));
                 }
             }
-            Tile::Window { window, .. } => {
-                if let Some(index) = self
-                    .dock
-                    .tiles
-                    .iter()
-                    .position(|tile| tile.key() == Key::Window(window.clone()))
-                {
-                    if let Some(rect) = self.tile_rect(index) {
-                        let into = fit_window(&window, tile_picture(rect));
-                        self.dock.restoring.retain(|(restoring, ..)| *restoring != window);
-                        self.dock.restoring.push((window.clone(), into, Instant::now()));
-                    }
-                }
-                self.reveal_window(&window);
-            }
+            Tile::Window { window, .. } => self.restore_from_dock(&window),
             Tile::Stack { index, .. } => self.open_stack(index),
             Tile::Trash { .. } => open_uri("trash:///"),
             Tile::Separator(_) => {}
@@ -2539,6 +2520,30 @@ impl Nekoland {
     pub(crate) fn dock_launching(&mut self, app_id: &str) {
         self.dock.launching.retain(|(id, _)| id != app_id);
         self.dock.launching.push((app_id.to_string(), Instant::now()));
+    }
+
+    /// The tile a minimized window goes into: its own, or its application's.
+    fn minimized_tile(&self, window: &Window) -> Option<usize> {
+        let app_id = window_names(window).1;
+        let tiles = &self.dock.tiles;
+        tiles
+            .iter()
+            .position(|tile| tile.key() == Key::Window(window.clone()))
+            .or_else(|| {
+                tiles
+                    .iter()
+                    .position(|tile| matches!(tile, Tile::App { app_id: id, .. } if id.eq_ignore_ascii_case(&app_id)))
+            })
+    }
+
+    /// Brings a minimized window back, drawn growing out of the tile it went into.
+    fn restore_from_dock(&mut self, window: &Window) {
+        if let Some(rect) = self.minimized_tile(window).and_then(|index| self.tile_rect(index)) {
+            let into = fit_window(window, tile_picture(rect));
+            self.dock.restoring.retain(|(restoring, ..)| restoring != window);
+            self.dock.restoring.push((window.clone(), into, Instant::now()));
+        }
+        self.reveal_window(window);
     }
 
     /// A window was minimized from `rect`; it is drawn shrinking into the Dock.
@@ -2978,7 +2983,11 @@ impl Nekoland {
         }
         let elsewhere = self.all_windows().find(|window| same(window)).cloned();
         if let Some(window) = elsewhere {
-            self.reveal_window(&window);
+            if self.minimized.iter().any(|(minimized, _)| *minimized == window) {
+                self.restore_from_dock(&window);
+            } else {
+                self.reveal_window(&window);
+            }
         }
     }
 }

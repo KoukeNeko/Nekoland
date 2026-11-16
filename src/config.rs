@@ -97,6 +97,9 @@ pub struct Config {
     /// when clicked.
     pub dock_indicators: bool,
     pub dock_bounce: bool,
+    /// Whether a minimized window goes into its application's icon, as the Mac's can, instead
+    /// of a tile of its own.
+    pub dock_minimize_into_app: bool,
     /// How solid the glass's tint is, from 0 to 1, and how strong its blur, from 0, none, to
     /// 1: of the menu bar and the Dock themselves, and of all other glass, menus,
     /// notifications and what shows behind windows, as through GTK's sidebars, whose tint
@@ -436,6 +439,7 @@ impl Default for Config {
             dock_magnify_scale: 1.6,
             dock_indicators: true,
             dock_bounce: true,
+            dock_minimize_into_app: false,
             bar_opacity: 0.5,
             bar_blur: 0.5,
             glass_opacity: 0.8,
