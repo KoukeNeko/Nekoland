@@ -351,10 +351,27 @@ struct OpenStack {
     view: Opened,
     rect: Rectangle<i32, Logical>,
     opened: Instant,
+    closed: Option<Instant>,
     hovered: Option<usize>,
     button_hovered: bool,
     picture: Option<Picture>,
     drawn: Option<(Option<usize>, bool, bool, usize, u8)>,
+}
+
+impl OpenStack {
+    /// How far out it is, eased, over `time`: coming out since it opened and, once closed,
+    /// going back the way it came.
+    fn out(&self, time: f64) -> f64 {
+        let opened = self.opened.elapsed().as_secs_f64();
+        let t = match self.closed {
+            None => opened / time,
+            Some(closed) => {
+                let since = closed.elapsed().as_secs_f64();
+                ((opened - since) / time).min(1.0) - since / time
+            }
+        };
+        ease_out(t)
+    }
 }
 
 enum Opened {
@@ -474,8 +491,20 @@ struct Ids {
     label: Id,
     preview: Id,
     stack: Id,
+    closing: Id,
     held: Id,
     tag: Id,
+}
+
+impl Dock {
+    /// The open folder, or the `closing` one.
+    fn stack_mut(&mut self, closing: bool) -> Option<&mut OpenStack> {
+        if closing {
+            self.closing.as_mut()
+        } else {
+            self.stack.as_mut()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -525,6 +554,8 @@ pub struct Dock {
     folders: Vec<Folder>,
     trash: Option<(bool, Instant)>,
     stack: Option<OpenStack>,
+    /// A folder closed, on its way back into its tile.
+    closing: Option<OpenStack>,
     /// Pictures of files and folders, by path.
     file_icons: Vec<(PathBuf, bool, Option<ImageSurface>)>,
     /// What a file manager is dragging, once it has said: the paths of the files.
@@ -1268,11 +1299,12 @@ impl Nekoland {
         self.dock.spans = spans;
         self.dock.width = width;
 
-        if self.dock.stack.is_some() && (menu_open || !self.dock_shown()) {
-            self.dock.stack = None;
+        if menu_open || !self.dock_shown() {
+            self.close_dock_stack();
         }
         self.refresh_preview(pointer, dark, menu_open, now);
-        self.refresh_stack(pointer, dark);
+        self.refresh_stack(pointer, dark, false);
+        self.refresh_stack(None, dark, true);
         self.draw_dock(dark, now);
         self.refresh_dock_popups(dark, menu_open);
     }
@@ -1762,20 +1794,14 @@ impl Nekoland {
         };
         let rect = frame.rect_i32(turned);
         let mut overlays = Vec::new();
-        if let Some((stack, picture)) = self
-            .dock
-            .stack
-            .as_ref()
-            .and_then(|stack| Some((stack, stack.picture.as_ref()?)))
+        for (stack, picture, id) in [(&self.dock.closing, &ids.closing), (&self.dock.stack, &ids.stack)]
+            .into_iter()
+            .filter_map(|(stack, id)| Some((stack.as_ref()?, stack.as_ref()?.picture.as_ref()?, id)))
         {
             let grid = matches!(stack.view, Opened::Grid { .. });
             overlays.push(Overlay {
-                fade: if grid {
-                    ease_out(stack.opened.elapsed().as_secs_f64() / FADE_IN_TIME) as f32
-                } else {
-                    1.0
-                },
-                id: &ids.stack,
+                fade: if grid { stack.out(FADE_IN_TIME) as f32 } else { 1.0 },
+                id,
                 rect: stack.rect,
                 glass: grid.then_some((Tier::Menu, stacks::GRID_RADIUS)),
                 alpha: 1.0,
@@ -2024,6 +2050,7 @@ impl Nekoland {
                 label: Id::new(),
                 preview: Id::new(),
                 stack: Id::new(),
+                closing: Id::new(),
                 held: Id::new(),
                 tag: Id::new(),
             });
@@ -2198,10 +2225,13 @@ impl Nekoland {
                     }
                 };
                 match open {
-                    Some(path) => open_path(&path),
+                    Some(path) => {
+                        open_path(&path);
+                        self.put_stack_away(stack);
+                    }
                     // Between the items of a fan, or on the grid's glass: it stays open.
                     None if matches!(stack.view, Opened::Grid { .. }) => self.dock.stack = Some(stack),
-                    None => {}
+                    None => self.put_stack_away(stack),
                 }
                 return true;
             }
@@ -2210,6 +2240,7 @@ impl Nekoland {
                 .dock_tile_at(pos)
                 .and_then(|index| self.dock.tiles.get(index))
                 .is_some_and(|tile| matches!(tile, Tile::Stack { path, .. } if *path == stack.folder));
+            self.put_stack_away(stack);
             if own || !self.dock_covers(pos) {
                 return true;
             }
@@ -2703,6 +2734,7 @@ impl Nekoland {
             view: opened,
             rect,
             opened: Instant::now(),
+            closed: None,
             hovered: None,
             button_hovered: false,
             picture: None,
@@ -2763,13 +2795,24 @@ impl Nekoland {
         entries
     }
 
-    /// Lights what the pointer is on in the open folder, and draws it again when that, or
-    /// how far the fan has come out, changed.
-    fn refresh_stack(&mut self, pointer: Option<Point<f64, Logical>>, dark: bool) {
-        let Some(stack) = self.dock.stack.as_mut() else {
+    /// Lights what the pointer is on in the open folder, or the `closing` one, and draws it
+    /// again when that, or how far it has come out, changed. A closed one is let go once it
+    /// is back in its tile.
+    fn refresh_stack(&mut self, pointer: Option<Point<f64, Logical>>, dark: bool, closing: bool) {
+        if closing
+            && self
+                .dock
+                .closing
+                .as_ref()
+                .and_then(|stack| stack.closed)
+                .is_some_and(|closed| closed.elapsed().as_secs_f64() >= FAN_TIME)
+        {
+            self.dock.closing = None;
+        }
+        let Some(stack) = self.dock.stack_mut(closing) else {
             return;
         };
-        let progress = ease_out(stack.opened.elapsed().as_secs_f64() / FAN_TIME);
+        let progress = stack.out(FAN_TIME);
         let (hovered, button_hovered, scroll) = match &stack.view {
             Opened::Fan { fan, anchor, .. } => (pointer.and_then(|pos| fan.hit(pos - *anchor)), false, 0),
             Opened::Grid { grid, scroll } => {
@@ -2813,7 +2856,7 @@ impl Nekoland {
         if let Some(folder) = fan_folder {
             icons.push(self.folder_icon(&folder, 64, dark));
         }
-        let Some(stack) = self.dock.stack.as_mut() else {
+        let Some(stack) = self.dock.stack_mut(closing) else {
             return;
         };
         stack.picture = match &stack.view {
@@ -2858,9 +2901,20 @@ impl Nekoland {
         true
     }
 
-    /// Closes an open folder. Returns whether one was open.
+    /// Closes an open folder, which goes back into its tile. Returns whether one was open.
     pub fn close_dock_stack(&mut self) -> bool {
-        self.dock.stack.take().is_some()
+        let Some(stack) = self.dock.stack.take() else {
+            return false;
+        };
+        self.put_stack_away(stack);
+        true
+    }
+
+    fn put_stack_away(&mut self, mut stack: OpenStack) {
+        stack.closed = Some(Instant::now());
+        stack.hovered = None;
+        stack.button_hovered = false;
+        self.dock.closing = Some(stack);
     }
 
     /// A file manager started dragging: what it drags is asked for at once, as a list of
