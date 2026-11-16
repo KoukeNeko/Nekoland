@@ -1,6 +1,7 @@
 //! Catseye（貓眼）, Nekoland's glass: what floats over the desktop is drawn over a blur of
 //! what is behind it, a little more saturated, with a thin line of light just inside its top
-//! edge, like the band of light across a cat's-eye stone.
+//! edge, like the band of light across a cat's-eye stone. Glass that meets the top of the
+//! screen, as the menu bar does, has no edge there to light.
 //!
 //! Once a frame, everything under the floating layers is drawn into a texture, which is
 //! blurred by halving it a few times and doubling it back (dual Kawase). Each glass surface
@@ -91,6 +92,7 @@ uniform vec2 uv_origin;
 uniform vec2 uv_size;
 uniform vec2 size;
 uniform float radius;
+uniform float edge;
 void main() {
     vec2 local = (v_coords - uv_origin) / uv_size * size;
     vec2 q = abs(local - size * 0.5) - (size * 0.5 - vec2(radius));
@@ -100,7 +102,7 @@ void main() {
     vec3 color = texture2D(tex, v_coords).rgb;
     float grey = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(vec3(grey), color, 1.4);
-    float light = exp(-local.y / 1.5) * 0.22 + (1.0 - local.y / size.y) * 0.04;
+    float light = exp(-local.y / 1.5) * 0.22 * edge + (1.0 - local.y / size.y) * 0.04;
     color = min(color + light, 1.0);
 
     gl_FragColor = vec4(color, 1.0) * inside * alpha;
@@ -131,6 +133,7 @@ impl Glass {
             UniformName::new("uv_size", UniformType::_2f),
             UniformName::new("size", UniformType::_2f),
             UniformName::new("radius", UniformType::_1f),
+            UniformName::new("edge", UniformType::_1f),
         ];
         Ok(Self {
             down: renderer.compile_custom_texture_shader(format!("{SAMPLER}{DOWN}"), &pass_uniforms)?,
@@ -395,6 +398,7 @@ impl RenderElement<GlesRenderer> for Pane {
                 ),
                 Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
                 Uniform::new("radius", self.radius as f32),
+                Uniform::new("edge", if dst.loc.y > 0 { 1.0f32 } else { 0.0 }),
             ],
         )
     }
