@@ -289,6 +289,8 @@ impl Nekoland {
                 };
                 pointer.set_grab(self, grab, serial, Focus::Clear);
             }
+        } else if left_or_right && self.desktop_press(pos, button == BUTTON_RIGHT) {
+            self.set_keyboard_focus(None);
         } else if let Some((layer, _)) = self.layer_under(pos, BELOW_WINDOWS) {
             self.focus_layer(&layer);
         } else {

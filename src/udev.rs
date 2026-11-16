@@ -339,6 +339,7 @@ fn render(
     state.refresh_menu_bar();
     state.dock_ids();
     state.refresh_dock();
+    state.refresh_desktop();
     state.refresh_apps();
     state.refresh_notices();
     let mut guard = udev.borrow_mut();

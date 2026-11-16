@@ -799,7 +799,7 @@ impl Nekoland {
     }
 
     /// What is in a kept folder, read again when it has changed since it was last read.
-    fn folder_items(&mut self, path: &Path, sort: Sort) -> &[Item] {
+    pub(crate) fn folder_items(&mut self, path: &Path, sort: Sort) -> &[Item] {
         let index = match self.dock.folders.iter().position(|folder| folder.path == path) {
             Some(index) => index,
             None => {
@@ -2474,13 +2474,7 @@ impl Nekoland {
             }
             DockCommand::RevealStack(index) => {
                 if let Some(stack) = self.config.stacks.get(index) {
-                    let uri = gio::File::for_path(stack.folder()).uri();
-                    // The file manager shows the folder selected in the one it is in.
-                    config::spawn(&format!(
-                        "gdbus call --session --dest org.freedesktop.FileManager1 \
-                         --object-path /org/freedesktop/FileManager1 \
-                         --method org.freedesktop.FileManager1.ShowItems \"['{uri}']\" ''"
-                    ));
+                    reveal_path(&stack.folder());
                 }
             }
             DockCommand::OpenTrash => open_uri("trash:///"),
@@ -3025,7 +3019,17 @@ fn open_label(name: &str) -> String {
 }
 
 /// Opens a file or folder in the program the desktop opens it with.
-fn open_path(path: &Path) {
+/// Has the file manager show `path` selected in the folder it is in.
+pub(crate) fn reveal_path(path: &Path) {
+    let uri = gio::File::for_path(path).uri();
+    config::spawn(&format!(
+        "gdbus call --session --dest org.freedesktop.FileManager1 \
+         --object-path /org/freedesktop/FileManager1 \
+         --method org.freedesktop.FileManager1.ShowItems \"['{uri}']\" ''"
+    ));
+}
+
+pub(crate) fn open_path(path: &Path) {
     open_uri(&gio::File::for_path(path).uri());
 }
 

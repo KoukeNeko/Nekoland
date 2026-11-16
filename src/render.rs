@@ -37,7 +37,7 @@ use crate::{
 pub const CLEAR_COLOR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
 /// The outline around the window under the pointer in the overview.
 const OUTLINE: i32 = 4;
-const OUTLINE_COLOR: [f32; 4] = [0.04, 0.52, 1.0, 1.0];
+pub(crate) const OUTLINE_COLOR: [f32; 4] = [0.04, 0.52, 1.0, 1.0];
 /// A layer surface at the top edge no taller than this is a panel.
 const TOP_PANEL_MAX_HEIGHT: i32 = 96;
 
@@ -853,7 +853,11 @@ fn windows_on_glass(
         .unwrap_or_default();
     let scale = output.current_scale().fractional_scale();
     let output_size = output.current_mode().map(|mode| mode.size);
-    let mut scene = layer_elements(renderer, output, BELOW_WINDOWS, false);
+    let mut scene: Vec<SceneElement> = state
+        .desktop_elements(renderer, output_loc, scale)
+        .into_iter()
+        .collect();
+    scene.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
     let mut kept = Vec::new();
     // From the bottom up, so the glass of each one shows those under it, theirs included.
     for window in windows.iter().rev() {

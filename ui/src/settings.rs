@@ -869,6 +869,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     // The pictures go under the heading, as a group's rows would come before them.
     flow.set_visible(flow.first_child().is_some());
     wall.add(&flow);
+    wall.add(&switch_row(config, "桌面項目", "desktop_icons"));
     page.add(&wall);
 
     let options = adw::PreferencesGroup::new();

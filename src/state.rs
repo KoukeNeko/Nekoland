@@ -90,6 +90,7 @@ pub struct Nekoland {
     pub overview: Option<Overview>,
     pub menu_bar: MenuBar,
     pub dock: Dock,
+    pub desktop: crate::desktop::Desktop,
     pub notices: Notices,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
@@ -203,6 +204,7 @@ impl Nekoland {
             overview: None,
             menu_bar: MenuBar::default(),
             dock: Dock::default(),
+            desktop: Default::default(),
             notices: Notices::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),

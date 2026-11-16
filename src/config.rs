@@ -69,6 +69,10 @@ pub struct Config {
     /// The picture on the desktop, drawn by swaybg, and how it fills the output.
     pub wallpaper: Option<String>,
     pub wallpaper_mode: WallpaperMode,
+    /// Whether the files in the Desktop folder show on the desktop, and in what order, from
+    /// the top right corner down.
+    pub desktop_icons: bool,
+    pub desktop_sort: Sort,
     pub clock_24h: bool,
     pub clock_weekday: bool,
     pub clock_seconds: bool,
@@ -298,7 +302,7 @@ pub enum View {
 }
 
 impl Sort {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Sort::Name => "name",
             Sort::Added => "added",
@@ -424,6 +428,8 @@ impl Default for Config {
             apps_view: AppsView::default(),
             wallpaper: None,
             wallpaper_mode: WallpaperMode::default(),
+            desktop_icons: true,
+            desktop_sort: Sort::Name,
             clock_24h: true,
             clock_weekday: true,
             clock_seconds: false,

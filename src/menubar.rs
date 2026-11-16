@@ -106,6 +106,8 @@ pub enum Command {
     /// What the Dock's menu for an application offers.
     Dock(DockCommand),
     Focus(Window),
+    /// What the desktop's menus offer.
+    Desktop(crate::desktop::DesktopCommand),
     VolumeUp,
     VolumeDown,
     Mute,
@@ -1335,7 +1337,7 @@ impl Nekoland {
         self.menu_bar.control = None;
     }
 
-    fn output_size(&self) -> Size<i32, Logical> {
+    pub(crate) fn output_size(&self) -> Size<i32, Logical> {
         self.output_area().map(|area| area.size).unwrap_or_default()
     }
 
@@ -1413,6 +1415,36 @@ impl Nekoland {
             rect.size,
             gap,
         );
+        let shift = loc - rect.loc;
+        self.menu_bar.open = Some(OpenMenu {
+            title: None,
+            levels: vec![Level {
+                entries,
+                rect: Rectangle::new(loc, rect.size),
+                rows: rows
+                    .into_iter()
+                    .map(|row| Rectangle::new(row.loc + shift, row.size))
+                    .collect(),
+                highlighted: None,
+                picture: None,
+                drawn: None,
+            }],
+            search: None,
+            last_pointer: None,
+        });
+    }
+
+    /// Opens a menu of these entries with a corner at `point`, as a right click on the
+    /// desktop does: its top left one, or, where it would not fit, the one on the other
+    /// side, as the Mac's menus turn.
+    pub fn open_menu_at(&mut self, entries: Vec<Entry>, point: Point<i32, Logical>) {
+        let output = self.output_size();
+        let (rect, rows) =
+            MenuBar::place_menu(&entries, Rectangle::new(point, Size::default()), false, output);
+        let loc = Point::from((
+            menu_side(point.x, rect.size.w, 6, output.w - 6),
+            menu_side(point.y, rect.size.h, MENU_BAR_HEIGHT, output.h - 6),
+        ));
         let shift = loc - rect.loc;
         self.menu_bar.open = Some(OpenMenu {
             title: None,
@@ -2120,6 +2152,7 @@ impl Nekoland {
             }
             Command::Focus(window) => self.restore_from_dock(&window),
             Command::Dock(command) => self.run_dock_command(command),
+            Command::Desktop(command) => self.run_desktop_command(command),
             Command::VolumeUp => config::spawn(&self.config.volume_up),
             Command::VolumeDown => config::spawn(&self.config.volume_down),
             Command::Mute => config::spawn(&self.config.volume_mute),
@@ -2145,9 +2178,26 @@ pub(crate) fn close(window: &Window) {
     }
 }
 
+/// Where a menu `length` long starts along one axis to have its edge at `point`: after it,
+/// or before it where it would pass `end`, kept from `start`.
+fn menu_side(point: i32, length: i32, start: i32, end: i32) -> i32 {
+    let at = if point + length <= end { point } else { point - length };
+    at.max(start).min((end - length).max(start))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_turns_to_keep_its_corner_at_the_pointer() {
+        // Room after the pointer: it starts there.
+        assert_eq!(menu_side(100, 200, 6, 1914), 100);
+        // None: it ends there.
+        assert_eq!(menu_side(1850, 200, 6, 1914), 1650);
+        // Room on neither side: kept on the output.
+        assert_eq!(menu_side(150, 200, 6, 300), 6);
+    }
 
     fn output() -> Size<i32, Logical> {
         Size::from((1920, 1080))

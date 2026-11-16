@@ -40,6 +40,7 @@ wallpaper and an input method. Every key is optional:
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
+| `desktop_icons`, `desktop_sort` | Whether the files in the Desktop folder show on the desktop, on unless set, and their order: `name` (the default), `added`, `modified`, `created` or `kind` |
 | `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `clock_flash` | Whether the colon between the clock's hours and minutes flashes each second; off unless set |
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
@@ -173,6 +174,14 @@ press dragged onto an entry and let go chooses it. Submenus open beside their en
 and stay open while the pointer heads into them. Ctrl+F2 opens the first menu for the
 keyboard: the arrows move, also into and out of submenus, Return chooses, Escape
 closes. It follows the desktop's dark or light setting.
+
+## Desktop
+
+The files in the Desktop folder lie on the wallpaper, under the windows, in columns from
+the top right corner down, as on the Mac: a click chooses one, a double click opens it.
+A right click on one opens its menu, to open it, show it in Files or put it in the
+Trash; on the desktop itself, to make a new folder, sort the files or change the
+wallpaper.
 
 ## Overview
 

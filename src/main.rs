@@ -6,6 +6,7 @@ mod control;
 mod corners;
 mod cursor;
 mod dbus;
+mod desktop;
 mod dock;
 mod focus;
 mod glass;
