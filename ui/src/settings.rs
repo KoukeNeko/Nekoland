@@ -1114,6 +1114,9 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
         |rate| set(&format!("repeat_rate = {}", rate.round() as i32)),
     ));
     page.add(&repeat);
+    let typing = group("");
+    typing.add(&gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink"));
+    page.add(&typing);
     page
 }
 
@@ -1135,6 +1138,7 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
     primary.connect_selected_notify(|row| set(&format!("left_handed = {}", row.selected() == 1)));
     pointer.add(&primary);
     pointer.add(&switch_row(config, "自然捲動", "natural_scroll"));
+    pointer.add(&gsettings_switch("中鍵貼上", INTERFACE, "gtk-enable-primary-paste"));
     page.add(&pointer);
     let touchpad = group("觸控板");
     touchpad.add(&switch_row(config, "輕觸以點按", "tap_to_click"));
@@ -1807,17 +1811,7 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
         }
     });
     seeing.add(&size);
-    let contrast = adw::SwitchRow::builder()
-        .title("高對比")
-        .active(
-            output("gsettings", &["get", A11Y_INTERFACE, "high-contrast"])
-                .is_some_and(|value| value.trim() == "true"),
-        )
-        .build();
-    contrast.connect_active_notify(|row| {
-        run("gsettings", &["set", A11Y_INTERFACE, "high-contrast", &row.is_active().to_string()]);
-    });
-    seeing.add(&contrast);
+    seeing.add(&gsettings_switch("高對比", A11Y_INTERFACE, "high-contrast"));
     let motion = adw::SwitchRow::builder()
         .title("減少動態效果")
         .active(interface_setting("enable-animations") == "false")
@@ -1826,6 +1820,16 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
     seeing.add(&motion);
     page.add(&seeing);
     page
+}
+
+/// A row that switches one of GNOME's settings, which GTK reads through the portal.
+fn gsettings_switch(title: &str, schema: &'static str, key: &'static str) -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title(title)
+        .active(output("gsettings", &["get", schema, key]).is_some_and(|value| value.trim() == "true"))
+        .build();
+    row.connect_active_notify(move |row| run("gsettings", &["set", schema, key, &row.is_active().to_string()]));
+    row
 }
 
 /// What opens each kind of file or link, by the types it is the default for; the first
@@ -2290,6 +2294,13 @@ fn privacy_page() -> adw::PreferencesPage {
         }
         page.add(&rows);
     }
+    let history = group("");
+    history.add(&gsettings_switch(
+        "記錄最近使用的檔案",
+        "org.gnome.desktop.privacy",
+        "remember-recent-files",
+    ));
+    page.add(&history);
     page
 }
 

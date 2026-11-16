@@ -99,8 +99,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
   permission store, the cursor size, high contrast and reduced motion, the applications
-  that open links and each kind of file, through GIO's defaults, and the terminal, and
-  what starts at login, show what the computer is and how worn its batteries are, and
+  that open links and each kind of file, through GIO's defaults, and the terminal,
+  whether GTK pastes with the middle button, blinks its text cursor and remembers recent
+  files, and what starts at login, show what the computer is and how worn its batteries are, and
   show GTK's own widgets as the system style draws them.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
