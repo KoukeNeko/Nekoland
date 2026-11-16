@@ -19,8 +19,9 @@ use crate::{
     text::{self, Picture},
 };
 
-/// Pictures bigger than this are not opened to draw their icon; their kind's icon is used.
-const MAX_PICTURE_BYTES: u64 = 40 << 20;
+/// Pictures with more pixels than this are not read: some formats are decoded whole before
+/// they are scaled down, at four bytes a pixel.
+const MAX_PICTURE_PIXELS: i64 = 200_000_000;
 
 pub const FAN_ICON: f64 = 48.0;
 /// How far apart the items of a fan are, how much it curves away, and how much each item
@@ -145,18 +146,19 @@ pub fn icon_names(path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// An item's picture: the thumbnail a file manager made of it, the picture itself when it
-/// is one, or else its kind's icon.
+/// An item's thumbnail, made by a file manager, or else its kind's icon. A picture itself is
+/// only read on a thread, with `read_on_a_thread`.
 pub fn item_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
     let scaled = size * text::picture_scale();
     picture_path(item)
+        .filter(|path| *path != item.path)
         .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_scale(path, scaled, scaled, true).ok())
         .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None))
         .or_else(|| kind_icon(item, size, tint))
 }
 
 /// The picture an item's icon is made from: the thumbnail a file manager made of it, or the
-/// picture itself when it is one and not too big to read.
+/// picture itself when it is one.
 pub fn picture_path(item: &Item) -> Option<PathBuf> {
     if item.is_dir {
         return None;
@@ -170,8 +172,7 @@ pub fn picture_path(item: &Item) -> Option<PathBuf> {
         .ok()
         .and_then(|info| info.attribute_byte_string("thumbnail::path"))
         .map(|path| PathBuf::from(path.as_str()));
-    let small = || std::fs::metadata(&item.path).is_ok_and(|meta| meta.len() <= MAX_PICTURE_BYTES);
-    thumbnail.or_else(|| (item.kind.starts_with("image/") && small()).then(|| item.path.clone()))
+    thumbnail.or_else(|| item.kind.starts_with("image/").then(|| item.path.clone()))
 }
 
 /// The icon of an item's kind in the theme.
@@ -193,9 +194,15 @@ pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
     let read = Arc::new(Mutex::new(None));
     let into = read.clone();
     std::thread::spawn(move || {
-        let found = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true)
-            .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
-            .ok()
+        // Learning the size may read the whole file, hence here and not on the caller's thread.
+        let fits = gdk_pixbuf::Pixbuf::file_info(&path)
+            .is_some_and(|(_, w, h)| i64::from(w) * i64::from(h) <= MAX_PICTURE_PIXELS);
+        let found = fits
+            .then(|| gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true))
+            .and_then(|read| {
+                read.inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
+                    .ok()
+            })
             .map(|pixbuf| {
                 let stride = pixbuf.rowstride();
                 (
