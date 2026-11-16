@@ -904,8 +904,12 @@ fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
             let (shown, quiet_then) = (shown.clone(), quiet.clone());
             let waiting = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
                 quiet_then.take();
-                if device_names(&audio_nodes()) != *shown.devices.borrow() {
+                let dump = output("pw-dump", &[]).unwrap_or_default();
+                let nodes = parse_audio_nodes(&dump);
+                if device_names(&nodes) != *shown.devices.borrow() {
                     fill_sound_page(&page, shown);
+                } else {
+                    show_status(&shown, &nodes, default_clock(&dump));
                 }
             });
             *quiet.borrow_mut() = Some(waiting);
@@ -922,6 +926,9 @@ fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
 struct SoundPage {
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     devices: RefCell<Vec<(String, String)>>,
+    /// The rows whose subtitles say what is going on: PipeWire's clock, and each card's.
+    clock: RefCell<Option<adw::ActionRow>>,
+    cards: RefCell<Vec<(u64, adw::ComboRow)>>,
 }
 
 /// Which devices there are, by kind and name, to tell when one comes or goes.
@@ -948,10 +955,15 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
             }
         }) as Rc<dyn Fn()>
     };
-    let (nodes, cards) = output("pw-dump", &[])
-        .map(|dump| (parse_audio_nodes(&dump), parse_sound_cards(&dump)))
-        .unwrap_or_default();
+    let dump = output("pw-dump", &[]).unwrap_or_default();
+    let (nodes, cards) = (parse_audio_nodes(&dump), parse_sound_cards(&dump));
     *shown.devices.borrow_mut() = device_names(&nodes);
+    let clock_group = group("");
+    let clock = adw::ActionRow::builder().title("PipeWire").build();
+    clock_group.add(&clock);
+    page.add(&clock_group);
+    shown.groups.borrow_mut().push(clock_group);
+    shown.clock.replace(Some(clock));
     for (title, class, default, none) in [
         ("輸出", "Audio/Sink", SINK, "沒有音訊輸出"),
         ("輸入", "Audio/Source", SOURCE, "沒有音訊輸入"),
@@ -962,12 +974,13 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
         shown.groups.borrow_mut().push(group);
     }
     let outputs: Vec<AudioDevice> = nodes
-        .into_iter()
+        .iter()
         .filter(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT)
+        .cloned()
         .collect();
     let mut more = vec![rates_group()];
     if !cards.is_empty() {
-        more.insert(0, profile_group(cards));
+        more.insert(0, profile_group(cards, &shown));
     }
     if outputs.len() >= 2 {
         more.insert(0, multi_output_group(&outputs, again));
@@ -976,6 +989,73 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
         page.add(&group);
         shown.groups.borrow_mut().push(group);
     }
+    show_status(&shown, &nodes, default_clock(&dump));
+}
+
+/// Says under each card how its devices are open, or that it is idle, and under PipeWire
+/// the rate and buffer it runs with: `clock`, its default, until `pw-top` has said, a second
+/// later, what it runs with now.
+fn show_status(shown: &SoundPage, nodes: &[AudioDevice], clock: Option<(u64, u64)>) {
+    for (card, row) in shown.cards.borrow().iter() {
+        let open: Vec<&str> =
+            nodes.iter().filter(|node| node.card == Some(*card)).filter_map(|node| node.open_as.as_deref()).collect();
+        row.set_subtitle(&if open.is_empty() { "閒置".to_string() } else { open.join(" · ") });
+    }
+    let Some(row) = shown.clock.borrow().clone() else { return };
+    row.set_subtitle(&clock.map(clock_text).unwrap_or_default());
+    let argv = ["pw-top", "--batch-mode", "--iterations", "2"].map(std::ffi::OsStr::new);
+    let child = match gio::Subprocess::newv(&argv, gio::SubprocessFlags::STDOUT_PIPE) {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("pw-top: {err}");
+            return;
+        }
+    };
+    let row = row.downgrade();
+    glib::spawn_future_local(async move {
+        match child.communicate_utf8_future(None).await {
+            Ok((Some(text), _)) => {
+                if let (Some(row), Some(clock)) = (row.upgrade(), running_clock(&text)) {
+                    row.set_subtitle(&clock_text(clock));
+                }
+            }
+            Ok((None, _)) => {}
+            Err(err) => eprintln!("pw-top: {err}"),
+        }
+    });
+}
+
+/// A rate and a buffer, in samples: "48000 Hz · 緩衝區 1024 個取樣（21.3 毫秒）".
+fn clock_text((rate, quantum): (u64, u64)) -> String {
+    let ms = quantum as f64 * 1000.0 / rate.max(1) as f64;
+    format!("{rate} Hz · 緩衝區 {quantum} 個取樣（{ms:.1} 毫秒）")
+}
+
+/// The rate and buffer PipeWire runs with when nothing asks for others, from its settings in
+/// `pw-dump`'s output.
+fn default_clock(dump: &str) -> Option<(u64, u64)> {
+    let objects: Vec<serde_json::Value> = serde_json::from_str(dump).ok()?;
+    let settings = objects.iter().find(|object| object["props"]["metadata.name"] == "settings")?;
+    let value = |key: &str| {
+        let entry = settings["metadata"].as_array()?.iter().find(|entry| entry["key"] == key)?;
+        let value = &entry["value"];
+        value.as_u64().or_else(|| value.as_str()?.parse().ok())
+    };
+    Some((value("clock.rate")?, value("clock.quantum")?))
+}
+
+/// The rate and buffer the first device driving PipeWire runs with, in `pw-top`'s last
+/// look; None when nothing plays or records. A driver's line is the one not marked as
+/// following another with "+" or "=".
+fn running_clock(text: &str) -> Option<(u64, u64)> {
+    let last = text.rsplit_once("QUANT")?.1;
+    last.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.first() != Some(&"R") || fields.iter().any(|field| *field == "+" || *field == "=") {
+            return None;
+        }
+        Some((fields.get(3)?.parse().ok()?, fields.get(2)?.parse().ok()?))
+    })
 }
 
 /// What PipeWire knows the output that plays on several at once by.
@@ -1280,6 +1360,9 @@ struct AudioDevice {
     formats: Vec<String>,
     rate: u32,
     format: String,
+    /// The sound card it is on, and how it is open now: "S16LE 48000 Hz 2ch".
+    card: Option<u64>,
+    open_as: Option<String>,
 }
 
 /// A sound card, and the profiles it can be used with, as PipeWire describes them: stereo,
@@ -1322,8 +1405,9 @@ fn parse_sound_cards(dump: &str) -> Vec<SoundCard> {
 }
 
 /// Each sound card's profile, as macOS's Audio MIDI Setup and pavucontrol pick it.
-fn profile_group(cards: Vec<SoundCard>) -> adw::PreferencesGroup {
+fn profile_group(cards: Vec<SoundCard>, shown: &SoundPage) -> adw::PreferencesGroup {
     let group = group("裝置模式");
+    let mut rows = Vec::new();
     for card in cards {
         let names: Vec<&str> = card.profiles.iter().map(|(_, name)| name.as_str()).collect();
         let row = adw::ComboRow::builder()
@@ -1331,6 +1415,7 @@ fn profile_group(cards: Vec<SoundCard>) -> adw::PreferencesGroup {
             .model(&gtk::StringList::new(&names))
             .selected(card.profiles.iter().position(|(index, _)| *index == card.profile).unwrap_or(0) as u32)
             .build();
+        rows.push((card.id, row.clone()));
         // The page follows as the card's devices change.
         row.connect_selected_notify(move |row| {
             if let Some((index, _)) = card.profiles.get(row.selected() as usize) {
@@ -1339,6 +1424,7 @@ fn profile_group(cards: Vec<SoundCard>) -> adw::PreferencesGroup {
         });
         group.add(&row);
     }
+    shown.cards.replace(rows);
     group
 }
 
@@ -1416,6 +1502,12 @@ fn parse_audio_nodes(dump: &str) -> Vec<AudioDevice> {
             formats,
             rate: props["audio.rate"].as_u64().unwrap_or(0) as u32,
             format: props["audio.format"].as_str().unwrap_or_default().into(),
+            card: props["device.id"].as_u64(),
+            open_as: info["params"]["Format"].get(0).and_then(|open| {
+                let (format, rate, channels) =
+                    (open["format"].as_str()?, open["rate"].as_u64()?, open["channels"].as_u64()?);
+                Some(format!("{format} {rate} Hz {channels}ch"))
+            }),
         });
     }
     devices
@@ -2555,6 +2647,25 @@ mod tests {
     }
 
     #[test]
+    fn the_running_clock_is_the_drivers_in_pw_tops_last_look() {
+        let header = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME \n";
+        let idle = "S   39      0      0    ---     ---   ---   ---     0                  alsa_output.x\n";
+        let playing = "R   39   1024  48000  11.0us  11.4us  0.00  0.00    0    S16LE 2 48000 alsa_output.x\n\
+                       R   62    256  44100  37.1us  17.7us  0.00  0.00    0    S16LE 2 44100  = pw-play\n";
+        assert_eq!(running_clock(&format!("{header}{playing}{header}{idle}")), None);
+        assert_eq!(running_clock(&format!("{header}{idle}{header}{playing}")), Some((48000, 1024)));
+        assert_eq!(clock_text((48000, 1024)), "48000 Hz · 緩衝區 1024 個取樣（21.3 毫秒）");
+    }
+
+    #[test]
+    fn the_default_clock_is_read_from_the_settings_metadata() {
+        let dump = r#"[{"id": 32, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "settings"},
+            "metadata": [{"key": "clock.rate", "value": 48000}, {"key": "clock.quantum", "value": "1024"}]}]"#;
+        assert_eq!(default_clock(dump), Some((48000, 1024)));
+        assert_eq!(default_clock("[]"), None);
+    }
+
+    #[test]
     fn sound_cards_are_read_with_the_profiles_they_have() {
         let dump = r#"[
             {"id": 46, "info": {"props": {"media.class": "Audio/Device", "device.description": "USB DAC"},
@@ -2586,15 +2697,18 @@ mod tests {
             {"id": 0, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
              "metadata": [{"key": "default.audio.sink", "value": {"name": "alsa_output.usb"}}]},
             {"id": 59, "info": {"props": {"media.class": "Audio/Sink", "node.name": "alsa_output.usb",
-              "node.description": "USB DAC", "device.api": "alsa", "audio.rate": 96000},
+              "node.description": "USB DAC", "device.api": "alsa", "audio.rate": 96000, "device.id": 46},
              "params": {"EnumFormat": [{"format": {"default": "S16LE", "alt1": "S16LE", "alt2": "S24_32LE"},
-              "rate": {"default": 48000, "min": 44100, "max": 96000}}]}}},
+              "rate": {"default": 48000, "min": 44100, "max": 96000}}],
+              "Format": [{"format": "S24_32LE", "rate": 96000, "channels": 2}]}}},
             {"id": 60, "info": {"props": {"media.class": "Audio/Source", "node.name": "bluez_input.x",
               "device.api": "bluez5"}, "params": {"EnumFormat": [{"format": "S16LE",
               "rate": {"default": 16000, "alt1": 16000}}]}}},
             {"id": 61, "info": {"props": {"media.class": "Stream/Output/Audio", "node.name": "firefox"}}}
         ]"#;
         let devices = parse_audio_nodes(dump);
+        assert_eq!((devices[0].card, devices[0].open_as.as_deref()), (Some(46), Some("S24_32LE 96000 Hz 2ch")));
+        assert_eq!((devices[1].card, devices[1].open_as.as_deref()), (None, None));
         let summary: Vec<_> = devices
             .iter()
             .map(|d| (d.id, d.description.as_str(), d.default, d.alsa, d.rates.clone(), d.formats.join(" "), d.rate))
