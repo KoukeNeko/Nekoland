@@ -62,9 +62,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
-  user's language too, and takes an input method. Super+A or the Dock's first button
-  opens it; typing in the overview opens it with what was typed. It closes when
-  anything else is clicked.
+  user's language too, and takes an input method. Clicking the search field of the
+  overview's applications opens it with what was typed there. It closes when anything
+  else is clicked.
 
 Programs learn whether to be dark from `xdg-desktop-portal`. With
 `xdg-desktop-portal-gtk` installed, copy `shell/nekoland-portals.conf` to
@@ -108,6 +108,20 @@ goes to it and leaves the overview. A window dragged onto a desktop goes there, 
 add button to a new desktop; the bar opens up for it. A desktop pointed at shows a button at its corner
 that takes it away, its windows going to the desktop before it.
 
+Super+A, the Dock's first button, or typing in the overview shows the applications in
+place of the windows, as GNOME does: the desktops' bar stays open above them, a search
+field under it, and every application a page at a time, turned with the wheel, the
+arrows or the dots. Typing narrows them down by name, keyword or command, and Return
+starts the first. A click starts one on the desktop shown; one dragged onto a desktop
+starts there, onto the add button on a new desktop, and onto the Dock is kept in it.
+
+The applications are arranged by dragging, as on the Mac's Launchpad: one dropped
+between others goes there, the others making room; onto another, the two make a folder
+named after its kind; onto a folder, it goes in. A dragged icon held at the grid's side
+turns the page. A folder opens over the grid; its applications are reordered there or
+dragged out, and a click on its name changes it. The arrangement is kept in
+`app-grid.toml` beside `config.toml`.
+
 ## Glass
 
 Nekoland's glass is called Catseye（貓眼）. The menu bar and its menus, the Dock,
@@ -122,9 +136,9 @@ whole output has square corners.
 | Keys | Action |
 | --- | --- |
 | Super, or Ctrl+Alt+Up | Overview |
-| Typing in the overview | Search applications |
+| Typing in the overview | Applications, searched |
 | Ctrl+Alt+Left / Right, Super+PageUp / PageDown | Previous / next desktop |
-| Super+A | Launcher |
+| Super+A | Applications |
 | Ctrl+Alt+T, Super+Return | Terminal |
 | Alt+Tab, Super+Tab | Next window |
 | Ctrl+F2 | Menu bar |

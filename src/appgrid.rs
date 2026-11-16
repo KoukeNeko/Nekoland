@@ -1,0 +1,1591 @@
+//! The overview's applications, as GNOME shows them: the desktops' bar stays open at the
+//! top, a search field under it, and every application below, a page at a time. Typing
+//! narrows them down; a click starts one on the desktop shown, and one dragged onto a
+//! desktop in the bar starts there, onto the add button on a new desktop, onto the Dock
+//! is kept in it.
+//!
+//! As on the Mac's Launchpad, the grid is arranged by dragging: an application dropped
+//! between others goes there, onto another makes a folder of the two, onto a folder goes
+//! into it. A folder opens over the grid; its applications are reordered there or dragged
+//! out of it, and its name is changed by clicking it. The arrangement is kept in
+//! `app-grid.toml` beside the configuration.
+
+use std::time::Instant;
+
+use cairo::{Context, Format, ImageSurface};
+use gio::prelude::*;
+use serde::{Deserialize, Serialize};
+use smithay::{
+    backend::renderer::element::Id,
+    utils::{Logical, Point, Rectangle, Size},
+};
+
+use crate::{
+    config,
+    dock::paint_pane,
+    menubar::Overlay,
+    overview::{expanded_height, BarAction},
+    text::{self, Picture},
+    Nekoland,
+};
+
+const CELL_WIDTH: i32 = 132;
+const CELL_HEIGHT: i32 = 128;
+const ICON: i32 = 66;
+const SEARCH_WIDTH: i32 = 360;
+const SEARCH_HEIGHT: i32 = 38;
+/// Room under the grid for the dots that tell the pages.
+const DOTS: i32 = 40;
+const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
+/// How long the view and a folder take to fade in, and a page to slide to the next.
+const FADE_TIME: f64 = 0.2;
+const PAGE_TIME: f64 = 0.25;
+/// How much the wheel has to turn, in its own units, to go a page on.
+const PAGE_SCROLL: f64 = 10.0;
+const DRAG_THRESHOLD: f64 = 6.0;
+const HELD_SIZE: i32 = 72;
+/// How long a dragged icon rests at the grid's edge before the page turns.
+const EDGE_TIME: f64 = 0.6;
+const EDGE: f64 = 28.0;
+/// Within this of an icon's middle, a dragged application goes onto it, not beside it.
+const ONTO: f64 = 30.0;
+const FOLDER_PADDING: i32 = 20;
+const FOLDER_TITLE: i32 = 48;
+const FOLDER_COLUMNS: usize = 5;
+const FOLDER_ROWS: usize = 4;
+const FOLDER_RADIUS: i32 = 24;
+const ARRANGEMENT: &str = "app-grid.toml";
+
+struct GridApp {
+    /// The desktop entry's name without `.desktop`, as the Dock keeps it.
+    id: String,
+    name: String,
+    /// Everything it can be found by, in lower case.
+    words: String,
+    icons: Vec<String>,
+    /// What a folder made with it is called.
+    category: &'static str,
+    info: gio::DesktopAppInfo,
+}
+
+/// A place on the grid: an application, or a folder of them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Entry {
+    App(usize),
+    Folder(usize),
+}
+
+/// What is drawn in a place on the page: an entry, or the room kept for a dragged one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Cell {
+    Entry(Entry),
+    Gap,
+}
+
+struct Folder {
+    id: String,
+    name: String,
+    apps: Vec<usize>,
+}
+
+/// The arrangement as kept between sessions, by the applications' IDs.
+#[derive(Serialize, Deserialize, Default)]
+struct Arrangement {
+    /// Applications and `folder:ID`s, in the grid's order.
+    #[serde(default)]
+    order: Vec<String>,
+    #[serde(default)]
+    folders: Vec<SavedFolder>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedFolder {
+    id: String,
+    name: String,
+    apps: Vec<String>,
+}
+
+/// Where the parts of the view are on the output.
+#[derive(Clone, Copy, PartialEq)]
+struct Layout {
+    search: Rectangle<i32, Logical>,
+    grid: Rectangle<i32, Logical>,
+    columns: usize,
+    rows: usize,
+}
+
+impl Layout {
+    fn per_page(&self) -> usize {
+        self.columns * self.rows
+    }
+
+    /// Which place on the page a point is on, and how far from that place's icon middle.
+    fn cell_at(&self, pos: Point<f64, Logical>) -> Option<(usize, f64)> {
+        cell_at(self.grid, self.columns, self.rows, pos)
+    }
+}
+
+/// Which place of a grid of `columns` by `rows` at `grid` a point is on, and how far from
+/// that place's icon middle.
+fn cell_at(
+    grid: Rectangle<i32, Logical>,
+    columns: usize,
+    rows: usize,
+    pos: Point<f64, Logical>,
+) -> Option<(usize, f64)> {
+    let x = pos.x - f64::from(grid.loc.x);
+    let y = pos.y - f64::from(grid.loc.y);
+    if x < 0.0 || y < 0.0 {
+        return None;
+    }
+    let (column, row) = (
+        (x / f64::from(CELL_WIDTH)) as usize,
+        (y / f64::from(CELL_HEIGHT)) as usize,
+    );
+    if column >= columns || row >= rows {
+        return None;
+    }
+    let middle = (
+        (column as f64 + 0.5) * f64::from(CELL_WIDTH),
+        row as f64 * f64::from(CELL_HEIGHT) + 12.0 + f64::from(ICON) / 2.0,
+    );
+    Some((row * columns + column, (x - middle.0).hypot(y - middle.1)))
+}
+
+/// Where an icon being dragged came from.
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    Grid,
+    Folder(usize),
+}
+
+struct Held {
+    entry: Entry,
+    from: Source,
+    grab: Point<f64, Logical>,
+}
+
+/// Where a dragged icon would go if let go now.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Target {
+    Nowhere,
+    /// Between the grid's entries, before the one at this place among those left.
+    Between(usize),
+    /// Onto the entry at this place among those left.
+    Onto(usize),
+    /// Among the open folder's applications.
+    InFolder(usize),
+}
+
+/// What a press went down on.
+#[derive(Clone, Copy, PartialEq)]
+enum Pressed {
+    Cell(usize),
+    FolderCell(usize),
+}
+
+/// What a folder was drawn with: its name, its applications, where room was kept,
+/// whether it was being renamed, and which was pointed at.
+type FolderDrawn = (String, Vec<usize>, Option<usize>, bool, Option<usize>);
+/// What the grid was drawn with: what was typed, how far the pages had turned, what was
+/// pointed at, the places, where a dragged icon was aimed, and whether a folder was open.
+type GridDrawn = (String, i64, Option<usize>, Vec<Cell>, Target, bool);
+
+/// Where an open folder is: its pane, its grid, and the grid's columns and rows.
+struct FolderPlace {
+    panel: Rectangle<i32, Logical>,
+    grid: Rectangle<i32, Logical>,
+    columns: usize,
+    rows: usize,
+}
+
+struct OpenFolder {
+    folder: usize,
+    renaming: bool,
+    opened: Instant,
+    hovered: Option<usize>,
+    picture: Option<Picture>,
+    drawn: Option<FolderDrawn>,
+}
+
+pub struct AppGrid {
+    apps: Vec<GridApp>,
+    entries: Vec<Entry>,
+    folders: Vec<Folder>,
+    query: String,
+    page: usize,
+    /// The page shown, on its way to `page`.
+    shown: f64,
+    hovered: Option<usize>,
+    press: Option<(Pressed, Point<f64, Logical>)>,
+    held: Option<Held>,
+    target: Target,
+    /// Where room is kept for a dragged icon among the grid's entries: first where it was,
+    /// then where it was last aimed between others.
+    gap: Option<usize>,
+    /// Since when a dragged icon has rested at an edge of the grid, and which.
+    edge: Option<(bool, Instant)>,
+    open: Option<OpenFolder>,
+    opened: Instant,
+    last_tick: Instant,
+    scrolled: f64,
+    layout: Option<Layout>,
+    picture: Option<Picture>,
+    drawn: Option<GridDrawn>,
+    search: Option<(String, Picture)>,
+    held_picture: Option<Picture>,
+    backdrop: Option<(Size<i32, Logical>, Picture)>,
+    ids: [Id; 5],
+}
+
+/// The kind of application a desktop entry says it is, as a folder of it is named.
+fn category(info: &gio::DesktopAppInfo) -> &'static str {
+    let categories = info.categories().map(|text| text.to_string()).unwrap_or_default();
+    let has = |names: &[&str]| categories.split(';').any(|category| names.contains(&category));
+    if has(&["Game"]) {
+        "遊戲"
+    } else if has(&["WebBrowser", "InstantMessaging", "Chat", "Email", "Network"]) {
+        "網際網路"
+    } else if has(&["Graphics", "Audio", "Video", "AudioVideo"]) {
+        "圖片與影音"
+    } else if has(&["Office"]) {
+        "辦公"
+    } else if has(&["Development"]) {
+        "開發"
+    } else if has(&[
+        "System",
+        "Settings",
+        "HardwareSettings",
+        "PackageManager",
+        "Security",
+    ]) {
+        "系統"
+    } else if has(&["Utility"]) {
+        "工具程式"
+    } else {
+        "資料夾"
+    }
+}
+
+/// Every application the desktop shows, A to Z by name.
+fn installed() -> Vec<GridApp> {
+    let mut apps: Vec<GridApp> = gio::AppInfo::all()
+        .into_iter()
+        .filter(|app| app.should_show())
+        .filter_map(|app| app.downcast::<gio::DesktopAppInfo>().ok())
+        .filter_map(|info| {
+            let id = info.id()?.trim_end_matches(".desktop").to_string();
+            let name = info.display_name().to_string();
+            let words = [
+                name.clone(),
+                info.name().to_string(),
+                info.generic_name()
+                    .map(|name| name.to_string())
+                    .unwrap_or_default(),
+                info.keywords()
+                    .iter()
+                    .map(|word| word.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                info.executable().display().to_string(),
+                id.clone(),
+            ]
+            .join(" ")
+            .to_lowercase();
+            let icons = info
+                .icon()
+                .and_then(|icon| icon.downcast::<gio::ThemedIcon>().ok())
+                .map(|icon| icon.names().iter().map(|name| name.to_string()).collect())
+                .unwrap_or_default();
+            Some(GridApp {
+                id,
+                name,
+                words,
+                icons,
+                category: category(&info),
+                info,
+            })
+        })
+        .collect();
+    apps.sort_by_key(|app| app.name.to_lowercase());
+    apps
+}
+
+/// The applications for what was typed: names starting with it first, then the rest
+/// that mention it anywhere, as indexes into `words`, which are in lower case.
+fn matching(words: &[(&str, &str)], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    let mut found: Vec<usize> = (0..words.len())
+        .filter(|&i| query.is_empty() || words[i].1.contains(&query))
+        .collect();
+    if !query.is_empty() {
+        found.sort_by_key(|&i| !words[i].0.to_lowercase().starts_with(&query));
+    }
+    found
+}
+
+/// The grid's entries and folders from what was kept: kept places first, then the
+/// applications installed since, in the order they come.
+fn arrange(ids: &[String], kept: &Arrangement) -> (Vec<Entry>, Vec<Folder>) {
+    let index = |id: &str| ids.iter().position(|known| known == id);
+    let folders: Vec<Folder> = kept
+        .folders
+        .iter()
+        .map(|folder| Folder {
+            id: folder.id.clone(),
+            name: folder.name.clone(),
+            apps: folder.apps.iter().filter_map(|id| index(id)).collect(),
+        })
+        .collect();
+    let in_folder = |app: usize| folders.iter().any(|folder| folder.apps.contains(&app));
+    let mut entries = Vec::new();
+    for id in &kept.order {
+        let entry = match id.strip_prefix("folder:") {
+            Some(id) => folders
+                .iter()
+                .position(|folder| folder.id == id)
+                .map(Entry::Folder),
+            None => index(id).filter(|&app| !in_folder(app)).map(Entry::App),
+        };
+        if let Some(entry) = entry.filter(|entry| !entries.contains(entry)) {
+            entries.push(entry);
+        }
+    }
+    for folder in 0..folders.len() {
+        if !entries.contains(&Entry::Folder(folder)) {
+            entries.push(Entry::Folder(folder));
+        }
+    }
+    for app in 0..ids.len() {
+        if !in_folder(app) && !entries.contains(&Entry::App(app)) {
+            entries.push(Entry::App(app));
+        }
+    }
+    entries.retain(|entry| !matches!(entry, Entry::Folder(folder) if folders[*folder].apps.is_empty()));
+    (entries, folders)
+}
+
+impl AppGrid {
+    fn new(query: &str) -> Self {
+        let apps = installed();
+        let kept: Arrangement = config::config_file(ARRANGEMENT)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| {
+                toml::from_str(&text)
+                    .inspect_err(|err| tracing::warn!("{ARRANGEMENT}: {err}"))
+                    .ok()
+            })
+            .unwrap_or_default();
+        let ids: Vec<String> = apps.iter().map(|app| app.id.clone()).collect();
+        let (entries, folders) = arrange(&ids, &kept);
+        Self {
+            apps,
+            entries,
+            folders,
+            query: query.to_string(),
+            page: 0,
+            shown: 0.0,
+            hovered: None,
+            press: None,
+            held: None,
+            target: Target::Nowhere,
+            gap: None,
+            edge: None,
+            open: None,
+            opened: Instant::now(),
+            last_tick: Instant::now(),
+            scrolled: 0.0,
+            layout: None,
+            picture: None,
+            drawn: None,
+            search: None,
+            held_picture: None,
+            backdrop: None,
+            ids: [Id::new(), Id::new(), Id::new(), Id::new(), Id::new()],
+        }
+    }
+
+    /// Writes the arrangement where it is kept.
+    fn save(&self) {
+        let arrangement = Arrangement {
+            order: self
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    Entry::App(app) => self.apps[*app].id.clone(),
+                    Entry::Folder(folder) => format!("folder:{}", self.folders[*folder].id),
+                })
+                .collect(),
+            folders: self
+                .folders
+                .iter()
+                .filter(|folder| !folder.apps.is_empty())
+                .map(|folder| SavedFolder {
+                    id: folder.id.clone(),
+                    name: folder.name.clone(),
+                    apps: folder.apps.iter().map(|&app| self.apps[app].id.clone()).collect(),
+                })
+                .collect(),
+        };
+        let Some(path) = config::config_file(ARRANGEMENT) else {
+            return;
+        };
+        let written = toml::to_string(&arrangement)
+            .map_err(std::io::Error::other)
+            .and_then(|text| {
+                std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
+                std::fs::write(&path, text)
+            });
+        if let Err(err) = written {
+            tracing::warn!("{}: {err}", path.display());
+        }
+    }
+
+    fn matches(&self) -> Vec<usize> {
+        let words: Vec<(&str, &str)> = self
+            .apps
+            .iter()
+            .map(|app| (app.name.as_str(), app.words.as_str()))
+            .collect();
+        matching(&words, &self.query)
+    }
+
+    /// The entries as they stand, the one being dragged out of the grid left out.
+    fn remaining(&self) -> Vec<Entry> {
+        match &self.held {
+            Some(held) => self.without(held.entry, held.from),
+            None => self.entries.clone(),
+        }
+    }
+
+    /// The grid's entries without one being dragged out of it.
+    fn without(&self, entry: Entry, from: Source) -> Vec<Entry> {
+        self.entries
+            .iter()
+            .copied()
+            .filter(|other| !(from == Source::Grid && *other == entry))
+            .collect()
+    }
+
+    /// What the pages show: what matches what was typed, or the arrangement with room
+    /// kept where a dragged icon would go.
+    fn cells(&self) -> Vec<Cell> {
+        if !self.query.is_empty() {
+            return self
+                .matches()
+                .into_iter()
+                .map(|app| Cell::Entry(Entry::App(app)))
+                .collect();
+        }
+        let mut cells: Vec<Cell> = self.remaining().into_iter().map(Cell::Entry).collect();
+        if let (Some(_), Some(at)) = (&self.held, self.gap) {
+            cells.insert(at.min(cells.len()), Cell::Gap);
+        }
+        cells
+    }
+
+    fn pages(&self, layout: &Layout) -> usize {
+        self.cells().len().div_ceil(layout.per_page()).max(1)
+    }
+
+    fn fade(&self) -> f32 {
+        fade_since(self.opened)
+    }
+
+    /// Where the open folder is, and its grid of applications.
+    fn folder_layout(&self, layout: &Layout) -> Option<FolderPlace> {
+        let open = self.open.as_ref()?;
+        let count = self.folders.get(open.folder)?.apps.len().max(1);
+        let columns = count.clamp(3, FOLDER_COLUMNS);
+        let rows = count.div_ceil(columns).clamp(1, FOLDER_ROWS);
+        let size = Size::from((
+            columns as i32 * CELL_WIDTH + FOLDER_PADDING * 2,
+            rows as i32 * CELL_HEIGHT + FOLDER_PADDING * 2 + FOLDER_TITLE,
+        ));
+        let center = layout.grid.loc + Point::from((layout.grid.size.w / 2, layout.grid.size.h / 2));
+        let panel = Rectangle::new(center - Point::from((size.w / 2, size.h / 2)), size);
+        let grid = Rectangle::new(
+            panel.loc + Point::from((FOLDER_PADDING, FOLDER_PADDING + FOLDER_TITLE)),
+            Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT)),
+        );
+        Some(FolderPlace {
+            panel,
+            grid,
+            columns,
+            rows,
+        })
+    }
+
+    /// Lets a dragged icon go where it is aimed, and keeps the new arrangement.
+    fn drop_held(&mut self, held: Held) {
+        let Held { entry, from, .. } = held;
+        if self.target == Target::Nowhere {
+            return;
+        }
+        let Entry::App(app) = entry else {
+            // A folder only moves among the others.
+            if let Target::Between(at) = self.target {
+                let mut entries = self.without(entry, from);
+                entries.insert(at.min(entries.len()), entry);
+                self.entries = entries;
+                self.save();
+            }
+            return;
+        };
+        if let (Source::Folder(folder), Target::InFolder(at)) = (from, self.target) {
+            let apps = &mut self.folders[folder].apps;
+            apps.retain(|&other| other != app);
+            apps.insert(at.min(apps.len()), app);
+            self.save();
+            return;
+        }
+        let mut entries = self.without(entry, from);
+        if let Source::Folder(folder) = from {
+            self.folders[folder].apps.retain(|&other| other != app);
+        }
+        match self.target {
+            Target::Between(at) => entries.insert(at.min(entries.len()), entry),
+            Target::Onto(at) => match entries.get(at).copied() {
+                Some(Entry::Folder(folder)) => self.folders[folder].apps.push(app),
+                Some(Entry::App(other)) => {
+                    let id = (0..)
+                        .map(|n: usize| format!("folder-{n}"))
+                        .find(|id| self.folders.iter().all(|folder| folder.id != *id))
+                        .unwrap_or_default();
+                    self.folders.push(Folder {
+                        id,
+                        name: self.apps[other].category.to_string(),
+                        apps: vec![other, app],
+                    });
+                    entries[at] = Entry::Folder(self.folders.len() - 1);
+                }
+                None => entries.push(entry),
+            },
+            Target::InFolder(_) | Target::Nowhere => {}
+        }
+        // A folder its last application left goes too.
+        entries
+            .retain(|entry| !matches!(entry, Entry::Folder(folder) if self.folders[*folder].apps.is_empty()));
+        self.entries = entries;
+        self.save();
+    }
+}
+
+fn fade_since(at: Instant) -> f32 {
+    let t = (at.elapsed().as_secs_f64() / FADE_TIME).clamp(0.0, 1.0);
+    (1.0 - (1.0 - t).powi(3)) as f32
+}
+
+fn text_layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
+    let layout = pangocairo::functions::create_layout(cr);
+    layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
+        "{FONT} {points}"
+    ))));
+    layout.set_text(text);
+    layout
+}
+
+/// What a page's place shows, to be drawn: an application's icon and name, or a folder's
+/// first applications in a square, with its name.
+struct Tile {
+    name: String,
+    icon: Option<ImageSurface>,
+    minis: Vec<Option<ImageSurface>>,
+}
+
+impl Nekoland {
+    /// Opens the overview on its applications, with `query` typed already; a second time,
+    /// with nothing typed, closes it again.
+    pub fn show_apps(&mut self, query: &str) {
+        if let Some(overview) = &self.overview {
+            if overview.apps.is_some() && query.is_empty() {
+                self.close_overview(None);
+                return;
+            }
+        } else {
+            self.toggle_overview();
+        }
+        if let Some(overview) = self.overview.as_mut() {
+            match overview.apps.as_mut() {
+                Some(apps) => {
+                    apps.query.push_str(query);
+                    apps.page = 0;
+                    apps.open = None;
+                }
+                None => overview.apps = Some(AppGrid::new(query)),
+            }
+        }
+    }
+
+    pub fn apps_shown(&self) -> bool {
+        self.overview
+            .as_ref()
+            .is_some_and(|overview| overview.apps.is_some())
+    }
+
+    fn apps_layout(&self) -> Option<Layout> {
+        let output = self.space.outputs().next()?;
+        let area = self.space.output_geometry(output)?;
+        let top = area.loc.y + expanded_height(area) + 24;
+        let search = Rectangle::new(
+            (area.loc.x + (area.size.w - SEARCH_WIDTH) / 2, top).into(),
+            (SEARCH_WIDTH, SEARCH_HEIGHT).into(),
+        );
+        let grid_top = top + SEARCH_HEIGHT + 32;
+        let bottom = area.loc.y + area.size.h - crate::dock::DOCK_SPACE - DOTS - 8;
+        let columns = ((area.size.w - 160) / CELL_WIDTH).clamp(4, 8) as usize;
+        let rows = ((bottom - grid_top) / CELL_HEIGHT).clamp(2, 5) as usize;
+        let size = Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT));
+        let grid = Rectangle::new((area.loc.x + (area.size.w - size.w) / 2, grid_top).into(), size);
+        Some(Layout {
+            search,
+            grid,
+            columns,
+            rows,
+        })
+    }
+
+    /// An application's icon at a size, or a folder's square of its first ones.
+    fn grid_tile(&mut self, entry: Entry, size: i32) -> Option<Tile> {
+        let apps = self.overview.as_ref()?.apps.as_ref()?;
+        let (name, icons, minis): (String, Vec<String>, Vec<Vec<String>>) = match entry {
+            Entry::App(app) => (
+                apps.apps[app].name.clone(),
+                apps.apps[app].icons.clone(),
+                Vec::new(),
+            ),
+            Entry::Folder(folder) => {
+                let folder = &apps.folders[folder];
+                (
+                    folder.name.clone(),
+                    Vec::new(),
+                    folder
+                        .apps
+                        .iter()
+                        .take(9)
+                        .map(|&app| apps.apps[app].icons.clone())
+                        .collect(),
+                )
+            }
+        };
+        let mini_size = (size - 14) / 3 - 2;
+        Some(Tile {
+            name,
+            icon: icons.iter().find_map(|name| self.dock_icon(name, size, true)),
+            minis: minis
+                .iter()
+                .map(|names| {
+                    names
+                        .iter()
+                        .find_map(|name| self.dock_icon(name, mini_size, true))
+                })
+                .collect(),
+        })
+    }
+
+    /// Brings the view up to date before a frame: where a dragged icon is aimed, the page
+    /// sliding into place, and what is drawn again when it changed.
+    pub fn refresh_apps(&mut self) {
+        let layout = self.apps_layout();
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let output_size = self
+            .space
+            .outputs()
+            .next()
+            .and_then(|output| self.space.output_geometry(output))
+            .map(|area| area.size);
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        let Some(layout) = layout else {
+            return;
+        };
+        apps.layout = Some(layout);
+        let now = Instant::now();
+        let dt = now.duration_since(apps.last_tick).as_secs_f64().min(0.1);
+        apps.last_tick = now;
+
+        // A dragged icon resting at the grid's side turns the page that way.
+        let mut pages = apps.pages(&layout);
+        if let (Some(_), Some(pos), None) = (&apps.held, pointer, &apps.open) {
+            let grid = layout.grid.to_f64();
+            let side = if pos.x < grid.loc.x + EDGE {
+                Some(false)
+            } else if pos.x > grid.loc.x + grid.size.w - EDGE {
+                Some(true)
+            } else {
+                None
+            };
+            apps.edge = match (side, apps.edge) {
+                (Some(side), Some((was, since))) if side == was => {
+                    if since.elapsed().as_secs_f64() >= EDGE_TIME {
+                        apps.page = if side {
+                            (apps.page + 1).min(pages)
+                        } else {
+                            apps.page.saturating_sub(1)
+                        };
+                        Some((side, now))
+                    } else {
+                        Some((was, since))
+                    }
+                }
+                (Some(side), _) => Some((side, now)),
+                (None, _) => None,
+            };
+        }
+        pages = pages.max(apps.page + 1);
+        apps.page = apps.page.min(pages - 1);
+        let target = apps.page as f64;
+        apps.shown += (target - apps.shown) * (1.0 - (-dt / (PAGE_TIME / 3.0)).exp());
+        if (apps.shown - target).abs() < 0.002 {
+            apps.shown = target;
+        }
+        let cells = apps.cells();
+        let first = apps.page * layout.per_page();
+        apps.hovered = pointer
+            .filter(|_| apps.held.is_none() && apps.open.is_none() && apps.shown == target)
+            .and_then(|pos| layout.cell_at(pos))
+            .map(|(cell, _)| first + cell)
+            .filter(|&index| index < cells.len());
+
+        if apps.backdrop.as_ref().map(|(size, _)| Some(*size)) != Some(output_size) {
+            apps.backdrop = output_size.and_then(|size| {
+                let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+                {
+                    let cr = Context::new(&surface).ok()?;
+                    cr.set_source_rgba(0.08, 0.08, 0.1, 0.42);
+                    cr.paint().ok()?;
+                }
+                Some((size, text::picture(surface)?))
+            });
+        }
+        if apps.search.as_ref().map(|(query, _)| query) != Some(&apps.query) {
+            apps.search =
+                draw_search(&apps.query, layout.search.size).map(|picture| (apps.query.clone(), picture));
+        }
+        let dimmed = apps.open.is_some();
+        let key = (
+            apps.query.clone(),
+            (apps.shown * 1000.0).round() as i64,
+            apps.hovered,
+            cells.clone(),
+            apps.target,
+            dimmed,
+        );
+        let held = apps.held.as_ref().map(|held| held.entry);
+        let open_key = self.refresh_folder(&layout, pointer);
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        let grid_stale = apps.drawn.as_ref() != Some(&key) || apps.picture.is_none();
+        let held_stale = held.is_some() != apps.held_picture.is_some();
+        if grid_stale {
+            apps.drawn = Some(key);
+            let shown = apps.shown;
+            let hovered = apps.hovered;
+            let aimed = match apps.target {
+                // Among the places shown, the room kept before it counts too.
+                Target::Onto(at) => Some(match apps.gap {
+                    Some(gap) if at >= gap => at + 1,
+                    _ => at,
+                }),
+                _ => None,
+            };
+            let (low, high) = (shown.floor() as usize, shown.ceil() as usize);
+            let per_page = layout.per_page();
+            let mut places: Vec<(usize, usize, Cell)> = Vec::new();
+            for page in [low, high].into_iter().collect::<std::collections::BTreeSet<_>>() {
+                for (slot, cell) in cells.iter().skip(page * per_page).take(per_page).enumerate() {
+                    places.push((page, slot, *cell));
+                }
+            }
+            let tiles: Vec<Option<Tile>> = places
+                .iter()
+                .map(|(.., cell)| match cell {
+                    Cell::Entry(entry) => self.grid_tile(*entry, ICON),
+                    Cell::Gap => None,
+                })
+                .collect();
+            let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+                return;
+            };
+            let pages = pages.max(cells.len().div_ceil(per_page));
+            apps.picture = draw_grid(&layout, shown, &places, &tiles, hovered, aimed, pages);
+        }
+        if held_stale {
+            let tile = held.and_then(|entry| self.grid_tile(entry, HELD_SIZE));
+            let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+                return;
+            };
+            apps.held_picture = tile.and_then(|tile| draw_held(&tile));
+        }
+        let _ = open_key;
+    }
+
+    /// Draws the open folder again when what it shows changed.
+    fn refresh_folder(&mut self, layout: &Layout, pointer: Option<Point<f64, Logical>>) -> Option<()> {
+        let apps = self.overview.as_ref()?.apps.as_ref()?;
+        let FolderPlace {
+            panel,
+            grid,
+            columns,
+            rows,
+        } = apps.folder_layout(layout)?;
+        let open = apps.open.as_ref()?;
+        let folder = &apps.folders[open.folder];
+        // While an application of it is dragged, the others make room where it would go.
+        let mut shown: Vec<usize> = folder.apps.clone();
+        let mut gap = None;
+        if let Some(held) = &apps.held {
+            if let (Entry::App(app), Source::Folder(_)) = (held.entry, held.from) {
+                shown.retain(|&other| other != app);
+                if let Target::InFolder(at) = apps.target {
+                    gap = Some(at.min(shown.len()));
+                }
+            }
+        }
+        let hovered = pointer
+            .filter(|_| apps.held.is_none())
+            .and_then(|pos| cell_at(grid, columns, rows, pos))
+            .map(|(cell, _)| cell)
+            .filter(|&cell| cell < shown.len());
+        let key = (folder.name.clone(), shown.clone(), gap, open.renaming, hovered);
+        if open.drawn.as_ref() == Some(&key) && open.picture.is_some() {
+            return Some(());
+        }
+        let name = folder.name.clone();
+        let renaming = open.renaming;
+        let tiles: Vec<Option<Tile>> = shown
+            .iter()
+            .map(|&app| self.grid_tile(Entry::App(app), ICON))
+            .collect();
+        let open = self.overview.as_mut()?.apps.as_mut()?.open.as_mut()?;
+        open.hovered = hovered;
+        open.drawn = Some(key);
+        open.picture = draw_folder(
+            panel.size,
+            grid.loc - panel.loc,
+            columns,
+            &name,
+            renaming,
+            &tiles,
+            gap,
+            hovered,
+        );
+        Some(())
+    }
+
+    /// What the view puts on screen in front of the desktops' bar, front first, and the
+    /// glass that goes behind everything.
+    pub fn apps_overlays(&self) -> (Vec<Overlay<'_>>, Option<Overlay<'_>>) {
+        let Some(apps) = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()) else {
+            return (Vec::new(), None);
+        };
+        let Some(layout) = apps.layout else {
+            return (Vec::new(), None);
+        };
+        let fade = apps.fade();
+        let mut front = Vec::new();
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        if let (Some(held), Some(picture), Some(pos)) = (&apps.held, &apps.held_picture, pointer) {
+            front.push(Overlay {
+                fade: 1.0,
+                id: &apps.ids[0],
+                rect: Rectangle::new((pos - held.grab).to_i32_round(), picture.size),
+                glass: None,
+                alpha: 1.0,
+                picture,
+            });
+        }
+        if let (Some(open), Some(FolderPlace { panel, .. })) = (&apps.open, apps.folder_layout(&layout)) {
+            if let Some(picture) = &open.picture {
+                front.push(Overlay {
+                    fade: fade_since(open.opened),
+                    id: &apps.ids[4],
+                    rect: panel,
+                    glass: Some(FOLDER_RADIUS),
+                    alpha: 1.0,
+                    picture,
+                });
+            }
+        }
+        if let Some(picture) = &apps.picture {
+            front.push(Overlay {
+                fade,
+                id: &apps.ids[1],
+                rect: Rectangle::new(layout.grid.loc, picture.size),
+                glass: None,
+                alpha: if apps.open.is_some() { 0.3 } else { 1.0 },
+                picture,
+            });
+        }
+        if let Some((_, picture)) = &apps.search {
+            front.push(Overlay {
+                fade,
+                id: &apps.ids[2],
+                rect: layout.search,
+                glass: Some(SEARCH_HEIGHT / 2),
+                alpha: 1.0,
+                picture,
+            });
+        }
+        let backdrop = apps.backdrop.as_ref().and_then(|(_, picture)| {
+            let output = self.space.outputs().next()?;
+            let area = self.space.output_geometry(output)?;
+            Some(Overlay {
+                fade,
+                id: &apps.ids[3],
+                rect: area,
+                glass: Some(0),
+                alpha: 1.0,
+                picture,
+            })
+        });
+        (front, backdrop)
+    }
+
+    /// A press in the view. In an open folder: an application, or its name to change it;
+    /// outside it, the folder closes. On the grid: an entry, which may be started, opened
+    /// or dragged; the search field, which opens the launcher, which takes an input
+    /// method; the pages' dots; anywhere else leaves.
+    pub fn apps_press(&mut self, pos: Point<f64, Logical>) {
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        let Some(layout) = apps.layout else {
+            return;
+        };
+        if let Some(FolderPlace {
+            panel,
+            grid,
+            columns,
+            rows,
+        }) = apps.folder_layout(&layout)
+        {
+            let title = Rectangle::new(
+                panel.loc,
+                Size::from((panel.size.w, FOLDER_PADDING + FOLDER_TITLE)),
+            );
+            let count = apps
+                .open
+                .as_ref()
+                .map_or(0, |open| apps.folders[open.folder].apps.len());
+            if let Some(open) = apps.open.as_mut() {
+                if title.to_f64().contains(pos) {
+                    open.renaming = true;
+                } else if let Some((cell, _)) =
+                    cell_at(grid, columns, rows, pos).filter(|(cell, _)| *cell < count)
+                {
+                    open.renaming = false;
+                    apps.press = Some((Pressed::FolderCell(cell), pos));
+                } else if !panel.to_f64().contains(pos) {
+                    apps.open = None;
+                    apps.save();
+                }
+            }
+            return;
+        }
+        if layout.search.to_f64().contains(pos) {
+            let query = apps.query.clone();
+            config::spawn(&format!(
+                "{} {}{}",
+                self.config.launcher,
+                self.config.launcher_search,
+                config::quote(&query)
+            ));
+            self.close_overview(None);
+            return;
+        }
+        let cells = apps.cells().len();
+        let index = layout
+            .cell_at(pos)
+            .map(|(cell, _)| apps.page * layout.per_page() + cell)
+            .filter(|&index| index < cells);
+        match index {
+            Some(index) => apps.press = Some((Pressed::Cell(index), pos)),
+            // Between the pages' dots: to that page.
+            None if pos.y >= f64::from(layout.grid.loc.y + layout.grid.size.h) => {
+                let pages = apps.pages(&layout);
+                let center = f64::from(layout.grid.loc.x + layout.grid.size.w / 2);
+                let first = center - f64::from(pages as i32 - 1) * 9.0;
+                let page = ((pos.x - first) / 18.0).round();
+                if page >= 0.0 && (page as usize) < pages && (pos.x - (first + page * 18.0)).abs() < 9.0 {
+                    apps.page = page as usize;
+                } else {
+                    self.close_overview(None);
+                }
+            }
+            None => self.close_overview(None),
+        }
+    }
+
+    /// The pointer moved: a press far enough becomes a drag, and a dragged icon is aimed
+    /// where the pointer is.
+    pub fn apps_motion(&mut self, pos: Point<f64, Logical>) {
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        let Some(layout) = apps.layout else {
+            return;
+        };
+        if let Some((pressed, start)) = apps.press {
+            if (pos.x - start.x).hypot(pos.y - start.y) > DRAG_THRESHOLD {
+                let held = match pressed {
+                    // Dragging rearranges the whole grid only; among matches it starts.
+                    Pressed::Cell(index) => match apps.cells().get(index) {
+                        Some(Cell::Entry(entry)) => Some((*entry, Source::Grid)),
+                        _ => None,
+                    },
+                    Pressed::FolderCell(index) => apps.open.as_ref().and_then(|open| {
+                        let app = *apps.folders[open.folder].apps.get(index)?;
+                        Some((Entry::App(app), Source::Folder(open.folder)))
+                    }),
+                };
+                if let Some((entry, from)) = held {
+                    apps.gap = match from {
+                        Source::Grid => apps.entries.iter().position(|other| *other == entry),
+                        Source::Folder(_) => None,
+                    };
+                    let half = f64::from(HELD_SIZE) / 2.0;
+                    apps.held = Some(Held {
+                        entry,
+                        from,
+                        grab: Point::from((half, half)),
+                    });
+                }
+                apps.press = None;
+            }
+        }
+        let Some(held) = &apps.held else {
+            return;
+        };
+        let (entry, from) = (held.entry, held.from);
+        // Inside the open folder, it moves among the folder's; out of it, the folder closes
+        // and it goes back to the grid.
+        if let Some(FolderPlace {
+            panel,
+            grid,
+            columns,
+            rows,
+        }) = apps.folder_layout(&layout)
+        {
+            if panel.to_f64().contains(pos) && matches!(from, Source::Folder(_)) {
+                let count = apps
+                    .open
+                    .as_ref()
+                    .map_or(0, |open| apps.folders[open.folder].apps.len());
+                apps.target = cell_at(grid, columns, rows, pos).map_or(Target::Nowhere, |(cell, _)| {
+                    Target::InFolder(cell.min(count.saturating_sub(1)))
+                });
+                return;
+            }
+            apps.open = None;
+        }
+        if !apps.query.is_empty() {
+            apps.target = Target::Nowhere;
+            return;
+        }
+        let remaining = apps.remaining().len();
+        let Some((cell, distance)) = layout.cell_at(pos) else {
+            apps.target = Target::Nowhere;
+            return;
+        };
+        let shown = apps.page * layout.per_page() + cell;
+        // Past the room kept, the places shown are one further than among the entries.
+        let at = match apps.gap {
+            Some(gap) if shown > gap => shown - 1,
+            _ => shown,
+        };
+        apps.target =
+            if apps.gap != Some(shown) && distance < ONTO && at < remaining && matches!(entry, Entry::App(_))
+            {
+                // The room stays where it was, so nothing moves under the pointer.
+                Target::Onto(at)
+            } else {
+                let at = at.min(remaining);
+                apps.gap = Some(at);
+                Target::Between(at)
+            };
+    }
+
+    /// A button came up: a press let go where it went down starts the application or
+    /// opens the folder; a dragged one goes where it is aimed, or starts on a desktop it
+    /// was dropped on, or is kept in the Dock.
+    pub fn apps_release(&mut self, pos: Point<f64, Logical>) {
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        if let Some((pressed, _)) = apps.press.take() {
+            match pressed {
+                Pressed::Cell(index) => {
+                    let here = apps.layout.and_then(|layout| {
+                        layout
+                            .cell_at(pos)
+                            .map(|(cell, _)| apps.page * layout.per_page() + cell)
+                    });
+                    match apps.cells().get(index).copied().filter(|_| here == Some(index)) {
+                        Some(Cell::Entry(Entry::App(app))) => self.start_grid_app(app, None),
+                        Some(Cell::Entry(Entry::Folder(folder))) => {
+                            apps.open = Some(OpenFolder {
+                                folder,
+                                renaming: false,
+                                opened: Instant::now(),
+                                hovered: None,
+                                picture: None,
+                                drawn: None,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                Pressed::FolderCell(index) => {
+                    let app = apps
+                        .open
+                        .as_ref()
+                        .and_then(|open| apps.folders[open.folder].apps.get(index).copied());
+                    if let Some(app) = app {
+                        self.start_grid_app(app, None);
+                    }
+                }
+            }
+            return;
+        }
+        let Some(held) = apps.held.take() else {
+            return;
+        };
+        apps.edge = None;
+        apps.gap = None;
+        if let Entry::App(app) = held.entry {
+            let id = apps.apps[app].id.clone();
+            if self.dock_covers(pos) {
+                if !self.config.dock.iter().any(|kept| kept.eq_ignore_ascii_case(&id)) {
+                    self.config.dock.push(id);
+                    config::save_dock(&self.config.dock);
+                }
+                return;
+            }
+            match self.overview_bar_action(pos) {
+                Some(BarAction::Switch(desktop)) => return self.start_grid_app(app, Some(desktop)),
+                Some(BarAction::Add) => {
+                    let desktop = self.workspaces.count();
+                    self.add_workspace();
+                    return self.start_grid_app(app, Some(desktop));
+                }
+                None => {}
+            }
+        }
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return;
+        };
+        apps.drop_held(held);
+        apps.target = Target::Nowhere;
+        apps.gap = None;
+    }
+
+    /// Starts an application of the grid, on `desktop` if one is given, and leaves.
+    fn start_grid_app(&mut self, index: usize, desktop: Option<usize>) {
+        let Some(apps) = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()) else {
+            return;
+        };
+        let Some(app) = apps.apps.get(index) else {
+            return;
+        };
+        let (info, id) = (app.info.clone(), app.id.clone());
+        if let Some(desktop) = desktop {
+            self.switch_workspace(desktop);
+        }
+        if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
+            tracing::warn!("{id}: {err}");
+        }
+        self.dock_launching(&id);
+        self.close_overview(None);
+    }
+
+    /// A key in the view: typing narrows it down, or names the folder being renamed;
+    /// Return starts the first match; the arrows turn the pages; Escape stops renaming,
+    /// closes the folder, clears what was typed, or leaves. Returns whether it was taken.
+    pub fn apps_key(&mut self, sym: smithay::input::keyboard::Keysym, typed: Option<char>) -> bool {
+        use smithay::input::keyboard::Keysym;
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return false;
+        };
+        if let Some(open) = apps.open.as_mut() {
+            let folder = open.folder;
+            if open.renaming {
+                let name = &mut apps.folders[folder].name;
+                match (sym, typed) {
+                    (Keysym::Return | Keysym::KP_Enter | Keysym::Escape, _) => {
+                        open.renaming = false;
+                        apps.save();
+                    }
+                    (Keysym::BackSpace, _) => {
+                        name.pop();
+                    }
+                    (_, Some(character)) if !character.is_control() => name.push(character),
+                    _ => return false,
+                }
+                return true;
+            }
+            if sym == Keysym::Escape {
+                apps.open = None;
+                return true;
+            }
+            apps.open = None;
+        }
+        let pages = apps.layout.map_or(1, |layout| apps.pages(&layout));
+        match sym {
+            Keysym::Escape if !apps.query.is_empty() => {
+                apps.query.clear();
+                apps.page = 0;
+            }
+            Keysym::Escape => self.close_overview(None),
+            Keysym::BackSpace => {
+                apps.query.pop();
+                apps.page = 0;
+            }
+            Keysym::Return | Keysym::KP_Enter => {
+                let cells = apps.cells();
+                let first = apps.hovered.unwrap_or(0);
+                match cells.get(first) {
+                    Some(Cell::Entry(Entry::App(app))) => {
+                        let app = *app;
+                        self.start_grid_app(app, None);
+                    }
+                    _ => return false,
+                }
+            }
+            Keysym::Left | Keysym::Page_Up => apps.page = apps.page.saturating_sub(1),
+            Keysym::Right | Keysym::Page_Down => apps.page = (apps.page + 1).min(pages - 1),
+            _ => match typed {
+                Some(character) if !character.is_control() => {
+                    apps.query.push(character);
+                    apps.page = 0;
+                }
+                _ => return false,
+            },
+        }
+        true
+    }
+
+    /// The wheel turns the pages. Returns whether it was taken.
+    pub fn apps_scroll(&mut self, amount: f64) -> bool {
+        let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
+            return false;
+        };
+        if apps.open.is_some() {
+            return true;
+        }
+        let pages = apps.layout.map_or(1, |layout| apps.pages(&layout));
+        apps.scrolled += amount;
+        if apps.scrolled.abs() >= PAGE_SCROLL {
+            apps.page = if apps.scrolled > 0.0 {
+                (apps.page + 1).min(pages - 1)
+            } else {
+                apps.page.saturating_sub(1)
+            };
+            apps.scrolled = 0.0;
+        }
+        true
+    }
+}
+
+/// The search field's text on its pane: what was typed with the caret after it, or what
+/// it is for.
+fn draw_search(query: &str, size: Size<i32, Logical>) -> Option<Picture> {
+    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        paint_pane(
+            &cr,
+            f64::from(size.w),
+            f64::from(size.h),
+            f64::from(size.h) / 2.0,
+            true,
+            false,
+        );
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
+        cr.set_line_width(1.6);
+        let (cx, cy) = (22.0, f64::from(size.h) / 2.0 - 1.0);
+        cr.arc(cx, cy, 6.0, 0.0, std::f64::consts::TAU);
+        cr.stroke().ok()?;
+        cr.move_to(cx + 4.5, cy + 4.5);
+        cr.line_to(cx + 9.0, cy + 9.0);
+        cr.stroke().ok()?;
+        let (text, alpha) = if query.is_empty() {
+            ("搜尋應用程式", 0.62)
+        } else {
+            (query, 1.0)
+        };
+        let line = text_layout(&cr, text, 11.0);
+        let (width, height) = line.pixel_size();
+        cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+        cr.move_to(40.0, f64::from(size.h - height) / 2.0);
+        pangocairo::functions::show_layout(&cr, &line);
+        if !query.is_empty() {
+            cr.rectangle(41.0 + f64::from(width), f64::from(size.h) / 2.0 - 9.0, 1.5, 18.0);
+            cr.fill().ok()?;
+        }
+    }
+    text::picture(surface)
+}
+
+/// A folder's square: translucent, its first applications in three rows of three.
+fn paint_folder(cr: &Context, x: f64, y: f64, size: f64, minis: &[Option<ImageSurface>]) {
+    text::rounded_rectangle(cr, x, y, size, size, size * 0.24);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.2);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.3);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+    let inset = 7.0;
+    let step = (size - inset * 2.0) / 3.0;
+    for (index, mini) in minis.iter().enumerate().take(9) {
+        let Some(mini) = mini else {
+            continue;
+        };
+        let (row, column) = ((index / 3) as f64, (index % 3) as f64);
+        let _ = cr.save();
+        cr.translate(x + inset + column * step + 1.0, y + inset + row * step + 1.0);
+        crate::stacks::paint_fitted(cr, mini, step - 2.0, 1.0);
+        let _ = cr.restore();
+    }
+}
+
+/// An application's icon or a folder's square at the top of a place, its name under it.
+fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile) -> Option<()> {
+    let left = x + f64::from(CELL_WIDTH - ICON) / 2.0;
+    match &tile.icon {
+        Some(icon) => {
+            cr.save().ok()?;
+            cr.translate(left, y + 12.0);
+            crate::stacks::paint_fitted(cr, icon, f64::from(ICON), 1.0);
+            cr.restore().ok()?;
+        }
+        None if !tile.minis.is_empty() => paint_folder(cr, left, y + 12.0, f64::from(ICON), &tile.minis),
+        None => {}
+    }
+    let label = text_layout(cr, &tile.name, 10.0);
+    label.set_width((CELL_WIDTH - 14) * pango::SCALE);
+    label.set_ellipsize(pango::EllipsizeMode::End);
+    let (width, _) = label.pixel_size();
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.move_to(
+        x + f64::from(CELL_WIDTH - width.min(CELL_WIDTH - 14)) / 2.0,
+        y + f64::from(ICON) + 22.0,
+    );
+    pangocairo::functions::show_layout(cr, &label);
+    Some(())
+}
+
+/// The grid: each page's places, the pointed-at one shaded and the one a dragged icon is
+/// aimed onto ringed, sliding as the pages turn; and the dots under it.
+fn draw_grid(
+    layout: &Layout,
+    shown: f64,
+    places: &[(usize, usize, Cell)],
+    tiles: &[Option<Tile>],
+    hovered: Option<usize>,
+    aimed: Option<usize>,
+    pages: usize,
+) -> Option<Picture> {
+    let (width, height) = (layout.grid.size.w, layout.grid.size.h + DOTS);
+    let per_page = layout.per_page();
+    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        cr.rectangle(0.0, 0.0, f64::from(width), f64::from(layout.grid.size.h));
+        cr.clip();
+        for ((page, slot, _), tile) in places.iter().zip(tiles) {
+            let (row, column) = (slot / layout.columns, slot % layout.columns);
+            let x = (*page as f64 - shown) * f64::from(width) + f64::from(column as i32 * CELL_WIDTH);
+            let y = f64::from(row as i32 * CELL_HEIGHT);
+            let index = page * per_page + slot;
+            if hovered == Some(index) || aimed == Some(index) {
+                text::rounded_rectangle(
+                    &cr,
+                    x + 4.0,
+                    y + 2.0,
+                    f64::from(CELL_WIDTH) - 8.0,
+                    f64::from(CELL_HEIGHT) - 6.0,
+                    14.0,
+                );
+                cr.set_source_rgba(1.0, 1.0, 1.0, if aimed == Some(index) { 0.22 } else { 0.10 });
+                cr.fill().ok()?;
+            }
+            if let Some(tile) = tile {
+                paint_tile(&cr, x, y, tile)?;
+            }
+        }
+        cr.reset_clip();
+        if pages > 1 {
+            let center = f64::from(width) / 2.0;
+            let first = center - f64::from(pages as i32 - 1) * 9.0;
+            for page in 0..pages {
+                let lit = (page as f64 - shown).abs() < 0.5;
+                cr.arc(
+                    first + page as f64 * 18.0,
+                    f64::from(layout.grid.size.h) + 20.0,
+                    3.5,
+                    0.0,
+                    std::f64::consts::TAU,
+                );
+                cr.set_source_rgba(1.0, 1.0, 1.0, if lit { 1.0 } else { 0.35 });
+                cr.fill().ok()?;
+            }
+        }
+    }
+    text::picture(surface)
+}
+
+/// The open folder on its pane: its name, a field while it is changed, then its
+/// applications, room kept where a dragged one would go.
+#[allow(clippy::too_many_arguments)]
+fn draw_folder(
+    size: Size<i32, Logical>,
+    grid: Point<i32, Logical>,
+    columns: usize,
+    name: &str,
+    renaming: bool,
+    tiles: &[Option<Tile>],
+    gap: Option<usize>,
+    hovered: Option<usize>,
+) -> Option<Picture> {
+    let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        paint_pane(
+            &cr,
+            f64::from(size.w),
+            f64::from(size.h),
+            f64::from(FOLDER_RADIUS),
+            true,
+            true,
+        );
+        let title = text_layout(&cr, name, 14.0);
+        title.set_font_description(Some(&pango::FontDescription::from_string(&format!(
+            "{FONT} Bold 14"
+        ))));
+        let (width, height) = title.pixel_size();
+        let (x, y) = (
+            f64::from(size.w - width) / 2.0,
+            f64::from(FOLDER_PADDING) + f64::from(FOLDER_TITLE - height) / 2.0 - 6.0,
+        );
+        if renaming {
+            text::rounded_rectangle(
+                &cr,
+                x - 12.0,
+                y - 5.0,
+                f64::from(width) + 24.0,
+                f64::from(height) + 10.0,
+                8.0,
+            );
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+            cr.fill().ok()?;
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.rectangle(x + f64::from(width) + 2.0, y, 1.5, f64::from(height));
+            cr.fill().ok()?;
+        }
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.move_to(x, y);
+        pangocairo::functions::show_layout(&cr, &title);
+        let mut place = 0;
+        for (index, tile) in tiles.iter().enumerate() {
+            if gap == Some(index) {
+                place += 1;
+            }
+            let (row, column) = (place / columns, place % columns);
+            let (x, y) = (
+                f64::from(grid.x + column as i32 * CELL_WIDTH),
+                f64::from(grid.y + row as i32 * CELL_HEIGHT),
+            );
+            if hovered == Some(index) {
+                text::rounded_rectangle(
+                    &cr,
+                    x + 4.0,
+                    y + 2.0,
+                    f64::from(CELL_WIDTH) - 8.0,
+                    f64::from(CELL_HEIGHT) - 6.0,
+                    14.0,
+                );
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.10);
+                cr.fill().ok()?;
+            }
+            if let Some(tile) = tile {
+                paint_tile(&cr, x, y, tile)?;
+            }
+            place += 1;
+        }
+    }
+    text::picture(surface)
+}
+
+/// The dragged entry's icon, a little bigger, as it follows the pointer.
+fn draw_held(tile: &Tile) -> Option<Picture> {
+    let surface = ImageSurface::create(Format::ARgb32, HELD_SIZE, HELD_SIZE).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        match &tile.icon {
+            Some(icon) => crate::stacks::paint_fitted(&cr, icon, f64::from(HELD_SIZE), 0.92),
+            None => paint_folder(&cr, 0.0, 0.0, f64::from(HELD_SIZE), &tile.minis),
+        }
+    }
+    text::picture(surface)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_grid_finds_the_cell_and_how_near_its_icon() {
+        let grid = Rectangle::new((100, 200).into(), (CELL_WIDTH * 4, CELL_HEIGHT * 2).into());
+        let (cell, _) = cell_at(grid, 4, 2, Point::from((101.0, 201.0))).unwrap();
+        assert_eq!(cell, 0);
+        let middle = Point::from((
+            100.0 + f64::from(CELL_WIDTH) * 2.5,
+            200.0 + f64::from(CELL_HEIGHT) + 12.0 + f64::from(ICON) / 2.0,
+        ));
+        assert_eq!(cell_at(grid, 4, 2, middle), Some((6, 0.0)));
+        assert_eq!(cell_at(grid, 4, 2, Point::from((99.0, 201.0))), None);
+        assert_eq!(
+            cell_at(
+                grid,
+                4,
+                2,
+                Point::from((101.0, 200.0 + f64::from(CELL_HEIGHT) * 2.0 + 1.0))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn typing_finds_names_that_start_with_it_first() {
+        let words = [
+            ("Text Editor", "text editor gedit"),
+            ("Terminal", "terminal foot"),
+            ("Files", "files terminal"),
+        ];
+        assert_eq!(matching(&words, "ter"), [1, 2]);
+        assert_eq!(matching(&words, ""), [0, 1, 2]);
+    }
+
+    #[test]
+    fn an_arrangement_keeps_its_order_and_puts_new_applications_last() {
+        let kept: Arrangement = toml::from_str(
+            r#"
+            order = ["b", "folder:f", "gone"]
+            [[folders]]
+            id = "f"
+            name = "工具程式"
+            apps = ["c", "a"]
+            "#,
+        )
+        .unwrap();
+        let ids: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        let (entries, folders) = arrange(&ids, &kept);
+        // "gone" is no longer installed; "d" was installed since and comes last.
+        assert_eq!(entries, [Entry::App(1), Entry::Folder(0), Entry::App(3)]);
+        assert_eq!(folders[0].apps, [2, 0]);
+        assert_eq!(folders[0].name, "工具程式");
+    }
+}

@@ -188,7 +188,9 @@ impl Nekoland {
                 }
 
                 let pointer = self.seat.get_pointer().unwrap();
-                if self.dock_scroll(pointer.current_location(), vertical_amount) {
+                if self.dock_scroll(pointer.current_location(), vertical_amount)
+                    || self.apps_scroll(vertical_amount + horizontal_amount)
+                {
                     return;
                 }
                 pointer.axis(self, frame);
@@ -282,21 +284,13 @@ impl Nekoland {
         }
 
         if self.overview.is_some() && !(ctrl || alt || logo) {
+            if self.apps_shown() {
+                return self.apps_key(sym, typed);
+            }
             match typed {
                 _ if sym == Keysym::Escape => self.close_overview(None),
-                // Typing in the overview searches, as it does on GNOME.
-                Some(character) if !character.is_control() => {
-                    self.close_overview(None);
-                    // The command goes through a shell, so the character is quoted for it.
-                    let quoted = match character {
-                        '\'' => r"'\''".to_string(),
-                        other => format!("'{other}'"),
-                    };
-                    config::spawn(&format!(
-                        "{} {}{quoted}",
-                        self.config.launcher, self.config.launcher_search
-                    ));
-                }
+                // Typing in the overview searches the applications, as it does on GNOME.
+                Some(character) if !character.is_control() => self.show_apps(&character.to_string()),
                 _ => return false,
             }
             return true;
@@ -307,7 +301,7 @@ impl Nekoland {
             Keysym::BackSpace if ctrl && alt => self.loop_signal.stop(),
             Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
             Keysym::Return if logo => config::spawn(&self.config.terminal),
-            Keysym::a if logo => config::spawn(&self.config.launcher),
+            Keysym::a if logo => self.show_apps(""),
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),

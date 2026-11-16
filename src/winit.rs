@@ -76,6 +76,7 @@ pub fn init_winit(
                 state.refresh_menu_bar();
                 state.dock_ids();
                 state.refresh_dock();
+                state.refresh_apps();
                 state.refresh_notices();
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();

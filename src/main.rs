@@ -1,5 +1,6 @@
 #![allow(irrefutable_let_patterns)]
 
+mod appgrid;
 mod config;
 mod cursor;
 mod dbus;

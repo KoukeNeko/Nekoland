@@ -201,6 +201,11 @@ fn config_path() -> Option<PathBuf> {
     Some(base.join("nekoland/config.toml"))
 }
 
+/// A file beside the configuration, for what Nekoland keeps between sessions.
+pub fn config_file(name: &str) -> Option<PathBuf> {
+    config_path().map(|path| path.with_file_name(name))
+}
+
 /// Writes the Dock's kept applications back to the configuration file.
 pub fn save_dock(dock: &[String]) {
     let quoted: Vec<String> = dock.iter().map(|app_id| format!("{app_id:?}")).collect();
@@ -276,6 +281,11 @@ fn with_setting(text: &str, key: &str, line: &str) -> String {
         out.push(line.to_string());
     }
     out.join("\n") + "\n"
+}
+
+/// Text quoted for a shell, as one word.
+pub fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Starts a shell command as a client of this compositor.

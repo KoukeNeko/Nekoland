@@ -10,6 +10,7 @@ use smithay::{
 };
 
 use crate::{
+    appgrid::AppGrid,
     menubar::{Overlay, MENU_BAR_HEIGHT},
     text::{self, Picture},
     windows::{is_managed, window_names},
@@ -60,7 +61,7 @@ pub struct Slot {
 }
 
 #[derive(Clone, Copy)]
-enum BarAction {
+pub(crate) enum BarAction {
     Switch(usize),
     Add,
 }
@@ -194,7 +195,7 @@ fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
 }
 
 /// How tall the desktops' bar is opened up, from the top of the screen.
-fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
+pub(crate) fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
     MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + LABEL_HEIGHT
 }
 
@@ -265,6 +266,8 @@ pub struct Overview {
     pub hovered: Option<usize>,
     /// The four sides of the outline around it.
     pub outline: [Id; 4],
+    /// The applications, shown in place of the windows.
+    pub apps: Option<AppGrid>,
 }
 
 impl Overview {
@@ -432,6 +435,7 @@ impl Nekoland {
             hovered_desktop: None,
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
+            apps: None,
         });
         self.rebuild_overview();
         // Nothing has the keyboard in the overview; what is typed starts a search.
@@ -706,6 +710,17 @@ impl Nekoland {
         overlays
     }
 
+    /// What dropping something at a position on the opened-up bar would do.
+    pub(crate) fn overview_bar_action(&self, pos: Point<f64, Logical>) -> Option<BarAction> {
+        self.overview
+            .as_ref()?
+            .bar
+            .expanded_items
+            .iter()
+            .find(|item| item.rect.to_f64().contains(pos))
+            .map(|item| item.action)
+    }
+
     /// Leaves the overview, bringing `selected` to the front if there is one.
     pub fn close_overview(&mut self, selected: Option<Window>) {
         let Some(overview) = &mut self.overview else {
@@ -771,7 +786,8 @@ impl Nekoland {
         // closes when the pointer leaves the opened-up bar.
         if let (Some(pos), Some(output)) = (pointer, output) {
             let y = pos.y - f64::from(output.loc.y);
-            if dragging || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
+            // With the applications shown, the bar stays open over them.
+            if dragging || overview.apps.is_some() || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
                 overview.expanding = true;
             } else if y > f64::from(expanded_height(output) + 8) || !settled {
                 overview.expanding = false;
@@ -858,6 +874,11 @@ impl Nekoland {
         } else {
             &overview.bar.strip_items
         };
+        // Off the bar, the applications take what they are shown over.
+        if overview.apps.is_some() && !items.iter().any(|item| item.rect.to_f64().contains(pos)) {
+            self.apps_press(pos);
+            return;
+        }
         let action = items
             .iter()
             .find(|item| item.rect.to_f64().contains(pos))
@@ -900,6 +921,7 @@ impl Nekoland {
 
     /// The pointer moved with a window held: far enough, and it is being dragged.
     pub fn overview_motion(&mut self, pos: Point<f64, Logical>) {
+        self.apps_motion(pos);
         if let Some(drag) = self.overview.as_mut().and_then(|overview| overview.drag.as_mut()) {
             let (dx, dy) = (pos.x - drag.start.x, pos.y - drag.start.y);
             if !drag.moving && dx.hypot(dy) > DRAG_THRESHOLD {
@@ -911,6 +933,10 @@ impl Nekoland {
     /// A button came up in the overview: a window let go unmoved is picked; one dragged
     /// onto a desktop goes there, onto the add button to a new desktop.
     pub fn overview_release(&mut self, pos: Point<f64, Logical>) {
+        if self.apps_shown() {
+            self.apps_release(pos);
+            return;
+        }
         let Some(overview) = self.overview.as_mut() else {
             return;
         };

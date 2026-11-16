@@ -743,7 +743,7 @@ impl Nekoland {
     }
 
     /// An icon by name, its art trimmed and fitted to `size`, kept for the next frame.
-    fn dock_icon(&mut self, name: &str, size: i32, dark: bool) -> Option<ImageSurface> {
+    pub(crate) fn dock_icon(&mut self, name: &str, size: i32, dark: bool) -> Option<ImageSurface> {
         if let Some((.., icon)) = self
             .dock
             .icons
@@ -1888,7 +1888,7 @@ impl Nekoland {
         }
         self.dock.bounce = Some((press.key, Instant::now()));
         match press.tile {
-            Tile::Apps => config::spawn(&self.config.launcher),
+            Tile::Apps => self.show_apps(""),
             Tile::App { app_id, running, .. } => {
                 if running {
                     self.bring_app(&app_id);
@@ -2016,6 +2016,12 @@ impl Nekoland {
             .restoring
             .iter()
             .any(|(restoring, ..)| restoring == window)
+    }
+
+    /// An application was started elsewhere; its icon breathes until its window shows.
+    pub(crate) fn dock_launching(&mut self, app_id: &str) {
+        self.dock.launching.retain(|(id, _)| id != app_id);
+        self.dock.launching.push((app_id.to_string(), Instant::now()));
     }
 
     /// A window was minimized from `rect`; it is drawn shrinking into the Dock.

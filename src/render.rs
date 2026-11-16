@@ -130,7 +130,13 @@ pub fn scene_elements(
     // Everything under the dock and other floating layers, which their glass shows blurred.
     let mut elements = Vec::new();
 
-    if let Some(slot) = overview.hovered.and_then(|index| overview.slots.get(index)) {
+    // With the applications shown, the windows are not.
+    let apps = overview.apps.is_some();
+    if let Some(slot) = overview
+        .hovered
+        .filter(|_| !apps)
+        .and_then(|index| overview.slots.get(index))
+    {
         let outer = Rectangle::new(
             slot.now.loc - Point::from((OUTLINE, OUTLINE)) - output_geometry.loc,
             slot.now.size + Size::from((OUTLINE * 2, OUTLINE * 2)),
@@ -200,7 +206,7 @@ pub fn scene_elements(
     };
 
     // The icon straddles the window's bottom edge, with the name under it.
-    for slot in resting() {
+    for slot in resting().filter(|_| !apps) {
         if let Some(badge) = &slot.badge {
             let at = Point::from((
                 slot.now.loc.x + (slot.now.size.w - badge.size.w) / 2,
@@ -210,7 +216,7 @@ pub fn scene_elements(
         }
     }
 
-    for slot in resting() {
+    for slot in resting().filter(|_| !apps) {
         elements.extend(window_thumbnail(renderer, slot));
     }
 
@@ -222,8 +228,11 @@ pub fn scene_elements(
         Kind::Unspecified,
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-    let mut overlays = state.overview_overlays();
+    // The applications in front of the desktops' bar, on glass behind everything else.
+    let (mut overlays, backdrop) = state.apps_overlays();
+    overlays.extend(state.overview_overlays());
     overlays.extend(state.dock_overlays());
+    overlays.extend(backdrop);
     let on_top = OnTop {
         overlays: &overlays,
         windows: &[],
