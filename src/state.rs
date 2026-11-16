@@ -69,9 +69,12 @@ pub struct Nekoland {
     pub last_input: std::time::Instant,
     /// Whether the displays are turned off, until there is input.
     pub screens_off: bool,
-    /// Night Shift, from the control center, and whether a display can show it.
+    /// Night Shift, as its setting, its schedule or the control center last said, and
+    /// whether a display can show it.
     pub night_shift: bool,
     pub night_shift_available: bool,
+    /// What the setting and schedule last said, for Night Shift to follow when it changes.
+    pub night_shift_wanted: Option<bool>,
     /// When a recorder last took a frame of the screen.
     pub screen_shared_at: Option<std::time::Instant>,
     /// Surfaces of programs that keep the screen from locking while it is idle.
@@ -186,6 +189,7 @@ impl Nekoland {
             screens_off: false,
             night_shift: false,
             night_shift_available: false,
+            night_shift_wanted: None,
             screen_shared_at: None,
             idle_inhibitors: Vec::new(),
             screencopy: Vec::new(),

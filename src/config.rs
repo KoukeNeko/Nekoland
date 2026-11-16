@@ -12,6 +12,12 @@ pub struct Config {
     pub mode: Option<String>,
     /// How many pixels a point is drawn with; worked out from the display's density otherwise.
     pub scale: Option<f64>,
+    /// Whether Night Shift is on, off, or on from `night_shift_from` to `night_shift_to`, and
+    /// how warm it is, from 0 to 1.
+    pub night_shift: NightShift,
+    pub night_shift_from: TimeOfDay,
+    pub night_shift_to: TimeOfDay,
+    pub night_shift_warmth: f64,
     /// Shell commands started once the compositor is up: the panel, the wallpaper, and so on.
     pub autostart: Vec<String>,
     pub terminal: String,
@@ -101,6 +107,37 @@ pub enum AppsView {
     Shelf,
     /// A list of kinds beside the icons of the one chosen.
     Sidebar,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum NightShift {
+    Off,
+    On,
+    Scheduled,
+}
+
+/// A time of day, in minutes since midnight, written as `HH:MM`.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
+#[serde(try_from = "String", into = "String")]
+pub struct TimeOfDay(pub u16);
+
+impl TryFrom<String> for TimeOfDay {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let parsed = text.split_once(':').and_then(|(hours, minutes)| {
+            let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+            (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+        });
+        parsed.map(TimeOfDay).ok_or(format!("{text:?} is not a time as HH:MM"))
+    }
+}
+
+impl From<TimeOfDay> for String {
+    fn from(time: TimeOfDay) -> String {
+        format!("{:02}:{:02}", time.0 / 60, time.0 % 60)
+    }
 }
 
 /// What the power button or closing the lid does.
@@ -305,6 +342,11 @@ impl Default for Config {
             // logind's own: it powers off, which Nekoland asks about first.
             power_button: PowerAction::ShutDown,
             lid_close: PowerAction::Sleep,
+            night_shift: NightShift::Off,
+            // The Mac's custom schedule.
+            night_shift_from: TimeOfDay(22 * 60),
+            night_shift_to: TimeOfDay(7 * 60),
+            night_shift_warmth: 0.7,
             glass: HashMap::from([("nekoland-launcher".into(), 16)]),
             dock: [
                 "org.gnome.Nautilus",
@@ -560,6 +602,15 @@ mod tests {
             with_setting(text, "dock_glass", "dock_glass = false"),
             "clock_24h = true\ndock = [\n    \"a\",\n]\ndock_glass = false\n[glass]\nwaybar = 12\n"
         );
+    }
+
+    #[test]
+    fn times_of_day_are_read_and_written_as_hours_and_minutes() {
+        assert_eq!(TimeOfDay::try_from("07:30".to_string()), Ok(TimeOfDay(450)));
+        assert_eq!(String::from(TimeOfDay(22 * 60)), "22:00");
+        for bad in ["24:00", "7:60", "7", "noon"] {
+            assert!(TimeOfDay::try_from(bad.to_string()).is_err(), "{bad}");
+        }
     }
 
     #[test]

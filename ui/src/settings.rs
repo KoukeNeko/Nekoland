@@ -1969,7 +1969,54 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
         None => {}
     });
     display.add(&scale);
+
+    let night = adw::PreferencesGroup::new();
+    let shift = choice_row(config, "夜覽", "night_shift", &NIGHT_SHIFT, &["關閉", "開啟", "排程"]);
+    let from = time_row(config, "開始", "night_shift_from");
+    let to = time_row(config, "結束", "night_shift_to");
+    night.add(&shift);
+    night.add(&from);
+    night.add(&to);
+    let scheduled = move |row: &adw::ComboRow| {
+        let on = NIGHT_SHIFT.get(row.selected() as usize) == Some(&"scheduled");
+        from.set_visible(on);
+        to.set_visible(on);
+    };
+    scheduled(&shift);
+    shift.connect_selected_notify(scheduled);
+    night.add(&scale_row(
+        "色溫",
+        config.number("night_shift_warmth", 0.7),
+        (0.0, 1.0, 0.05),
+        |warmth| set(&format!("night_shift_warmth = {warmth:.2}")),
+    ));
+    page.add(&night);
     page
+}
+
+const NIGHT_SHIFT: [&str; 3] = ["off", "on", "scheduled"];
+
+/// A row choosing an hour of the day for a setting kept as `HH:MM`; a time of the file's own
+/// is kept among the choices.
+fn time_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
+    let mut times: Vec<String> = (0..24).map(|hour| format!("{hour:02}:00")).collect();
+    let current = config.word(key).to_string();
+    if !current.is_empty() && !times.contains(&current) {
+        times.push(current.clone());
+        times.sort();
+    }
+    let labels: Vec<&str> = times.iter().map(String::as_str).collect();
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(&labels))
+        .selected(times.iter().position(|time| *time == current).unwrap_or(0) as u32)
+        .build();
+    row.connect_selected_notify(move |row| {
+        if let Some(time) = times.get(row.selected() as usize) {
+            set(&format!("{key} = {time:?}"));
+        }
+    });
+    row
 }
 
 const POWER_BUTTON: [&str; 3] = ["shutdown", "sleep", "ignore"];

@@ -16,6 +16,7 @@ mod input;
 mod ipc;
 mod lock;
 mod menubar;
+mod night;
 mod notices;
 mod overview;
 mod power;
