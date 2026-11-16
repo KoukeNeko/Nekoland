@@ -340,6 +340,7 @@ impl Nekoland {
             if let Some((x, width)) = self.dock.spans.get(*index) {
                 let center = rect.loc.x + x + width / 2;
                 overlays.push(Overlay {
+                    fade: 1.0,
                     id: label_id,
                     rect: Rectangle::new(
                         (center - label.size.w / 2, rect.loc.y - label.size.h - 8).into(),
@@ -352,6 +353,7 @@ impl Nekoland {
             }
         }
         overlays.push(Overlay {
+            fade: 1.0,
             id: dock_id,
             rect,
             glass: Some(RADIUS),

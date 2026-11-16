@@ -381,7 +381,7 @@ fn floating_elements(
                 renderer,
                 rect.loc.to_f64(),
                 &overlay.picture.buffer,
-                Some(overlay.alpha),
+                Some(overlay.alpha * overlay.fade),
                 crop.map(|size| Rectangle::from_size(size).to_f64()),
                 crop,
                 Kind::Unspecified,
@@ -394,7 +394,7 @@ fn floating_elements(
                 .as_deref_mut()
                 .zip(overlay.glass)
                 .and_then(|(glass, radius)| glass.pane_with(overlay.id.clone(), rect, radius))
-                .map(SceneElement::Glass),
+                .map(|pane| SceneElement::Glass(pane.faded(overlay.fade))),
         );
     }
     for window in windows {

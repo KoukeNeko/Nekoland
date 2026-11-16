@@ -298,6 +298,7 @@ impl Nekoland {
             .filter_map(|(index, rect)| {
                 let banner = &self.notices.banners[index];
                 Some(Overlay {
+                    fade: 1.0,
                     id: &banner.id,
                     rect,
                     glass: Some(RADIUS),

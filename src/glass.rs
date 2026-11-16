@@ -270,6 +270,7 @@ impl Glass {
             src,
             dst: rect,
             radius: radius.min(rect.size.w / 2).min(rect.size.h / 2),
+            alpha: 1.0,
         })
     }
 }
@@ -344,11 +345,23 @@ pub struct Pane {
     src: Rectangle<f64, Buffer>,
     dst: Rectangle<i32, Physical>,
     radius: i32,
+    alpha: f32,
+}
+
+impl Pane {
+    /// The same glass, only partly there, as while it fades in.
+    pub fn faded(self, alpha: f32) -> Self {
+        Self { alpha, ..self }
+    }
 }
 
 impl Element for Pane {
     fn id(&self) -> &Id {
         &self.id
+    }
+
+    fn alpha(&self) -> f32 {
+        self.alpha
     }
 
     fn current_commit(&self) -> CommitCounter {
@@ -385,7 +398,7 @@ impl RenderElement<GlesRenderer> for Pane {
             damage,
             opaque_regions,
             Transform::Normal,
-            1.0,
+            self.alpha,
             Some(&self.program),
             &[
                 Uniform::new(

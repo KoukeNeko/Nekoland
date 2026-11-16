@@ -305,6 +305,8 @@ pub struct Overlay<'a> {
     pub glass: Option<i32>,
     /// How opaque the picture is drawn.
     pub alpha: f32,
+    /// How far it has come in, glass and all, as while it fades in or out.
+    pub fade: f32,
     pub picture: &'a Picture,
 }
 
@@ -1011,6 +1013,7 @@ impl Nekoland {
             for (level, id) in open.levels.iter().zip(&bar.menu_ids).rev() {
                 if let Some(picture) = &level.picture {
                     overlays.push(Overlay {
+                        fade: 1.0,
                         id,
                         rect: Rectangle::new(level.rect.loc + output.loc, level.rect.size),
                         glass: Some(MENU_RADIUS),
@@ -1022,6 +1025,7 @@ impl Nekoland {
         }
         if let Some(picture) = &bar.picture {
             overlays.push(Overlay {
+                fade: 1.0,
                 id: &bar.bar_id,
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
                 glass: Some(0),

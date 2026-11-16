@@ -685,6 +685,7 @@ impl Nekoland {
         let mut overlays = Vec::new();
         if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| expansion > 0.0) {
             overlays.push(Overlay {
+                fade: 1.0,
                 id: &overview.expanded_id,
                 rect: panel,
                 glass: None,
@@ -694,6 +695,7 @@ impl Nekoland {
         }
         if let Some(picture) = &overview.bar.strip {
             overlays.push(Overlay {
+                fade: 1.0,
                 id: &overview.strip_id,
                 rect: panel,
                 glass: Some(0),
