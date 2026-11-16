@@ -3,6 +3,7 @@
 mod config;
 mod cursor;
 mod dbus;
+mod dock;
 mod focus;
 mod glass;
 mod handlers;
@@ -11,9 +12,11 @@ mod grabs;
 mod input;
 mod ipc;
 mod menubar;
+mod notices;
 mod overview;
 mod render;
 mod state;
+mod system;
 mod text;
 mod udev;
 mod windows;
@@ -64,10 +67,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .handle()
         .insert_source(dbus_channel, |event, _, data| {
             if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
+                data.state.notice_event(&event);
                 data.state.menu_bar_event(event);
             }
         })
         .map_err(|err| err.error)?;
+    system::watch_sound(dbus_events.clone());
     data.state.menu_bar.bus = dbus::start(dbus_events)
         .inspect_err(|err| tracing::warn!("the menu bar has no D-Bus: {err}"))
         .ok();

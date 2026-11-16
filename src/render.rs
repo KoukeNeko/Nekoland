@@ -7,24 +7,25 @@ use smithay::{
             render_elements,
             solid::SolidColorRenderElement,
             surface::WaylandSurfaceRenderElement,
-            utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
-            AsRenderElements, Kind,
+            utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
+            AsRenderElements, Id, Kind,
         },
         gles::GlesRenderer,
         utils::CommitCounter,
     },
-    desktop::{layer_map_for_output, LayerSurface},
+    desktop::{layer_map_for_output, LayerSurface, Window},
     output::Output,
-    utils::{Logical, Point, Rectangle, Scale, Size},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::shell::wlr_layer::Layer,
 };
 
 use crate::{
     glass::{Glass, Pane},
     menubar::Overlay,
-    overview::{BAR_HEIGHT, ICON_SIZE},
+    overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
+    windows::window_names,
     Nekoland,
 };
 
@@ -42,6 +43,7 @@ render_elements! {
     Surface=SurfaceElement,
     Glass=Pane,
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
+    Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     Solid=SolidColorRenderElement,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
@@ -61,34 +63,43 @@ pub fn scene_elements(
                 .output_geometry(output)
                 .ok_or("output is not mapped")?
                 .loc;
-            let location = state.space.element_location(&window).unwrap_or_default();
             let mut elements = layer_elements(renderer, output, [Layer::Overlay, Layer::Overlay], false);
-            elements.extend(
-                AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
-                    &window,
-                    renderer,
-                    (location - window.geometry().loc - output_loc).to_physical(1),
-                    Scale::from(1.0),
-                    1.0,
-                )
-                .into_iter()
-                .map(SceneElement::Surface),
-            );
+            elements.extend(window_elements(state, renderer, &window, output_loc));
             return Ok(elements);
         }
         let output_geometry = state
             .space
             .output_geometry(output)
             .ok_or("output is not mapped")?;
-        let mut under: Vec<SceneElement> = state
+        // Windows the configuration puts on glass float over the rest, as the panels do.
+        let floating: Vec<Window> = state
             .space
-            .render_elements_for_region(renderer, &output_geometry, 1.0, 1.0)
-            .into_iter()
-            .map(SceneElement::Surface)
+            .elements()
+            .rev()
+            .filter(|window| state.config.glass.contains_key(&window_names(window).1))
+            .cloned()
+            .collect();
+        let windows: Vec<Window> = state
+            .space
+            .elements()
+            .rev()
+            .filter(|window| !floating.contains(window))
+            .cloned()
+            .collect();
+        let mut under: Vec<SceneElement> = windows
+            .iter()
+            .flat_map(|window| window_elements(state, renderer, window, output_geometry.loc))
             .collect();
         under.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-        let overlays = state.menu_bar_overlays();
-        let mut elements = floating_elements(state, renderer, output, glass, &under, false, &overlays);
+        let mut overlays = state.menu_bar_overlays();
+        overlays.extend(state.notice_overlays());
+        overlays.extend(state.dock_overlays());
+        let on_top = OnTop {
+            overlays: &overlays,
+            windows: &floating,
+            without_top_panel: false,
+        };
+        let mut elements = floating_elements(state, renderer, output, glass, &under, &on_top);
         elements.extend(under);
         return Ok(elements);
     };
@@ -118,19 +129,6 @@ pub fn scene_elements(
     // Everything under the dock and other floating layers, which their glass shows blurred.
     let mut elements = Vec::new();
 
-    // The bar slides down from the top edge.
-    let slide = Point::from((0, ((progress - 1.0) * f64::from(BAR_HEIGHT)).round() as i32));
-    for item in &overview.bar {
-        elements.extend(picture(renderer, &item.picture, item.rect.loc + slide));
-    }
-    elements.push(SceneElement::Solid(SolidColorRenderElement::from_buffer(
-        &overview.bar_background,
-        slide.to_physical(1),
-        1.0,
-        1.0,
-        Kind::Unspecified,
-    )));
-
     if let Some(slot) = overview.hovered.and_then(|index| overview.slots.get(index)) {
         let outer = Rectangle::new(
             slot.now.loc - Point::from((OUTLINE, OUTLINE)) - output_geometry.loc,
@@ -159,8 +157,49 @@ pub fn scene_elements(
         }
     }
 
+    // A window being dragged goes over everything else in the overview, without its name.
+    let dragged = overview.dragged();
+    let window_thumbnail = |renderer: &mut GlesRenderer, slot: &crate::overview::Slot| {
+        let geometry = slot.window.geometry();
+        let natural = (slot.from.loc - geometry.loc - output_geometry.loc).to_physical(1);
+        let origin = (slot.from.loc - output_geometry.loc).to_physical(1);
+        let offset = (slot.now.loc - slot.from.loc).to_physical(1);
+        let scale = f64::from(slot.now.size.w) / f64::from(slot.from.size.w.max(1));
+        AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+            &slot.window,
+            renderer,
+            natural,
+            Scale::from(1.0),
+            1.0,
+        )
+        .into_iter()
+        .map(move |element| {
+            let scaled = RescaleRenderElement::from_element(element, origin, scale);
+            SceneElement::Thumbnail(RelocateRenderElement::from_element(
+                scaled,
+                offset,
+                Relocate::Relative,
+            ))
+        })
+        .collect::<Vec<_>>()
+    };
+    // Put in front of the scene, the bar included, once it is put together.
+    let dragged_elements: Vec<SceneElement> = dragged
+        .and_then(|index| overview.slots.get(index))
+        .map(|slot| window_thumbnail(renderer, slot))
+        .unwrap_or_default();
+    let resting = || {
+        overview
+            .slots
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(move |(index, _)| Some(*index) != dragged)
+            .map(|(_, slot)| slot)
+    };
+
     // The icon straddles the window's bottom edge, with the name under it.
-    for slot in overview.slots.iter().rev() {
+    for slot in resting() {
         if let Some(badge) = &slot.badge {
             let at = Point::from((
                 slot.now.loc.x + (slot.now.size.w - badge.size.w) / 2,
@@ -170,30 +209,8 @@ pub fn scene_elements(
         }
     }
 
-    for slot in overview.slots.iter().rev() {
-        let geometry = slot.window.geometry();
-        let natural = (slot.from.loc - geometry.loc - output_geometry.loc).to_physical(1);
-        let origin = (slot.from.loc - output_geometry.loc).to_physical(1);
-        let offset = (slot.now.loc - slot.from.loc).to_physical(1);
-        let scale = f64::from(slot.now.size.w) / f64::from(slot.from.size.w.max(1));
-        elements.extend(
-            AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
-                &slot.window,
-                renderer,
-                natural,
-                Scale::from(1.0),
-                1.0,
-            )
-            .into_iter()
-            .map(|element| {
-                let scaled = RescaleRenderElement::from_element(element, origin, scale);
-                SceneElement::Thumbnail(RelocateRenderElement::from_element(
-                    scaled,
-                    offset,
-                    Relocate::Relative,
-                ))
-            }),
-        );
+    for slot in resting() {
+        elements.extend(window_thumbnail(renderer, slot));
     }
 
     elements.push(SceneElement::Solid(SolidColorRenderElement::from_buffer(
@@ -204,22 +221,110 @@ pub fn scene_elements(
         Kind::Unspecified,
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
-    let mut scene = floating_elements(state, renderer, output, glass, &elements, true, &[]);
+    let mut overlays = state.overview_overlays();
+    overlays.extend(state.dock_overlays());
+    let on_top = OnTop {
+        overlays: &overlays,
+        windows: &[],
+        without_top_panel: true,
+    };
+    let floating = floating_elements(state, renderer, output, glass, &elements, &on_top);
+    // Each desktop as it is, small, in the opened-up bar, over everything, and the close
+    // button of the one the pointer is on over that.
+    let mut scene = dragged_elements;
+    scene.extend(
+        state
+            .overview_close_button()
+            .and_then(|(rect, button)| picture(renderer, button, rect.loc)),
+    );
+    scene.extend(desktop_thumbnails(state, renderer, output, output_geometry.loc));
+    scene.extend(floating);
     scene.extend(elements);
     Ok(scene)
 }
 
-/// The compositor's own overlays and the layers above the windows, each overlay and each
-/// surface the configuration names on glass over `under`.
+/// Every desktop's wallpaper and windows, scaled down into its place in the desktops' bar,
+/// fading in as the bar opens up, and cut off where it ends.
+fn desktop_thumbnails(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_loc: Point<i32, Logical>,
+) -> Vec<SceneElement> {
+    let expansion = state.overview_expansion() as f32;
+    let Some(panel) = state.overview_panel().filter(|_| expansion > 0.0) else {
+        return Vec::new();
+    };
+    let crop = Rectangle::new(panel.loc - output_loc, panel.size).to_physical(1);
+    let output_width = state
+        .space
+        .output_geometry(output)
+        .map_or(1, |geometry| geometry.size.w.max(1));
+    let map = layer_map_for_output(output);
+    let mut elements = Vec::new();
+    for (index, rect) in state.overview_thumbnails() {
+        let scale = f64::from(rect.size.w) / f64::from(output_width);
+        let offset = (rect.loc - output_loc).to_physical(1);
+        let mut surfaces: Vec<SurfaceElement> = Vec::new();
+        // Front to back: the windows, top of the stack first, then the wallpaper.
+        for (window, location) in state.desktop_windows(index).into_iter().rev() {
+            surfaces.extend(
+                AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+                    &window,
+                    renderer,
+                    (location - window.geometry().loc - output_loc).to_physical(1),
+                    Scale::from(1.0),
+                    expansion,
+                ),
+            );
+        }
+        for surface in BELOW_WINDOWS
+            .into_iter()
+            .flat_map(|layer| map.layers_on(layer).rev())
+        {
+            let location = map.layer_geometry(surface).unwrap_or_default().loc;
+            surfaces.extend(
+                AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+                    surface,
+                    renderer,
+                    location.to_physical(1),
+                    Scale::from(1.0),
+                    expansion,
+                ),
+            );
+        }
+        elements.extend(surfaces.into_iter().filter_map(|surface| {
+            let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
+            let placed = RelocateRenderElement::from_element(scaled, offset, Relocate::Relative);
+            CropRenderElement::from_element(placed, 1.0, crop).map(SceneElement::Desktop)
+        }));
+    }
+    elements
+}
+
+/// What goes over the windows: the compositor's own overlays, windows on glass, and the
+/// layers above the windows, less a top panel where the overview's bar takes its place.
+struct OnTop<'a> {
+    overlays: &'a [Overlay<'a>],
+    windows: &'a [Window],
+    without_top_panel: bool,
+}
+
+/// What goes over `under`, each overlay, window and surface the configuration names on
+/// glass that shows `under` blurred.
 fn floating_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
     mut glass: Option<&mut Glass>,
     under: &[SceneElement],
-    without_top_panel: bool,
-    overlays: &[Overlay<'_>],
+    on_top: &OnTop<'_>,
 ) -> Vec<SceneElement> {
+    let OnTop {
+        overlays,
+        windows,
+        without_top_panel,
+    } = *on_top;
     let output_width = state
         .space
         .output_geometry(output)
@@ -240,12 +345,18 @@ fn floating_elements(
         .unwrap_or_default();
     let areas: Vec<_> = overlays
         .iter()
+        .filter(|overlay| overlay.glass.is_some())
         .map(|overlay| Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1))
         .chain(
             surfaces
                 .iter()
                 .filter(|surface| radius_of(surface).is_some())
                 .map(|surface| map.layer_geometry(surface).unwrap_or_default().to_physical(1)),
+        )
+        .chain(
+            windows
+                .iter()
+                .filter_map(|window| window_area(state, window, output_loc)),
         )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
@@ -259,14 +370,20 @@ fn floating_elements(
     let mut elements = Vec::new();
     for overlay in overlays {
         let rect = Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical(1);
+        // An overlay smaller than its picture shows as much of it as fits, from the top left.
+        let fits = Size::from((
+            overlay.rect.size.w.min(overlay.picture.size.w),
+            overlay.rect.size.h.min(overlay.picture.size.h),
+        ));
+        let crop = (fits != overlay.picture.size).then_some(fits);
         elements.extend(
             MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 rect.loc.to_f64(),
                 &overlay.picture.buffer,
-                None,
-                None,
-                None,
+                Some(overlay.alpha),
+                crop.map(|size| Rectangle::from_size(size).to_f64()),
+                crop,
                 Kind::Unspecified,
             )
             .ok()
@@ -275,9 +392,27 @@ fn floating_elements(
         elements.extend(
             glass
                 .as_deref_mut()
-                .and_then(|glass| glass.pane_with(overlay.id.clone(), rect, overlay.radius))
+                .zip(overlay.glass)
+                .and_then(|(glass, radius)| glass.pane_with(overlay.id.clone(), rect, radius))
                 .map(SceneElement::Glass),
         );
+    }
+    for window in windows {
+        elements.extend(window_elements(state, renderer, window, output_loc));
+        let radius = state
+            .config
+            .glass
+            .get(&window_names(window).1)
+            .copied()
+            .unwrap_or_default();
+        if let Some(area) = window_area(state, window, output_loc) {
+            elements.extend(
+                glass
+                    .as_deref_mut()
+                    .and_then(|glass| glass.pane_with(window_glass_id(window), area, radius))
+                    .map(SceneElement::Glass),
+            );
+        }
     }
     for surface in &surfaces {
         let geometry = map.layer_geometry(surface).unwrap_or_default();
@@ -308,6 +443,41 @@ fn floating_elements(
         }
     }
     elements
+}
+
+/// A window's surfaces, with its popups, where it is on the output.
+fn window_elements(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    output_loc: Point<i32, Logical>,
+) -> Vec<SceneElement> {
+    let location = state.space.element_location(window).unwrap_or_default();
+    AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+        window,
+        renderer,
+        (location - window.geometry().loc - output_loc).to_physical(1),
+        Scale::from(1.0),
+        1.0,
+    )
+    .into_iter()
+    .map(SceneElement::Surface)
+    .collect()
+}
+
+/// The part of the output a window covers, without its shadow.
+fn window_area(
+    state: &Nekoland,
+    window: &Window,
+    output_loc: Point<i32, Logical>,
+) -> Option<Rectangle<i32, Physical>> {
+    let location = state.space.element_location(window)?;
+    Some(Rectangle::new(location - output_loc, window.geometry().size).to_physical(1))
+}
+
+/// What a window's glass goes by from frame to frame: the window keeps it.
+fn window_glass_id(window: &Window) -> Id {
+    window.user_data().get_or_insert(Id::new).clone()
 }
 
 fn is_top_panel(map: &smithay::desktop::LayerMap, surface: &LayerSurface) -> bool {

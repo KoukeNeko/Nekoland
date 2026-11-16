@@ -12,7 +12,10 @@ use smithay::{
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use crate::{focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
+use crate::{dock::DOCK_SPACE, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
+
+/// The application ID of Nekoland's own launcher.
+pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
 
 /// The states that say where a window was put, as opposed to what it is doing.
 const PLACEMENT_STATES: [ToplevelState; 6] = [
@@ -85,11 +88,15 @@ impl Nekoland {
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
         let mut area = Rectangle::new(geometry.loc + zone.loc, zone.size);
-        // The menu bar keeps the top for itself.
+        // The menu bar keeps the top for itself, the Dock the bottom.
         let below_bar = geometry.loc.y + MENU_BAR_HEIGHT;
         if area.loc.y < below_bar {
             area.size.h -= below_bar - area.loc.y;
             area.loc.y = below_bar;
+        }
+        let above_dock = geometry.loc.y + geometry.size.h - DOCK_SPACE;
+        if area.loc.y + area.size.h > above_dock {
+            area.size.h = above_dock - area.loc.y;
         }
         Some(area)
     }
@@ -119,7 +126,25 @@ impl Nekoland {
 
     /// Gives the keyboard to a window or a surface, or to nothing, and tells every
     /// window whether it is the active one.
+    /// The launcher is for the moment it is asked for: it goes when anything else is
+    /// clicked or given the keyboard.
+    pub fn close_launcher_unless(&self, keep: Option<&Window>) {
+        for window in self.space.elements() {
+            if window_names(window).1 == LAUNCHER_APP_ID && Some(window) != keep {
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.send_close();
+                }
+            }
+        }
+    }
+
     pub fn set_keyboard_focus(&mut self, focus: Option<KeyFocus>) {
+        let keep = self
+            .space
+            .elements()
+            .find(|window| Some(key_focus_of(window)) == focus)
+            .cloned();
+        self.close_launcher_unless(keep.as_ref());
         for window in self.space.elements() {
             window.set_activated(Some(key_focus_of(window)) == focus);
             if let Some(toplevel) = window.toplevel() {

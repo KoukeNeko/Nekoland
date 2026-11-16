@@ -74,6 +74,9 @@ impl Nekoland {
                 pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
 
                 self.menu_bar_motion(pos);
+                self.dock_motion(pos);
+                self.notice_motion(pos);
+                self.overview_motion(pos);
                 let under = self.surface_under(pos);
                 pointer.motion(
                     self,
@@ -107,6 +110,9 @@ impl Nekoland {
                 let pointer = self.seat.get_pointer().unwrap();
 
                 self.menu_bar_motion(pos);
+                self.dock_motion(pos);
+                self.notice_motion(pos);
+                self.overview_motion(pos);
                 let under = self.surface_under(pos);
 
                 pointer.motion(
@@ -131,6 +137,7 @@ impl Nekoland {
                     self.pointer_pressed(button, serial);
                 } else if ButtonState::Released == button_state {
                     self.menu_bar_release(pointer.current_location());
+                    self.overview_release(pointer.current_location());
                 }
 
                 pointer.button(
@@ -197,7 +204,12 @@ impl Nekoland {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
+        let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
+        self.close_launcher_unless(clicked.as_ref());
         if self.menu_bar_press(pos) {
+            return;
+        }
+        if button == BUTTON_LEFT && (self.dock_press(pos) || self.notice_press(pos)) {
             return;
         }
         if self.overview.is_some() && self.overview_covers(pos) {
@@ -253,7 +265,7 @@ impl Nekoland {
         let focused = self.focused_window();
 
         if self.menu_bar.open.is_some() {
-            self.menu_bar_key(sym);
+            self.menu_bar_key(sym, typed);
             return true;
         }
 

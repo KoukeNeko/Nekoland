@@ -1,12 +1,10 @@
-# An example ~/.config/nekoland/config.toml: a top panel, a dock and a wallpaper.
-# The paths assume the repository is at ~/Nekoland.
+# An example ~/.config/nekoland/config.toml. The menu bar, the Dock, notifications and
+# the launcher are Nekoland's own; this adds a wallpaper and an input method.
 
 autostart = [
     "swaybg -m fill -i /usr/share/backgrounds/warty-final-ubuntu.png",
-    "waybar -c ~/Nekoland/shell/waybar/config.jsonc -s ~/Nekoland/shell/waybar/style.css",
-    "mako -c ~/Nekoland/shell/mako.ini",
     # The input method; its keyboard grab and candidate popups go through Wayland.
     "fcitx5 -d --replace",
 ]
 terminal = "foot"
-launcher = "fuzzel --config ~/Nekoland/shell/fuzzel.ini"
+dock = ["org.gnome.Nautilus", "org.gnome.TextEditor", "org.gnome.Calculator", "foot"]

@@ -33,8 +33,10 @@ use smithay::{
 
 use crate::{
     config::Config,
+    dock::Dock,
     handlers::{foreign_toplevel::ForeignToplevelState, protocols::Protocols},
     menubar::MenuBar,
+    notices::Notices,
     overview::Overview,
     text::Apps,
     workspaces::Workspaces,
@@ -58,6 +60,8 @@ pub struct Nekoland {
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
     pub overview: Option<Overview>,
     pub menu_bar: MenuBar,
+    pub dock: Dock,
+    pub notices: Notices,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
     pub apps: Apps,
@@ -109,6 +113,7 @@ impl Nekoland {
         let popups = PopupManager::default();
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh);
+        crate::handlers::appmenu::create_globals(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
@@ -144,6 +149,8 @@ impl Nekoland {
             minimized: Vec::new(),
             overview: None,
             menu_bar: MenuBar::default(),
+            dock: Dock::default(),
+            notices: Notices::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),
             super_tap: false,
@@ -235,7 +242,7 @@ impl Nekoland {
     /// bottom and background layers after them.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         // The menu bar and its menus are the compositor's own, above everything.
-        if self.menu_bar_covers(pos) {
+        if self.menu_bar_covers(pos) || self.dock_covers(pos) || self.notice_covers(pos) {
             return None;
         }
         let layer_surface_under = |layers| {

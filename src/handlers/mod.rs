@@ -1,3 +1,4 @@
+pub mod appmenu;
 mod compositor;
 pub mod foreign_toplevel;
 mod layer_shell;

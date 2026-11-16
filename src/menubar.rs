@@ -1,27 +1,42 @@
 //! The menu bar along the top, after the Mac's: the system menu, the menus of the active
-//! application, the status items programs put there, and the clock.
+//! application, the status items programs put there, the sound and the network, and the
+//! clock.
+//!
+//! An application's own menus are shown when it exports them (Qt over KDE's appmenu
+//! protocol, GTK over gtk_shell1). Otherwise its menus are built from the actions it
+//! exports and what Nekoland can do for any window, as the Mac gives every application an
+//! Edit and a Window menu. The Help menu searches all the others.
 //!
 //! A click opens a menu; after that the menus follow the pointer across the bar until one
 //! is chosen or dismissed. A press dragged onto an entry and let go chooses it in one move.
-//! The keyboard works too: the arrows move, Return chooses, Escape closes, and Ctrl+F2
-//! opens the first menu.
+//! Submenus open to the side, and a pointer on its way into one does not close it. The
+//! keyboard works too: the arrows move, Return chooses, Escape closes, and Ctrl+F2 opens
+//! the first menu.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use cairo::{Context, Format, ImageSurface};
 use smithay::{
-    backend::renderer::element::Id,
+    backend::{input::KeyState, renderer::element::Id},
     desktop::{Window, WindowSurface},
-    input::keyboard::Keysym,
-    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
-    utils::{Logical, Point, Rectangle, Size},
+    input::keyboard::{FilterResult, Keycode, Keysym},
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
+        wayland_server::protocol::wl_surface::WlSurface,
+    },
+    utils::{IsAlive, Logical, Point, Rectangle, Size, SERIAL_COUNTER},
+    wayland::seat::WaylandFocus,
 };
 
 use crate::{
     config,
-    dbus::{Bus, Event, MenuEntry, Request, StatusItem},
+    dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
+    system::{self, Network, Volume},
     text::{self, Picture},
-    windows::{is_managed, window_names, Side},
+    windows::{is_managed, window_names, Side, LAUNCHER_APP_ID},
     Nekoland,
 };
 
@@ -31,18 +46,33 @@ const TITLE_HIGHLIGHT_HEIGHT: i32 = 22;
 const STATUS_ICON: i32 = 18;
 const LOGO: f64 = 16.0;
 const ROW_HEIGHT: i32 = 24;
+const SEARCH_HEIGHT: i32 = 32;
 const SEPARATOR_HEIGHT: i32 = 11;
 const MENU_PADDING: i32 = 6;
 const MENU_MIN_WIDTH: i32 = 220;
 const MENU_RADIUS: i32 = 12;
-/// Room on the left of an entry for its check mark, and per level of a submenu.
+/// Room on the left of an entry for its check mark.
 const CHECK_COLUMN: i32 = 22;
-const INDENT: i32 = 14;
 const GAP_BELOW_BAR: i32 = 4;
+/// How far a submenu tucks under the menu it opens from.
+const SUBMENU_OVERLAP: i32 = 4;
+const MAX_SEARCH_RESULTS: usize = 14;
+const NETWORK_POLL: Duration = Duration::from_secs(3);
 
 const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC";
 const MONO: &str = "Ubuntu Sans Mono";
 const WEEKDAYS: [&str; 7] = ["日", "一", "二", "三", "四", "五", "六"];
+/// What Help menus are called, by the programs that bring their own.
+const HELP_TITLES: [&str; 6] = ["help", "說明", "輔助說明", "幫助", "帮助", "ヘルプ"];
+
+// xkb key codes, which are evdev's plus 8, for the Edit menu's shortcuts.
+const KEY_CTRL: u32 = 37;
+const KEY_SHIFT: u32 = 50;
+const KEY_A: u32 = 38;
+const KEY_Z: u32 = 52;
+const KEY_X: u32 = 53;
+const KEY_C: u32 = 54;
+const KEY_V: u32 = 55;
 
 /// What choosing a menu entry does.
 #[derive(Clone, PartialEq)]
@@ -53,10 +83,16 @@ pub enum Command {
     LogOut,
     /// One of the actions the active application exports, by name.
     Action(String),
+    /// An entry of a menu a program exported.
+    Invoke(MenuAction),
+    /// Keys pressed together for the active window, as its own shortcut would be.
+    Keys(&'static [u32]),
     Hide,
     HideOthers,
     ShowAll,
     Quit,
+    CloseWindow,
+    FullScreen,
     Minimize,
     Zoom,
     TileLeft,
@@ -64,50 +100,63 @@ pub enum Command {
     MoveToDesktop(usize),
     BringAllToFront,
     Focus(Window),
-    Status {
-        item: String,
-        id: i32,
-    },
+    VolumeUp,
+    VolumeDown,
+    Mute,
 }
 
 #[derive(Clone)]
 pub struct Entry {
     label: String,
-    shortcut: &'static str,
+    shortcut: String,
     enabled: bool,
     separator: bool,
+    /// The Help menu's search field, whose label is what was typed.
+    search: bool,
     checked: Option<bool>,
-    depth: usize,
     command: Option<Command>,
+    children: Vec<Entry>,
 }
 
 impl Entry {
     fn item(label: impl Into<String>, command: Command) -> Self {
         Self {
             label: label.into(),
-            shortcut: "",
+            shortcut: String::new(),
             enabled: true,
             separator: false,
+            search: false,
             checked: None,
-            depth: 0,
             command: Some(command),
+            children: Vec::new(),
+        }
+    }
+
+    /// A line of information, not something to choose.
+    fn note(label: impl Into<String>) -> Self {
+        Self {
+            command: None,
+            enabled: false,
+            ..Self::item(label, Command::Sleep)
         }
     }
 
     fn separator() -> Self {
         Self {
-            label: String::new(),
-            shortcut: "",
-            enabled: false,
             separator: true,
-            checked: None,
-            depth: 0,
-            command: None,
+            ..Self::note("")
         }
     }
 
-    fn shortcut(mut self, shortcut: &'static str) -> Self {
-        self.shortcut = shortcut;
+    fn search_field(query: &str) -> Self {
+        Self {
+            search: true,
+            ..Self::note(query)
+        }
+    }
+
+    fn shortcut(mut self, shortcut: &str) -> Self {
+        self.shortcut = shortcut.to_string();
         self
     }
 
@@ -121,8 +170,25 @@ impl Entry {
         self
     }
 
-    fn chooseable(&self) -> bool {
-        self.enabled && !self.separator && self.command.is_some()
+    fn from_menu(entry: &MenuEntry) -> Self {
+        Self {
+            label: entry.label.clone(),
+            shortcut: entry.shortcut.clone(),
+            enabled: entry.enabled,
+            separator: entry.separator,
+            search: false,
+            checked: entry.checked,
+            command: entry.action.clone().map(Command::Invoke),
+            children: entry.children.iter().map(Entry::from_menu).collect(),
+        }
+    }
+
+    /// Whether the pointer or the keyboard can land on it.
+    fn reachable(&self) -> bool {
+        self.enabled
+            && !self.separator
+            && !self.search
+            && (self.command.is_some() || !self.children.is_empty())
     }
 }
 
@@ -131,10 +197,16 @@ impl Entry {
 enum Source {
     System,
     App,
+    /// One of the menus the application exported, by its place among them.
+    AppMenu(usize),
     File,
+    Edit,
+    View,
     Window,
     Help,
     Status(String),
+    Sound,
+    Network,
 }
 
 struct Title {
@@ -142,8 +214,8 @@ struct Title {
     source: Source,
 }
 
-pub struct OpenMenu {
-    title: usize,
+/// One menu on screen: the one under the bar, or a submenu beside another.
+struct Level {
     entries: Vec<Entry>,
     rect: Rectangle<i32, Logical>,
     rows: Vec<Rectangle<i32, Logical>>,
@@ -152,12 +224,22 @@ pub struct OpenMenu {
     drawn: Option<(Option<usize>, bool)>,
 }
 
+pub struct OpenMenu {
+    title: usize,
+    levels: Vec<Level>,
+    /// For a Help menu: what has been typed into its search field, and what it shows
+    /// when nothing has.
+    search: Option<(String, Vec<Entry>)>,
+    /// Where the pointer last was over the menus, to tell a move into a submenu.
+    last_pointer: Option<Point<i32, Logical>>,
+}
+
 /// What the bar shows; it is drawn again when any of it changes.
 #[derive(Clone, PartialEq)]
 struct Drawn {
     width: i32,
     app: Option<(String, String)>,
-    actions: usize,
+    menus: u64,
     open: Option<usize>,
     dark: bool,
     minute: i64,
@@ -169,15 +251,24 @@ pub struct MenuBar {
     dark: bool,
     /// The actions each application exports, as far as they are known.
     actions: HashMap<String, Vec<String>>,
+    /// Where each window said its menus are, and the menus found there.
+    addresses: HashMap<WlSurface, AppMenuAddress>,
+    /// The same for X11 windows, by window ID, from the AppMenu registrar.
+    x11_addresses: HashMap<u32, AppMenuAddress>,
+    app_menus: HashMap<AppMenuAddress, Vec<MenuEntry>>,
+    menus_revision: u64,
     items: Vec<StatusItem>,
     items_revision: u64,
+    sound: Option<Volume>,
+    network: Option<Network>,
+    network_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
     picture: Option<Picture>,
     drawn: Option<Drawn>,
     bar_id: Id,
-    menu_id: Id,
+    menu_ids: Vec<Id>,
 }
 
 impl Default for MenuBar {
@@ -186,15 +277,22 @@ impl Default for MenuBar {
             bus: None,
             dark: true,
             actions: HashMap::new(),
+            addresses: HashMap::new(),
+            x11_addresses: HashMap::new(),
+            app_menus: HashMap::new(),
+            menus_revision: 0,
             items: Vec::new(),
             items_revision: 0,
+            sound: None,
+            network: None,
+            network_read: None,
             icons: HashMap::new(),
             titles: Vec::new(),
             open: None,
             picture: None,
             drawn: None,
             bar_id: Id::new(),
-            menu_id: Id::new(),
+            menu_ids: Vec::new(),
         }
     }
 }
@@ -203,7 +301,10 @@ impl Default for MenuBar {
 pub struct Overlay<'a> {
     pub id: &'a Id,
     pub rect: Rectangle<i32, Logical>,
-    pub radius: i32,
+    /// The corner radius of the glass under it, or None for none.
+    pub glass: Option<i32>,
+    /// How opaque the picture is drawn.
+    pub alpha: f32,
     pub picture: &'a Picture,
 }
 
@@ -243,6 +344,10 @@ fn colors(dark: bool) -> Colors {
 
 fn font(weight: &str, points: f64) -> pango::FontDescription {
     pango::FontDescription::from_string(&format!("{FONT} {weight} {points}"))
+}
+
+fn mono_font() -> pango::FontDescription {
+    pango::FontDescription::from_string(&format!("{MONO} 9"))
 }
 
 fn text_layout(cr: &Context, text: &str, font: &pango::FontDescription) -> pango::Layout {
@@ -322,54 +427,100 @@ fn clock() -> (i64, String) {
     (minute, text)
 }
 
+fn is_help(label: &str) -> bool {
+    HELP_TITLES.contains(&label.trim().to_lowercase().as_str())
+}
+
+fn sound_icon(volume: Volume) -> &'static str {
+    match (volume.muted, volume.percent) {
+        (true, _) | (false, 0) => "audio-volume-muted-symbolic",
+        (false, 1..=33) => "audio-volume-low-symbolic",
+        (false, 34..=66) => "audio-volume-medium-symbolic",
+        _ => "audio-volume-high-symbolic",
+    }
+}
+
+fn network_icon(network: &Network) -> &'static str {
+    match (network.connected, network.wireless) {
+        (false, _) => "network-offline-symbolic",
+        (true, true) => "network-wireless-signal-good-symbolic",
+        (true, false) => "network-wired-symbolic",
+    }
+}
+
+/// Is `point` inside the triangle `a`, `b`, `c`?
+fn in_triangle(
+    point: Point<i32, Logical>,
+    a: Point<i32, Logical>,
+    b: Point<i32, Logical>,
+    c: Point<i32, Logical>,
+) -> bool {
+    let side = |p: Point<i32, Logical>, q: Point<i32, Logical>, r: Point<i32, Logical>| {
+        i64::from(p.x - r.x) * i64::from(q.y - r.y) - i64::from(q.x - r.x) * i64::from(p.y - r.y)
+    };
+    let (d1, d2, d3) = (side(point, a, b), side(point, b, c), side(point, c, a));
+    let negative = d1 < 0 || d2 < 0 || d3 < 0;
+    let positive = d1 > 0 || d2 > 0 || d3 > 0;
+    !(negative && positive)
+}
+
+/// Every entry that can be chosen, with the way to it, for the Help menu's search.
+fn searchable(menus: &[(String, Vec<Entry>)]) -> Vec<Entry> {
+    fn walk(entries: &[Entry], path: &str, found: &mut Vec<Entry>) {
+        for entry in entries {
+            if entry.separator || entry.search {
+                continue;
+            }
+            let here = format!("{path} › {}", entry.label);
+            if entry.children.is_empty() {
+                if entry.command.is_some() {
+                    found.push(Entry {
+                        label: here,
+                        ..entry.clone()
+                    });
+                }
+            } else {
+                walk(&entry.children, &here, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for (title, entries) in menus {
+        walk(entries, title, &mut found);
+    }
+    found
+}
+
 impl MenuBar {
-    fn status_icon(&mut self, item: &StatusItem, tint: Rgb) -> Option<ImageSurface> {
-        let key = format!("{}|{}|{:?}", item.key, item.icon_name, tint);
-        if let Some(icon) = self.icons.get(&key) {
+    fn icon(
+        &mut self,
+        key: &str,
+        name: &str,
+        theme_path: &str,
+        pixmap: Option<&(i32, i32, Vec<u8>)>,
+        tint: Rgb,
+    ) -> Option<ImageSurface> {
+        let cache_key = format!("{key}|{name}|{tint:?}");
+        if let Some(icon) = self.icons.get(&cache_key) {
             return icon.clone();
         }
-        let icon = (!item.icon_name.is_empty())
-            .then(|| text::named_icon(&item.icon_name, &item.icon_theme_path, STATUS_ICON, tint))
+        let icon = (!name.is_empty())
+            .then(|| text::named_icon(name, theme_path, STATUS_ICON, tint))
             .flatten()
             .or_else(|| {
-                let (width, height, argb) = item.pixmap.as_ref()?;
+                let (width, height, argb) = pixmap?;
                 text::pixmap_icon(*width, *height, argb)
             });
-        self.icons.insert(key, icon.clone());
+        self.icons.insert(cache_key, icon.clone());
         icon
     }
 
     /// Lays the bar out and draws it.
-    fn draw_bar(&mut self, width: i32, app: Option<&(String, String)>, actions: &[String], clock: &str) {
+    fn draw_bar(&mut self, width: i32, titles: Vec<(Source, Option<String>)>, clock: &str) {
         let colors = colors(self.dark);
         let open = self.open.as_ref().map(|open| open.title);
         let title_font = font("Medium", 10.0);
         let app_font = font("Bold", 10.0);
-
-        // Left: the mark, then the application's menus.
-        let mut titles: Vec<(Source, Option<String>, i32)> = vec![(Source::System, None, LOGO as i32)];
-        if let Some((_, name)) = app {
-            titles.push((Source::App, Some(name.clone()), text_size(name, &app_font).0));
-            if actions.iter().any(|action| action == "new-window") {
-                titles.push((
-                    Source::File,
-                    Some("檔案".into()),
-                    text_size("檔案", &title_font).0,
-                ));
-            }
-            titles.push((
-                Source::Window,
-                Some("視窗".into()),
-                text_size("視窗", &title_font).0,
-            ));
-            if actions.iter().any(|action| action == "help") {
-                titles.push((
-                    Source::Help,
-                    Some("輔助說明".into()),
-                    text_size("輔助說明", &title_font).0,
-                ));
-            }
-        }
 
         let Ok(surface) = ImageSurface::create(Format::ARgb32, width.max(1), MENU_BAR_HEIGHT) else {
             return;
@@ -395,12 +546,21 @@ impl MenuBar {
             let _ = cr.fill();
         };
 
+        // Left: the mark, then the application's menus.
         self.titles.clear();
         let mut x = 8;
-        for (source, label, content_width) in titles {
+        for (source, label) in titles {
+            let font = if source == Source::App {
+                &app_font
+            } else {
+                &title_font
+            };
+            let content = label
+                .as_deref()
+                .map_or(LOGO as i32, |label| text_size(label, font).0);
             let rect = Rectangle::new(
                 (x, 0).into(),
-                (content_width + TITLE_PADDING * 2, MENU_BAR_HEIGHT).into(),
+                (content + TITLE_PADDING * 2, MENU_BAR_HEIGHT).into(),
             );
             let lit = open == Some(self.titles.len());
             if lit {
@@ -409,28 +569,50 @@ impl MenuBar {
             let color = if lit { colors.on_ink } else { colors.ink };
             match &label {
                 None => draw_logo(&cr, f64::from(x + TITLE_PADDING), center - LOGO / 2.0, color),
-                Some(label) => {
-                    let font = if source == Source::App {
-                        &app_font
-                    } else {
-                        &title_font
-                    };
-                    show_text(&cr, label, font, f64::from(x + TITLE_PADDING), center, color);
-                }
+                Some(label) => show_text(&cr, label, font, f64::from(x + TITLE_PADDING), center, color),
             }
             self.titles.push(Title { rect, source });
             x += rect.size.w;
         }
 
-        // Right: the clock, and the status items left of it.
+        // Right, from the edge in: the clock, the system's items, then the programs' items.
         let clock_font = font("Medium", 10.0);
         let clock_width = text_size(clock, &clock_font).0;
         let mut right = width - 12 - clock_width;
         show_text(&cr, clock, &clock_font, f64::from(right), center, colors.ink);
         right -= 8;
 
+        type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
+        let mut icons: Vec<Icon> = Vec::new();
+        if let Some(network) = &self.network {
+            icons.push((
+                Source::Network,
+                "network".into(),
+                network_icon(network).into(),
+                String::new(),
+                None,
+            ));
+        }
+        if let Some(volume) = self.sound {
+            icons.push((
+                Source::Sound,
+                "sound".into(),
+                sound_icon(volume).into(),
+                String::new(),
+                None,
+            ));
+        }
         let items: Vec<StatusItem> = self.items.iter().filter(|item| !item.passive).cloned().collect();
-        for item in items.iter().rev() {
+        icons.extend(items.into_iter().map(|item| {
+            (
+                Source::Status(item.key.clone()),
+                item.key,
+                item.icon_name,
+                item.icon_theme_path,
+                item.pixmap,
+            )
+        }));
+        for (source, key, name, theme_path, pixmap) in icons {
             let rect = Rectangle::new(
                 (right - STATUS_ICON - TITLE_PADDING * 2 + 8, 0).into(),
                 (STATUS_ICON + TITLE_PADDING * 2 - 8, MENU_BAR_HEIGHT).into(),
@@ -440,7 +622,7 @@ impl MenuBar {
                 highlight(&cr, rect);
             }
             let tint = if lit { colors.on_ink } else { colors.ink };
-            if let Some(icon) = self.status_icon(item, tint) {
+            if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
                 let scale = f64::from(STATUS_ICON) / f64::from(icon.width().max(icon.height()).max(1));
                 cr.save().ok();
                 cr.translate(
@@ -452,34 +634,34 @@ impl MenuBar {
                 let _ = cr.paint();
                 cr.restore().ok();
             }
-            self.titles.push(Title {
-                rect,
-                source: Source::Status(item.key.clone()),
-            });
+            self.titles.push(Title { rect, source });
             right = rect.loc.x;
         }
         drop(cr);
         self.picture = text::picture(surface);
     }
 
-    /// Where a menu of these entries goes under a title, and where each entry is in it.
+    /// Where a menu of these entries goes and where each entry is in it: under a title of
+    /// the bar, or beside the row of another menu.
     fn place_menu(
         entries: &[Entry],
-        under: Rectangle<i32, Logical>,
-        output_width: i32,
+        anchor: Rectangle<i32, Logical>,
+        beside: bool,
+        output: Size<i32, Logical>,
     ) -> (Rectangle<i32, Logical>, Vec<Rectangle<i32, Logical>>) {
         let label_font = font("", 10.0);
-        let shortcut_font = pango::FontDescription::from_string(&format!("{MONO} 9"));
         let widest = entries
             .iter()
             .map(|entry| {
-                let label = text_size(&entry.label, &label_font).0 + entry.depth as i32 * INDENT;
-                let shortcut = if entry.shortcut.is_empty() {
+                let label = text_size(&entry.label, &label_font).0;
+                let trailing = if !entry.children.is_empty() {
+                    24
+                } else if entry.shortcut.is_empty() {
                     0
                 } else {
-                    24 + text_size(entry.shortcut, &shortcut_font).0
+                    24 + text_size(&entry.shortcut, &mono_font()).0
                 };
-                label + shortcut
+                label + trailing
             })
             .max()
             .unwrap_or(0);
@@ -488,10 +670,10 @@ impl MenuBar {
         let mut rows = Vec::with_capacity(entries.len());
         let mut y = MENU_PADDING;
         for entry in entries {
-            let height = if entry.separator {
-                SEPARATOR_HEIGHT
-            } else {
-                ROW_HEIGHT
+            let height = match (entry.separator, entry.search) {
+                (true, _) => SEPARATOR_HEIGHT,
+                (_, true) => SEARCH_HEIGHT,
+                _ => ROW_HEIGHT,
             };
             rows.push(Rectangle::new(
                 (MENU_PADDING, y).into(),
@@ -500,11 +682,23 @@ impl MenuBar {
             y += height;
         }
         let height = y + MENU_PADDING;
-        let x = under.loc.x.min(output_width - width - 6).max(6);
-        let rect = Rectangle::new(
-            (x, MENU_BAR_HEIGHT + GAP_BELOW_BAR).into(),
-            (width, height).into(),
-        );
+        let (x, top) = if beside {
+            let right = anchor.loc.x + anchor.size.w + MENU_PADDING - SUBMENU_OVERLAP;
+            // On the right if it fits there, else on the left.
+            let x = if right + width <= output.w - 6 {
+                right
+            } else {
+                anchor.loc.x - MENU_PADDING + SUBMENU_OVERLAP - width
+            };
+            (x, anchor.loc.y - MENU_PADDING)
+        } else {
+            (anchor.loc.x, MENU_BAR_HEIGHT + GAP_BELOW_BAR)
+        };
+        let x = x.min(output.w - width - 6).max(6);
+        let top = top
+            .min(output.h - height - 6)
+            .max(MENU_BAR_HEIGHT + GAP_BELOW_BAR);
+        let rect = Rectangle::new((x, top).into(), (width, height).into());
         let rows = rows
             .into_iter()
             .map(|row| Rectangle::new(row.loc + rect.loc, row.size))
@@ -512,14 +706,14 @@ impl MenuBar {
         (rect, rows)
     }
 
-    fn draw_menu(dark: bool, open: &mut OpenMenu) {
+    fn draw_menu(dark: bool, level: &mut Level) {
         let colors = colors(dark);
-        let key = (open.highlighted, dark);
-        if open.drawn == Some(key) && open.picture.is_some() {
+        let key = (level.highlighted, dark);
+        if level.drawn == Some(key) && level.picture.is_some() {
             return;
         }
-        open.drawn = Some(key);
-        let size: Size<i32, Logical> = open.rect.size;
+        level.drawn = Some(key);
+        let size: Size<i32, Logical> = level.rect.size;
         let Ok(surface) = ImageSurface::create(Format::ARgb32, size.w, size.h) else {
             return;
         };
@@ -542,22 +736,41 @@ impl MenuBar {
         let _ = cr.stroke();
 
         let label_font = font("", 10.0);
-        let shortcut_font = pango::FontDescription::from_string(&format!("{MONO} 9"));
-        for (index, (entry, row)) in open.entries.iter().zip(&open.rows).enumerate() {
-            let local = Rectangle::<i32, Logical>::new(row.loc - open.rect.loc, row.size);
+        for (index, (entry, row)) in level.entries.iter().zip(&level.rows).enumerate() {
+            let local = Rectangle::<i32, Logical>::new(row.loc - level.rect.loc, row.size);
             let (x, y, w, h) = (
                 f64::from(local.loc.x),
                 f64::from(local.loc.y),
                 f64::from(local.size.w),
                 f64::from(local.size.h),
             );
+            let center = y + h / 2.0;
             if entry.separator {
                 cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.12);
-                cr.rectangle(x + 4.0, y + h / 2.0, w - 8.0, 1.0);
+                cr.rectangle(x + 4.0, center, w - 8.0, 1.0);
                 let _ = cr.fill();
                 continue;
             }
-            let lit = open.highlighted == Some(index);
+            if entry.search {
+                text::rounded_rectangle(&cr, x, y + 2.0, w, h - 6.0, 7.0);
+                cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.08);
+                let _ = cr.fill();
+                let (text, color) = if entry.label.is_empty() {
+                    ("搜尋", colors.ink_3)
+                } else {
+                    (entry.label.as_str(), colors.ink)
+                };
+                show_text(&cr, text, &label_font, x + 10.0, center - 2.0, color);
+                if !entry.label.is_empty() {
+                    // The caret, after what was typed.
+                    let typed = text_size(&entry.label, &label_font).0;
+                    cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
+                    cr.rectangle(x + 11.0 + f64::from(typed), center - 10.0, 1.0, 16.0);
+                    let _ = cr.fill();
+                }
+                continue;
+            }
+            let lit = level.highlighted == Some(index);
             if lit {
                 text::rounded_rectangle(&cr, x, y, w, h, 6.0);
                 cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
@@ -568,32 +781,39 @@ impl MenuBar {
                 (false, true) => colors.ink,
                 (false, false) => colors.ink_3,
             };
-            let center = y + h / 2.0;
             if entry.checked == Some(true) {
                 show_text(&cr, "✓", &label_font, x + 6.0, center, color);
             }
-            let indent = f64::from(CHECK_COLUMN + entry.depth as i32 * INDENT);
-            show_text(&cr, &entry.label, &label_font, x + indent, center, color);
-            if !entry.shortcut.is_empty() {
-                let width = text_size(entry.shortcut, &shortcut_font).0;
-                let shortcut_color = if lit { colors.on_ink } else { colors.ink_3 };
+            show_text(
+                &cr,
+                &entry.label,
+                &label_font,
+                x + f64::from(CHECK_COLUMN),
+                center,
+                color,
+            );
+            let trailing_color = if lit { colors.on_ink } else { colors.ink_3 };
+            if !entry.children.is_empty() {
+                show_text(&cr, "›", &label_font, x + w - 16.0, center, trailing_color);
+            } else if !entry.shortcut.is_empty() {
+                let width = text_size(&entry.shortcut, &mono_font()).0;
                 show_text(
                     &cr,
-                    entry.shortcut,
-                    &shortcut_font,
+                    &entry.shortcut,
+                    &mono_font(),
                     x + w - 10.0 - f64::from(width),
                     center,
-                    shortcut_color,
+                    trailing_color,
                 );
             }
         }
         drop(cr);
-        open.picture = text::picture(surface);
+        level.picture = text::picture(surface);
     }
 }
 
 impl Nekoland {
-    fn output_origin(&self) -> Option<Rectangle<i32, Logical>> {
+    fn output_area(&self) -> Option<Rectangle<i32, Logical>> {
         let output = self.space.outputs().next()?;
         self.space.output_geometry(output)
     }
@@ -602,7 +822,8 @@ impl Nekoland {
     fn active_app(&mut self) -> Option<(String, String)> {
         let window = self.focused_window().filter(is_managed)?;
         let (_, app_id) = window_names(&window);
-        if app_id.is_empty() {
+        // The launcher is the system's, not an application of its own.
+        if app_id.is_empty() || app_id == LAUNCHER_APP_ID {
             return None;
         }
         let name = self
@@ -615,12 +836,52 @@ impl Nekoland {
         Some((app_id, name))
     }
 
+    /// Where the active window's own menus are, if it said; for a dialog that did not,
+    /// where another window of its program said, as the Mac keeps an application's menus.
+    fn active_address(&self) -> Option<AppMenuAddress> {
+        let focused = self.focused_window()?;
+        let address_of = |window: &Window| match window.x11_surface() {
+            Some(surface) => self.menu_bar.x11_addresses.get(&surface.window_id()).cloned(),
+            None => window
+                .wl_surface()
+                .and_then(|surface| self.menu_bar.addresses.get(&*surface).cloned()),
+        };
+        address_of(&focused).or_else(|| {
+            let app_id = window_names(&focused).1;
+            self.space
+                .elements()
+                .filter(|window| *window != &focused && window_names(window).1 == app_id)
+                .find_map(address_of)
+        })
+    }
+
+    /// The active window's own menus, if it has any.
+    fn active_menus(&self) -> Vec<MenuEntry> {
+        self.active_address()
+            .and_then(|address| self.menu_bar.app_menus.get(&address).cloned())
+            .unwrap_or_default()
+    }
+
     fn app_windows(&self, app_id: &str) -> Vec<Window> {
         self.space
             .elements()
             .filter(|window| is_managed(window) && window_names(window).1 == app_id)
             .cloned()
             .collect()
+    }
+
+    /// A window said where its menus are.
+    pub fn set_app_menu_address(&mut self, surface: &WlSurface, address: AppMenuAddress) {
+        self.menu_bar.addresses.retain(|surface, _| surface.alive());
+        self.menu_bar.addresses.insert(surface.clone(), address.clone());
+        if let Some(bus) = &self.menu_bar.bus {
+            bus.send(Request::AppMenus(address));
+        }
+    }
+
+    /// Whether the desktop is dark, as the menu bar learned it.
+    pub fn menu_bar_dark(&self) -> bool {
+        self.menu_bar.dark
     }
 
     /// Whether the bar is there to see: not in the overview, nor over a fullscreen window.
@@ -630,37 +891,77 @@ impl Nekoland {
 
     /// Whether the bar or an open menu is at a position, so that it is not a window's.
     pub fn menu_bar_covers(&self, pos: Point<f64, Logical>) -> bool {
-        let Some(output) = self.output_origin() else {
+        let Some(output) = self.output_area() else {
             return false;
         };
         self.menu_bar_shown()
             && (self.menu_bar.open.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT))
     }
 
+    /// The titles of the bar's left side for the active application.
+    fn left_titles(&mut self) -> Vec<(Source, Option<String>)> {
+        let mut titles = vec![(Source::System, None)];
+        let Some((app_id, name)) = self.active_app() else {
+            return titles;
+        };
+        titles.push((Source::App, Some(name)));
+        let menus = self.active_menus();
+        if menus.is_empty() {
+            let actions = self.menu_bar.actions.get(&app_id).cloned().unwrap_or_default();
+            if actions.iter().any(|action| action == "new-window") || self.focused_window().is_some() {
+                titles.push((Source::File, Some("檔案".into())));
+            }
+            titles.push((Source::Edit, Some("編輯".into())));
+            titles.push((Source::View, Some("顯示方式".into())));
+            titles.push((Source::Window, Some("視窗".into())));
+            titles.push((Source::Help, Some("輔助說明".into())));
+            return titles;
+        }
+        // The program's menus, with Nekoland's Window menu before its Help, as on the Mac.
+        let help = menus.iter().position(|menu| is_help(&menu.label));
+        for (index, menu) in menus.iter().enumerate() {
+            if Some(index) != help && !menu.separator {
+                titles.push((Source::AppMenu(index), Some(menu.label.clone())));
+            }
+        }
+        titles.push((Source::Window, Some("視窗".into())));
+        match help {
+            Some(index) => titles.push((Source::AppMenu(index), Some(menus[index].label.clone()))),
+            None => titles.push((Source::Help, Some("輔助說明".into()))),
+        }
+        titles
+    }
+
     /// Brings the bar and any open menu up to date before a frame.
     pub fn refresh_menu_bar(&mut self) {
-        let Some(output) = self.output_origin() else {
+        let Some(output) = self.output_area() else {
             return;
         };
         let app = self.active_app();
-        if let Some((app_id, _)) = &app {
+        if let (Some((app_id, _)), Some(bus)) = (&app, &self.menu_bar.bus) {
             if !self.menu_bar.actions.contains_key(app_id) {
                 self.menu_bar.actions.insert(app_id.clone(), Vec::new());
-                if let Some(bus) = &self.menu_bar.bus {
-                    bus.send(Request::Actions(app_id.clone()));
-                }
+                bus.send(Request::Actions(app_id.clone()));
             }
         }
-        let actions = app
-            .as_ref()
-            .and_then(|(app_id, _)| self.menu_bar.actions.get(app_id))
-            .cloned()
-            .unwrap_or_default();
+        if self
+            .menu_bar
+            .network_read
+            .is_none_or(|read| read.elapsed() >= NETWORK_POLL)
+        {
+            self.menu_bar.network_read = Some(Instant::now());
+            let network = system::read_network();
+            if network != self.menu_bar.network {
+                self.menu_bar.network = network;
+                self.menu_bar.items_revision += 1;
+            }
+        }
+
         let (minute, clock) = clock();
         let drawn = Drawn {
             width: output.size.w,
             app: app.clone(),
-            actions: actions.len(),
+            menus: self.menu_bar.menus_revision,
             open: self.menu_bar.open.as_ref().map(|open| open.title),
             dark: self.menu_bar.dark,
             minute,
@@ -676,22 +977,29 @@ impl Nekoland {
             {
                 self.menu_bar.open = None;
             }
-            self.menu_bar
-                .draw_bar(output.size.w, app.as_ref(), &actions, &clock);
+            let titles = self.left_titles();
+            self.menu_bar.draw_bar(output.size.w, titles, &clock);
             self.menu_bar.drawn = Some(Drawn {
                 open: self.menu_bar.open.as_ref().map(|open| open.title),
                 ..drawn
             });
         }
+
         let dark = self.menu_bar.dark;
+        let levels = self.menu_bar.open.as_ref().map_or(0, |open| open.levels.len());
+        while self.menu_bar.menu_ids.len() < levels {
+            self.menu_bar.menu_ids.push(Id::new());
+        }
         if let Some(open) = self.menu_bar.open.as_mut() {
-            MenuBar::draw_menu(dark, open);
+            for level in &mut open.levels {
+                MenuBar::draw_menu(dark, level);
+            }
         }
     }
 
-    /// What the bar and its open menu put on screen, front first.
+    /// What the bar and its open menus put on screen, front first.
     pub fn menu_bar_overlays(&self) -> Vec<Overlay<'_>> {
-        let Some(output) = self.output_origin() else {
+        let Some(output) = self.output_area() else {
             return Vec::new();
         };
         if !self.menu_bar_shown() {
@@ -700,32 +1008,81 @@ impl Nekoland {
         let bar = &self.menu_bar;
         let mut overlays = Vec::new();
         if let Some(open) = &bar.open {
-            if let Some(picture) = &open.picture {
-                overlays.push(Overlay {
-                    id: &bar.menu_id,
-                    rect: Rectangle::new(open.rect.loc + output.loc, open.rect.size),
-                    radius: MENU_RADIUS,
-                    picture,
-                });
+            for (level, id) in open.levels.iter().zip(&bar.menu_ids).rev() {
+                if let Some(picture) = &level.picture {
+                    overlays.push(Overlay {
+                        id,
+                        rect: Rectangle::new(level.rect.loc + output.loc, level.rect.size),
+                        glass: Some(MENU_RADIUS),
+                        alpha: 1.0,
+                        picture,
+                    });
+                }
             }
         }
         if let Some(picture) = &bar.picture {
             overlays.push(Overlay {
                 id: &bar.bar_id,
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
-                radius: 0,
+                glass: Some(0),
+                alpha: 1.0,
                 picture,
             });
         }
         overlays
     }
 
-    /// Takes in what the D-Bus thread learned.
+    /// Takes in what the D-Bus thread and the sound watcher learned.
     pub fn menu_bar_event(&mut self, event: Event) {
         let bar = &mut self.menu_bar;
         match event {
             Event::Actions { app_id, actions } => {
                 bar.actions.insert(app_id, actions);
+                bar.menus_revision += 1;
+            }
+            Event::AppMenus { address, menus } => {
+                if bar.app_menus.get(&address) == Some(&menus) {
+                    return;
+                }
+                bar.app_menus.insert(address.clone(), menus);
+                bar.menus_revision += 1;
+                // An open menu of the program shows what it says now, unless a submenu
+                // is open, which would lose its place.
+                if self.active_address() == Some(address) {
+                    self.reopen_app_menu();
+                }
+            }
+            Event::X11Menu { window, address } => {
+                match address {
+                    Some(address) => {
+                        bar.x11_addresses.insert(window, address.clone());
+                        if let Some(bus) = &bar.bus {
+                            bus.send(Request::AppMenus(address));
+                        }
+                    }
+                    None => {
+                        bar.x11_addresses.remove(&window);
+                    }
+                }
+                bar.menus_revision += 1;
+            }
+            Event::MenusChanged(bus_name) => {
+                let addresses: Vec<AppMenuAddress> = bar
+                    .addresses
+                    .values()
+                    .chain(bar.x11_addresses.values())
+                    .filter(|address| match address {
+                        AppMenuAddress::Dbusmenu { bus, .. } | AppMenuAddress::Gtk { bus, .. } => {
+                            *bus == bus_name
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                if let Some(bus) = &bar.bus {
+                    for address in addresses {
+                        bus.send(Request::AppMenus(address));
+                    }
+                }
             }
             Event::Item(item) => {
                 match bar.items.iter_mut().find(|known| known.key == item.key) {
@@ -738,16 +1095,48 @@ impl Nekoland {
             Event::ItemGone(key) => {
                 bar.items.retain(|item| item.key != key);
                 bar.items_revision += 1;
-                if bar.open.is_some() {
-                    bar.open = None;
-                }
+                bar.open = None;
             }
             Event::Dark(dark) => bar.dark = dark,
+            // Banners, which the notices take.
+            Event::Notify(_) | Event::CloseNotification(_) => {}
+            Event::Sound(volume) => {
+                bar.sound = volume;
+                bar.items_revision += 1;
+            }
+        }
+    }
+
+    fn reopen_app_menu(&mut self) {
+        let Some(open) = self.menu_bar.open.as_ref() else {
+            return;
+        };
+        let source = self
+            .menu_bar
+            .titles
+            .get(open.title)
+            .map(|title| title.source.clone());
+        if open.levels.len() == 1 && matches!(source, Some(Source::AppMenu(_))) {
+            let highlighted = open.levels[0].highlighted;
+            let search = open.search.as_ref().map(|(query, _)| query.clone());
+            self.open_menu(open.title, false);
+            if let Some(open) = self.menu_bar.open.as_mut() {
+                if let Some(query) = search {
+                    if let Some((typed, _)) = open.search.as_mut() {
+                        *typed = query;
+                    }
+                }
+                if let Some(level) = open.levels.first_mut() {
+                    level.highlighted =
+                        highlighted.filter(|&index| level.entries.get(index).is_some_and(Entry::reachable));
+                }
+            }
+            self.update_search();
         }
     }
 
     fn local(&self, pos: Point<f64, Logical>) -> Option<Point<i32, Logical>> {
-        let output = self.output_origin()?;
+        let output = self.output_area()?;
         Some(pos.to_i32_floor() - output.loc)
     }
 
@@ -758,16 +1147,27 @@ impl Nekoland {
             .position(|title| title.rect.contains(local))
     }
 
-    fn row_at(&self, local: Point<i32, Logical>) -> Option<usize> {
+    /// The deepest open menu at a position, and the entry there if one can be landed on.
+    fn level_at(&self, local: Point<i32, Logical>) -> Option<(usize, Option<usize>)> {
         let open = self.menu_bar.open.as_ref()?;
-        open.rows
-            .iter()
-            .position(|row| row.contains(local))
-            .filter(|&index| open.entries[index].chooseable())
+        open.levels.iter().enumerate().rev().find_map(|(index, level)| {
+            level.rect.contains(local).then(|| {
+                let row = level
+                    .rows
+                    .iter()
+                    .position(|row| row.contains(local))
+                    .filter(|&row| level.entries[row].reachable());
+                (index, row)
+            })
+        })
     }
 
     pub fn close_menu(&mut self) {
         self.menu_bar.open = None;
+    }
+
+    fn output_size(&self) -> Size<i32, Logical> {
+        self.output_area().map(|area| area.size).unwrap_or_default()
     }
 
     /// Opens the menu of a title, or for a status item without one, activates it.
@@ -775,7 +1175,7 @@ impl Nekoland {
         let Some(source) = self.menu_bar.titles.get(title).map(|title| title.source.clone()) else {
             return;
         };
-        let entries = self.menu_entries(&source);
+        let mut entries = self.menu_entries(&source);
         if entries.is_empty() {
             self.menu_bar.open = None;
             if let (Source::Status(item), Some(bus)) = (&source, &self.menu_bar.bus) {
@@ -788,13 +1188,62 @@ impl Nekoland {
             }
             return;
         }
-        let width = self.output_origin().map_or(0, |output| output.size.w);
-        let (rect, rows) = MenuBar::place_menu(&entries, self.menu_bar.titles[title].rect, width);
+        // Programs' menus are asked for again on opening, for entries that come and go.
+        if matches!(source, Source::AppMenu(_)) {
+            if let (Some(address), Some(bus)) = (self.active_address(), &self.menu_bar.bus) {
+                bus.send(Request::AppMenus(address));
+            }
+        }
+        let help = match &source {
+            Source::Help => true,
+            Source::AppMenu(index) => self
+                .active_menus()
+                .get(*index)
+                .is_some_and(|menu| is_help(&menu.label)),
+            _ => false,
+        };
+        let search = help.then(|| {
+            let base = entries.clone();
+            entries.insert(0, Entry::search_field(""));
+            (String::new(), base)
+        });
+        let anchor = self.menu_bar.titles[title].rect;
+        let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, self.output_size());
         let highlighted = highlight_first
-            .then(|| entries.iter().position(Entry::chooseable))
+            .then(|| entries.iter().position(Entry::reachable))
             .flatten();
         self.menu_bar.open = Some(OpenMenu {
             title,
+            levels: vec![Level {
+                entries,
+                rect,
+                rows,
+                highlighted,
+                picture: None,
+                drawn: None,
+            }],
+            search,
+            last_pointer: None,
+        });
+    }
+
+    /// Opens the submenu of a row of a level beside it, closing any deeper one.
+    fn open_submenu(&mut self, level: usize, row: usize, highlight_first: bool) {
+        let size = self.output_size();
+        let Some(open) = self.menu_bar.open.as_mut() else {
+            return;
+        };
+        open.levels.truncate(level + 1);
+        let parent = &open.levels[level];
+        let entries = parent.entries[row].children.clone();
+        if entries.is_empty() {
+            return;
+        }
+        let (rect, rows) = MenuBar::place_menu(&entries, parent.rows[row], true, size);
+        let highlighted = highlight_first
+            .then(|| entries.iter().position(Entry::reachable))
+            .flatten();
+        open.levels.push(Level {
             entries,
             rect,
             rows,
@@ -802,6 +1251,63 @@ impl Nekoland {
             picture: None,
             drawn: None,
         });
+    }
+
+    /// Every menu of the active application but Help, with its title, for searching.
+    fn all_menus(&mut self) -> Vec<(String, Vec<Entry>)> {
+        let titles = self.left_titles();
+        titles
+            .into_iter()
+            .filter(|(source, _)| !matches!(source, Source::System | Source::Help))
+            .filter_map(|(source, label)| {
+                let label = label?;
+                if matches!(source, Source::AppMenu(index) if self.active_menus().get(index).is_some_and(|menu| is_help(&menu.label)))
+                {
+                    return None;
+                }
+                Some((label, self.menu_entries(&source)))
+            })
+            .collect()
+    }
+
+    /// Shows what the Help menu's search finds for what was typed.
+    fn update_search(&mut self) {
+        let Some((query, base)) = self.menu_bar.open.as_ref().and_then(|open| open.search.clone()) else {
+            return;
+        };
+        let mut entries = vec![Entry::search_field(&query)];
+        if query.is_empty() {
+            entries.extend(base);
+        } else {
+            let wanted = query.to_lowercase();
+            let found: Vec<Entry> = searchable(&self.all_menus())
+                .into_iter()
+                .filter(|entry| entry.label.to_lowercase().contains(&wanted))
+                .take(MAX_SEARCH_RESULTS)
+                .collect();
+            if found.is_empty() {
+                entries.push(Entry::note("沒有相符的項目"));
+            } else {
+                entries.extend(found);
+            }
+        }
+        let size = self.output_size();
+        let Some(open) = self.menu_bar.open.as_mut() else {
+            return;
+        };
+        let anchor = self.menu_bar.titles[open.title].rect;
+        let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, size);
+        let highlighted = (!query.is_empty())
+            .then(|| entries.iter().position(Entry::reachable))
+            .flatten();
+        open.levels = vec![Level {
+            entries,
+            rect,
+            rows,
+            highlighted,
+            picture: None,
+            drawn: None,
+        }];
     }
 
     fn menu_entries(&mut self, source: &Source) -> Vec<Entry> {
@@ -814,6 +1320,7 @@ impl Nekoland {
         let has = |action: &str| actions.iter().any(|known| known == action);
         let name = app.as_ref().map(|(_, name)| name.clone()).unwrap_or_default();
         let focused = self.focused_window().filter(is_managed);
+        let has_window = focused.is_some();
 
         match source {
             Source::System => vec![
@@ -848,9 +1355,56 @@ impl Nekoland {
                 entries.push(Entry::item(format!("結束「{name}」"), Command::Quit));
                 entries
             }
-            Source::File => vec![Entry::item("新增視窗", Command::Action("new-window".into()))],
+            Source::AppMenu(index) => self
+                .active_menus()
+                .get(*index)
+                .map(|menu| menu.children.iter().map(Entry::from_menu).collect())
+                .unwrap_or_default(),
+            Source::File => {
+                let mut entries = Vec::new();
+                if has("new-window") {
+                    entries.push(Entry::item("新增視窗", Command::Action("new-window".into())));
+                }
+                entries.push(
+                    Entry::item("關閉視窗", Command::CloseWindow)
+                        .shortcut("Super Q")
+                        .enabled(has_window),
+                );
+                entries
+            }
+            Source::Edit => vec![
+                Entry::item("還原", Command::Keys(&[KEY_CTRL, KEY_Z]))
+                    .shortcut("Ctrl Z")
+                    .enabled(has_window),
+                Entry::item("重做", Command::Keys(&[KEY_CTRL, KEY_SHIFT, KEY_Z]))
+                    .shortcut("Shift Ctrl Z")
+                    .enabled(has_window),
+                Entry::separator(),
+                Entry::item("剪下", Command::Keys(&[KEY_CTRL, KEY_X]))
+                    .shortcut("Ctrl X")
+                    .enabled(has_window),
+                Entry::item("拷貝", Command::Keys(&[KEY_CTRL, KEY_C]))
+                    .shortcut("Ctrl C")
+                    .enabled(has_window),
+                Entry::item("貼上", Command::Keys(&[KEY_CTRL, KEY_V]))
+                    .shortcut("Ctrl V")
+                    .enabled(has_window),
+                Entry::item("全選", Command::Keys(&[KEY_CTRL, KEY_A]))
+                    .shortcut("Ctrl A")
+                    .enabled(has_window),
+            ],
+            Source::View => {
+                let fullscreen = focused.as_ref().is_some_and(|window| self.is_fullscreen(window));
+                let label = if fullscreen {
+                    "結束全螢幕"
+                } else {
+                    "進入全螢幕"
+                };
+                vec![Entry::item(label, Command::FullScreen)
+                    .shortcut("F11")
+                    .enabled(has_window)]
+            }
             Source::Window => {
-                let has_window = focused.is_some();
                 let mut entries = vec![
                     Entry::item("縮到最小", Command::Minimize)
                         .shortcut("Super H")
@@ -858,20 +1412,26 @@ impl Nekoland {
                     Entry::item("縮放", Command::Zoom)
                         .shortcut("Super ↑")
                         .enabled(has_window),
-                    Entry::item("移到螢幕左半邊", Command::TileLeft)
-                        .shortcut("Super ←")
-                        .enabled(has_window),
-                    Entry::item("移到螢幕右半邊", Command::TileRight)
-                        .shortcut("Super →")
-                        .enabled(has_window),
+                    Entry {
+                        children: vec![
+                            Entry::item("左半邊", Command::TileLeft).shortcut("Super ←"),
+                            Entry::item("右半邊", Command::TileRight).shortcut("Super →"),
+                        ],
+                        ..Entry::note("移動與調整大小").enabled(has_window)
+                    },
                 ];
                 let desktops = self.workspaces.count();
                 let active = self.workspaces.active;
                 if desktops > 1 && has_window {
-                    entries.push(Entry::separator());
-                    entries.extend((0..desktops).filter(|&index| index != active).map(|index| {
-                        Entry::item(format!("移到桌面 {}", index + 1), Command::MoveToDesktop(index))
-                    }));
+                    entries.push(Entry {
+                        children: (0..desktops)
+                            .filter(|&index| index != active)
+                            .map(|index| {
+                                Entry::item(format!("桌面 {}", index + 1), Command::MoveToDesktop(index))
+                            })
+                            .collect(),
+                        ..Entry::note("移到").enabled(true)
+                    });
                 }
                 entries.push(Entry::separator());
                 entries.push(Entry::item("全部移到最前面", Command::BringAllToFront));
@@ -889,37 +1449,52 @@ impl Nekoland {
                 }
                 entries
             }
-            Source::Help => vec![Entry::item(
-                format!("「{name}」輔助說明"),
-                Command::Action("help".into()),
-            )],
+            Source::Help => {
+                if has("help") {
+                    vec![Entry::item(
+                        format!("「{name}」輔助說明"),
+                        Command::Action("help".into()),
+                    )]
+                } else {
+                    Vec::new()
+                }
+            }
             Source::Status(key) => self
                 .menu_bar
                 .items
                 .iter()
                 .find(|item| item.key == *key)
-                .map(|item| {
-                    item.menu
-                        .iter()
-                        .map(|entry: &MenuEntry| {
-                            if entry.separator {
-                                return Entry::separator();
-                            }
-                            let mut converted = Entry::item(
-                                entry.label.clone(),
-                                Command::Status {
-                                    item: key.clone(),
-                                    id: entry.id,
-                                },
-                            )
-                            .enabled(entry.enabled);
-                            converted.checked = entry.checked;
-                            converted.depth = entry.depth;
-                            converted
-                        })
-                        .collect()
-                })
+                .map(|item| item.menu.iter().map(Entry::from_menu).collect())
                 .unwrap_or_default(),
+            Source::Sound => match self.menu_bar.sound {
+                Some(volume) => vec![
+                    Entry::note(format!("音量 {}%", volume.percent)),
+                    Entry::separator(),
+                    Entry::item("調高音量", Command::VolumeUp),
+                    Entry::item("調低音量", Command::VolumeDown),
+                    Entry::item("靜音", Command::Mute).checked(volume.muted),
+                ],
+                None => Vec::new(),
+            },
+            Source::Network => match &self.menu_bar.network {
+                Some(network) => {
+                    let kind = if network.wireless { "Wi-Fi" } else { "乙太網路" };
+                    let state = if network.connected {
+                        "已連線"
+                    } else {
+                        "未連線"
+                    };
+                    let mut entries = vec![
+                        Entry::note(format!("{kind}：{state}")),
+                        Entry::note(network.interface.clone()),
+                    ];
+                    if let Some(address) = network.address {
+                        entries.push(Entry::note(format!("IP 位址 {address}")));
+                    }
+                    entries
+                }
+                None => Vec::new(),
+            },
         }
     }
 
@@ -944,19 +1519,15 @@ impl Nekoland {
             }
             return true;
         }
-        let in_menu = self
-            .menu_bar
-            .open
-            .as_ref()
-            .is_some_and(|open| open.rect.contains(local));
-        // A click anywhere else only dismisses the menu; it does not reach a window.
-        if !in_menu {
+        // A click anywhere else only dismisses the menus; it does not reach a window.
+        if self.level_at(local).is_none() {
             self.close_menu();
         }
         true
     }
 
-    /// The pointer moved: an open menu follows it across the bar and lights the entry under it.
+    /// The pointer moved: open menus follow it across the bar, light the entry under it,
+    /// and open the submenu of that entry.
     pub fn menu_bar_motion(&mut self, pos: Point<f64, Logical>) {
         if self.menu_bar.open.is_none() || !self.menu_bar_shown() {
             return;
@@ -975,9 +1546,37 @@ impl Nekoland {
             }
             return;
         }
-        let row = self.row_at(local);
-        if let Some(open) = self.menu_bar.open.as_mut() {
-            open.highlighted = row;
+        let Some((level, row)) = self.level_at(local) else {
+            return;
+        };
+        let Some(open) = self.menu_bar.open.as_mut() else {
+            return;
+        };
+        let previous = open.last_pointer.replace(local);
+
+        // On the way from a row into its submenu, the pointer may cross other rows; while it
+        // heads for the submenu, they do not take over.
+        if let (Some(child), Some(from)) = (open.levels.get(level + 1), previous) {
+            let parent_row = open.levels[level].highlighted;
+            if row != parent_row {
+                let edge_x = if child.rect.loc.x > open.levels[level].rect.loc.x {
+                    child.rect.loc.x
+                } else {
+                    child.rect.loc.x + child.rect.size.w
+                };
+                let top = Point::from((edge_x, child.rect.loc.y));
+                let bottom = Point::from((edge_x, child.rect.loc.y + child.rect.size.h));
+                if in_triangle(local, from, top, bottom) {
+                    return;
+                }
+            }
+        }
+
+        open.levels.truncate(level + 1);
+        open.levels[level].highlighted = row;
+        let has_children = row.is_some_and(|row| !open.levels[level].entries[row].children.is_empty());
+        if let (Some(row), true) = (row, has_children) {
+            self.open_submenu(level, row, false);
         }
     }
 
@@ -990,21 +1589,46 @@ impl Nekoland {
         let Some(local) = self.local(pos) else {
             return;
         };
-        if let Some(row) = self.row_at(local) {
-            self.choose(row);
+        if let Some((level, Some(row))) = self.level_at(local) {
+            self.choose(level, row);
         }
     }
 
-    /// A key while a menu is open. Every key goes to the menu then.
-    pub fn menu_bar_key(&mut self, sym: Keysym) {
+    /// A key while a menu is open. Every key goes to the menus then; in a Help menu,
+    /// typing searches.
+    pub fn menu_bar_key(&mut self, sym: Keysym, typed: Option<char>) {
         let Some(open) = self.menu_bar.open.as_ref() else {
             return;
         };
         let title = open.title;
         let titles = self.menu_bar.titles.len();
-        let step = |from: Option<usize>, forward: bool, open: &OpenMenu| {
-            let count = open.entries.len();
-            let mut index = from;
+        let depth = open.levels.len() - 1;
+        let searching = open.search.is_some() && depth == 0;
+
+        if searching {
+            let edit = match (sym, typed) {
+                (Keysym::BackSpace, _) => Some(None),
+                (Keysym::Return | Keysym::KP_Enter | Keysym::Escape | Keysym::Up | Keysym::Down, _) => None,
+                (_, Some(character)) if !character.is_control() => Some(Some(character)),
+                _ => None,
+            };
+            if let Some(edit) = edit {
+                if let Some((query, _)) = self.menu_bar.open.as_mut().and_then(|open| open.search.as_mut()) {
+                    match edit {
+                        Some(character) => query.push(character),
+                        None => {
+                            query.pop();
+                        }
+                    }
+                }
+                self.update_search();
+                return;
+            }
+        }
+
+        let step = |level: &Level, forward: bool| {
+            let count = level.entries.len();
+            let mut index = level.highlighted;
             for _ in 0..count {
                 let next = match (index, forward) {
                     (None, true) => 0,
@@ -1012,25 +1636,49 @@ impl Nekoland {
                     (Some(at), true) => (at + 1) % count,
                     (Some(at), false) => (at + count - 1) % count,
                 };
-                if open.entries[next].chooseable() {
+                if level.entries[next].reachable() {
                     return Some(next);
                 }
                 index = Some(next);
             }
-            from
+            level.highlighted
         };
+        let current = &open.levels[depth];
+        let highlighted = current.highlighted;
+        let opens_submenu = highlighted.is_some_and(|row| !current.entries[row].children.is_empty());
+
         match sym {
+            Keysym::Escape if depth > 0 => {
+                if let Some(open) = self.menu_bar.open.as_mut() {
+                    open.levels.truncate(depth);
+                }
+            }
             Keysym::Escape => self.close_menu(),
+            Keysym::Left if depth > 0 => {
+                if let Some(open) = self.menu_bar.open.as_mut() {
+                    open.levels.truncate(depth);
+                }
+            }
             Keysym::Left => self.open_menu((title + titles - 1) % titles, true),
+            Keysym::Right if opens_submenu => {
+                if let Some(row) = highlighted {
+                    self.open_submenu(depth, row, true);
+                }
+            }
             Keysym::Right => self.open_menu((title + 1) % titles, true),
             Keysym::Down | Keysym::Up => {
                 if let Some(open) = self.menu_bar.open.as_mut() {
-                    open.highlighted = step(open.highlighted, sym == Keysym::Down, open);
+                    let level = &mut open.levels[depth];
+                    level.highlighted = step(level, sym == Keysym::Down);
                 }
             }
             Keysym::Return | Keysym::KP_Enter | Keysym::space => {
-                if let Some(row) = open.highlighted {
-                    self.choose(row);
+                if let Some(row) = highlighted {
+                    if opens_submenu {
+                        self.open_submenu(depth, row, true);
+                    } else {
+                        self.choose(depth, row);
+                    }
                 }
             }
             _ => {}
@@ -1044,16 +1692,42 @@ impl Nekoland {
         }
     }
 
-    fn choose(&mut self, row: usize) {
+    fn choose(&mut self, level: usize, row: usize) {
         let command = self
             .menu_bar
             .open
             .as_ref()
-            .and_then(|open| open.entries.get(row))
+            .and_then(|open| open.levels.get(level))
+            .and_then(|level| level.entries.get(row))
+            .filter(|entry| entry.children.is_empty())
             .and_then(|entry| entry.command.clone());
+        let Some(command) = command else {
+            return;
+        };
         self.close_menu();
-        if let Some(command) = command {
-            self.run_menu_command(command);
+        self.run_menu_command(command);
+    }
+
+    /// Presses keys for the window with the keyboard, then lets them go in reverse.
+    fn press_keys(&mut self, keys: &[u32]) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let time = self.start_time.elapsed().as_millis() as u32;
+        for (state, keys) in [
+            (KeyState::Pressed, keys.to_vec()),
+            (KeyState::Released, keys.iter().rev().copied().collect()),
+        ] {
+            for key in keys {
+                keyboard.input::<(), _>(
+                    self,
+                    Keycode::new(key),
+                    state,
+                    SERIAL_COUNTER.next_serial(),
+                    time,
+                    |_, _, _| FilterResult::Forward,
+                );
+            }
         }
     }
 
@@ -1076,6 +1750,8 @@ impl Nekoland {
                     send(&self.menu_bar, Request::Activate { app_id, action });
                 }
             }
+            Command::Invoke(action) => send(&self.menu_bar, Request::Invoke(action)),
+            Command::Keys(keys) => self.press_keys(keys),
             Command::Hide => {
                 if let Some((app_id, _)) = app {
                     for window in self.app_windows(&app_id) {
@@ -1123,6 +1799,20 @@ impl Nekoland {
                     None => {}
                 }
             }
+            Command::CloseWindow => {
+                if let Some(window) = focused {
+                    close(&window);
+                }
+            }
+            Command::FullScreen => {
+                if let Some(window) = focused {
+                    if self.is_fullscreen(&window) {
+                        self.restore(&window);
+                    } else {
+                        self.fullscreen(&window);
+                    }
+                }
+            }
             Command::Minimize => {
                 if let Some(window) = focused {
                     self.minimize(&window);
@@ -1166,7 +1856,9 @@ impl Nekoland {
                 self.unminimize(&window);
                 self.focus_window(&window);
             }
-            Command::Status { item, id } => send(&self.menu_bar, Request::MenuEvent { item, id }),
+            Command::VolumeUp => config::spawn(&self.config.volume_up),
+            Command::VolumeDown => config::spawn(&self.config.volume_down),
+            Command::Mute => config::spawn(&self.config.volume_mute),
         }
     }
 }
@@ -1193,6 +1885,10 @@ fn close(window: &Window) {
 mod tests {
     use super::*;
 
+    fn output() -> Size<i32, Logical> {
+        Size::from((1920, 1080))
+    }
+
     fn entries() -> Vec<Entry> {
         vec![
             Entry::item("一", Command::Sleep),
@@ -1204,7 +1900,7 @@ mod tests {
     #[test]
     fn menus_stay_on_the_output() {
         let title = Rectangle::new((1880, 0).into(), (30, MENU_BAR_HEIGHT).into());
-        let (rect, _) = MenuBar::place_menu(&entries(), title, 1920);
+        let (rect, _) = MenuBar::place_menu(&entries(), title, false, output());
         assert!(rect.loc.x + rect.size.w <= 1920 - 6);
         assert_eq!(rect.loc.y, MENU_BAR_HEIGHT + GAP_BELOW_BAR);
     }
@@ -1212,7 +1908,7 @@ mod tests {
     #[test]
     fn rows_are_stacked_with_thin_separators() {
         let title = Rectangle::new((8, 0).into(), (36, MENU_BAR_HEIGHT).into());
-        let (rect, rows) = MenuBar::place_menu(&entries(), title, 1920);
+        let (rect, rows) = MenuBar::place_menu(&entries(), title, false, output());
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1].size.h, SEPARATOR_HEIGHT);
         assert_eq!(rows[2].loc.y, rows[1].loc.y + SEPARATOR_HEIGHT);
@@ -1220,10 +1916,47 @@ mod tests {
     }
 
     #[test]
-    fn separators_and_disabled_entries_cannot_be_chosen() {
+    fn submenus_open_beside_their_row_and_flip_at_the_edge() {
+        let row = Rectangle::new((100, 200).into(), (208, ROW_HEIGHT).into());
+        let (rect, _) = MenuBar::place_menu(&entries(), row, true, output());
+        assert!(rect.loc.x > row.loc.x + row.size.w - SUBMENU_OVERLAP * 2);
+        assert_eq!(rect.loc.y, row.loc.y - MENU_PADDING);
+
+        let at_edge = Rectangle::new((1700, 200).into(), (208, ROW_HEIGHT).into());
+        let (rect, _) = MenuBar::place_menu(&entries(), at_edge, true, output());
+        assert!(rect.loc.x + rect.size.w <= at_edge.loc.x);
+    }
+
+    #[test]
+    fn only_entries_that_do_something_can_be_reached() {
         let entries = entries();
-        assert!(entries[0].chooseable());
-        assert!(!entries[1].chooseable());
-        assert!(!Entry::item("三", Command::Sleep).enabled(false).chooseable());
+        assert!(entries[0].reachable());
+        assert!(!entries[1].reachable());
+        assert!(!Entry::item("三", Command::Sleep).enabled(false).reachable());
+        assert!(!Entry::note("音量 40%").reachable());
+        assert!(!Entry::search_field("").reachable());
+    }
+
+    #[test]
+    fn search_finds_entries_in_submenus_by_their_way_there() {
+        let menus = vec![(
+            "視窗".to_string(),
+            vec![Entry {
+                children: vec![Entry::item("左半邊", Command::TileLeft)],
+                ..Entry::note("移動與調整大小")
+            }],
+        )];
+        let found = searchable(&menus);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].label, "視窗 › 移動與調整大小 › 左半邊");
+    }
+
+    #[test]
+    fn a_point_on_the_way_to_a_submenu_is_in_the_triangle() {
+        let from = Point::from((100, 100));
+        let top = Point::from((200, 50));
+        let bottom = Point::from((200, 250));
+        assert!(in_triangle(Point::from((150, 110)), from, top, bottom));
+        assert!(!in_triangle(Point::from((150, 30)), from, top, bottom));
     }
 }

@@ -74,6 +74,9 @@ pub fn init_winit(
 
                 state.tick_overview();
                 state.refresh_menu_bar();
+                state.dock_ids();
+                state.refresh_dock();
+                state.refresh_notices();
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
                     let elements = scene_elements(state, renderer, &output, glass.as_mut()).unwrap();

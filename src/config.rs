@@ -20,9 +20,11 @@ pub struct Config {
     pub volume_mute: String,
     pub brightness_up: String,
     pub brightness_down: String,
-    /// Layer surfaces drawn on glass, by the namespace they give, with the corner radius
-    /// they draw themselves with.
+    /// Layer surfaces and windows drawn on glass, by the namespace or application ID they
+    /// give, with the corner radius they draw themselves with.
     pub glass: HashMap<String, i32>,
+    /// The applications kept in the Dock, by desktop entry name or application ID.
+    pub dock: Vec<String>,
 }
 
 impl Default for Config {
@@ -31,18 +33,22 @@ impl Default for Config {
             mode: None,
             autostart: Vec::new(),
             terminal: "foot".into(),
-            launcher: "fuzzel".into(),
+            launcher: "nekoland-launcher".into(),
             launcher_search: "--search=".into(),
             volume_up: "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+".into(),
             volume_down: "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".into(),
             volume_mute: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
             brightness_up: "brightnessctl set 5%+".into(),
             brightness_down: "brightnessctl set 5%-".into(),
-            glass: HashMap::from([
-                ("waybar".into(), 18),
-                ("notifications".into(), 14),
-                ("launcher".into(), 16),
-            ]),
+            glass: HashMap::from([("nekoland-launcher".into(), 16)]),
+            dock: [
+                "org.gnome.Nautilus",
+                "org.gnome.TextEditor",
+                "org.gnome.Calculator",
+                "foot",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 }

@@ -288,6 +288,9 @@ fn render(
     let state = &mut data.state;
     state.tick_overview();
     state.refresh_menu_bar();
+    state.dock_ids();
+    state.refresh_dock();
+    state.refresh_notices();
     let mut guard = udev.borrow_mut();
     let Udev {
         renderer,

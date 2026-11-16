@@ -3025,6 +3025,10 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "wayland-backend",
+ "wayland-protocols-plasma",
+ "wayland-scanner",
+ "wayland-server",
  "xcursor",
  "zbus",
 ]
@@ -5516,6 +5520,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

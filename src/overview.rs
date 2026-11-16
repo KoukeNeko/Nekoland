@@ -10,7 +10,8 @@ use smithay::{
 };
 
 use crate::{
-    text::{label, Picture},
+    menubar::{Overlay, MENU_BAR_HEIGHT},
+    text::{self, Picture},
     windows::{is_managed, window_names},
     Nekoland,
 };
@@ -18,10 +19,22 @@ use crate::{
 const DURATION: Duration = Duration::from_millis(240);
 /// How dark the wallpaper gets behind the windows.
 const DIM: f32 = 0.25;
-pub const BAR_HEIGHT: i32 = 64;
-const BAR_COLOR: [f32; 3] = [0.10, 0.10, 0.11];
-const BAR_OPACITY: f32 = 0.55;
-const BAR_SPACING: i32 = 6;
+/// Kept free under the desktops' bar, closed or opened up.
+const BAR_GAP: i32 = 16;
+const NAME_PADDING: i32 = 12;
+const NAME_GAP: i32 = 8;
+const NAME_PILL: i32 = 24;
+const THUMBNAIL_WIDTH: i32 = 192;
+const THUMBNAIL_GAP: i32 = 28;
+const EXPANDED_PADDING: i32 = 14;
+const LABEL_HEIGHT: i32 = 24;
+/// How long the bar takes to open up or close.
+const EXPAND_DURATION: Duration = Duration::from_millis(180);
+const CLOSE_SIZE: i32 = 22;
+/// How far the pointer moves with a button down before a click becomes a drag.
+const DRAG_THRESHOLD: f64 = 6.0;
+/// How wide a window being dragged gets over the desktops' bar, to show where it goes.
+const DRAGGED_OVER_BAR_WIDTH: i32 = 160;
 const MARGIN: i32 = 48;
 /// Kept free around every window, for the name under it and to tell them apart.
 const GAP: i32 = 64;
@@ -36,8 +49,10 @@ pub struct Slot {
     pub window: Window,
     /// Where the window is on the desktop.
     pub from: Rectangle<i32, Logical>,
-    /// Where it sits in the overview.
+    /// Where it sits in the overview, and where when the desktops' bar is opened up and
+    /// the windows make room for it.
     to: Rectangle<i32, Logical>,
+    to_open: Rectangle<i32, Logical>,
     /// Where it is drawn right now, between the two.
     pub now: Rectangle<i32, Logical>,
     /// The application's icon and name.
@@ -52,8 +67,182 @@ enum BarAction {
 
 pub struct BarItem {
     pub rect: Rectangle<i32, Logical>,
-    pub picture: Picture,
     action: BarAction,
+}
+
+/// A window being dragged in the overview, by the slot it is in.
+struct Drag {
+    slot: usize,
+    start: Point<f64, Logical>,
+    /// Where in the window it was taken, as a fraction of its size.
+    grab: (f64, f64),
+    moving: bool,
+}
+
+/// The desktops' bar, which takes the menu bar's place in the overview: closed, a strip of
+/// their names as tall as the menu bar; opened up, the same glass grown down over pictures
+/// of them. And where things are on each.
+#[derive(Default)]
+struct SpacesBar {
+    strip: Option<Picture>,
+    expanded: Option<Picture>,
+    strip_items: Vec<BarItem>,
+    expanded_items: Vec<BarItem>,
+    /// Where each desktop's live picture goes when the bar is opened up.
+    thumbnails: Vec<Rectangle<i32, Logical>>,
+    /// The button that takes a desktop away, shown on the one the pointer is on.
+    close: Option<Picture>,
+}
+
+struct BarColors {
+    ink: (f64, f64, f64),
+    on_ink: (f64, f64, f64),
+    tint: (f64, f64, f64, f64),
+}
+
+impl BarColors {
+    fn new(dark: bool) -> Self {
+        if dark {
+            Self {
+                ink: (0.945, 0.937, 0.918),
+                on_ink: (0.090, 0.090, 0.102),
+                tint: (0.133, 0.133, 0.149, 0.45),
+            }
+        } else {
+            Self {
+                ink: (0.090, 0.090, 0.102),
+                on_ink: (0.984, 0.980, 0.973),
+                tint: (0.984, 0.980, 0.973, 0.55),
+            }
+        }
+    }
+
+    fn paint_glass(&self, cr: &cairo::Context, width: i32, height: i32) {
+        cr.set_source_rgba(self.tint.0, self.tint.1, self.tint.2, self.tint.3);
+        let _ = cr.paint();
+        // A hairline along the bottom edge, where the bar ends.
+        cr.set_source_rgba(self.ink.0, self.ink.1, self.ink.2, 0.10);
+        cr.rectangle(0.0, f64::from(height) - 1.0, f64::from(width), 1.0);
+        let _ = cr.fill();
+    }
+
+    fn fill_pill(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>) {
+        text::rounded_rectangle(
+            cr,
+            f64::from(rect.loc.x),
+            f64::from(rect.loc.y),
+            f64::from(rect.size.w),
+            f64::from(rect.size.h),
+            6.0,
+        );
+        cr.set_source_rgb(self.ink.0, self.ink.1, self.ink.2);
+        let _ = cr.fill();
+    }
+
+    fn fill_tile(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>) {
+        text::rounded_rectangle(
+            cr,
+            f64::from(rect.loc.x),
+            f64::from(rect.loc.y),
+            f64::from(rect.size.w),
+            f64::from(rect.size.h),
+            6.0,
+        );
+        cr.set_source_rgba(self.ink.0, self.ink.1, self.ink.2, 0.10);
+        let _ = cr.fill();
+    }
+
+    fn ring(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>) {
+        text::rounded_rectangle(
+            cr,
+            f64::from(rect.loc.x) - 3.0,
+            f64::from(rect.loc.y) - 3.0,
+            f64::from(rect.size.w) + 6.0,
+            f64::from(rect.size.h) + 6.0,
+            8.0,
+        );
+        cr.set_source_rgb(self.ink.0, self.ink.1, self.ink.2);
+        cr.set_line_width(2.5);
+        let _ = cr.stroke();
+    }
+
+    fn draw_plus(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>, size: f64) {
+        let (x, y) = (
+            f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0,
+            f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0,
+        );
+        cr.set_source_rgb(self.ink.0, self.ink.1, self.ink.2);
+        cr.set_line_width(1.75);
+        cr.move_to(x - size / 2.0, y);
+        cr.line_to(x + size / 2.0, y);
+        cr.move_to(x, y - size / 2.0);
+        cr.line_to(x, y + size / 2.0);
+        let _ = cr.stroke();
+    }
+}
+
+/// Where a desktop's close button sits: over the top left corner of its picture.
+fn close_button_rect(thumbnail: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        thumbnail.loc - Point::from((CLOSE_SIZE / 3, CLOSE_SIZE / 3)),
+        Size::from((CLOSE_SIZE, CLOSE_SIZE)),
+    )
+}
+
+fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
+    (THUMBNAIL_WIDTH * output.size.h / output.size.w.max(1)).max(1)
+}
+
+/// How tall the desktops' bar is opened up, from the top of the screen.
+fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
+    MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + LABEL_HEIGHT
+}
+
+fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn text_width(text: &str, font: &pango::FontDescription) -> i32 {
+    let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) else {
+        return 0;
+    };
+    let Ok(cr) = cairo::Context::new(&surface) else {
+        return 0;
+    };
+    let layout = pangocairo::functions::create_layout(&cr);
+    layout.set_font_description(Some(font));
+    layout.set_text(text);
+    layout.pixel_size().0
+}
+
+fn show_centered(
+    cr: &cairo::Context,
+    text: &str,
+    font: &pango::FontDescription,
+    rect: Rectangle<i32, Logical>,
+    color: (f64, f64, f64),
+) {
+    let layout = pangocairo::functions::create_layout(cr);
+    layout.set_font_description(Some(font));
+    layout.set_text(text);
+    let (width, height) = layout.pixel_size();
+    cr.set_source_rgb(color.0, color.1, color.2);
+    cr.move_to(
+        f64::from(rect.loc.x) + f64::from(rect.size.w - width) / 2.0,
+        f64::from(rect.loc.y) + f64::from(rect.size.h - height) / 2.0,
+    );
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// A picture drawn by `paint` on a surface of that size.
+fn draw(width: i32, height: i32, paint: impl FnOnce(&cairo::Context)) -> Option<Picture> {
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width.max(1), height.max(1)).ok()?;
+    {
+        let cr = cairo::Context::new(&surface).ok()?;
+        paint(&cr);
+    }
+    text::picture(surface)
 }
 
 pub struct Overview {
@@ -62,8 +251,16 @@ pub struct Overview {
     /// The windows, bottom of the stack first.
     pub slots: Vec<Slot>,
     pub dim: SolidColorBuffer,
-    pub bar_background: SolidColorBuffer,
-    pub bar: Vec<BarItem>,
+    bar: SpacesBar,
+    /// How far the desktops' bar is opened up, 0 to 1, and whether it is opening.
+    expansion: f64,
+    expanding: bool,
+    last_tick: Instant,
+    strip_id: Id,
+    expanded_id: Id,
+    drag: Option<Drag>,
+    /// The desktop in the opened-up bar the pointer is on, which shows its close button.
+    hovered_desktop: Option<usize>,
     /// The slot under the pointer.
     pub hovered: Option<usize>,
     /// The four sides of the outline around it.
@@ -71,6 +268,14 @@ pub struct Overview {
 }
 
 impl Overview {
+    /// The slot of the window being dragged, which is drawn over the others.
+    pub fn dragged(&self) -> Option<usize> {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.moving)
+            .map(|drag| drag.slot)
+    }
+
     /// 0 on the desktop, 1 in the overview, eased.
     pub fn progress(&self) -> f64 {
         let linear = (self.started.elapsed().as_secs_f64() / DURATION.as_secs_f64()).min(1.0);
@@ -217,8 +422,14 @@ impl Nekoland {
             closing: false,
             slots: Vec::new(),
             dim: SolidColorBuffer::new(output.size, [0.0, 0.0, 0.0, 0.0]),
-            bar_background: SolidColorBuffer::new((output.size.w, BAR_HEIGHT), [0.0, 0.0, 0.0, 0.0]),
-            bar: Vec::new(),
+            bar: SpacesBar::default(),
+            expansion: 0.0,
+            expanding: false,
+            last_tick: Instant::now(),
+            strip_id: Id::new(),
+            expanded_id: Id::new(),
+            drag: None,
+            hovered_desktop: None,
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
         });
@@ -241,11 +452,14 @@ impl Nekoland {
         let bottom = self
             .usable_area()
             .map_or(output.loc.y + output.size.h, |area| area.loc.y + area.size.h);
-        let top = output.loc.y + BAR_HEIGHT;
-        let area = Rectangle::new(
-            Point::from((output.loc.x + MARGIN, top + MARGIN / 2)),
-            Size::from((output.size.w - MARGIN * 2, bottom - top - MARGIN)),
-        );
+        let area_under = |top: i32| {
+            Rectangle::new(
+                Point::from((output.loc.x + MARGIN, top + MARGIN / 2)),
+                Size::from((output.size.w - MARGIN * 2, bottom - top - MARGIN)),
+            )
+        };
+        let area = area_under(output.loc.y + MENU_BAR_HEIGHT + BAR_GAP);
+        let open_area = area_under(output.loc.y + expanded_height(output) + BAR_GAP);
 
         let windows: Vec<(Window, Rectangle<i32, Logical>)> = self
             .space
@@ -261,68 +475,233 @@ impl Nekoland {
             .iter()
             .map(|(_, rect)| Rectangle::new(rect.loc, rect.size + Size::from((0, BADGE_ROOM))))
             .collect();
+        // The padded rectangle back to the window's own proportions.
+        let unpad = |from: Rectangle<i32, Logical>, padded: Rectangle<i32, Logical>| {
+            let scale = f64::from(padded.size.w) / f64::from(from.size.w.max(1));
+            let height = (f64::from(from.size.h) * scale).round() as i32;
+            Rectangle::new(padded.loc, Size::from((padded.size.w, height)))
+        };
         let slots = windows
             .into_iter()
-            .zip(spread(&rects, area))
-            .map(|((window, from), padded)| {
-                let scale = f64::from(padded.size.w) / f64::from(from.size.w.max(1));
-                let height = (f64::from(from.size.h) * scale).round() as i32;
-                let to = Rectangle::new(padded.loc, Size::from((padded.size.w, height)));
+            .zip(spread(&rects, area).into_iter().zip(spread(&rects, open_area)))
+            .map(|((window, from), (padded, padded_open))| {
+                let to = unpad(from, padded);
                 let (title, app_id) = window_names(&window);
                 Slot {
                     badge: self.apps.badge(&app_id, &title, ICON_SIZE),
                     window,
                     from,
                     to,
+                    to_open: unpad(from, padded_open),
                     now: to,
                 }
             })
             .collect();
 
-        let bar = self.overview_bar(output);
+        let bar = self.spaces_bar(output);
         if let Some(overview) = &mut self.overview {
             overview.slots = slots;
             overview.bar = bar;
             overview.hovered = None;
+            overview.drag = None;
+            overview.hovered_desktop = None;
         }
         self.tick_overview();
     }
 
-    /// The names of the desktops, centered, and the button that adds one, at the right.
-    fn overview_bar(&self, output: Rectangle<i32, Logical>) -> Vec<BarItem> {
-        let names: Vec<(Picture, BarAction)> = (0..self.workspaces.count())
-            .filter_map(|index| {
-                let active = index == self.workspaces.active;
-                let picture = label(&format!("Desktop {}", index + 1), 12, 240, active.then_some(0.2))?;
-                Some((picture, BarAction::Switch(index)))
-            })
-            .collect();
-        let width: i32 =
-            names.iter().map(|(picture, _)| picture.size.w).sum::<i32>() + BAR_SPACING * names.len() as i32;
-        let centered = |picture: &Picture| output.loc.y + (BAR_HEIGHT - picture.size.h) / 2;
+    /// The desktops' bar, as on the Mac: a strip naming the desktops, the current one
+    /// marked, with the add button at the right end; and the same bar opened up, each
+    /// desktop shown small as it is, the current one ringed, named under its picture.
+    fn spaces_bar(&self, output: Rectangle<i32, Logical>) -> SpacesBar {
+        let dark = self.menu_bar_dark();
+        let colors = BarColors::new(dark);
+        let count = self.workspaces.count();
+        let active = self.workspaces.active;
+        let names: Vec<String> = (0..count).map(|index| format!("桌面 {}", index + 1)).collect();
+        let tile_height = thumbnail_height(output);
+        let expanded_height = expanded_height(output);
+        let font = pango::FontDescription::from_string("Ubuntu Sans, Noto Sans CJK TC Medium 10");
 
-        let mut x = output.loc.x + (output.size.w - width) / 2;
-        let mut bar: Vec<BarItem> = names
-            .into_iter()
-            .map(|(picture, action)| {
-                let rect = Rectangle::new(Point::from((x, centered(&picture))), picture.size);
-                x += picture.size.w + BAR_SPACING;
-                BarItem {
-                    rect,
-                    picture,
-                    action,
-                }
-            })
+        // The strip, where the menu bar was: names in a row, centered.
+        let widths: Vec<i32> = names
+            .iter()
+            .map(|name| text_width(name, &font) + NAME_PADDING * 2)
             .collect();
-        if let Some(picture) = label("+", 20, 60, None) {
-            let x = output.loc.x + output.size.w - picture.size.w - MARGIN / 2;
-            bar.push(BarItem {
-                rect: Rectangle::new(Point::from((x, centered(&picture))), picture.size),
-                picture,
+        let row: i32 = widths.iter().sum::<i32>() + NAME_GAP * (count as i32 - 1).max(0);
+        let mut strip_items = Vec::with_capacity(count + 1);
+        let strip = draw(output.size.w, MENU_BAR_HEIGHT, |cr| {
+            colors.paint_glass(cr, output.size.w, MENU_BAR_HEIGHT);
+            let mut x = (output.size.w - row) / 2;
+            for (index, (name, width)) in names.iter().zip(&widths).enumerate() {
+                let pill = Rectangle::new(
+                    Point::from((x, (MENU_BAR_HEIGHT - NAME_PILL) / 2)),
+                    Size::from((*width, NAME_PILL)),
+                );
+                let ink = if index == active {
+                    colors.fill_pill(cr, pill);
+                    colors.on_ink
+                } else {
+                    colors.ink
+                };
+                show_centered(cr, name, &font, pill, ink);
+                strip_items.push(BarItem {
+                    rect: Rectangle::new(output.loc + pill.loc, pill.size),
+                    action: BarAction::Switch(index),
+                });
+                x += width + NAME_GAP;
+            }
+            let plus = Rectangle::new(
+                Point::from((output.size.w - MENU_BAR_HEIGHT - 8, 0)),
+                Size::from((MENU_BAR_HEIGHT, MENU_BAR_HEIGHT)),
+            );
+            colors.draw_plus(cr, plus, 12.0);
+            strip_items.push(BarItem {
+                rect: Rectangle::new(output.loc + plus.loc, plus.size),
                 action: BarAction::Add,
             });
+        });
+
+        // Opened up: the pictures with their names, and the add button a square, each
+        // centered top to bottom.
+        let row = count as i32 * THUMBNAIL_WIDTH + THUMBNAIL_GAP * (count as i32 - 1).max(0);
+        let top = (expanded_height - tile_height - LABEL_HEIGHT) / 2;
+        let mut thumbnails = Vec::with_capacity(count);
+        let mut expanded_items = Vec::with_capacity(count + 1);
+        let expanded = draw(output.size.w, expanded_height, |cr| {
+            colors.paint_glass(cr, output.size.w, expanded_height);
+            let mut x = (output.size.w - row) / 2;
+            for (index, name) in names.iter().enumerate() {
+                let tile = Rectangle::new(Point::from((x, top)), Size::from((THUMBNAIL_WIDTH, tile_height)));
+                // Behind the live picture, which is drawn over it.
+                colors.fill_tile(cr, tile);
+                if index == active {
+                    colors.ring(cr, tile);
+                }
+                let label = Rectangle::new(
+                    Point::from((x, top + tile_height + 4)),
+                    Size::from((THUMBNAIL_WIDTH, LABEL_HEIGHT - 4)),
+                );
+                show_centered(cr, name, &font, label, colors.ink);
+                thumbnails.push(Rectangle::new(output.loc + tile.loc, tile.size));
+                expanded_items.push(BarItem {
+                    rect: Rectangle::new(
+                        output.loc + tile.loc,
+                        Size::from((THUMBNAIL_WIDTH, tile_height + LABEL_HEIGHT)),
+                    ),
+                    action: BarAction::Switch(index),
+                });
+                x += THUMBNAIL_WIDTH + THUMBNAIL_GAP;
+            }
+            let add = Rectangle::new(
+                Point::from((
+                    output.size.w - tile_height - 16,
+                    (expanded_height - tile_height) / 2,
+                )),
+                Size::from((tile_height, tile_height)),
+            );
+            colors.fill_tile(cr, add);
+            colors.draw_plus(cr, add, 18.0);
+            expanded_items.push(BarItem {
+                rect: Rectangle::new(output.loc + add.loc, add.size),
+                action: BarAction::Add,
+            });
+        });
+
+        // A dark disc with a cross, as the Mac shows on a desktop to take it away.
+        let close = draw(CLOSE_SIZE, CLOSE_SIZE, |cr| {
+            let radius = f64::from(CLOSE_SIZE) / 2.0;
+            cr.arc(radius, radius, radius - 0.5, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
+            let _ = cr.fill();
+            cr.set_source_rgb(colors.on_ink.0, colors.on_ink.1, colors.on_ink.2);
+            cr.set_line_width(1.75);
+            let arm = radius * 0.4;
+            cr.move_to(radius - arm, radius - arm);
+            cr.line_to(radius + arm, radius + arm);
+            cr.move_to(radius + arm, radius - arm);
+            cr.line_to(radius - arm, radius + arm);
+            let _ = cr.stroke();
+        });
+
+        SpacesBar {
+            strip,
+            expanded,
+            strip_items,
+            expanded_items,
+            thumbnails,
+            close,
         }
-        bar
+    }
+
+    /// How far the desktops' bar is opened up, 0 to 1, eased.
+    pub fn overview_expansion(&self) -> f64 {
+        self.overview
+            .as_ref()
+            .map_or(0.0, |overview| ease(overview.expansion))
+    }
+
+    /// Where each desktop's live picture goes in the opened-up bar.
+    pub fn overview_thumbnails(&self) -> Vec<(usize, Rectangle<i32, Logical>)> {
+        self.overview.as_ref().map_or_else(Vec::new, |overview| {
+            overview.bar.thumbnails.iter().copied().enumerate().collect()
+        })
+    }
+
+    /// The close button on the desktop the pointer is on, and where it is.
+    pub fn overview_close_button(&self) -> Option<(Rectangle<i32, Logical>, &Picture)> {
+        let overview = self.overview.as_ref()?;
+        let index = overview.hovered_desktop?;
+        let picture = overview.bar.close.as_ref()?;
+        let (_, rect) = self
+            .overview_thumbnails()
+            .into_iter()
+            .find(|(at, _)| *at == index)?;
+        Some((close_button_rect(rect), picture))
+    }
+
+    /// Where the desktops' bar is right now: as tall as the menu bar closed, growing down
+    /// as it opens up.
+    pub fn overview_panel(&self) -> Option<Rectangle<i32, Logical>> {
+        let overview = self.overview.as_ref()?;
+        let output = self
+            .space
+            .outputs()
+            .next()
+            .and_then(|output| self.space.output_geometry(output))?;
+        let grown = f64::from(expanded_height(output) - MENU_BAR_HEIGHT) * ease(overview.expansion);
+        Some(Rectangle::new(
+            output.loc,
+            Size::from((output.size.w, MENU_BAR_HEIGHT + grown.round() as i32)),
+        ))
+    }
+
+    /// The desktops' bar: one pane of glass, the strip fading out on it as it grows down
+    /// and the opened-up bar fading in, shown as far as the glass has come.
+    pub fn overview_overlays(&self) -> Vec<Overlay<'_>> {
+        let (Some(overview), Some(panel)) = (&self.overview, self.overview_panel()) else {
+            return Vec::new();
+        };
+        let expansion = ease(overview.expansion);
+        let mut overlays = Vec::new();
+        if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| expansion > 0.0) {
+            overlays.push(Overlay {
+                id: &overview.expanded_id,
+                rect: panel,
+                glass: None,
+                alpha: expansion as f32,
+                picture,
+            });
+        }
+        if let Some(picture) = &overview.bar.strip {
+            overlays.push(Overlay {
+                id: &overview.strip_id,
+                rect: panel,
+                glass: Some(0),
+                alpha: (1.0 - expansion) as f32,
+                picture,
+            });
+        }
+        overlays
     }
 
     /// Leaves the overview, bringing `selected` to the front if there is one.
@@ -357,6 +736,13 @@ impl Nekoland {
     /// Moves the overview's animation on; called before each frame.
     pub fn tick_overview(&mut self) {
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let output = self
+            .space
+            .outputs()
+            .next()
+            .and_then(|output| self.space.output_geometry(output));
+        let desktops = self.workspaces.count();
+        let thumbnails = self.overview_thumbnails();
         let Some(overview) = &mut self.overview else {
             return;
         };
@@ -365,61 +751,194 @@ impl Nekoland {
             self.overview = None;
             return;
         }
-        overview.slots.retain(|slot| slot.window.alive());
-        for slot in &mut overview.slots {
-            slot.now = lerp(slot.from, slot.to, progress);
+        if overview.drag.as_ref().is_some_and(|drag| {
+            overview
+                .slots
+                .get(drag.slot)
+                .is_none_or(|slot| !slot.window.alive())
+        }) {
+            overview.drag = None;
         }
+        overview.slots.retain(|slot| slot.window.alive());
         let fade = progress as f32;
         overview.dim.set_color([0.0, 0.0, 0.0, DIM * fade]);
-        let [r, g, b] = BAR_COLOR.map(|channel| channel * BAR_OPACITY * fade);
-        overview.bar_background.set_color([r, g, b, BAR_OPACITY * fade]);
 
         let settled = !overview.closing && progress >= 1.0;
-        overview.hovered = pointer.filter(|_| settled).and_then(|pos| {
+        let dragging = overview.drag.as_ref().is_some_and(|drag| drag.moving);
+        // The bar opens up when the pointer comes onto the strip or a window is dragged, and
+        // closes when the pointer leaves the opened-up bar.
+        if let (Some(pos), Some(output)) = (pointer, output) {
+            let y = pos.y - f64::from(output.loc.y);
+            if dragging || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
+                overview.expanding = true;
+            } else if y > f64::from(expanded_height(output) + 8) || !settled {
+                overview.expanding = false;
+            }
+        }
+        let now = Instant::now();
+        let step = now.duration_since(overview.last_tick).as_secs_f64() / EXPAND_DURATION.as_secs_f64();
+        overview.last_tick = now;
+        overview.expansion = if overview.expanding {
+            (overview.expansion + step).min(1.0)
+        } else {
+            (overview.expansion - step).max(0.0)
+        };
+
+        // The windows make room as the bar opens up.
+        let open = ease(overview.expansion);
+        for slot in &mut overview.slots {
+            let target = lerp(slot.to, slot.to_open, open);
+            slot.now = lerp(slot.from, target, progress);
+        }
+        // A window being dragged follows the pointer, and shrinks over the bar.
+        if let (Some(drag), Some(pos)) = (overview.drag.as_ref().filter(|drag| drag.moving), pointer) {
+            if let Some(slot) = overview.slots.get_mut(drag.slot) {
+                let over_bar =
+                    output.is_some_and(|output| pos.y < f64::from(output.loc.y + expanded_height(output)));
+                let size = if over_bar {
+                    let height = DRAGGED_OVER_BAR_WIDTH * slot.to.size.h / slot.to.size.w.max(1);
+                    Size::from((DRAGGED_OVER_BAR_WIDTH, height.max(1)))
+                } else {
+                    slot.now.size
+                };
+                let loc = Point::from((
+                    pos.x - drag.grab.0 * f64::from(size.w),
+                    pos.y - drag.grab.1 * f64::from(size.h),
+                ));
+                slot.now = Rectangle::new(loc.to_i32_round(), size);
+            }
+        }
+
+        overview.hovered = pointer.filter(|_| settled && !dragging).and_then(|pos| {
             overview
                 .slots
                 .iter()
                 .rposition(|slot| slot.now.to_f64().contains(pos))
         });
+        // The desktop under the pointer in the opened-up bar shows its close button, when
+        // there is another desktop for its windows to go to.
+        overview.hovered_desktop = pointer
+            .filter(|_| open >= 0.5 && desktops > 1 && !dragging)
+            .and_then(|pos| {
+                thumbnails
+                    .iter()
+                    .find(|(_, rect)| {
+                        let reach = Rectangle::new(
+                            rect.loc - Point::from((CLOSE_SIZE / 2, CLOSE_SIZE / 2)),
+                            rect.size + Size::from((CLOSE_SIZE, CLOSE_SIZE)),
+                        );
+                        reach.to_f64().contains(pos)
+                    })
+                    .map(|(index, _)| *index)
+            });
     }
 
     /// Whether a position is on the desktops' bar, which lies over a panel at the top.
     pub fn overview_covers(&self, pos: Point<f64, Logical>) -> bool {
-        let top = self
-            .space
-            .outputs()
-            .next()
-            .and_then(|output| self.space.output_geometry(output))
-            .map_or(0, |output| output.loc.y);
-        pos.y < f64::from(top + BAR_HEIGHT)
+        self.overview_panel()
+            .is_some_and(|panel| pos.y < f64::from(panel.loc.y + panel.size.h))
     }
 
-    /// A click in the overview: on a desktop's name, the add button, a window, or nothing.
+    /// A click in the overview: on a desktop's name or picture, the add button, a window, or nothing.
     pub fn overview_click(&mut self, pos: Point<f64, Logical>) {
         let Some(overview) = &self.overview else {
             return;
         };
-        let action = overview
-            .bar
+        // The close button of a desktop, over the corner of its picture, comes first.
+        if let (Some(index), Some((rect, _))) = (overview.hovered_desktop, self.overview_close_button()) {
+            if rect.to_f64().contains(pos) {
+                self.remove_workspace(index);
+                return;
+            }
+        }
+        let items = if ease(overview.expansion) >= 0.5 {
+            &overview.bar.expanded_items
+        } else {
+            &overview.bar.strip_items
+        };
+        let action = items
             .iter()
             .find(|item| item.rect.to_f64().contains(pos))
             .map(|item| item.action);
         match action {
-            Some(BarAction::Switch(index)) => self.switch_workspace(index),
+            // As on the Mac, picking a desktop goes to it and leaves the overview.
+            Some(BarAction::Switch(index)) => {
+                self.switch_workspace(index);
+                self.close_overview(None);
+            }
             Some(BarAction::Add) => {
                 self.add_workspace();
                 self.rebuild_overview();
             }
-            None => {
-                let picked = overview
-                    .slots
-                    .iter()
-                    .rev()
-                    .find(|slot| slot.now.to_f64().contains(pos))
-                    .map(|slot| slot.window.clone());
-                self.close_overview(picked);
+            // On a window, the press may become a drag; it is picked when let go unmoved.
+            None => match overview
+                .slots
+                .iter()
+                .rposition(|slot| slot.now.to_f64().contains(pos))
+            {
+                Some(index) => {
+                    let rect = overview.slots[index].now.to_f64();
+                    let grab = (
+                        (pos.x - rect.loc.x) / rect.size.w.max(1.0),
+                        (pos.y - rect.loc.y) / rect.size.h.max(1.0),
+                    );
+                    if let Some(overview) = &mut self.overview {
+                        overview.drag = Some(Drag {
+                            slot: index,
+                            start: pos,
+                            grab,
+                            moving: false,
+                        });
+                    }
+                }
+                None => self.close_overview(None),
+            },
+        }
+    }
+
+    /// The pointer moved with a window held: far enough, and it is being dragged.
+    pub fn overview_motion(&mut self, pos: Point<f64, Logical>) {
+        if let Some(drag) = self.overview.as_mut().and_then(|overview| overview.drag.as_mut()) {
+            let (dx, dy) = (pos.x - drag.start.x, pos.y - drag.start.y);
+            if !drag.moving && dx.hypot(dy) > DRAG_THRESHOLD {
+                drag.moving = true;
             }
         }
+    }
+
+    /// A button came up in the overview: a window let go unmoved is picked; one dragged
+    /// onto a desktop goes there, onto the add button to a new desktop.
+    pub fn overview_release(&mut self, pos: Point<f64, Logical>) {
+        let Some(overview) = self.overview.as_mut() else {
+            return;
+        };
+        let Some(drag) = overview.drag.take() else {
+            return;
+        };
+        let Some(window) = overview.slots.get(drag.slot).map(|slot| slot.window.clone()) else {
+            return;
+        };
+        if !drag.moving {
+            self.close_overview(Some(window));
+            return;
+        }
+        let target = overview
+            .bar
+            .expanded_items
+            .iter()
+            .find(|item| item.rect.to_f64().contains(pos))
+            .map(|item| item.action);
+        match target {
+            Some(BarAction::Switch(index)) => self.move_to_workspace(&window, index),
+            Some(BarAction::Add) => {
+                let index = self.workspaces.count();
+                self.add_workspace();
+                self.move_to_workspace(&window, index);
+            }
+            // Let go anywhere else, it goes back to its place.
+            None => return,
+        }
+        self.rebuild_overview();
     }
 }
 

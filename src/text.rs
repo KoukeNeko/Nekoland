@@ -58,10 +58,6 @@ fn layout(cr: &Context, text: &str, points: i32, bold: bool, max_width: i32) -> 
 
 /// A line of white text with a soft shadow, as wide as it needs up to `max_width`,
 /// on a rounded pill if `pill` says how opaque.
-pub fn label(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> Option<Picture> {
-    picture(label_surface(text, points, max_width, pill)?)
-}
-
 fn label_surface(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> Option<ImageSurface> {
     const PAD_X: i32 = 14;
     const PAD_Y: i32 = 6;
@@ -101,6 +97,10 @@ fn label_surface(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> 
 pub struct AppInfo {
     pub name: Option<String>,
     icon: Option<PathBuf>,
+    /// The icon's name in the themes, for drawing it at any size, SVG included.
+    pub icon_name: Option<String>,
+    /// The command line that starts it, without the desktop entry's field codes.
+    pub exec: Option<String>,
 }
 
 /// Desktop entries and icons, looked up once per application.
@@ -133,10 +133,25 @@ impl Apps {
         {
             let cr = Context::new(&surface).ok()?;
             let icon_x = f64::from(width - icon_size) / 2.0;
+            // By name first, which finds SVG icons too; a symbolic one is drawn white.
             let drawn = info
-                .icon
+                .icon_name
                 .as_deref()
-                .and_then(|path| draw_icon(&cr, path, icon_x, 0.0, icon_size))
+                .and_then(|name| named_icon(name, "", icon_size, (1.0, 1.0, 1.0)))
+                .and_then(|icon| {
+                    let scale = f64::from(icon_size) / f64::from(icon.width().max(icon.height()).max(1));
+                    cr.save().ok()?;
+                    cr.translate(icon_x, 0.0);
+                    cr.scale(scale, scale);
+                    cr.set_source_surface(&icon, 0.0, 0.0).ok()?;
+                    cr.paint().ok()?;
+                    cr.restore().ok()
+                })
+                .or_else(|| {
+                    info.icon
+                        .as_deref()
+                        .and_then(|path| draw_icon(&cr, path, icon_x, 0.0, icon_size))
+                })
                 .is_some();
             if !drawn {
                 // No icon to be found: a plain tile in its place.
@@ -284,6 +299,8 @@ fn lookup(app_id: &str) -> AppInfo {
         return AppInfo {
             name: None,
             icon: find_icon(&dirs, &app_id.to_lowercase()),
+            icon_name: Some(app_id.to_lowercase()),
+            exec: None,
         };
     };
     let value = |key: &str| {
@@ -301,7 +318,28 @@ fn lookup(app_id: &str) -> AppInfo {
     AppInfo {
         name: value("Name"),
         icon: value("Icon").and_then(|icon| find_icon(&dirs, &icon)),
+        icon_name: value("Icon"),
+        exec: value("Exec").map(|exec| strip_field_codes(&exec)),
     }
+}
+
+/// A desktop entry's Exec without the %f, %U and the like a launcher would fill in.
+fn strip_field_codes(exec: &str) -> String {
+    let mut command = String::with_capacity(exec.len());
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('%', Some('%')) => {
+                command.push('%');
+                chars.next();
+            }
+            ('%', Some(_)) => {
+                chars.next();
+            }
+            _ => command.push(c),
+        }
+    }
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The desktop entry named after the application, or failing that the one that claims its window class.
@@ -362,4 +400,18 @@ fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_codes_are_left_out_of_commands() {
+        assert_eq!(
+            strip_field_codes("nautilus --new-window %U"),
+            "nautilus --new-window"
+        );
+        assert_eq!(strip_field_codes("printf 100%%"), "printf 100%");
+    }
 }
