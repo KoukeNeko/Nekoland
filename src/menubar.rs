@@ -48,21 +48,25 @@ const TITLE_PADDING: i32 = 10;
 const TITLE_HIGHLIGHT_HEIGHT: i32 = 22;
 const STATUS_ICON: i32 = 18;
 const LOGO: f64 = 16.0;
-const ROW_HEIGHT: i32 = 24;
+/// A menu's rows, separators and text are as GTK's popover menus are, so that every menu
+/// is one size.
+const ROW_HEIGHT: i32 = 32;
 const SEARCH_HEIGHT: i32 = 32;
-const SEPARATOR_HEIGHT: i32 = 11;
+const SEPARATOR_HEIGHT: i32 = 12;
+const MENU_POINTS: f64 = 11.0;
 const MENU_PADDING: i32 = 6;
 const MENU_MIN_WIDTH: i32 = 220;
 pub(crate) const MENU_RADIUS: i32 = 12;
 /// Room on the left of an entry for its check mark.
 const CHECK_COLUMN: i32 = 22;
+/// Where a label starts in a menu with no check marks or icons, as in GTK's.
+const LABEL_INSET: i32 = 12;
 const GAP_BELOW_BAR: i32 = 4;
 /// How far a submenu tucks under the menu it opens from.
 const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
 const NETWORK_POLL: Duration = Duration::from_secs(3);
 
-const MONO: &str = "Ubuntu Sans Mono";
 const WEEKDAYS: [&str; 7] = ["日", "一", "二", "三", "四", "五", "六"];
 /// What Help menus are called, by the programs that bring their own.
 const HELP_TITLES: [&str; 6] = ["help", "說明", "輔助說明", "幫助", "帮助", "ヘルプ"];
@@ -419,12 +423,20 @@ pub(crate) fn colors(dark: bool) -> Colors {
     }
 }
 
-pub(crate) fn font(weight: &str, points: f64) -> pango::FontDescription {
-    text::font(&format!("{weight} {points}"))
+/// A menu leaves room before its labels only if one of them has a check mark or an icon.
+fn label_indent(entries: &[Entry]) -> i32 {
+    let marked = entries
+        .iter()
+        .any(|entry| entry.checked.is_some() || !entry.icon.is_empty());
+    if marked {
+        CHECK_COLUMN
+    } else {
+        LABEL_INSET
+    }
 }
 
-fn mono_font() -> pango::FontDescription {
-    text::font(&format!("{MONO} 9"))
+pub(crate) fn font(weight: &str, points: f64) -> pango::FontDescription {
+    text::font(&format!("{weight} {points}"))
 }
 
 fn text_layout(cr: &Context, text: &str, font: &pango::FontDescription) -> pango::Layout {
@@ -762,7 +774,7 @@ impl MenuBar {
         beside: bool,
         output: Size<i32, Logical>,
     ) -> (Rectangle<i32, Logical>, Vec<Rectangle<i32, Logical>>) {
-        let label_font = font("", 10.0);
+        let label_font = font("", MENU_POINTS);
         let widest = entries
             .iter()
             .map(|entry| {
@@ -772,13 +784,13 @@ impl MenuBar {
                 } else if entry.shortcut.is_empty() {
                     0
                 } else {
-                    24 + text_size(&entry.shortcut, &mono_font()).0
+                    24 + text_size(&entry.shortcut, &label_font).0
                 };
                 label + trailing
             })
             .max()
             .unwrap_or(0);
-        let width = (widest + CHECK_COLUMN + MENU_PADDING * 2 + 16).max(MENU_MIN_WIDTH);
+        let width = (widest + label_indent(entries) + MENU_PADDING * 2 + 16).max(MENU_MIN_WIDTH);
 
         let mut rows = Vec::with_capacity(entries.len());
         let mut y = MENU_PADDING;
@@ -849,7 +861,8 @@ impl MenuBar {
         cr.set_line_width(1.0);
         let _ = cr.stroke();
 
-        let label_font = font("", 10.0);
+        let label_font = font("", MENU_POINTS);
+        let indent = f64::from(label_indent(&level.entries));
         for (index, (entry, row)) in level.entries.iter().zip(&level.rows).enumerate() {
             let local = Rectangle::<i32, Logical>::new(row.loc - level.rect.loc, row.size);
             let (x, y, w, h) = (
@@ -905,23 +918,16 @@ impl MenuBar {
                 let _ = cr.set_source_surface(&icon, x + 3.0, center - 8.0);
                 let _ = cr.paint();
             }
-            show_text(
-                &cr,
-                &entry.label,
-                &label_font,
-                x + f64::from(CHECK_COLUMN),
-                center,
-                color,
-            );
+            show_text(&cr, &entry.label, &label_font, x + indent, center, color);
             let trailing_color = if lit { colors.on_ink } else { colors.ink_3 };
             if !entry.children.is_empty() {
                 show_text(&cr, "›", &label_font, x + w - 16.0, center, trailing_color);
             } else if !entry.shortcut.is_empty() {
-                let width = text_size(&entry.shortcut, &mono_font()).0;
+                let width = text_size(&entry.shortcut, &label_font).0;
                 show_text(
                     &cr,
                     &entry.shortcut,
-                    &mono_font(),
+                    &label_font,
                     x + w - 10.0 - f64::from(width),
                     center,
                     trailing_color,
