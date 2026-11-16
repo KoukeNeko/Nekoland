@@ -370,11 +370,11 @@ fn colors(dark: bool) -> Colors {
 }
 
 fn font(weight: &str, points: f64) -> pango::FontDescription {
-    pango::FontDescription::from_string(&format!("{FONT} {weight} {points}"))
+    text::font(&format!("{FONT} {weight} {points}"))
 }
 
 fn mono_font() -> pango::FontDescription {
-    pango::FontDescription::from_string(&format!("{MONO} 9"))
+    text::font(&format!("{MONO} 9"))
 }
 
 fn text_layout(cr: &Context, text: &str, font: &pango::FontDescription) -> pango::Layout {

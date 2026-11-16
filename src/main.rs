@@ -55,6 +55,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().init();
     }
 
+    // The Mac thickens the outlines of all its text. FreeType can do so only for CFF fonts,
+    // which Noto Sans CJK is: here by 0.4px at any stem width, where its own curve leaves
+    // stems as wide as those at 2x alone. Latin is set heavier instead; see
+    // text::TEXT_WEIGHT. FreeType reads this as it starts, here and in what starts here.
+    if std::env::var_os("FREETYPE_PROPERTIES").is_none() {
+        std::env::set_var(
+            "FREETYPE_PROPERTIES",
+            "cff:no-stem-darkening=0 cff:darkening-parameters=500,400,1000,400,3000,400,8000,400",
+        );
+    }
+
     let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
 
     let display: Display<Nekoland> = Display::new()?;
@@ -131,7 +142,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // have to find this display; a nested compositor leaves the outer session's alone.
         if !nested {
             let updated = std::process::Command::new("dbus-update-activation-environment")
-                .args(["--systemd", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP", "LD_PRELOAD"])
+                .args([
+                    "--systemd",
+                    "WAYLAND_DISPLAY",
+                    "DISPLAY",
+                    "XDG_CURRENT_DESKTOP",
+                    "LD_PRELOAD",
+                    "FREETYPE_PROPERTIES",
+                ])
                 .status();
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");

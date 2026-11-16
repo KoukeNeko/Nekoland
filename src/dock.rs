@@ -535,7 +535,7 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
+    layout.set_font_description(Some(&text::font(&format!(
         "{FONT} Bold {}",
         (size * 0.36).round()
     ))));
@@ -551,7 +551,7 @@ fn draw_initial(cr: &Context, x: f64, y: f64, size: f64, name: &str, dark: bool)
 
 /// A name on a small pane of glass, as shown over a pointed-at icon.
 fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) -> Option<Picture> {
-    let font = pango::FontDescription::from_string(&format!("{FONT} {points}"));
+    let font = text::font(&format!("{FONT} {points}"));
     let probe = Context::new(ImageSurface::create(Format::ARgb32, 1, 1).ok()?).ok()?;
     let layout = text::new_layout(&probe);
     layout.set_font_description(Some(&font));
@@ -2713,7 +2713,7 @@ fn draw_preview(
             true,
         );
         let (r, g, b) = ink(dark);
-        let font = pango::FontDescription::from_string(&format!("{FONT} 9.75"));
+        let font = text::font(&format!("{FONT} 9.75"));
         for (index, (card, title)) in cards.iter().zip(titles).enumerate() {
             let card = Rectangle::<i32, Logical>::new(card.loc - origin, card.size);
             let (x, y) = (f64::from(card.loc.x), f64::from(card.loc.y));

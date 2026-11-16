@@ -652,9 +652,7 @@ fn fade_since(at: Instant) -> f32 {
 
 fn text_layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
-        "{FONT} {points}"
-    ))));
+    layout.set_font_description(Some(&text::font(&format!("{FONT} {points}"))));
     layout.set_text(text);
     layout
 }
@@ -1710,9 +1708,7 @@ fn draw_folder(
             true,
         );
         let title = text_layout(&cr, name, 14.0);
-        title.set_font_description(Some(&pango::FontDescription::from_string(&format!(
-            "{FONT} Bold 14"
-        ))));
+        title.set_font_description(Some(&text::font(&format!("{FONT} Bold 14"))));
         let (width, height) = title.pixel_size();
         let (x, y) = (
             f64::from(size.w - width) / 2.0,

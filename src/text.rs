@@ -12,7 +12,7 @@ use smithay::{
     utils::{Logical, Size, Transform},
 };
 
-const FONT: &str = "Ubuntu, Noto Sans CJK TC, Sans";
+const FONT: &str = "Ubuntu Sans, Noto Sans CJK TC, Sans";
 const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
 // Largest first: icons are drawn smaller than this more often than larger.
 const ICON_SIZES: [&str; 6] = ["256x256", "128x128", "96x96", "64x64", "48x48", "32x32"];
@@ -53,6 +53,20 @@ pub fn new_layout(cr: &Context) -> pango::Layout {
     pangocairo::functions::context_set_font_options(&context, Some(&options));
     context.set_round_glyph_positions(false);
     pango::Layout::new(&context)
+}
+
+/// Text that names no weight of its own is set a little heavier than regular, where the
+/// Mac thickens every outline: unhinted text with grey edges otherwise reads thin and
+/// frayed. CJK outlines are thickened by FreeType instead; see `main`.
+const TEXT_WEIGHT: i32 = 450;
+
+/// The font `description` names, in pango's words, at `TEXT_WEIGHT` if it names no weight.
+pub fn font(description: &str) -> pango::FontDescription {
+    let mut font = pango::FontDescription::from_string(description);
+    if font.weight() == pango::Weight::Normal {
+        font.set_weight(pango::Weight::__Unknown(TEXT_WEIGHT));
+    }
+    font
 }
 
 /// Something drawn once and shown many times.
@@ -135,7 +149,7 @@ pub fn rounded_rectangle(cr: &Context, x: f64, y: f64, width: f64, height: f64, 
 fn layout(cr: &Context, text: &str, points: i32, bold: bool, max_width: i32) -> pango::Layout {
     let layout = new_layout(cr);
     let weight = if bold { " Semi-Bold" } else { "" };
-    let font = pango::FontDescription::from_string(&format!("{FONT}{weight} {points}"));
+    let font = font(&format!("{FONT}{weight} {points}"));
     layout.set_font_description(Some(&font));
     layout.set_text(text);
     layout.set_width(max_width * pango::SCALE);
@@ -508,6 +522,7 @@ fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pango::prelude::*;
 
     /// The curves cairo draws a corner with keep to the superellipse the glass is cut to.
     #[test]
@@ -540,6 +555,24 @@ mod tests {
                 .fold(f64::MAX, f64::min);
             assert!(gap < 0.003, "{gap} off at {u}");
         }
+    }
+
+    #[test]
+    fn text_that_names_no_weight_is_set_heavier_than_regular() {
+        let surface = ImageSurface::create(Format::ARgb32, 1, 1).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let weight_of = |font: &str| {
+            let layout = new_layout(&cr);
+            layout.set_font_description(Some(&super::font(font)));
+            layout.set_text("Nekoland");
+            let run = layout.line_readonly(0).unwrap().runs()[0].clone();
+            run.item().analysis().font().describe().weight()
+        };
+        assert_eq!(
+            weight_of(&format!("{FONT} 11")),
+            pango::Weight::__Unknown(TEXT_WEIGHT)
+        );
+        assert_eq!(weight_of(&format!("{FONT} Bold 11")), pango::Weight::Bold);
     }
 
     #[test]

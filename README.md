@@ -176,6 +176,12 @@ Nekoland starts through `LD_PRELOAD`, from beside the `nekoland` binary, and cha
 popover as it is made. It reaches programs linked with GTK 4.14 or later, not those that
 load GTK while running, as Python and GJS programs do; others are left as they are.
 
+Text is drawn as the Mac draws it on a dense display: unhinted, with grey edges, and a
+little heavier than regular, where the Mac thickens every outline. Nekoland's own text,
+and GTK's in Nekoland's look, is Ubuntu Sans at weight 450; Noto Sans CJK, a CFF font, is
+thickened by 0.4px by FreeType, through `FREETYPE_PROPERTIES` in what Nekoland starts,
+unless that is set already.
+
 ## Screen lock and capture
 
 The menu, Super+L and `nekoland msg lock` lock the screen, and so does sleeping and,
@@ -207,6 +213,7 @@ draws behind every window. Settings' 設計語言 page shows all of it, after th
 in this look whether or not it is turned on. Settings' 外觀 page
 turns it on: it puts the file in `~/.config/gtk-4.0/nekoland/` and imports it from
 `~/.config/gtk-4.0/gtk.css`, keeping what else that file has, and keeps it up to date with Settings.
+It sets their text in Ubuntu Sans and Noto Sans CJK TC, as Nekoland's own is set.
 It also gives windows minimize, maximize and close at the right of the title bar, through
 GNOME's `button-layout`, and puts back the buttons they had when it is turned off. GTK reads
 that file as an application starts, so others take the change when opened again;

@@ -63,6 +63,14 @@
   --window-radius: 14px;
 }
 
+/* Text in the design language's typeface, a little heavier than regular, as the Mac sets
+ * it; Nekoland thickens CJK outlines itself. What names its own weight keeps it. */
+window,
+tooltip {
+  font-family: "Ubuntu Sans", "Noto Sans CJK TC", sans-serif;
+  font-weight: 450;
+}
+
 /* The controls as the design language draws them. GTK puts this file over the theme
  * whatever a rule's selector, so each rule names only what it means to change. */
 

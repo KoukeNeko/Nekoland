@@ -65,7 +65,7 @@ fn colors(dark: bool) -> (Rgb, Rgb, (f64, f64, f64, f64)) {
 
 fn layout(cr: &Context, text: &str, font: &str, width: i32, lines: i32) -> pango::Layout {
     let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&pango::FontDescription::from_string(font)));
+    layout.set_font_description(Some(&text::font(font)));
     layout.set_text(text);
     layout.set_width(width * pango::SCALE);
     layout.set_wrap(pango::WrapMode::WordChar);
