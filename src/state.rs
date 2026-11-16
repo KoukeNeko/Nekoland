@@ -140,6 +140,7 @@ impl Nekoland {
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
 
         let config = Config::load();
+        crate::glass::set_look(config.glass_opacity, config.glass_blur);
         // A layout XKB does not know is no reason to have no keyboard.
         let (delay, rate) = (config.repeat_delay, config.repeat_rate);
         if let Err(err) = seat.add_keyboard(crate::config::xkb(&config.keyboard()), delay, rate) {
@@ -380,6 +381,12 @@ impl Nekoland {
             if let Err(err) = keyboard.set_xkb_config(self, crate::config::xkb(&names)) {
                 tracing::warn!("keyboard layout {:?}: {err}", self.config.keyboard_layout);
             }
+        }
+        // What is drawn on glass with its tint is drawn again; menus and the like are as
+        // they next open.
+        if crate::glass::set_look(self.config.glass_opacity, self.config.glass_blur) {
+            self.dock.drawn = None;
+            self.menu_bar.drawn = None;
         }
         if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
             if let Some(mut swaybg) = self.wallpaper.take() {

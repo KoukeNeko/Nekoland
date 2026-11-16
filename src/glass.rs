@@ -14,6 +14,7 @@
 //! those under it.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use smithay::{
     backend::{
@@ -38,10 +39,52 @@ use smithay::{
 
 /// How many times the scene is halved. Each one roughly doubles how far the blur reaches.
 const LEVELS: usize = 4;
-/// How far apart the samples of a pass are, in texels of the smaller texture.
-const SPREAD: f32 = 2.0;
+/// How far apart the samples of a pass are, in texels of the smaller texture, with the
+/// blur as strong as the configuration can make it.
+const MAX_SPREAD: f32 = 4.0;
+/// How much more see-through the glass of a bar is than that of what opens over things.
+const BAR_CLEARER: f64 = 0.30;
+
+/// The look the configuration gives all glass, in thousandths: how solid the tint over the
+/// blur is, and how strong the blur.
+static OPACITY: AtomicU32 = AtomicU32::new(800);
+static BLUR: AtomicU32 = AtomicU32::new(500);
+
+/// Takes how solid the glass's tint is and how strong its blur, each from 0 to 1, and says
+/// whether either changed.
+pub fn set_look(opacity: f64, blur: f64) -> bool {
+    let thousandths = |value: f64| (value.clamp(0.0, 1.0) * 1000.0).round() as u32;
+    let opacity = OPACITY.swap(thousandths(opacity), Ordering::Relaxed) != thousandths(opacity);
+    let blur = BLUR.swap(thousandths(blur), Ordering::Relaxed) != thousandths(blur);
+    opacity || blur
+}
+
+/// The tint drawn over the blur, the design language's sheet: as solid as the configuration
+/// says for what opens over things, as menus, notifications and the Dock's popups do, and
+/// clearer for a bar, as the menu bar and the Dock.
+pub fn tint(dark: bool, solid: bool) -> (f64, f64, f64, f64) {
+    let opacity = f64::from(OPACITY.load(Ordering::Relaxed)) / 1000.0;
+    let alpha = if solid {
+        opacity
+    } else {
+        (opacity - BAR_CLEARER).max(0.0)
+    };
+    if dark {
+        (0.133, 0.133, 0.149, alpha)
+    } else {
+        (0.984, 0.980, 0.973, alpha)
+    }
+}
+
+/// How far apart the samples of a pass are now, in texels of the smaller texture.
+fn spread() -> f32 {
+    BLUR.load(Ordering::Relaxed) as f32 / 1000.0 * MAX_SPREAD
+}
+
 /// How far from a pane a change behind it still shows in its blur, in pixels.
-const REACH: i32 = (SPREAD as i32) << (LEVELS + 1);
+fn reach() -> i32 {
+    (spread().ceil() as i32).max(1) << (LEVELS + 1)
+}
 /// Offscreen targets are drawn top row first, the way textures are read back.
 const OFFSCREEN: Transform = Transform::Flipped180;
 
@@ -147,8 +190,9 @@ struct Blur {
     /// Where on the output the textures start: the top left for the scene, a window's
     /// surroundings for its own.
     origin: Point<i32, Physical>,
-    /// Where the panes were when it was last blurred.
+    /// Where the panes were when it was last blurred, and how far apart its samples were.
     areas: Vec<Rectangle<i32, Physical>>,
+    spread: f32,
     commit: CommitCounter,
 }
 
@@ -210,8 +254,8 @@ impl Glass {
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let reach = Rectangle::new(
-            area.loc - Point::from((REACH, REACH)),
-            area.size + Size::from((REACH * 2, REACH * 2)),
+            area.loc - Point::from((reach(), reach())),
+            area.size + Size::from((reach() * 2, reach() * 2)),
         );
         let Some(canvas) = reach.intersection(Rectangle::from_size(output)) else {
             return Ok(());
@@ -272,6 +316,13 @@ impl Blur {
             self.origin = canvas.loc;
             self.areas.clear();
         }
+        // A blur of another strength is drawn again, all of it.
+        let spread = spread();
+        if self.spread != spread {
+            self.spread = spread;
+            self.areas.clear();
+        }
+        let reach = reach();
         let full = Size::<i32, Buffer>::from((size.w, size.h));
         if self.levels.first().map(Texture::size) != Some(full) || self.scale != scale {
             self.levels = (0..=LEVELS)
@@ -320,8 +371,8 @@ impl Blur {
                 damage.iter().any(|damage| {
                     areas.iter().any(|area| {
                         let reach = Rectangle::new(
-                            area.loc - Point::from((REACH, REACH)),
-                            area.size + Size::from((REACH * 2, REACH * 2)),
+                            area.loc - Point::from((reach, reach)),
+                            area.size + Size::from((reach * 2, reach * 2)),
                         );
                         reach.overlaps(*damage)
                     })
@@ -339,8 +390,8 @@ impl Blur {
             .iter()
             .map(|area| {
                 Rectangle::new(
-                    area.loc - Point::from((REACH, REACH)),
-                    area.size + Size::from((REACH * 2, REACH * 2)),
+                    area.loc - Point::from((reach, reach)),
+                    area.size + Size::from((reach * 2, reach * 2)),
                 )
             })
             .collect();
@@ -351,7 +402,7 @@ impl Blur {
                 renderer,
                 &source,
                 &mut self.levels[level + 1],
-                down,
+                (down, spread),
                 &regions,
                 full,
                 (level + 1) % 2 == 1,
@@ -363,7 +414,7 @@ impl Blur {
                 renderer,
                 &source,
                 &mut self.levels[level],
-                up,
+                (up, spread),
                 &regions,
                 full,
                 level % 2 == 1,
@@ -409,7 +460,7 @@ fn pass(
     renderer: &mut GlesRenderer,
     source: &GlesTexture,
     target: &mut GlesTexture,
-    program: &GlesTexProgram,
+    (program, spread): (&GlesTexProgram, f32),
     regions: &[Rectangle<i32, Physical>],
     full: Size<i32, Buffer>,
     upright: bool,
@@ -456,7 +507,7 @@ fn pass(
         Some(program),
         &[
             Uniform::new("half_pixel", (0.5 / from.w as f32, 0.5 / from.h as f32)),
-            Uniform::new("spread", SPREAD),
+            Uniform::new("spread", spread),
         ],
     )?;
     // The next pass runs in the same GL context, which keeps the order; nothing to wait for.

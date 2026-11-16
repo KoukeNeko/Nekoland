@@ -47,6 +47,11 @@ pub struct Config {
     /// how big the one under it grows, as a multiple of their size.
     pub dock_magnify: bool,
     pub dock_magnify_scale: f64,
+    /// How solid the glass's tint is over menus, notifications and the Dock's popups, from 0
+    /// to 1; that of bars, as the menu bar and the Dock, is 0.3 less.
+    pub glass_opacity: f64,
+    /// How strong the glass's blur is, from 0, none, to 1.
+    pub glass_blur: f64,
     pub natural_scroll: bool,
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
@@ -260,6 +265,8 @@ impl Default for Config {
             dock_glass: true,
             dock_magnify: true,
             dock_magnify_scale: 1.6,
+            glass_opacity: 0.8,
+            glass_blur: 0.5,
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,

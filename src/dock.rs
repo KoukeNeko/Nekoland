@@ -324,7 +324,7 @@ impl Preview {
 
 /// What the Dock was last drawn as; it is drawn again when any of it changes.
 #[derive(PartialEq)]
-struct Drawn {
+pub(crate) struct Drawn {
     dark: bool,
     glass: bool,
     width: i32,
@@ -377,7 +377,7 @@ pub struct Dock {
     tag: Option<(bool, Picture)>,
     icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
     badges: Vec<(Option<String>, bool, Option<Picture>)>,
-    drawn: Option<Drawn>,
+    pub(crate) drawn: Option<Drawn>,
     ids: Option<Ids>,
     last_tick: Option<Instant>,
     folders: Vec<Folder>,
@@ -409,20 +409,9 @@ fn ink_2(dark: bool) -> Rgb {
     }
 }
 
-/// The glass's own tint, as the design's floating surfaces have, and the tint of what
-/// opens over it, which is a little more solid to read on.
-fn tint(dark: bool, solid: bool) -> (f64, f64, f64, f64) {
-    match (dark, solid) {
-        (true, false) => (0.133, 0.133, 0.149, 0.45),
-        (true, true) => (0.133, 0.133, 0.149, 0.78),
-        (false, false) => (0.984, 0.980, 0.973, 0.55),
-        (false, true) => (0.984, 0.980, 0.973, 0.80),
-    }
-}
-
 /// A rounded pane of tinted glass with its thin rim, the size of the surface.
 pub(crate) fn paint_pane(cr: &Context, width: f64, height: f64, radius: f64, dark: bool, solid: bool) {
-    let (r, g, b, a) = tint(dark, solid);
+    let (r, g, b, a) = crate::glass::tint(dark, solid);
     text::rounded_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0, radius);
     cr.set_source_rgba(r, g, b, a);
     let _ = cr.fill_preserve();

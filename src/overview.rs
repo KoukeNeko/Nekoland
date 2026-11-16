@@ -107,13 +107,13 @@ impl BarColors {
             Self {
                 ink: (0.945, 0.937, 0.918),
                 on_ink: (0.090, 0.090, 0.102),
-                tint: (0.133, 0.133, 0.149, 0.45),
+                tint: crate::glass::tint(dark, false),
             }
         } else {
             Self {
                 ink: (0.090, 0.090, 0.102),
                 on_ink: (0.984, 0.980, 0.973),
-                tint: (0.984, 0.980, 0.973, 0.55),
+                tint: crate::glass::tint(dark, false),
             }
         }
     }

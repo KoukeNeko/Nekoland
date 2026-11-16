@@ -41,6 +41,7 @@ wallpaper and an input method. Every key is optional:
 | `wallpaper`, `wallpaper_mode` | A picture drawn on the desktop by swaybg, and `fill` (the default), `fit` or `center` |
 | `clock_24h`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours and the weekday unless set, no seconds |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
+| `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, for menus, notifications and the Dock's popups, with bars 0.3 clearer; and how far glass spreads what is behind it, from 0, none, to 1: 0.8 and 0.5 unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
@@ -164,9 +165,12 @@ dragged out, and a click on its name changes it. The arrangement is kept in
 Nekoland's glass is called Catseye（貓眼）. The menu bar and its menus, the Dock,
 notifications, the overview's desktops and what `glass` names are drawn over a blur of what is behind it, a little more saturated,
 with a thin line of light just inside its top edge, like the band of light across a
-cat's-eye stone. The surface's own colour goes on top, so it has to be translucent
-for the glass to show; the styles in `shell/` are. Glass behind a bar that spans the
-whole output has square corners.
+cat's-eye stone. What `glass` names draws its own colour on top, so it has to be
+translucent for the glass to show; the styles in `shell/` are. Nekoland's own surfaces
+take a tint, as solid as `glass_opacity` says for menus, notifications, the Dock's popups
+and GTK's menus in Nekoland's look, and 0.3 clearer for the menu bar, the Dock and the
+overview's bar, the same light and dark; Settings' 外觀 page sets it and the blur. Glass
+behind a bar that spans the whole output has square corners.
 
 Behind every window is glass of what is under it, blurred, as Windows' Acrylic is: what a
 window leaves see-through, as sidebars and menus in Nekoland's GTK look, shows the windows

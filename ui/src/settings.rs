@@ -4,7 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -197,6 +197,8 @@ const PAGE_ENV: &str = "NEKOLAND_SETTINGS_PAGE";
 thread_local! {
     /// Set when Settings is to start again once it has closed, on the page named.
     static RESTART: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+    /// Nekoland's `glass_opacity`, which the look gives GTK's menus too.
+    static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
 }
 
 fn main() -> glib::ExitCode {
@@ -220,6 +222,8 @@ fn build(app: &adw::Application) {
         window.present();
         return;
     }
+    let config = Config::load();
+    GLASS_OPACITY.set(config.number("glass_opacity", 0.8));
     // A look turned on before keeps up with this version of it.
     if gtk_look_on() {
         if let Err(err) = set_gtk_look(true) {
@@ -227,11 +231,10 @@ fn build(app: &adw::Application) {
         }
         set_window_buttons(true);
     }
-    let config = Config::load();
     let autostart = Rc::new(RefCell::new(config.autostart()));
     let pages: [(&str, gtk::Widget); 8] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
-        ("外觀", appearance_page().upcast()),
+        ("外觀", appearance_page(&config).upcast()),
         ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
         ("聲音", sound_page().upcast()),
@@ -527,7 +530,7 @@ fn show_thumbnail(picture: &gtk::Picture, path: PathBuf) {
     });
 }
 
-fn appearance_page() -> adw::PreferencesPage {
+fn appearance_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let style = group("");
     let dark = output(
@@ -573,6 +576,7 @@ fn appearance_page() -> adw::PreferencesPage {
         move |styles| provider.load_from_string(&look_for(styles.is_dark()))
     ));
     let read_at_start = gtk_look_on();
+    let glass_look = provider.clone();
     look.connect_active_notify(move |row| {
         let on = row.is_active();
         if let Err(err) = set_gtk_look(on) {
@@ -604,6 +608,30 @@ fn appearance_page() -> adw::PreferencesPage {
     });
     style.add(&look);
     page.add(&style);
+
+    let glass = group("毛玻璃");
+    glass.add(&scale_row(
+        "不透明度",
+        config.number("glass_opacity", 0.8),
+        (0.3, 1.0, 0.05),
+        move |opacity| {
+            set(&format!("glass_opacity = {opacity:.2}"));
+            GLASS_OPACITY.set(opacity);
+            if gtk_look_on() {
+                if let Err(err) = set_gtk_look(true) {
+                    eprintln!("GTK look: {err}");
+                }
+                glass_look.load_from_string(&look_for(adw::StyleManager::default().is_dark()));
+            }
+        },
+    ));
+    glass.add(&scale_row(
+        "模糊程度",
+        config.number("glass_blur", 0.5),
+        (0.0, 1.0, 0.05),
+        |blur| set(&format!("glass_blur = {blur:.2}")),
+    ));
+    page.add(&glass);
     page
 }
 
@@ -619,6 +647,12 @@ const OLD_GTK_IMPORT: &str = "@import url(\"nekoland.css\");";
 /// The first GTK whose stylesheets read the look's variables and its dark media query.
 const GTK_LOOK_MINOR: u32 = 20;
 
+/// The look as GTK's user stylesheet takes it, with Nekoland's glass opacity.
+fn gtk_look() -> String {
+    let opacity = GLASS_OPACITY.get() * 100.0;
+    format!("{GTK_LOOK}\n:root {{ --nekoland-glass-opacity: {opacity:.0}%; }}\n")
+}
+
 /// The look for a stylesheet Settings loads itself, which GTK reads light whatever the
 /// system is: when dark, its dark colours are put in outside their media query.
 fn look_for(dark: bool) -> String {
@@ -627,7 +661,7 @@ fn look_for(dark: bool) -> String {
         .and_then(|(_, part)| part.trim_end().strip_suffix('}'))
         .filter(|_| dark)
         .unwrap_or_default();
-    format!("{GTK_LOOK}\n{dark_part}")
+    format!("{}{dark_part}", gtk_look())
 }
 
 /// Where GTK 4 reads the user's stylesheet, and where Nekoland's goes beside it.
@@ -670,7 +704,7 @@ fn set_gtk_look(on: bool) -> std::io::Result<()> {
     let look = dir.join(GTK_LOOK_FILE);
     if on {
         std::fs::create_dir_all(look.parent().expect("a folder"))?;
-        write_atomic(&look, GTK_LOOK)?;
+        write_atomic(&look, &gtk_look())?;
         // An import counts only before any rule.
         lines.insert(0, GTK_IMPORT);
     } else if let Err(err) = std::fs::remove_file(&look) {
@@ -2274,7 +2308,7 @@ mod tests {
         let on = std::fs::read_to_string(&user).unwrap();
         assert_eq!(on, format!("{GTK_IMPORT}\nlabel {{ color: red; }}\n"));
         assert!(gtk_look_on());
-        assert_eq!(std::fs::read_to_string(dir.join(GTK_LOOK_FILE)).unwrap(), GTK_LOOK);
+        assert_eq!(std::fs::read_to_string(dir.join(GTK_LOOK_FILE)).unwrap(), gtk_look());
 
         set_gtk_look(false).unwrap();
         assert_eq!(std::fs::read_to_string(&user).unwrap(), "label { color: red; }\n");
@@ -2299,8 +2333,8 @@ mod tests {
     /// when dark.
     #[test]
     fn the_look_settings_loads_itself_is_dark_when_dark() {
-        assert_eq!(look_for(false), format!("{GTK_LOOK}\n"));
-        let added = &look_for(true)[GTK_LOOK.len()..];
+        assert_eq!(look_for(false), gtk_look());
+        let added = &look_for(true)[gtk_look().len()..];
         assert!(added.contains("--nekoland-paper: #1b1b1e;"));
         assert!(!added.contains("@media"));
     }

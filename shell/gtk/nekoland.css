@@ -61,6 +61,10 @@
   --error-color: var(--nekoland-danger);
 
   --window-radius: 14px;
+
+  /* How solid the tint over glass is, as Nekoland's glass_opacity says; Settings writes
+   * the one set after this file. */
+  --nekoland-glass-opacity: 80%;
 }
 
 /* Text in the design language's typeface, a little heavier than regular, as the Mac sets
@@ -233,10 +237,11 @@ popover > contents {
   border-radius: 12px;
 }
 /* Menus on glass: Nekoland draws what is behind a popover blurred, as it does behind
- * sidebars, so its sheet is left see-through; the arrow takes the same tint. */
+ * sidebars, so its sheet is left see-through, as solid as Nekoland's own menus; the arrow
+ * takes the same tint. */
 popover > contents,
 popover > arrow {
-  background-color: color-mix(in srgb, var(--popover-bg-color) 72%, transparent);
+  background-color: color-mix(in srgb, var(--popover-bg-color) var(--nekoland-glass-opacity), transparent);
 }
 
 /* Dialogs take the corners windows do. */

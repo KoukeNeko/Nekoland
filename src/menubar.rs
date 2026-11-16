@@ -261,7 +261,7 @@ pub struct OpenMenu {
 
 /// What the bar shows; it is drawn again when any of it changes.
 #[derive(Clone, PartialEq)]
-struct Drawn {
+pub(crate) struct Drawn {
     width: i32,
     app: Option<(String, String)>,
     menus: u64,
@@ -291,7 +291,7 @@ pub struct MenuBar {
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
     picture: Option<Picture>,
-    drawn: Option<Drawn>,
+    pub(crate) drawn: Option<Drawn>,
     bar_id: Id,
     menu_ids: Vec<Id>,
 }
@@ -341,8 +341,6 @@ struct Colors {
     ink: Rgb,
     ink_3: Rgb,
     on_ink: Rgb,
-    bar: (f64, f64, f64, f64),
-    menu: (f64, f64, f64, f64),
     edge: (f64, f64, f64, f64),
 }
 
@@ -353,8 +351,6 @@ fn colors(dark: bool) -> Colors {
             ink: (0.945, 0.937, 0.918),
             ink_3: (0.576, 0.569, 0.592),
             on_ink: (0.090, 0.090, 0.102),
-            bar: (0.133, 0.133, 0.149, 0.45),
-            menu: (0.133, 0.133, 0.149, 0.78),
             edge: (1.0, 1.0, 1.0, 0.16),
         }
     } else {
@@ -362,8 +358,6 @@ fn colors(dark: bool) -> Colors {
             ink: (0.090, 0.090, 0.102),
             ink_3: (0.435, 0.427, 0.447),
             on_ink: (0.984, 0.980, 0.973),
-            bar: (0.984, 0.980, 0.973, 0.55),
-            menu: (0.984, 0.980, 0.973, 0.80),
             edge: (0.0, 0.0, 0.0, 0.10),
         }
     }
@@ -571,7 +565,8 @@ impl MenuBar {
         let Ok(cr) = Context::new(&surface) else {
             return;
         };
-        cr.set_source_rgba(colors.bar.0, colors.bar.1, colors.bar.2, colors.bar.3);
+        let (r, g, b, a) = crate::glass::tint(self.dark, false);
+        cr.set_source_rgba(r, g, b, a);
         let _ = cr.paint();
 
         let center = f64::from(MENU_BAR_HEIGHT) / 2.0;
@@ -773,7 +768,8 @@ impl MenuBar {
             f64::from(size.h) - 1.0,
             radius,
         );
-        cr.set_source_rgba(colors.menu.0, colors.menu.1, colors.menu.2, colors.menu.3);
+        let (r, g, b, a) = crate::glass::tint(dark, true);
+        cr.set_source_rgba(r, g, b, a);
         let _ = cr.fill_preserve();
         cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
         cr.set_line_width(1.0);
