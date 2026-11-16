@@ -59,6 +59,7 @@ wallpaper and an input method. Every key is optional:
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
+| `focus_follows_pointer` | Whether the keyboard goes to the window the pointer moves into, without raising it, instead of the one clicked; off unless set |
 | `hot_corner_top_left`, `hot_corner_top_right`, `hot_corner_bottom_left`, `hot_corner_bottom_right` | What pointing into that corner of a display does: `none` (the default), `overview`, `apps` or `lock` |
 
 The Settings application changes most of these while Nekoland runs (see below);

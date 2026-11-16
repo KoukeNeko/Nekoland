@@ -9,7 +9,7 @@ use smithay::{
         wayland_server::protocol::wl_surface::WlSurface,
     },
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
+    wayland::{compositor::{get_parent, with_states}, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
 use crate::{config::DockPosition, dock::dock_space, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
@@ -137,6 +137,29 @@ impl Nekoland {
             }
         }
         Some(area)
+    }
+
+    /// With `focus_follows_pointer`, the keyboard goes from window to window as the pointer
+    /// moves into them, none raised, and stays when it leaves for the desktop or a panel.
+    pub fn focus_under_pointer(&mut self, under: Option<&WlSurface>) {
+        let grabbed = self.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed());
+        // What has the keyboard besides windows, a launcher or the lock, keeps it.
+        let on_window = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus()).is_none()
+            || self.focused_window().is_some();
+        if !self.config.focus_follows_pointer || grabbed || !on_window {
+            return;
+        }
+        let Some(mut root) = under.cloned() else {
+            return;
+        };
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        if let Some(window) = self.window_for_surface(&root).filter(is_managed) {
+            if self.focused_window().as_ref() != Some(&window) {
+                self.set_keyboard_focus(Some(key_focus_of(&window)));
+            }
+        }
     }
 
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {

@@ -536,6 +536,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         }
     });
     windows.add(&titlebar);
+    windows.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
     page.add(&windows);
 
     let corners = group("熱點");

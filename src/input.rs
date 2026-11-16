@@ -108,6 +108,7 @@ impl Nekoland {
                     self.corner_motion(pos);
                 }
                 let under = self.surface_under(pos);
+                self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
                 pointer.motion(
                     self,
                     under.clone(),
@@ -147,6 +148,7 @@ impl Nekoland {
                     self.corner_motion(pos);
                 }
                 let under = self.surface_under(pos);
+                self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
 
                 pointer.motion(
                     self,
