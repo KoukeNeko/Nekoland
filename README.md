@@ -33,7 +33,13 @@ panel, the dock, a wallpaper and notifications. Every key is optional:
 | `volume_up`, `volume_down`, `volume_mute`, `brightness_up`, `brightness_down` | Commands behind the media keys |
 
 The panel and the dock in `shell/` are [waybar](https://github.com/Alexays/Waybar)
-bars; the launcher is fuzzel, the wallpaper swaybg and notifications mako.
+bars; the launcher is fuzzel, the wallpaper swaybg and notifications mako. The
+example also starts Fcitx5 for input methods.
+
+Programs learn whether to be dark from `xdg-desktop-portal`. With
+`xdg-desktop-portal-gtk` installed, copy `shell/nekoland-portals.conf` to
+`~/.config/xdg-desktop-portal/`; the GSetting
+`org.gnome.desktop.interface color-scheme` then switches them.
 
 ## Shortcuts
 

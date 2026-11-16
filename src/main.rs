@@ -56,9 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Inside another session, be a window in it; on a bare console, drive the display.
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some() {
+    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    if nested {
         crate::winit::init_winit(&mut event_loop, &mut data)?;
     } else {
+        // Portals pick their backends by the desktop's name.
+        std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
         crate::udev::init_udev(&mut event_loop, &mut data)?;
     }
 
@@ -85,6 +88,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // X11 programs find XWayland through the environment, so everything else starts after it.
     x11::start(&event_loop.handle(), &mut data, move |data| {
+        // Services D-Bus starts, such as the portal that tells programs whether to be dark,
+        // have to find this display; a nested compositor leaves the outer session's alone.
+        if !nested {
+            let updated = std::process::Command::new("dbus-update-activation-environment")
+                .args(["--systemd", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP"])
+                .status();
+            if !updated.as_ref().is_ok_and(|status| status.success()) {
+                tracing::warn!("D-Bus services will not find this display: {updated:?}");
+            }
+        }
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         match &command {

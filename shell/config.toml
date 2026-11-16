@@ -5,6 +5,8 @@ autostart = [
     "swaybg -m fill -i /usr/share/backgrounds/warty-final-ubuntu.png",
     "waybar -c ~/Nekoland/shell/waybar/config.jsonc -s ~/Nekoland/shell/waybar/style.css",
     "mako -c ~/Nekoland/shell/mako.ini",
+    # The input method; its keyboard grab and candidate popups go through Wayland.
+    "fcitx5 -d --replace",
 ]
 terminal = "foot"
 launcher = "fuzzel --config ~/Nekoland/shell/fuzzel.ini"
