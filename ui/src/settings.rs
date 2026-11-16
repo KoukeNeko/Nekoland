@@ -240,10 +240,7 @@ fn build(app: &adw::Application) {
         return;
     }
     let config = Config::load();
-    GLASS_OPACITY.set(config.number("glass_opacity", 0.8));
-    if !config.word("font").is_empty() {
-        UI_FONT.set(config.word("font").to_string());
-    }
+    remember_look(&config);
     // A look turned on before keeps up with this version of it.
     if gtk_look_on() {
         if let Err(err) = set_gtk_look(true) {
@@ -262,30 +259,52 @@ fn build(app: &adw::Application) {
         look,
         move |styles| look.load_from_string(&look_for(styles.is_dark()))
     ));
+    let make_page = {
+        let (look, autostart) = (look.clone(), autostart.clone());
+        Rc::new(move |name: &str, config: &Config| -> gtk::Widget {
+            match name {
+                "外觀" => appearance_page(config, &look).upcast(),
+                "字型" => fonts_page(&look).upcast(),
+                "協助工具" => accessibility_page(config).upcast(),
+                "隱私" => privacy_page().upcast(),
+                "桌面" => desktop_page(config, &autostart).upcast(),
+                "顯示" => display_page(config).upcast(),
+                "電源" => power_page(config).upcast(),
+                "聲音" => sound_page().upcast(),
+                "鍵盤" => keyboard_page(config).upcast(),
+                "滑鼠與觸控板" => mouse_page(config).upcast(),
+                "預設應用程式" => default_apps_page(config).upcast(),
+                "啟動項目" => startup_page(&autostart).upcast(),
+                "關於" => about_page().upcast(),
+                "設計語言" => design_page().upcast(),
+                _ => unreachable!("no page named {name}"),
+            }
+        })
+    };
     // The pages in groups with a line between, as the Mac's System Settings has them.
-    let groups: Vec<Vec<(&str, &str, gtk::Widget)>> = vec![
+    let groups: Vec<Vec<(&str, &str)>> = vec![
         vec![
-            ("外觀", "preferences-desktop-appearance-symbolic", appearance_page(&config, &look).upcast()),
-            ("字型", "preferences-desktop-font-symbolic", fonts_page(&look).upcast()),
-            ("協助工具", "preferences-desktop-accessibility-symbolic", accessibility_page(&config).upcast()),
-            ("隱私", "preferences-system-privacy-symbolic", privacy_page().upcast()),
+            ("外觀", "preferences-desktop-appearance-symbolic"),
+            ("字型", "preferences-desktop-font-symbolic"),
+            ("協助工具", "preferences-desktop-accessibility-symbolic"),
+            ("隱私", "preferences-system-privacy-symbolic"),
         ],
         vec![
-            ("桌面", "user-desktop-symbolic", desktop_page(&config, &autostart).upcast()),
-            ("顯示", "video-display-symbolic", display_page(&config).upcast()),
-            ("電源", "battery-level-100-symbolic", power_page(&config).upcast()),
+            ("桌面", "user-desktop-symbolic"),
+            ("顯示", "video-display-symbolic"),
+            ("電源", "battery-level-100-symbolic"),
         ],
         vec![
-            ("聲音", "audio-speakers-symbolic", sound_page().upcast()),
-            ("鍵盤", "input-keyboard-symbolic", keyboard_page(&config).upcast()),
-            ("滑鼠與觸控板", "input-mouse-symbolic", mouse_page(&config).upcast()),
+            ("聲音", "audio-speakers-symbolic"),
+            ("鍵盤", "input-keyboard-symbolic"),
+            ("滑鼠與觸控板", "input-mouse-symbolic"),
         ],
         vec![
-            ("預設應用程式", "preferences-desktop-apps-symbolic", default_apps_page(&config).upcast()),
-            ("啟動項目", "system-run-symbolic", startup_page(&autostart).upcast()),
-            ("關於", "help-about-symbolic", about_page().upcast()),
+            ("預設應用程式", "preferences-desktop-apps-symbolic"),
+            ("啟動項目", "system-run-symbolic"),
+            ("關於", "help-about-symbolic"),
         ],
-        vec![("設計語言", "applications-graphics-symbolic", design_page().upcast())],
+        vec![("設計語言", "applications-graphics-symbolic")],
     ];
     let starts: Vec<usize> = groups
         .iter()
@@ -295,7 +314,11 @@ fn build(app: &adw::Application) {
             Some(start)
         })
         .collect();
-    let pages: Vec<(&str, &str, gtk::Widget)> = groups.into_iter().flatten().collect();
+    let pages: Vec<(&str, &str, gtk::Widget)> = groups
+        .into_iter()
+        .flatten()
+        .map(|(name, icon)| (name, icon, make_page(name, &config)))
+        .collect();
 
     // A page's name has its glyphs half a pixel under the middle of its line, where its
     // icon, placed on whole pixels, cannot follow but by a transform.
@@ -382,7 +405,7 @@ fn build(app: &adw::Application) {
     ));
     sidebar.select_row(sidebar.row_at_index(first as i32).as_ref());
 
-    adw::ApplicationWindow::builder()
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("設定")
         .default_width(980)
@@ -390,8 +413,72 @@ fn build(app: &adw::Application) {
         .width_request(640)
         .height_request(480)
         .content(&split)
-        .build()
-        .present();
+        .build();
+    // Settings changed elsewhere while the window was in the background show as it comes
+    // back; its own changes, made while it is in front, never rebuild a page under the hand.
+    let left_with: RefCell<Option<String>> = RefCell::new(None);
+    window.connect_is_active_notify(move |window| {
+        if !window.is_active() {
+            left_with.replace(Some(outside_settings()));
+            return;
+        }
+        if left_with.take().is_none_or(|before| before == outside_settings()) {
+            return;
+        }
+        let config = Config::load();
+        remember_look(&config);
+        let shown = stack.visible_child_name();
+        let transition = stack.transition_type();
+        stack.set_transition_type(gtk::StackTransitionType::None);
+        for name in REBUILT_PAGES {
+            if let Some(old) = stack.child_by_name(name) {
+                stack.remove(&old);
+                stack.add_named(&make_page(name, &config), Some(name));
+            }
+        }
+        if let Some(shown) = shown {
+            stack.set_visible_child_name(&shown);
+        }
+        stack.set_transition_type(transition);
+    });
+    window.present();
+}
+
+/// The pages that show settings another program can change. 聲音 follows its devices on
+/// its own, and the rest show nothing that changes.
+const REBUILT_PAGES: [&str; 10] = [
+    "外觀",
+    "字型",
+    "協助工具",
+    "隱私",
+    "桌面",
+    "顯示",
+    "電源",
+    "鍵盤",
+    "滑鼠與觸控板",
+    "預設應用程式",
+];
+
+/// The compositor's settings and the GNOME ones the pages show, as text to compare.
+fn outside_settings() -> String {
+    let mut all = output("nekoland", &["msg", "config"]).unwrap_or_default();
+    for schema in [
+        INTERFACE,
+        WM_PREFERENCES,
+        A11Y_INTERFACE,
+        "org.gnome.desktop.privacy",
+    ] {
+        all += &output("gsettings", &["list-recursively", schema]).unwrap_or_default();
+    }
+    all
+}
+
+/// Keeps what the custom look's stylesheet is drawn with up with the settings.
+fn remember_look(config: &Config) {
+    GLASS_OPACITY.set(config.number("glass_opacity", 0.8));
+    if !config.word("font").is_empty() {
+        UI_FONT.set(config.word("font").to_string());
+    }
 }
 
 /// A row that switches a setting of the compositor's.
