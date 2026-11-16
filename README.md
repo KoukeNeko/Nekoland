@@ -44,7 +44,8 @@ wallpaper and an input method. Every key is optional:
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `bar_opacity`, `bar_blur`, `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar and the Dock themselves, and of all other glass, menus, notifications, the Dock's popups, the overview, and behind windows, as GTK's menus and sidebars show it. 0.5 and 0.8, each blurred 0.5, unless set |
 | `dock_size` | How big the Dock's icons are, from 24 to 96, the rest of it growing with them; 40 unless set, written back when the line between its icons is dragged |
-| `dock_autohide` | Whether the Dock slides off the bottom until the pointer reaches the bottom edge, leaving windows the whole height; off unless set |
+| `dock_position` | The edge the Dock is at: `left`, `bottom` or `right`; at the bottom unless set |
+| `dock_autohide` | Whether the Dock slides off its edge until the pointer reaches that edge, leaving windows the room; off unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
@@ -74,8 +75,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   is kept. A minimized window goes to the Dock's right end, next to the Trash, drawn in
   with the Mac's Genie effect, and comes back out the same way.
 - The line before the kept folders, and the one before the running applications, is
-  dragged up or down to size the Dock, as on the Mac; its right click turns
-  magnification and hiding on or off and opens Settings.
+  dragged up or down, or across at a side, to size the Dock, as on the Mac; its right
+  click turns magnification and hiding on or off, moves the Dock to the left, bottom or
+  right edge, and opens Settings. At a side the Dock runs from the top down, what opens
+  from it opens beside it, and folders open as a grid.
 - A kept folder shows as its newest items piled up or as its own icon, and opens as a
   fan rising from it, a grid of pages to scroll, or a list with submenus for folders; a
   right click sets its order, how it shows and how it opens. A folder dragged in from a

@@ -1390,16 +1390,18 @@ impl Nekoland {
         });
     }
 
-    /// Opens a menu of these entries centered over `anchor`, as the Dock's are over an icon.
-    pub fn open_menu_above(&mut self, entries: Vec<Entry>, anchor: Rectangle<i32, Logical>, gap: i32) {
+    /// Opens a menu of these entries beside `anchor`, the strip across the Dock at an icon,
+    /// on the side away from the Dock's edge.
+    pub fn open_dock_menu(&mut self, entries: Vec<Entry>, anchor: Rectangle<i32, Logical>, gap: i32) {
         let output = self.output_size();
         let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, output);
-        let loc = Point::from((
-            (anchor.loc.x + anchor.size.w / 2 - rect.size.w / 2)
-                .min(output.w - rect.size.w - 6)
-                .max(6),
-            (anchor.loc.y - gap - rect.size.h).max(MENU_BAR_HEIGHT + GAP_BELOW_BAR),
-        ));
+        let loc = crate::dock::beside(
+            self.config.dock_position,
+            Rectangle::from_size(output),
+            anchor,
+            rect.size,
+            gap,
+        );
         let shift = loc - rect.loc;
         self.menu_bar.open = Some(OpenMenu {
             title: None,

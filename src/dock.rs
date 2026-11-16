@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cairo::{Context, Format, ImageSurface};
+use cairo::{Context, Format, ImageSurface, Matrix};
 use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
@@ -33,9 +33,9 @@ use smithay::{
 };
 
 use crate::{
-    config::{self, Show, Sort, Stack, View},
+    config::{self, DockPosition, Show, Sort, Stack, View},
     glass::Tier,
-    menubar::{close, Command, Entry, Overlay},
+    menubar::{close, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
     windows::{is_managed, window_names, CONFIRM_APP_ID, LAUNCHER_APP_ID},
@@ -53,6 +53,8 @@ pub const MAX_ART: i32 = 96;
 const MARGIN: i32 = 8;
 /// How far over the Dock what opens from it stands: names, window pictures and menus.
 const POPUP_GAP: i32 = 10;
+/// How near the output's edges what opens from the Dock comes.
+const EDGE: i32 = 6;
 const LIFT: f64 = 4.0;
 const DOT: f64 = 4.0;
 const ACTIVE_DOT: f64 = 14.0;
@@ -85,6 +87,106 @@ impl Sizes {
             radius: part(20),
         }
     }
+}
+
+/// The output turned so that the Dock's edge is its bottom, where the Dock is laid out
+/// along x, as at the bottom, and turned back onto the output: a side Dock runs from the
+/// top down, its icons growing away from its edge.
+#[derive(Clone, Copy)]
+pub struct Frame {
+    pub side: DockPosition,
+    area: Rectangle<i32, Logical>,
+}
+
+impl Frame {
+    fn size(&self) -> Size<i32, Logical> {
+        match self.side {
+            DockPosition::Bottom => self.area.size,
+            _ => (self.area.size.h, self.area.size.w).into(),
+        }
+    }
+
+    /// A rectangle in the turned output, on the output.
+    pub fn rect(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+        let area = self.area.to_f64();
+        let turned = Size::from((rect.size.h, rect.size.w));
+        match self.side {
+            DockPosition::Bottom => Rectangle::new(area.loc + rect.loc, rect.size),
+            DockPosition::Left => Rectangle::new(
+                (
+                    area.loc.x + area.size.w - rect.loc.y - rect.size.h,
+                    area.loc.y + rect.loc.x,
+                )
+                    .into(),
+                turned,
+            ),
+            DockPosition::Right => {
+                Rectangle::new((area.loc.x + rect.loc.y, area.loc.y + rect.loc.x).into(), turned)
+            }
+        }
+    }
+
+    /// A rectangle on the output, in the turned output.
+    pub fn unrect(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+        let area = self.area.to_f64();
+        let (x, y) = (rect.loc.x - area.loc.x, rect.loc.y - area.loc.y);
+        let turned = Size::from((rect.size.h, rect.size.w));
+        match self.side {
+            DockPosition::Bottom => Rectangle::new((x, y).into(), rect.size),
+            DockPosition::Left => Rectangle::new((y, area.size.w - x - rect.size.w).into(), turned),
+            DockPosition::Right => Rectangle::new((y, x).into(), turned),
+        }
+    }
+
+    /// A point on the output, in the turned output.
+    fn point(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+        let area = self.area.to_f64();
+        let (x, y) = (point.x - area.loc.x, point.y - area.loc.y);
+        match self.side {
+            DockPosition::Bottom => (x, y).into(),
+            DockPosition::Left => (y, area.size.w - x).into(),
+            DockPosition::Right => (y, x).into(),
+        }
+    }
+
+    fn rect_i32(&self, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+        self.rect(rect.to_f64()).to_i32_round()
+    }
+}
+
+/// Where a popup `size` big goes beside a Dock on `side` of `area`: in the middle of
+/// `anchor` along the Dock, `gap` past its side away from the Dock's edge, on the output.
+pub(crate) fn beside(
+    side: DockPosition,
+    area: Rectangle<i32, Logical>,
+    anchor: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+    gap: i32,
+) -> Point<i32, Logical> {
+    let (center_x, center_y) = (anchor.loc.x + anchor.size.w / 2, anchor.loc.y + anchor.size.h / 2);
+    let (x, y) = match side {
+        DockPosition::Bottom => (center_x - size.w / 2, anchor.loc.y - gap - size.h),
+        DockPosition::Left => (anchor.loc.x + anchor.size.w + gap, center_y - size.h / 2),
+        DockPosition::Right => (anchor.loc.x - gap - size.w, center_y - size.h / 2),
+    };
+    Point::from((
+        x.min(area.loc.x + area.size.w - EDGE - size.w)
+            .max(area.loc.x + EDGE),
+        y.min(area.loc.y + area.size.h - EDGE - size.h)
+            .max(area.loc.y + MENU_BAR_HEIGHT + EDGE),
+    ))
+}
+
+/// Undoes the Dock's turn about a point, so that what is drawn next stands upright.
+fn stand_upright(cr: &Context, side: DockPosition, x: f64, y: f64) {
+    let undo = match side {
+        DockPosition::Bottom => return,
+        DockPosition::Left => Matrix::new(0.0, -1.0, 1.0, 0.0, 0.0, 0.0),
+        DockPosition::Right => Matrix::new(0.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+    };
+    cr.translate(x, y);
+    cr.transform(undo);
+    cr.translate(-x, -y);
 }
 
 /// The height the Dock keeps at the bottom of the output for itself.
@@ -228,6 +330,7 @@ pub enum DockCommand {
     EmptyTrash,
     ToggleMagnify,
     ToggleAutohide,
+    Position(DockPosition),
 }
 
 /// What is in a kept folder, as last read.
@@ -269,6 +372,7 @@ enum Opened {
 /// A window on its way into the Dock or back out: where it is when it is not minimized,
 /// where its picture is in its tile, and how far in it is, 0 to 1.
 pub struct Genie {
+    pub frame: Frame,
     pub window: Window,
     pub from: Rectangle<i32, Logical>,
     pub into: Rectangle<i32, Logical>,
@@ -796,8 +900,8 @@ impl Nekoland {
                 .is_some_and(|(_, slot)| slot.is_some());
         let pointed = pointer.is_some_and(|pos| {
             let at_edge = self
-                .output_rect()
-                .is_some_and(|area| pos.y >= f64::from(area.loc.y + area.size.h) - 1.0);
+                .dock_frame()
+                .is_some_and(|frame| frame.point(pos).y >= f64::from(frame.size().h) - 1.0);
             at_edge || (self.dock.hidden < 1.0 && self.dock_covers(pos))
         });
         in_use || pointed
@@ -808,22 +912,25 @@ impl Nekoland {
         self.space.output_geometry(output)
     }
 
-    /// Where the Dock is on the output, `width` wide.
+    pub(crate) fn dock_frame(&self) -> Option<Frame> {
+        Some(Frame {
+            side: self.config.dock_position,
+            area: self.output_rect()?,
+        })
+    }
+
+    /// Where the Dock is in the turned output, `width` long.
     fn dock_rect_of(&self, width: i32) -> Option<Rectangle<i32, Logical>> {
-        let area = self.output_rect()?;
+        let size = self.dock_frame()?.size();
         let height = self.dock_sizes().height;
         let hidden = (ease_out(self.dock.hidden) * f64::from(height + MARGIN)).round() as i32;
         Some(Rectangle::new(
-            (
-                area.loc.x + (area.size.w - width) / 2,
-                area.loc.y + area.size.h - MARGIN - height + hidden,
-            )
-                .into(),
+            ((size.w - width) / 2, size.h - MARGIN - height + hidden).into(),
             (width, height).into(),
         ))
     }
 
-    /// Where the Dock is drawn now, wider for its magnified icons.
+    /// Where the Dock is drawn now in the turned output, longer for its magnified icons.
     fn dock_rect(&self) -> Option<Rectangle<i32, Logical>> {
         let (_, extra) = self.magnified_offsets();
         self.dock_rect_of((self.dock.shown_width + extra).round() as i32)
@@ -866,9 +973,14 @@ impl Nekoland {
         (f64::from(self.dock_sizes().art) * (zoom - 1.0)).ceil() as i32
     }
 
-    /// Where a tile is drawn now, art and all, lifted or magnified if it is: a magnified
-    /// one grows up and out from the middle of its bottom.
+    /// Where a tile is drawn now on the output.
     fn tile_rect(&self, index: usize) -> Option<Rectangle<i32, Logical>> {
+        Some(self.dock_frame()?.rect_i32(self.turned_tile_rect(index)?))
+    }
+
+    /// Where a tile is drawn now in the turned output, art and all, lifted or magnified if
+    /// it is: a magnified one grows up and out from the middle of its bottom.
+    fn turned_tile_rect(&self, index: usize) -> Option<Rectangle<i32, Logical>> {
         let dock = self.dock_rect()?;
         let motion = self.dock.motions.get(index)?;
         let s = self.dock_sizes();
@@ -883,6 +995,39 @@ impl Nekoland {
                 .into(),
             (width.round() as i32, art.round() as i32).into(),
         ))
+    }
+
+    /// The strip across the Dock at a tile, on the output, from its edge out to the Dock's
+    /// far side or, `magnified`, the tile's if it stands out further.
+    fn dock_anchor(&self, index: usize, magnified: bool) -> Option<Rectangle<i32, Logical>> {
+        let frame = self.dock_frame()?;
+        let (along, width, out) = if magnified {
+            let dock = self.dock_rect()?;
+            let tile = self.turned_tile_rect(index)?;
+            (
+                tile.loc.x,
+                tile.size.w,
+                dock.loc.y.min(tile.loc.y - self.dock_sizes().pad),
+            )
+        } else {
+            let dock = self.dock_rect_of(self.dock.width)?;
+            let (start, width) = *self.dock.spans.get(index)?;
+            (dock.loc.x + start, width, dock.loc.y)
+        };
+        let edge = frame.size().h;
+        Some(frame.rect_i32(Rectangle::new((along, out).into(), (width, edge - out).into())))
+    }
+
+    /// Where a popup `size` big opens from a tile.
+    fn popup_loc(
+        &self,
+        index: usize,
+        magnified: bool,
+        size: Size<i32, Logical>,
+    ) -> Option<Point<i32, Logical>> {
+        let area = self.output_rect()?;
+        let anchor = self.dock_anchor(index, magnified)?;
+        Some(beside(self.config.dock_position, area, anchor, size, POPUP_GAP))
     }
 
     /// An icon by name, its art trimmed and fitted to `size`, kept for the next frame.
@@ -928,6 +1073,9 @@ impl Nekoland {
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64().min(0.1));
         self.dock.last_tick = Some(now);
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let turned = pointer
+            .zip(self.dock_frame())
+            .map(|(pos, frame)| frame.point(pos));
         let dark = self.menu_bar_dark();
         let menu_open = self.menu_bar.open.is_some();
 
@@ -976,7 +1124,7 @@ impl Nekoland {
             };
             let count = tiles[start..].iter().take_while(|tile| alike(tile)).count();
             let (spans, width) = Self::lay_out(&tiles, None, self.dock_sizes());
-            let slot = match (pointer, self.dock_rect_of(width)) {
+            let slot = match (turned, self.dock_rect_of(width)) {
                 (Some(pos), Some(rect)) if pos.y >= f64::from(rect.loc.y) - REMOVE_DISTANCE => {
                     let x = pos.x - f64::from(rect.loc.x);
                     Some(
@@ -1036,7 +1184,7 @@ impl Nekoland {
         // its size, while it is over the Dock or the icons grown out of it.
         let magnify = self.magnify_scale();
         let rise = f64::from(self.dock_rise());
-        let pointed = pointer.filter(|pos| {
+        let pointed = turned.filter(|pos| {
             magnify > 1.0
                 && !menu_open
                 && self.dock.drag.is_none()
@@ -1192,15 +1340,21 @@ impl Nekoland {
             return;
         }
 
-        let Ok(pane) = text::canvas(width.max(1), s.height) else {
+        let side = self.config.dock_position;
+        let turn = |long: i32, high: i32| match side {
+            DockPosition::Bottom => (long, high),
+            _ => (high, long),
+        };
+        let (pane_width, pane_height) = turn(width.max(1), s.height);
+        let Ok(pane) = text::canvas(pane_width, pane_height) else {
             return;
         };
         if let Ok(cr) = Context::new(&pane) {
             // Without glass under it, its tint is the more solid one, to read on.
             paint_pane(
                 &cr,
-                f64::from(width),
-                f64::from(s.height),
+                f64::from(pane_width),
+                f64::from(pane_height),
                 f64::from(s.radius),
                 dark,
                 if glass { Tier::Bar } else { Tier::Menu },
@@ -1208,13 +1362,22 @@ impl Nekoland {
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
         let big = (f64::from(s.art) * self.magnify_scale()).ceil() as i32;
-        let Ok(surface) = text::canvas(width.max(1), s.height + rise) else {
+        let (icons_width, icons_height) = turn(width.max(1), s.height + rise);
+        let Ok(surface) = text::canvas(icons_width, icons_height) else {
             return;
         };
         {
             let Ok(cr) = Context::new(&surface) else {
                 return;
             };
+            // Drawn as at the bottom, and turned onto the side.
+            match side {
+                DockPosition::Bottom => {}
+                DockPosition::Left => {
+                    cr.transform(Matrix::new(0.0, 1.0, -1.0, 0.0, f64::from(icons_width), 0.0))
+                }
+                DockPosition::Right => cr.transform(Matrix::new(0.0, 1.0, 1.0, 0.0, 0.0, 0.0)),
+            }
             let (r, g, b) = ink(dark);
             for (tile, x, lift, scale, alpha, zoom) in &drawn.tiles {
                 let x = f64::from(*x) / 2.0;
@@ -1260,10 +1423,13 @@ impl Nekoland {
                         ..
                     } => {
                         let image = icon.as_deref().and_then(|icon| self.dock_icon(icon, big, dark));
+                        let _ = cr.save();
+                        stand_upright(&cr, side, ax + size / 2.0, ay + size / 2.0);
                         match image {
                             Some(image) => paint_scaled(&cr, &image, ax, ay, size / f64::from(big), alpha),
                             None => draw_initial(&cr, ax, ay, size, name, dark),
                         }
+                        let _ = cr.restore();
                         if *running {
                             let dot = if *active { ACTIVE_DOT } else { DOT };
                             text::rounded_rectangle(
@@ -1287,6 +1453,8 @@ impl Nekoland {
                     Tile::Stack {
                         path, show, covers, ..
                     } => {
+                        let _ = cr.save();
+                        stand_upright(&cr, side, ax + size / 2.0, ay + size / 2.0);
                         // As a stack, its newest items piled up, the newest on top.
                         let images: Vec<ImageSurface> = if *show == Show::Stack {
                             covers
@@ -1314,11 +1482,15 @@ impl Nekoland {
                             stacks::paint_fitted(&cr, image, piece, alpha);
                             let _ = cr.restore();
                         }
+                        let _ = cr.restore();
                     }
                     Tile::Trash { full } => {
                         let name = if *full { "user-trash-full" } else { "user-trash" };
                         if let Some(icon) = self.dock_icon(name, big, dark) {
+                            let _ = cr.save();
+                            stand_upright(&cr, side, ax + size / 2.0, ay + size / 2.0);
                             paint_scaled(&cr, &icon, ax, ay, size / f64::from(big), alpha);
+                            let _ = cr.restore();
                         }
                     }
                 }
@@ -1358,6 +1530,7 @@ impl Nekoland {
                 });
         let showing = self.dock.preview.as_ref().map(|preview| preview.app_id.clone());
         let dock_top = f64::from(self.dock_rect().map_or(0, |rect| rect.loc.y));
+        let frame = self.dock_frame();
         let target = match (&candidate, showing) {
             _ if !quiet => None,
             // Resting long enough on an icon, or moving to another while pictures show.
@@ -1375,8 +1548,8 @@ impl Nekoland {
                     return;
                 };
                 // Over the pictures, or on the way down to the icon.
-                let inside = pointer.is_some_and(|pos| {
-                    let rect = preview.rect.to_f64();
+                let inside = pointer.zip(frame).is_some_and(|(pos, frame)| {
+                    let (pos, rect) = (frame.point(pos), frame.unrect(preview.rect.to_f64()));
                     pos.x >= rect.loc.x
                         && pos.x < rect.loc.x + rect.size.w
                         && pos.y >= rect.loc.y
@@ -1434,15 +1607,10 @@ impl Nekoland {
             PREVIEW_PADDING * 2 + count * CARD_WIDTH + (count - 1) * CARD_GAP,
             PREVIEW_PADDING * 2 + CARD_PADDING * 2 + CARD_HEADER + 6 + SHOT_HEIGHT,
         ));
-        let (Some(dock), Some(tile)) = (self.dock_rect(), self.tile_rect(index)) else {
+        let Some(loc) = self.popup_loc(index, true, size) else {
             return;
         };
-        let center = tile.loc.x + tile.size.w / 2;
-        let x = (center - size.w / 2)
-            .min(output.loc.x + output.size.w - 12 - size.w)
-            .max(output.loc.x + 12);
-        let top = dock.loc.y.min(tile.loc.y - self.dock_sizes().pad);
-        let rect = Rectangle::new((x, top - POPUP_GAP - size.h).into(), size);
+        let rect = Rectangle::new(loc, size);
         let cards: Vec<Rectangle<i32, Logical>> = (0..count)
             .map(|i| {
                 Rectangle::new(
@@ -1579,10 +1747,16 @@ impl Nekoland {
         if !self.dock_shown() {
             return Vec::new();
         }
-        let (Some(rect), Some(picture), Some(ids)) = (self.dock_rect(), &self.dock.picture, &self.dock.ids)
-        else {
+        let (Some(frame), Some(turned), Some(area), Some(picture), Some(ids)) = (
+            self.dock_frame(),
+            self.dock_rect(),
+            self.dock_area(),
+            &self.dock.picture,
+            &self.dock.ids,
+        ) else {
             return Vec::new();
         };
+        let rect = frame.rect_i32(turned);
         let mut overlays = Vec::new();
         if let Some((stack, picture)) = self
             .dock
@@ -1644,24 +1818,17 @@ impl Nekoland {
             });
         }
         if let Some((key, _, label, opened)) = &self.dock.label {
-            if let Some(tile) = self
+            if let Some(loc) = self
                 .dock
                 .tiles
                 .iter()
                 .position(|tile| tile.key() == *key)
-                .and_then(|index| self.tile_rect(index))
+                .and_then(|index| self.popup_loc(index, true, label.size))
             {
                 overlays.push(Overlay {
                     fade: fade_in(opened),
                     id: &ids.label,
-                    rect: Rectangle::new(
-                        (
-                            tile.loc.x + tile.size.w / 2 - label.size.w / 2,
-                            rect.loc.y.min(tile.loc.y - self.dock_sizes().pad) - POPUP_GAP - label.size.h,
-                        )
-                            .into(),
-                        label.size,
-                    ),
+                    rect: Rectangle::new(loc, label.size),
                     glass: Some((Tier::Menu, LABEL_RADIUS)),
                     alpha: 1.0,
                     picture: label,
@@ -1687,10 +1854,7 @@ impl Nekoland {
             overlays.push(Overlay {
                 fade: 1.0,
                 id: &ids.icons,
-                rect: Rectangle::new(
-                    (rect.loc.x, rect.loc.y + rect.size.h - icons.size.h).into(),
-                    icons.size,
-                ),
+                rect: Rectangle::new(frame.rect_i32(area).loc, icons.size),
                 glass: None,
                 alpha: 1.0,
                 picture: icons,
@@ -1743,6 +1907,9 @@ impl Nekoland {
     /// is not minimized, where its picture is in its tile, and how far it has gone in.
     pub fn dock_genies(&self) -> Vec<Genie> {
         let mut genies = Vec::new();
+        let Some(frame) = self.dock_frame() else {
+            return genies;
+        };
         for (window, from, at) in &self.dock.minimizing {
             let tile = self
                 .dock
@@ -1753,6 +1920,7 @@ impl Nekoland {
             if let Some(tile) = tile {
                 let progress = at.elapsed().as_secs_f64() / MINIMIZE_TIME;
                 genies.push(Genie {
+                    frame,
                     window: window.clone(),
                     from: *from,
                     into: fit_window(window, tile_picture(tile)),
@@ -1765,6 +1933,7 @@ impl Nekoland {
                 let rect = Rectangle::new(location, window.geometry().size);
                 let progress = 1.0 - at.elapsed().as_secs_f64() / MINIMIZE_TIME;
                 genies.push(Genie {
+                    frame,
                     window: window.clone(),
                     from: rect,
                     into: *into,
@@ -1867,7 +2036,10 @@ impl Nekoland {
     /// window's.
     pub fn dock_covers(&self, pos: Point<f64, Logical>) -> bool {
         self.dock_shown()
-            && (self.dock_area().is_some_and(|rect| rect.to_f64().contains(pos))
+            && (self
+                .dock_area()
+                .zip(self.dock_frame())
+                .is_some_and(|(rect, frame)| rect.to_f64().contains(frame.point(pos)))
                 || self
                     .dock
                     .preview
@@ -1880,7 +2052,7 @@ impl Nekoland {
                     .is_some_and(|stack| stack.rect.to_f64().contains(pos)))
     }
 
-    /// The Dock with the icons grown out of the top of it.
+    /// The Dock with the icons grown out of the top of it, in the turned output.
     fn dock_area(&self) -> Option<Rectangle<i32, Logical>> {
         let rect = self.dock_rect()?;
         let rise = self.dock_rise();
@@ -1903,11 +2075,13 @@ impl Nekoland {
     }
 
     fn dock_hit(&self, pos: Point<f64, Logical>) -> Option<usize> {
+        let pos = self.dock_frame()?.point(pos);
         if !self.dock_area()?.to_f64().contains(pos) {
             return None;
         }
         (0..self.dock.tiles.len()).find(|&index| {
-            let (Some(rect), Some(motion)) = (self.tile_rect(index), self.dock.motions.get(index)) else {
+            let (Some(rect), Some(motion)) = (self.turned_tile_rect(index), self.dock.motions.get(index))
+            else {
                 return false;
             };
             let half_gap = f64::from(self.dock_sizes().gap) * motion.zoom / 2.0;
@@ -1920,18 +2094,20 @@ impl Nekoland {
     /// a drag.
     pub fn dock_motion(&mut self, pos: Point<f64, Logical>) {
         self.dock.pointer = Some(pos);
-        if let Some((start_y, start)) = self.dock.resizing {
+        if let (Some((start_y, start)), Some(frame)) = (self.dock.resizing, self.dock_frame()) {
             // The line stays under the pointer: the Dock is as tall as its art times this.
             let s = Sizes::of(start);
-            let grown = (start_y - pos.y) * f64::from(s.art) / f64::from(s.height);
+            let grown = (start_y - frame.point(pos).y) * f64::from(s.art) / f64::from(s.height);
             self.config.dock_size = (start + grown.round() as i32).clamp(MIN_ART, MAX_ART);
             return;
         }
         let on_divider = self.dock_shown() && self.menu_bar.open.is_none() && self.dock_divider_at(pos);
         if on_divider != self.dock.on_divider {
             self.dock.on_divider = on_divider;
-            self.cursor_status = if on_divider {
+            self.cursor_status = if on_divider && self.config.dock_position == DockPosition::Bottom {
                 CursorImageStatus::Named(CursorIcon::NsResize)
+            } else if on_divider {
+                CursorImageStatus::Named(CursorIcon::EwResize)
             } else {
                 CursorImageStatus::default_named()
             };
@@ -2074,6 +2250,20 @@ impl Nekoland {
                         .checked(self.config.dock_magnify),
                     Entry::item("自動隱藏", Command::Dock(DockCommand::ToggleAutohide))
                         .checked(self.config.dock_autohide),
+                    Entry::submenu(
+                        "位置",
+                        [
+                            ("左", DockPosition::Left),
+                            ("下", DockPosition::Bottom),
+                            ("右", DockPosition::Right),
+                        ]
+                        .into_iter()
+                        .map(|(label, side)| {
+                            Entry::item(label, Command::Dock(DockCommand::Position(side)))
+                                .checked(self.config.dock_position == side)
+                        })
+                        .collect(),
+                    ),
                     Entry::separator(),
                     Entry::item("Dock 設定⋯", Command::Settings),
                 ];
@@ -2081,7 +2271,9 @@ impl Nekoland {
                     self.open_tile_menu(index, entries);
                 }
             } else {
-                self.dock.resizing = Some((pos.y, self.dock_sizes().art));
+                if let Some(frame) = self.dock_frame() {
+                    self.dock.resizing = Some((frame.point(pos).y, self.dock_sizes().art));
+                }
             }
             return true;
         }
@@ -2309,6 +2501,13 @@ impl Nekoland {
             DockCommand::OpenTrash => open_uri("trash:///"),
             // Asked first, in a dialog of its own: what is in the Trash cannot come back.
             DockCommand::EmptyTrash => config::spawn("nekoland-confirm empty-trash"),
+            DockCommand::Position(side) => {
+                self.config.dock_position = side;
+                self.dock.drawn = None;
+                if let Err(err) = config::set(&format!("dock_position = {:?}", side.name())) {
+                    tracing::warn!("{err}");
+                }
+            }
             DockCommand::ToggleAutohide => {
                 self.config.dock_autohide = !self.config.dock_autohide;
                 if let Err(err) = config::set(&format!("dock_autohide = {}", self.config.dock_autohide)) {
@@ -2355,12 +2554,8 @@ impl Nekoland {
 
     /// Opens a menu over a tile of the Dock, from the Dock's top edge.
     fn open_tile_menu(&mut self, index: usize, entries: Vec<Entry>) {
-        if let (Some(tile), Some(dock)) = (self.tile_rect(index), self.dock_rect()) {
-            let anchor = Rectangle::new(
-                (tile.loc.x, dock.loc.y).into(),
-                (tile.size.w, self.dock_sizes().height).into(),
-            );
-            self.open_menu_above(entries, anchor, POPUP_GAP);
+        if let Some(anchor) = self.dock_anchor(index, false) {
+            self.open_dock_menu(entries, anchor, POPUP_GAP);
         }
     }
 
@@ -2443,20 +2638,20 @@ impl Nekoland {
         else {
             return;
         };
-        let (Some(dock), Some(output), Some((start, width))) = (
-            self.dock_rect_of(self.dock.width),
-            self.output_rect(),
-            self.dock.spans.get(tile).copied(),
-        ) else {
+        let Some(anchor) = self.dock_anchor(tile, false) else {
             return;
         };
         self.dock.preview = None;
+        // A fan rises only from a Dock at the bottom; at a side it opens as a grid, as the
+        // Mac's does.
+        let bottom = self.config.dock_position == DockPosition::Bottom;
         let view = match stack.view {
+            View::Auto | View::Fan if !bottom => View::Grid,
             View::Auto if items.len() <= stacks::AUTO_FAN => View::Fan,
             View::Auto => View::Grid,
             view => view,
         };
-        let center = dock.loc.x + start + width / 2;
+        let center = anchor.loc.x + anchor.size.w / 2;
         let (opened, rect) = match view {
             View::List => {
                 let entries = self.list_entries(&items, &folder, &name, stack.sort);
@@ -2475,16 +2670,17 @@ impl Nekoland {
                     "在檔案中打開".to_string()
                 });
                 let fan = Fan::new(&labels);
-                let anchor = Point::from((f64::from(center), f64::from(dock.loc.y + self.dock_sizes().pad)));
+                let anchor =
+                    Point::from((f64::from(center), f64::from(anchor.loc.y + self.dock_sizes().pad)));
                 let rect = Rectangle::new((anchor + fan.origin).to_i32_round(), fan.size);
                 (Opened::Fan { fan, anchor, labels }, rect)
             }
             View::Grid | View::Auto => {
                 let grid = Grid::new(items.len());
-                let x = (center - grid.size.w / 2)
-                    .min(output.loc.x + output.size.w - 12 - grid.size.w)
-                    .max(output.loc.x + 12);
-                let rect = Rectangle::new((x, dock.loc.y - POPUP_GAP - grid.size.h).into(), grid.size);
+                let Some(loc) = self.popup_loc(tile, false, grid.size) else {
+                    return;
+                };
+                let rect = Rectangle::new(loc, grid.size);
                 (Opened::Grid { grid, scroll: 0 }, rect)
             }
         };
@@ -2948,6 +3144,55 @@ mod tests {
         let (spans, width_with_gap) = Nekoland::lay_out(&tiles, Some(1), s);
         assert_eq!(spans[1].0, 12 + (40 + 12) * 2);
         assert_eq!(width_with_gap, width + 40 + 12);
+    }
+
+    #[test]
+    fn a_side_dock_is_turned_onto_its_edge_and_back() {
+        let area = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        // The Dock's strip, 64 high at the turned bottom, 100 to 300 along.
+        let strip = Rectangle::<f64, Logical>::new((100.0, 1856.0).into(), (200.0, 64.0).into());
+        let left = Frame {
+            side: DockPosition::Left,
+            area,
+        };
+        assert_eq!(left.size(), Size::from((1080, 1920)));
+        assert_eq!(
+            left.rect(strip),
+            Rectangle::new((0.0, 100.0).into(), (64.0, 200.0).into())
+        );
+        let right = Frame {
+            side: DockPosition::Right,
+            area,
+        };
+        assert_eq!(
+            right.rect(strip),
+            Rectangle::new((1856.0, 100.0).into(), (64.0, 200.0).into())
+        );
+        for frame in [
+            left,
+            right,
+            Frame {
+                side: DockPosition::Bottom,
+                area,
+            },
+        ] {
+            assert_eq!(frame.unrect(frame.rect(strip)), strip);
+            // A point at the output's edge is at the turned bottom.
+            let edge = frame.rect(strip).loc + Point::from((1.0, 1.0));
+            assert!(strip.contains(frame.point(edge)));
+        }
+        // A popup opens past the far side of a left Dock's strip, kept on the output.
+        let anchor = Rectangle::new((0, 100).into(), (64, 40).into());
+        let at = beside(DockPosition::Left, area, anchor, Size::from((80, 20)), 10);
+        assert_eq!(at, Point::from((74, 110)));
+        let at = beside(
+            DockPosition::Bottom,
+            area,
+            Rectangle::new((0, 1016).into(), (40, 64).into()),
+            Size::from((80, 20)),
+            10,
+        );
+        assert_eq!(at, Point::from((EDGE, 986)));
     }
 
     #[test]

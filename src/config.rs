@@ -57,8 +57,10 @@ pub struct Config {
     pub dock_glass: bool,
     /// How big the Dock's icons are, in logical pixels; the rest of the Dock grows with them.
     pub dock_size: i32,
-    /// Whether the Dock slides off the bottom until the pointer reaches it.
+    /// Whether the Dock slides off its edge until the pointer reaches it.
     pub dock_autohide: bool,
+    /// The edge of the output the Dock is at.
+    pub dock_position: DockPosition,
     /// Whether the Dock's icons grow as the pointer passes over them, as the Mac's do, and
     /// how big the one under it grows, as a multiple of their size.
     pub dock_magnify: bool,
@@ -169,6 +171,26 @@ pub enum Show {
     Folder,
     #[default]
     Stack,
+}
+
+/// The edge of the output the Dock is at.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DockPosition {
+    Left,
+    #[default]
+    Bottom,
+    Right,
+}
+
+impl DockPosition {
+    pub fn name(self) -> &'static str {
+        match self {
+            DockPosition::Left => "left",
+            DockPosition::Bottom => "bottom",
+            DockPosition::Right => "right",
+        }
+    }
 }
 
 /// How the folder's items open from the Dock.
@@ -302,6 +324,7 @@ impl Default for Config {
             dock_glass: true,
             dock_size: 40,
             dock_autohide: false,
+            dock_position: DockPosition::Bottom,
             dock_magnify: true,
             dock_magnify_scale: 1.6,
             bar_opacity: 0.5,

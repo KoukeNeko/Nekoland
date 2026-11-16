@@ -15,6 +15,7 @@ use gtk::{gdk, gdk_pixbuf::Pixbuf, gio, glib};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Settings";
 const APPS_VIEWS: [&str; 4] = ["overview", "launchpad", "shelf", "sidebar"];
+const DOCK_POSITIONS: [&str; 3] = ["left", "bottom", "right"];
 const WALLPAPER_MODES: [&str; 3] = ["fill", "fit", "center"];
 /// Where pictures for the desktop are looked for, and how many are offered.
 const WALLPAPER_DIRS: [&str; 3] = [
@@ -439,6 +440,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         (24.0, 96.0, 1.0),
         |size| set(&format!("dock_size = {size:.0}")),
     ));
+    dock.add(&choice_row(config, "位置", "dock_position", &DOCK_POSITIONS, &["左", "下", "右"]));
     dock.add(&switch_row(config, "自動隱藏", "dock_autohide"));
     dock.add(&switch_row(config, "毛玻璃", "dock_glass"));
     let magnify = switch_row(config, "放大", "dock_magnify");

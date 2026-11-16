@@ -12,7 +12,7 @@ use smithay::{
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use crate::{dock::dock_space, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
+use crate::{config::DockPosition, dock::dock_space, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
 
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
@@ -109,15 +109,32 @@ impl Nekoland {
             area.size.h -= below_bar - area.loc.y;
             area.loc.y = below_bar;
         }
-        // A Dock that hides leaves the whole height to windows, as on the Mac.
+        // A Dock that hides leaves its edge to windows, as on the Mac.
         let dock = if self.config.dock_autohide {
             0
         } else {
             dock_space(self.config.dock_size)
         };
-        let above_dock = geometry.loc.y + geometry.size.h - dock;
-        if area.loc.y + area.size.h > above_dock {
-            area.size.h = above_dock - area.loc.y;
+        match self.config.dock_position {
+            DockPosition::Bottom => {
+                let above_dock = geometry.loc.y + geometry.size.h - dock;
+                if area.loc.y + area.size.h > above_dock {
+                    area.size.h = above_dock - area.loc.y;
+                }
+            }
+            DockPosition::Left => {
+                let right_of_dock = geometry.loc.x + dock;
+                if area.loc.x < right_of_dock {
+                    area.size.w -= right_of_dock - area.loc.x;
+                    area.loc.x = right_of_dock;
+                }
+            }
+            DockPosition::Right => {
+                let left_of_dock = geometry.loc.x + geometry.size.w - dock;
+                if area.loc.x + area.size.w > left_of_dock {
+                    area.size.w = left_of_dock - area.loc.x;
+                }
+            }
         }
         Some(area)
     }

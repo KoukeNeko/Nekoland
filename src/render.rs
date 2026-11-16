@@ -23,6 +23,8 @@ use smithay::{
 };
 
 use crate::{
+    config::DockPosition,
+    dock::Frame,
     glass::{Glass, Pane, Tier},
     menubar::Overlay,
     overview::ICON_SIZE,
@@ -349,6 +351,7 @@ fn dock_front(
         .flat_map(|genie| {
             draw_genie(
                 renderer,
+                genie.frame,
                 &genie.window,
                 genie.from,
                 genie.into,
@@ -387,9 +390,11 @@ const GENIE_BEND: f64 = 0.4;
 /// A window `progress` of the way into the Dock, as the Mac's Genie draws it: first its
 /// lower part bends toward `into`, the place of its picture in the Dock, then it slides
 /// down the funnel that makes and into it. It is cut into bands across, each squeezed to
-/// the funnel's width where it is.
+/// the funnel's width where it is. All this is worked out in the Dock's turned `frame`, so
+/// that into a side Dock the window flows sideways, in bands from top to bottom.
 fn draw_genie(
     renderer: &mut GlesRenderer,
+    frame: Frame,
     window: &Window,
     from: Rectangle<i32, Logical>,
     into: Rectangle<i32, Logical>,
@@ -408,7 +413,12 @@ fn draw_genie(
     } else {
         (1.0, smooth((progress - GENIE_BEND) / (1.0 - GENIE_BEND)))
     };
-    let (from, into) = (from.to_f64(), into.to_f64());
+    let (from, into) = (frame.unrect(from.to_f64()), frame.unrect(into.to_f64()));
+    // The window's length down the turned output, across which the bands are cut.
+    let length = match frame.side {
+        DockPosition::Bottom => f64::from(geometry.size.h),
+        _ => f64::from(geometry.size.w),
+    };
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     // How far a height on screen is down the funnel, from the window's top to its picture's.
     let depth = (into.loc.y - from.loc.y).max(1.0);
@@ -425,21 +435,31 @@ fn draw_genie(
         let f = funnel((y0 + y1) / 2.0);
         let left = lerp(from.loc.x, into.loc.x, f);
         let right = lerp(from.loc.x + from.size.w, into.loc.x + into.size.w, f);
-        let scale = Scale::from((
-            (right - left) / f64::from(geometry.size.w),
-            (y1 - y0) / ((v1 - v0) * f64::from(geometry.size.h)),
-        ));
-        let offset = Point::<f64, Logical>::from((
-            left - f64::from(output_loc.x),
-            y0 - v0 * f64::from(geometry.size.h) * scale.y - f64::from(output_loc.y),
-        ));
-        // One pixel taller, so that the bands meet without a seam.
-        let crop = Rectangle::<f64, Logical>::new(
-            (left - f64::from(output_loc.x), y0 - f64::from(output_loc.y)).into(),
-            (right - left, y1 - y0 + 1.0).into(),
-        )
-        .to_physical(output_scale)
-        .to_i32_round();
+        let band = frame.rect(Rectangle::new((left, y0).into(), (right - left, y1 - y0).into()));
+        // The band's part of the window, across it on the output: a Dock on the left turns
+        // the window's right side to the top of the turned output.
+        let part = (v1 - v0) * length;
+        let start = match frame.side {
+            DockPosition::Left => (1.0 - v1) * length,
+            _ => v0 * length,
+        };
+        let (scale, offset, grown) = match frame.side {
+            DockPosition::Bottom => {
+                let scale = Scale::from((band.size.w / f64::from(geometry.size.w), band.size.h / part));
+                let offset = Point::from((band.loc.x, band.loc.y - start * scale.y));
+                (scale, offset, Size::from((0.0, 1.0)))
+            }
+            _ => {
+                let scale = Scale::from((band.size.w / part, band.size.h / f64::from(geometry.size.h)));
+                let offset = Point::from((band.loc.x - start * scale.x, band.loc.y));
+                (scale, offset, Size::from((1.0, 0.0)))
+            }
+        };
+        let offset: Point<f64, Logical> = offset - output_loc.to_f64();
+        // One pixel longer, so that the bands meet without a seam.
+        let crop = Rectangle::<f64, Logical>::new(band.loc - output_loc.to_f64(), band.size + grown)
+            .to_physical(output_scale)
+            .to_i32_round();
         // Each band draws the window anew; its surfaces' elements are not copied.
         let surfaces = AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
             window,
