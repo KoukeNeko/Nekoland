@@ -172,10 +172,13 @@ scale > trough > highlight {
 scale > trough {
   background-color: var(--nekoland-line);
 }
+/* At least as long as the padding it reaches into, or GTK finds it shorter than nothing. */
 scale.horizontal > trough {
+  min-width: 24px;
   margin: 0 -12px;
 }
 scale.vertical > trough {
+  min-height: 24px;
   margin: -12px 0;
 }
 scale > trough > slider {
