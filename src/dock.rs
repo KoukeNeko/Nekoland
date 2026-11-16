@@ -2955,8 +2955,8 @@ impl Nekoland {
         self.dock.dnd = Some(found);
     }
 
-    /// A drag ended. Dropped on the Dock, where no program took it: on an application, the
-    /// files open in it; on the Trash, they go there; elsewhere, folders are kept.
+    /// A drag ended. Dropped on the Dock, where no program took it, the files go where
+    /// `drop_files_on_dock` puts them.
     pub fn dock_dropped(&mut self, validated: bool) {
         let Some(found) = self.dock.dnd.take() else {
             return;
@@ -2966,7 +2966,7 @@ impl Nekoland {
         let Some(pos) = self.dock.pointer else {
             return;
         };
-        if validated || !self.dock_covers(pos) {
+        if validated {
             return;
         }
         let paths = found
@@ -2974,8 +2974,15 @@ impl Nekoland {
             .ok()
             .and_then(|found| found.clone())
             .unwrap_or_default();
-        if paths.is_empty() {
-            return;
+        self.drop_files_on_dock(pos, &paths);
+    }
+
+    /// Files dropped at `pos`: on an application, they open in it; on the Trash, they go
+    /// there; on a kept folder, into it; elsewhere on the Dock, folders are kept. Returns
+    /// whether the Dock was there to take them.
+    pub(crate) fn drop_files_on_dock(&mut self, pos: Point<f64, Logical>, paths: &[PathBuf]) -> bool {
+        if paths.is_empty() || !self.dock_covers(pos) {
+            return false;
         }
         let tile = self
             .dock_tile_at(pos)
@@ -2994,13 +3001,15 @@ impl Nekoland {
                 }
             }
             Some(Tile::Trash { .. }) => {
-                for path in &paths {
+                for path in paths {
                     if let Err(err) = gio::File::for_path(path).trash(gio::Cancellable::NONE) {
                         tracing::warn!("{}: {err}", path.display());
                     }
                 }
                 self.dock.trash = None;
             }
+            // Into a kept folder, as onto a folder in a file manager.
+            Some(Tile::Stack { path: folder, .. }) => move_into(paths, &folder),
             _ => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let before = self.config.stacks.len();
@@ -3018,6 +3027,7 @@ impl Nekoland {
                 }
             }
         }
+        true
     }
 
     /// Starts an application from its desktop entry, or by its ID when it has none.
@@ -3082,14 +3092,44 @@ fn open_label(name: &str) -> String {
 }
 
 /// Opens a file or folder in the program the desktop opens it with.
+/// Moves files into a folder, as dropping them on it in a file manager does; what is
+/// already there stays.
+pub(crate) fn move_into(paths: &[PathBuf], folder: &Path) {
+    for path in paths
+        .iter()
+        .filter(|path| *path != folder && path.parent() != Some(folder))
+    {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let to = gio::File::for_path(folder.join(name));
+        if let Err(err) =
+            gio::File::for_path(path).move_(&to, gio::FileCopyFlags::NONE, gio::Cancellable::NONE, None)
+        {
+            tracing::warn!("{} into {}: {err}", path.display(), folder.display());
+        }
+    }
+}
+
 /// Has the file manager show `path` selected in the folder it is in.
 pub(crate) fn reveal_path(path: &Path) {
-    let uri = gio::File::for_path(path).uri();
-    config::spawn(&format!(
-        "gdbus call --session --dest org.freedesktop.FileManager1 \
-         --object-path /org/freedesktop/FileManager1 \
-         --method org.freedesktop.FileManager1.ShowItems \"['{uri}']\" ''"
-    ));
+    ask_file_manager("ShowItems", &[path.to_path_buf()]);
+}
+
+/// Calls a method of the file manager's D-Bus interface on `paths`: `ShowItems` or
+/// `ShowItemProperties`. The names go as a GVariant, never through a shell, as a file may
+/// be named anything.
+pub(crate) fn ask_file_manager(method: &str, paths: &[PathBuf]) {
+    let uris: Vec<String> = paths.iter().map(|path| gio::File::for_path(path).uri().into()).collect();
+    let spawned = std::process::Command::new("gdbus")
+        .args(["call", "--session", "--dest", "org.freedesktop.FileManager1"])
+        .args(["--object-path", "/org/freedesktop/FileManager1"])
+        .args(["--method", &format!("org.freedesktop.FileManager1.{method}")])
+        .args([uris.to_variant().print(false).as_str(), "''"])
+        .spawn();
+    if let Err(err) = spawned {
+        tracing::warn!("gdbus: {err}");
+    }
 }
 
 pub(crate) fn open_path(path: &Path) {

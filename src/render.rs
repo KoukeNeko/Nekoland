@@ -121,7 +121,11 @@ pub fn scene_elements(
             popups_of: &windows,
             without_top_panel: false,
         };
-        let mut elements = dock_front(state, renderer, output_geometry.loc, scale);
+        let mut elements: Vec<SceneElement> = state
+            .desktop_drag_element(renderer, output_geometry.loc, scale)
+            .into_iter()
+            .collect();
+        elements.extend(dock_front(state, renderer, output_geometry.loc, scale));
         elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
         return Ok(elements);

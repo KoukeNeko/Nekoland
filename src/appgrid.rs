@@ -1504,7 +1504,7 @@ const CANDIDATES_RADIUS: i32 = 10;
 
 /// The input method's candidates in a row, each after the number that picks it, the lit
 /// one on solid ink; then its note, such as the page.
-fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<Picture> {
+pub(crate) fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<Picture> {
     const PAD: f64 = 6.0;
     const HEIGHT: i32 = 36;
     let measure = ImageSurface::create(Format::ARgb32, 1, 1).ok()?;

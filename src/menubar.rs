@@ -186,7 +186,7 @@ impl Entry {
         }
     }
 
-    fn shortcut(mut self, shortcut: &str) -> Self {
+    pub(crate) fn shortcut(mut self, shortcut: &str) -> Self {
         self.shortcut = shortcut.to_string();
         self
     }

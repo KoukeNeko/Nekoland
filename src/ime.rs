@@ -196,9 +196,9 @@ pub fn start(events: Sender<Event>) -> Option<Ime> {
 }
 
 impl crate::state::Nekoland {
-    /// Hands a key to the input method while the applications' text field takes keys; a
-    /// letter typed in the overview opens the applications first, as typing there does.
-    /// Returns whether the key went to it.
+    /// Hands a key to the input method while the applications' text field or a name being
+    /// typed on the desktop takes keys; a letter typed in the overview opens the
+    /// applications first, as typing there does. Returns whether the key went to it.
     pub fn ime_key(
         &mut self,
         modifiers: &smithay::input::keyboard::ModifiersState,
@@ -209,14 +209,15 @@ impl crate::state::Nekoland {
         use smithay::input::keyboard::Keysym;
         let sym = keysym.modified_sym();
         // Ctrl+Space switches the input method; other shortcuts stay the compositor's.
-        let typing = self.overview.is_some()
+        let renaming = self.desktop.renaming.is_some();
+        let typing = (self.overview.is_some() || renaming)
             && self.menu_bar.open.is_none()
             && !(modifiers.alt || modifiers.logo)
             && (!modifiers.ctrl || sym == Keysym::space);
         if !typing {
             return false;
         }
-        if !self.apps_shown() {
+        if !renaming && !self.apps_shown() {
             if !(pressed && sym.key_char().is_some_and(|character| !character.is_control())) {
                 return false;
             }
@@ -225,17 +226,22 @@ impl crate::state::Nekoland {
         if self.ime.is_none() {
             self.ime = self.events.clone().and_then(start);
         }
-        let (Some(ime), Some(apps)) = (
-            &self.ime,
-            self.overview.as_mut().and_then(|overview| overview.apps.as_mut()),
-        ) else {
+        let Some(ime) = &self.ime else {
             return false;
+        };
+        let focused = match (
+            &mut self.desktop.renaming,
+            self.overview.as_mut().and_then(|overview| overview.apps.as_mut()),
+        ) {
+            (Some(rename), _) => &mut rename.ime_focused,
+            (None, Some(apps)) => &mut apps.ime_focused,
+            (None, None) => return false,
         };
         let state = u32::from(modifiers.shift)
             | u32::from(modifiers.caps_lock) << 1
             | u32::from(modifiers.ctrl) << 2
             | u32::from(modifiers.logo) << 6;
-        let sent = (apps.ime_focused || ime.send(Request::Focus))
+        let sent = (*focused || ime.send(Request::Focus))
             && ime.send(Request::Key(Key {
                 keysym: sym.raw(),
                 keycode: keysym.raw_code().raw(),
@@ -243,16 +249,29 @@ impl crate::state::Nekoland {
                 release: !pressed,
                 time,
             }));
-        apps.ime_focused = sent;
+        *focused = sent;
         if !sent {
             self.ime = None;
         }
         sent
     }
 
-    /// What the input method says goes into the applications' text field.
+    /// What the input method says goes into the name being typed on the desktop, or else
+    /// the applications' text field.
     pub fn ime_event(&mut self, event: ImeEvent) {
         use smithay::input::keyboard::Keysym;
+        if let Some(rename) = self.desktop.renaming.as_mut() {
+            match event {
+                ImeEvent::Commit(text) => self.rename_commit(&text),
+                ImeEvent::Key(raw) => {
+                    let sym = Keysym::from(raw);
+                    self.rename_key(sym, sym.key_char());
+                }
+                ImeEvent::Preedit(text) => rename.preedit = text,
+                ImeEvent::Candidates(candidates) => self.desktop.candidates = candidates,
+            }
+            return;
+        }
         match event {
             ImeEvent::Commit(text) => {
                 for character in text.chars() {

@@ -181,9 +181,16 @@ closes. It follows the desktop's dark or light setting.
 
 The files in the Desktop folder lie on the wallpaper, under the windows, in columns from
 the top right corner down, as on the Mac: a click chooses one, a double click opens it.
-A right click on one opens its menu, to open it, show it in Files or put it in the
-Trash; on the desktop itself, to make a new folder, sort the files or change the
-wallpaper.
+Shift or Ctrl and a click adds to the choice, and dragging over the desktop draws a box
+that chooses what it touches. What is chosen drags as files: into a folder on the
+desktop, onto the Dock (the Trash, an application, a kept folder) or into a window.
+
+With the desktop chosen, the arrows and a typed letter move the choice; Return or F2
+renames in place (the name without its extension is chosen, and the input method
+types into it); Super O opens, Delete or Super Backspace puts in the Trash, Super I
+shows the file's properties in Files, and Super Shift N makes a new folder. A right
+click on a file opens its menu, with the same and the applications that open it; on
+the desktop itself, to make a new folder, sort the files or change the wallpaper.
 
 ## Overview
 

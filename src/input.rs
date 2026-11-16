@@ -103,6 +103,7 @@ impl Nekoland {
                 if !locked {
                     self.menu_bar_motion(pos);
                     self.dock_motion(pos);
+                    self.desktop_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
@@ -143,6 +144,7 @@ impl Nekoland {
                 if !locked {
                     self.menu_bar_motion(pos);
                     self.dock_motion(pos);
+                    self.desktop_motion(pos);
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
@@ -175,6 +177,7 @@ impl Nekoland {
                 } else if ButtonState::Released == button_state {
                     self.menu_bar_release(pointer.current_location());
                     self.dock_release(pointer.current_location());
+                    self.desktop_release();
                     self.overview_release(pointer.current_location());
                 }
 
@@ -255,6 +258,7 @@ impl Nekoland {
 
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
         self.close_launcher_unless(clicked.as_ref());
+        self.end_rename();
         if self.menu_bar_press(pos) {
             return;
         }
@@ -289,7 +293,7 @@ impl Nekoland {
                 };
                 pointer.set_grab(self, grab, serial, Focus::Clear);
             }
-        } else if left_or_right && self.desktop_press(pos, button == BUTTON_RIGHT) {
+        } else if left_or_right && self.desktop_press(pos, button == BUTTON_RIGHT, serial) {
             self.set_keyboard_focus(None);
         } else if let Some((layer, _)) = self.layer_under(pos, BELOW_WINDOWS) {
             self.focus_layer(&layer);
@@ -341,6 +345,10 @@ impl Nekoland {
                 Some(character) if !character.is_control() => self.show_apps(&character.to_string()),
                 _ => return false,
             }
+            return true;
+        }
+
+        if self.desktop_key(modifiers, sym, typed) {
             return true;
         }
 

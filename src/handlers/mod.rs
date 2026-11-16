@@ -97,7 +97,20 @@ impl ClientDndGrabHandler for Nekoland {
         self.dock_dropped(validated);
     }
 }
-impl ServerDndGrabHandler for Nekoland {}
+/// Files dragged off the desktop: Nekoland is where they come from.
+impl ServerDndGrabHandler for Nekoland {
+    fn send(&mut self, _mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
+        self.desktop_drag_send(fd);
+    }
+
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        self.desktop_drag_ended();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.desktop_dropped_here();
+    }
+}
 
 delegate_data_device!(Nekoland);
 
