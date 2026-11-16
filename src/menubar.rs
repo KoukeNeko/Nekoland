@@ -1650,7 +1650,12 @@ impl Nekoland {
                 entries.push(Entry::separator());
                 entries.push(Entry::item("全部移到最前面", Command::BringAllToFront));
                 if let Some((app_id, _)) = &app {
-                    let windows = self.app_windows(app_id);
+                    // Minimized ones too, as the Mac's Window menu lists them.
+                    let windows: Vec<Window> = self
+                        .all_windows()
+                        .filter(|window| is_managed(window) && window_names(window).1 == *app_id)
+                        .cloned()
+                        .collect();
                     if !windows.is_empty() {
                         entries.push(Entry::separator());
                     }
