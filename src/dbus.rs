@@ -133,6 +133,7 @@ pub enum Event {
     },
     /// The default output's volume, or None when there is no sound server to ask.
     Sound(Option<crate::system::Volume>),
+    Ime(crate::ime::ImeEvent),
 }
 
 /// A notification as a program sent it.

@@ -56,6 +56,9 @@ pub struct Nekoland {
     pub wallpaper: Option<std::process::Child>,
     /// The pointing devices libinput gave, to set as the configuration says.
     pub pointer_devices: Vec<smithay::reexports::input::Device>,
+    /// Where threads send what they learn; the input method starts when first typed into.
+    pub events: Option<smithay::reexports::calloop::channel::Sender<crate::dbus::Event>>,
+    pub ime: Option<crate::ime::Ime>,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
@@ -149,6 +152,8 @@ impl Nekoland {
             config: Config::load(),
             wallpaper: None,
             pointer_devices: Vec::new(),
+            events: None,
+            ime: None,
             display_handle: dh,
 
             space,

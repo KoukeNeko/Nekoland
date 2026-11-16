@@ -35,6 +35,16 @@ impl Nekoland {
                     time,
                     |state, modifiers, keysym| {
                         let code = keysym.raw_code();
+                        let pressed = key_state == KeyState::Pressed;
+                        if state.ime_key(modifiers, &keysym, pressed, time) {
+                            if pressed {
+                                state.suppressed_keys.insert(code);
+                            } else {
+                                state.key_released(keysym.modified_sym());
+                                state.suppressed_keys.remove(&code);
+                            }
+                            return FilterResult::Intercept(());
+                        }
                         let handled = match key_state {
                             KeyState::Pressed => {
                                 // Letters by their plain symbol, so that Shift does not change them;

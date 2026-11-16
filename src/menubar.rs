@@ -1150,6 +1150,8 @@ impl Nekoland {
             Event::Dark(dark) => bar.dark = dark,
             // Banners, which the notices take.
             Event::Notify(_) | Event::CloseNotification(_) => {}
+            // What is typed into the applications' search field.
+            Event::Ime(event) => self.ime_event(event),
             Event::Sound(volume) => {
                 bar.sound = volume;
                 bar.items_revision += 1;

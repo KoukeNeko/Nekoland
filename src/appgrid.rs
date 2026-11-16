@@ -234,6 +234,13 @@ pub struct AppGrid {
     entries: Vec<Entry>,
     folders: Vec<Folder>,
     query: String,
+    /// What the input method is composing, shown after the query until it is committed;
+    /// and what it offers to choose from.
+    pub preedit: String,
+    pub candidates: Option<crate::ime::Candidates>,
+    candidates_picture: Option<(crate::ime::Candidates, Picture)>,
+    /// Whether the input method has been told that this view takes keys.
+    pub ime_focused: bool,
     page: usize,
     /// The page shown, on its way to `page`.
     shown: f64,
@@ -253,10 +260,10 @@ pub struct AppGrid {
     layout: Option<Layout>,
     picture: Option<Picture>,
     drawn: Option<GridDrawn>,
-    search: Option<(String, Picture)>,
+    search: Option<((String, String), Picture)>,
     held_picture: Option<Picture>,
     backdrop: Option<(Size<i32, Logical>, Picture)>,
-    ids: [Id; 6],
+    ids: [Id; 7],
 }
 
 /// The kind of application a desktop entry says it is, as a folder of it is named.
@@ -416,6 +423,10 @@ impl AppGrid {
             entries,
             folders,
             query: query.to_string(),
+            preedit: String::new(),
+            candidates: None,
+            candidates_picture: None,
+            ime_focused: false,
             page: 0,
             shown: 0.0,
             hovered: None,
@@ -434,7 +445,7 @@ impl AppGrid {
             search: None,
             held_picture: None,
             backdrop: None,
-            ids: [Id::new(), Id::new(), Id::new(), Id::new(), Id::new(), Id::new()],
+            ids: std::array::from_fn(|_| Id::new()),
         }
     }
 
@@ -563,13 +574,19 @@ impl AppGrid {
                 Some((size, text::picture(surface)?))
             });
         }
+        let typed = (self.query.clone(), self.preedit.clone());
         let stale = self
             .search
             .as_ref()
-            .is_none_or(|(query, picture)| *query != self.query || picture.size != layout.search.size);
+            .is_none_or(|(drawn, picture)| *drawn != typed || picture.size != layout.search.size);
         if stale {
-            self.search =
-                draw_search(&self.query, layout.search.size).map(|picture| (self.query.clone(), picture));
+            self.search = draw_search(&typed.0, &typed.1, layout.search.size).map(|picture| (typed, picture));
+        }
+        if self.candidates.as_ref() != self.candidates_picture.as_ref().map(|(drawn, _)| drawn) {
+            self.candidates_picture = self
+                .candidates
+                .clone()
+                .and_then(|candidates| Some((candidates.clone(), draw_candidates(&candidates)?)));
         }
     }
 
@@ -1000,6 +1017,24 @@ impl Nekoland {
                 picture,
             });
         }
+        // shortcut: under the search field even while a folder is renamed, near enough there.
+        if let Some((_, picture)) = &apps.candidates_picture {
+            front.push(Overlay {
+                fade: 1.0,
+                id: &apps.ids[6],
+                rect: Rectangle::new(
+                    (
+                        layout.search.loc.x,
+                        layout.search.loc.y + layout.search.size.h + 8,
+                    )
+                        .into(),
+                    picture.size,
+                ),
+                glass: Some(CANDIDATES_RADIUS),
+                alpha: 1.0,
+                picture,
+            });
+        }
         // Behind its search field.
         if let (Some(sidebar), Some((_, picture))) = (layout.sidebar, &apps.sidebar_picture) {
             front.push(Overlay {
@@ -1395,9 +1430,9 @@ impl Nekoland {
     }
 }
 
-/// The search field's text on its pane: what was typed with the caret after it, or what
-/// it is for.
-fn draw_search(query: &str, size: Size<i32, Logical>) -> Option<Picture> {
+/// The search field's text on its pane: what was typed and what is being composed, which
+/// is underlined, with the caret after them; or what the field is for.
+fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<Picture> {
     let surface = ImageSurface::create(Format::ARgb32, size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
@@ -1417,19 +1452,99 @@ fn draw_search(query: &str, size: Size<i32, Logical>) -> Option<Picture> {
         cr.move_to(cx + 4.5, cy + 4.5);
         cr.line_to(cx + 9.0, cy + 9.0);
         cr.stroke().ok()?;
-        let (text, alpha) = if query.is_empty() {
-            ("搜尋應用程式", 0.62)
+        let empty = query.is_empty() && preedit.is_empty();
+        let (text, alpha) = if empty {
+            ("搜尋應用程式".to_string(), 0.62)
         } else {
-            (query, 1.0)
+            (format!("{query}{preedit}"), 1.0)
         };
-        let line = text_layout(&cr, text, 11.0);
+        let line = text_layout(&cr, &text, 11.0);
         let (width, height) = line.pixel_size();
+        let top = f64::from(size.h - height) / 2.0;
         cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
-        cr.move_to(40.0, f64::from(size.h - height) / 2.0);
+        cr.move_to(40.0, top);
         pangocairo::functions::show_layout(&cr, &line);
-        if !query.is_empty() {
+        if !preedit.is_empty() {
+            let start = f64::from(text_layout(&cr, query, 11.0).pixel_size().0);
+            cr.rectangle(
+                40.0 + start,
+                top + f64::from(height),
+                f64::from(width) - start,
+                1.0,
+            );
+            cr.fill().ok()?;
+        }
+        if !empty {
             cr.rectangle(41.0 + f64::from(width), f64::from(size.h) / 2.0 - 9.0, 1.5, 18.0);
             cr.fill().ok()?;
+        }
+    }
+    text::picture(surface)
+}
+
+const CANDIDATES_RADIUS: i32 = 10;
+
+/// The input method's candidates in a row, each after the number that picks it, the lit
+/// one on solid ink; then its note, such as the page.
+fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<Picture> {
+    const PAD: f64 = 6.0;
+    const HEIGHT: i32 = 36;
+    let measure = ImageSurface::create(Format::ARgb32, 1, 1).ok()?;
+    let labels: Vec<String> = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, text)| format!("{} {text}", (index + 1) % 10))
+        .collect();
+    let widths: Vec<f64> = {
+        let cr = Context::new(&measure).ok()?;
+        labels
+            .iter()
+            .map(|label| f64::from(text_layout(&cr, label, 11.0).pixel_size().0) + 20.0)
+            .chain(std::iter::once(if note.is_empty() {
+                0.0
+            } else {
+                f64::from(text_layout(&cr, note, 9.5).pixel_size().0) + 20.0
+            }))
+            .collect()
+    };
+    let width = (widths.iter().sum::<f64>() + PAD * 2.0).ceil() as i32;
+    let surface = ImageSurface::create(Format::ARgb32, width, HEIGHT).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        paint_pane(
+            &cr,
+            f64::from(width),
+            f64::from(HEIGHT),
+            f64::from(CANDIDATES_RADIUS),
+            true,
+            false,
+        );
+        let mut x = PAD;
+        for (index, label) in labels.iter().enumerate() {
+            let cell = widths[index];
+            let on = *lit == Some(index);
+            if on {
+                text::rounded_rectangle(&cr, x, PAD, cell, f64::from(HEIGHT) - PAD * 2.0, 6.0);
+                cr.set_source_rgba(0.945, 0.937, 0.918, 1.0);
+                cr.fill().ok()?;
+            }
+            let line = text_layout(&cr, label, 11.0);
+            let (_, height) = line.pixel_size();
+            if on {
+                cr.set_source_rgba(0.09, 0.09, 0.1, 1.0);
+            } else {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+            }
+            cr.move_to(x + 10.0, f64::from(HEIGHT - height) / 2.0);
+            pangocairo::functions::show_layout(&cr, &line);
+            x += cell;
+        }
+        if !note.is_empty() {
+            let line = text_layout(&cr, note, 9.5);
+            let (_, height) = line.pixel_size();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
+            cr.move_to(x + 10.0, f64::from(HEIGHT - height) / 2.0);
+            pangocairo::functions::show_layout(&cr, &line);
         }
     }
     text::picture(surface)

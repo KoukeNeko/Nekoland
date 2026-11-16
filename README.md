@@ -122,6 +122,10 @@ arrows or the dots. Typing narrows them down by name, keyword or command, and Re
 starts the first. A click starts one on the desktop shown; one dragged onto a desktop
 starts there, onto the add button on a new desktop, and onto the Dock is kept in it.
 
+The search field and a folder's name take an input method: with Fcitx5 running, what
+is being composed shows underlined in the field and its candidates in a row under it,
+as Nekoland draws them.
+
 `apps_view` shows them other ways instead, without the desktops' bar: `launchpad`,
 pages of icons over the whole screen with the search field above; `shelf`, one long
 page, the latest started first and the rest under the name of their kind; `sidebar`,
