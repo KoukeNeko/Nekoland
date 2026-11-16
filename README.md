@@ -172,9 +172,9 @@ with a thin line of light just inside its top edge, like the band of light acros
 cat's-eye stone. What `glass` names draws its own colour on top, so it has to be
 translucent for the glass to show; the styles in `shell/` are. Nekoland's own surfaces
 take a tint, as solid as `glass_opacity` says for menus, notifications, the Dock's popups
-and GTK's menus in Nekoland's look, and 0.3 clearer for the menu bar, the Dock and the
-overview's bar, the same light and dark; Settings' 外觀 page sets it and the blur. Glass
-behind a bar that spans the whole output has square corners.
+and GTK's menus and sidebars in Nekoland's look, and 0.3 clearer for the menu bar, the
+Dock and the overview's bar, the same light and dark; Settings' 外觀 page sets it and the
+blur. Glass behind a bar that spans the whole output has square corners.
 
 Behind every window is glass of what is under it, blurred, as Windows' Acrylic is: what a
 window leaves see-through, as sidebars and menus in Nekoland's GTK look, shows the windows

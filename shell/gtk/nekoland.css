@@ -62,8 +62,8 @@
 
   --window-radius: 14px;
 
-  /* How solid the tint over glass is, as Nekoland's glass_opacity says; Settings writes
-   * the one set after this file. */
+  /* How solid the tint over glass is, for menus and sidebars, as Nekoland's glass_opacity
+   * says; Settings writes the one set after this file. */
   --nekoland-glass-opacity: 80%;
 }
 
@@ -488,7 +488,7 @@ window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverv
 window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview > widget > taboverview > widget > taboverview > widget > overlay-split-view { background: none; }
 .content-pane, navigation-split-view > navigation-view > navigation-view-page, overlay-split-view > outline + widget { background-color: var(--window-bg-color); }
 window.view .content-pane, window.view overlay-split-view > outline + widget { background-color: var(--view-bg-color); }
-.sidebar-pane { background-color: color-mix(in srgb, var(--sidebar-bg-color) 72%, transparent); }
+.sidebar-pane { background-color: color-mix(in srgb, var(--sidebar-bg-color) var(--nekoland-glass-opacity), transparent); }
 
 @media (prefers-color-scheme: dark) {
   :root {
