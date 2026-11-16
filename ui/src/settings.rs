@@ -531,12 +531,14 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     for (title, key) in [
         ("按兩下標題列", "action-double-click-titlebar"),
         ("按中鍵標題列", "action-middle-click-titlebar"),
+        ("按右鍵標題列", "action-right-click-titlebar"),
     ] {
         let current = output("gsettings", &["get", WM_PREFERENCES, key]).unwrap_or_default();
         let titlebar = adw::ComboRow::builder()
             .title(title)
             .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
-            .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(0) as u32)
+            // What Nekoland cannot do, GNOME's window menu or lowering, does nothing here.
+            .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(2) as u32)
             .build();
         titlebar.connect_selected_notify(move |row| {
             if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
@@ -674,7 +676,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
 const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
 const HOT_CORNERS: [&str; 4] = ["none", "overview", "apps", "lock"];
 const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
-/// What double-clicking or middle-clicking a GTK title bar does, as GNOME names it.
+/// What clicking a GTK title bar does, as GNOME names it.
 const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
 
 fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
