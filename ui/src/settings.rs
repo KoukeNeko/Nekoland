@@ -240,12 +240,13 @@ fn build(app: &adw::Application) {
         set_window_buttons(true);
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
-    let pages: [(&str, gtk::Widget); 8] = [
+    let pages: [(&str, gtk::Widget); 9] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
         ("外觀", appearance_page(&config).upcast()),
         ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
         ("聲音", sound_page().upcast()),
+        ("電源", power_page(&config).upcast()),
         ("啟動項目", startup_page(&autostart).upcast()),
         ("關於", about_page().upcast()),
         ("設計語言", design_page().upcast()),
@@ -366,8 +367,38 @@ fn scale_row(
     row
 }
 
-/// The choices of how long, in seconds, the screen waits idle before it locks.
-const LOCK_AFTER: [i64; 6] = [0, 60, 300, 900, 1800, 3600];
+/// The choices of how long, in seconds, the computer waits idle before it locks the screen,
+/// turns the displays off or sleeps.
+const IDLE_AFTER: [i64; 6] = [0, 60, 300, 900, 1800, 3600];
+
+/// A row choosing how long the computer waits idle before what `key` is for.
+fn idle_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
+    let current = config.0.get(key).and_then(toml::Value::as_integer).unwrap_or(0);
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(&["永不", "1 分鐘", "5 分鐘", "15 分鐘", "30 分鐘", "1 小時"]))
+        .selected(IDLE_AFTER.iter().position(|seconds| *seconds == current).unwrap_or(0) as u32)
+        .build();
+    row.connect_selected_notify(move |row| {
+        if let Some(seconds) = IDLE_AFTER.get(row.selected() as usize) {
+            set(&format!("{key} = {seconds}"));
+        }
+    });
+    row
+}
+
+/// A row stating a fact, which can be selected to copy.
+fn fact_row(title: &str, value: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(
+        &gtk::Label::builder()
+            .label(value)
+            .css_classes(["dim-label"])
+            .selectable(true)
+            .build(),
+    );
+    row
+}
 
 fn group(title: &str) -> adw::PreferencesGroup {
     adw::PreferencesGroup::builder().title(title).build()
@@ -417,18 +448,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     page.add(&bar);
 
     let lock = group("鎖定螢幕");
-    let current = config.0.get("lock_after").and_then(toml::Value::as_integer).unwrap_or(0);
-    let idle = adw::ComboRow::builder()
-        .title("閒置後鎖定")
-        .model(&gtk::StringList::new(&["永不", "1 分鐘", "5 分鐘", "15 分鐘", "30 分鐘", "1 小時"]))
-        .selected(LOCK_AFTER.iter().position(|seconds| *seconds == current).unwrap_or(0) as u32)
-        .build();
-    idle.connect_selected_notify(|row| {
-        if let Some(seconds) = LOCK_AFTER.get(row.selected() as usize) {
-            set(&format!("lock_after = {seconds}"));
-        }
-    });
-    lock.add(&idle);
+    lock.add(&idle_row(config, "閒置後鎖定", "lock_after"));
     page.add(&lock);
 
     let wall = group("桌布");
@@ -1629,19 +1649,101 @@ fn list_commands(
     group.add(added);
 }
 
+const POWER_BUTTON: [&str; 3] = ["shutdown", "sleep", "ignore"];
+const LID_CLOSE: [&str; 3] = ["sleep", "lock", "ignore"];
+
+/// What happens when the computer is idle, what its power button and lid do, and how
+/// worn its batteries are.
+fn power_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let idle = group("");
+    idle.add(&idle_row(config, "閒置後關閉螢幕", "screen_off_after"));
+    idle.add(&idle_row(config, "閒置後睡眠", "sleep_after"));
+    page.add(&idle);
+
+    let batteries = batteries();
+    let buttons = group("");
+    buttons.add(&choice_row(
+        config,
+        "電源按鈕",
+        "power_button",
+        &POWER_BUTTON,
+        &["關機⋯", "睡眠", "不動作"],
+    ));
+    // A computer with a lid is told by its battery.
+    if !batteries.is_empty() {
+        buttons.add(&choice_row(
+            config,
+            "闔上螢幕",
+            "lid_close",
+            &LID_CLOSE,
+            &["睡眠", "鎖定螢幕", "不動作"],
+        ));
+    }
+    page.add(&buttons);
+
+    for battery in &batteries {
+        let title = if batteries.len() > 1 { battery.model.as_str() } else { "電池" };
+        let rows = group(title);
+        if let Some(health) = battery.health {
+            rows.add(&fact_row("最大容量", &format!("{health}%")));
+        }
+        if let Some(cycles) = battery.cycles {
+            rows.add(&fact_row("循環次數", &cycles.to_string()));
+        }
+        page.add(&rows);
+    }
+    page
+}
+
+#[derive(Debug, PartialEq)]
+struct Battery {
+    model: String,
+    /// How much it holds when full, as a percentage of what it was made to hold.
+    health: Option<u64>,
+    cycles: Option<u64>,
+}
+
+fn batteries() -> Vec<Battery> {
+    let Ok(supplies) = std::fs::read_dir("/sys/class/power_supply") else {
+        return Vec::new();
+    };
+    supplies
+        .filter_map(|supply| std::fs::read_to_string(supply.ok()?.path().join("uevent")).ok())
+        .filter_map(|uevent| parse_battery(&uevent))
+        .collect()
+}
+
+/// A power supply's `uevent`, if it is a battery. It counts in energy or in charge,
+/// whichever its driver knows.
+fn parse_battery(uevent: &str) -> Option<Battery> {
+    let field = |key: &str| {
+        uevent
+            .lines()
+            .find_map(|line| line.strip_prefix("POWER_SUPPLY_")?.strip_prefix(key)?.strip_prefix('='))
+    };
+    let number = |key: &str| field(key)?.parse::<u64>().ok();
+    if field("TYPE")? != "Battery" {
+        return None;
+    }
+    let full = number("ENERGY_FULL").zip(number("ENERGY_FULL_DESIGN"));
+    let health = full
+        .or_else(|| number("CHARGE_FULL").zip(number("CHARGE_FULL_DESIGN")))
+        .filter(|(_, design)| *design > 0)
+        .map(|(full, design)| (full * 100 + design / 2) / design);
+    Some(Battery {
+        model: field("MODEL_NAME").unwrap_or_default().to_string(),
+        health,
+        // Drivers that do not count cycles say 0.
+        cycles: number("CYCLE_COUNT").filter(|cycles| *cycles > 0),
+    })
+}
+
 fn about_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let computer = group("");
     for (title, value) in facts() {
-        let row = adw::ActionRow::builder().title(title).build();
-        row.add_suffix(
-            &gtk::Label::builder()
-                .label(value)
-                .css_classes(["dim-label"])
-                .selectable(true)
-                .build(),
-        );
-        computer.add(&row);
+        computer.add(&fact_row(title, &value));
     }
     page.add(&computer);
     page
@@ -2671,6 +2773,21 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_battery_is_read_in_energy_or_in_charge() {
+        let energy = "POWER_SUPPLY_NAME=BAT0\nPOWER_SUPPLY_TYPE=Battery\nPOWER_SUPPLY_CYCLE_COUNT=312\n\
+            POWER_SUPPLY_ENERGY_FULL_DESIGN=57000000\nPOWER_SUPPLY_ENERGY_FULL=52440000\n\
+            POWER_SUPPLY_MODEL_NAME=5B10W13930\n";
+        assert_eq!(
+            parse_battery(energy),
+            Some(Battery { model: "5B10W13930".into(), health: Some(92), cycles: Some(312) })
+        );
+        let charge = "POWER_SUPPLY_TYPE=Battery\nPOWER_SUPPLY_CHARGE_FULL=4000\n\
+            POWER_SUPPLY_CHARGE_FULL_DESIGN=5000\nPOWER_SUPPLY_CYCLE_COUNT=0\n";
+        assert_eq!(parse_battery(charge), Some(Battery { model: String::new(), health: Some(80), cycles: None }));
+        assert_eq!(parse_battery("POWER_SUPPLY_TYPE=Mains\nPOWER_SUPPLY_ONLINE=1\n"), None);
+    }
 
     #[test]
     fn metadata_values_are_read_from_pw_metadata() {

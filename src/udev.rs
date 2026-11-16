@@ -3,7 +3,13 @@
 //! shortcut: one GPU, and the connectors found at startup; hotplug and a second GPU need
 //! the udev monitor and per-device state that Smithay's anvil has.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Mutex, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::Mutex,
+    time::Duration,
+};
 
 use smithay::{
     backend::input::InputEvent,
@@ -69,6 +75,10 @@ struct Udev {
     /// Each output's, as what it blurs is what that output shows; none when the GPU could
     /// not build the glass shaders.
     glass: HashMap<crtc::Handle, Glass>,
+    /// The outputs turned off while the screens are, to be drawn afresh when they come back.
+    dark: HashSet<crtc::Handle>,
+    /// While it is open, the power button and the lid are Nekoland's.
+    _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
 
 type SharedUdev = Rc<RefCell<Udev>>;
@@ -193,7 +203,12 @@ pub fn init_udev(
         return Err("no connected display".into());
     }
 
+    let power_keys = crate::power::take_power_keys()
+        .inspect_err(|err| warn!("logind keeps the power button and the lid: {err}"))
+        .ok();
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
+        dark: HashSet::new(),
+        _power_keys: power_keys,
         glass: surfaces
             .keys()
             .filter_map(|crtc| {
@@ -321,17 +336,31 @@ fn render(
         surfaces,
         cursors,
         glass,
+        dark,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
         return;
     };
 
-    let frames = state.take_screencopy(output);
-    let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
-        warn!("render: {err}");
+    // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
+    let queued = if state.screens_off {
+        if dark.insert(crtc) {
+            if let Err(err) = surface.with_compositor(|compositor| compositor.clear()) {
+                warn!("could not turn {} off: {err}", output.name());
+            }
+        }
         false
-    });
+    } else {
+        if dark.remove(&crtc) {
+            surface.reset_buffers();
+        }
+        let frames = state.take_screencopy(output);
+        draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
+            warn!("render: {err}");
+            false
+        })
+    };
     let output = output.clone();
     drop(guard);
 

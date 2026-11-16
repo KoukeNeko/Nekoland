@@ -26,6 +26,13 @@ pub struct Config {
     pub lock: String,
     /// Seconds without input after which the screen locks; 0 for never.
     pub lock_after: u64,
+    /// Seconds without input after which the displays go dark, and after which the
+    /// computer sleeps; 0 for never.
+    pub screen_off_after: u64,
+    pub sleep_after: u64,
+    /// What the power button does, and what closing the lid does with no other display.
+    pub power_button: PowerAction,
+    pub lid_close: PowerAction,
     /// Layer surfaces and windows drawn on glass, by the namespace or application ID they
     /// give, with the corner radius they draw themselves with.
     pub glass: HashMap<String, i32>,
@@ -87,6 +94,17 @@ pub enum AppsView {
     Shelf,
     /// A list of kinds beside the icons of the one chosen.
     Sidebar,
+}
+
+/// What the power button or closing the lid does.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PowerAction {
+    Sleep,
+    /// Asks first, as the menu's 關機⋯ does.
+    ShutDown,
+    Lock,
+    Ignore,
 }
 
 impl AppsView {
@@ -254,6 +272,11 @@ impl Default for Config {
             )
             .into(),
             lock_after: 0,
+            screen_off_after: 0,
+            sleep_after: 0,
+            // logind's own: it powers off, which Nekoland asks about first.
+            power_button: PowerAction::ShutDown,
+            lid_close: PowerAction::Sleep,
             glass: HashMap::from([("nekoland-launcher".into(), 16)]),
             dock: [
                 "org.gnome.Nautilus",

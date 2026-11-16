@@ -67,6 +67,8 @@ pub struct Nekoland {
     pub lock: Option<crate::lock::Lock>,
     pub locker_started: Option<std::time::Instant>,
     pub last_input: std::time::Instant,
+    /// Whether the displays are turned off, until there is input.
+    pub screens_off: bool,
     /// Surfaces of programs that keep the screen from locking while it is idle.
     pub idle_inhibitors: Vec<WlSurface>,
     /// Screen captures waiting for their output to be drawn.
@@ -175,6 +177,7 @@ impl Nekoland {
             lock: None,
             locker_started: None,
             last_input: start_time,
+            screens_off: false,
             idle_inhibitors: Vec::new(),
             screencopy: Vec::new(),
 

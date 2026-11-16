@@ -47,6 +47,8 @@ wallpaper and an input method. Every key is optional:
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
 | `repeat_delay`, `repeat_rate` | Milliseconds a held key waits before it repeats, and how many times a second it then repeats; 200 and 25 unless set |
+| `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
+| `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 
 The Settings application changes most of these while Nekoland runs (see below);
 `nekoland msg reload` reads a file changed by hand.
@@ -81,9 +83,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the keyboard, the mouse and touchpad, the sound and what starts at login, show what the
-  computer is, and show GTK's own widgets as the system style draws them. Each change
-  takes effect at once. The sound page picks the output and input, and the sample rate and
+  the keyboard, the mouse and touchpad, the sound, the power and what starts at login, show
+  what the computer is and how worn its batteries are, and show GTK's own widgets as the
+  system style draws them. Each change takes effect at once. The sound page picks the output and input, and the sample rate and
   bit depth each sound card is opened with, apart from the others: a WirePlumber rule of
   its own in `~/.config/wireplumber/wireplumber.conf.d/`, which restarts WirePlumber and so
   stops the sound for a moment. It also makes a multi-output device that plays on the
@@ -206,6 +208,11 @@ it is locked only the locker is drawn and takes keys, except for switching virtu
 terminals and quitting. A locker that goes away leaves the screen locked, and a key
 starts it again.
 
+Nekoland takes the power button and the lid from logind, through an inhibitor lock, and
+does what `power_button` and `lid_close` say; closing the lid does nothing while another
+display is connected. A time without input can also turn the displays off, until the next
+input, and put the computer to sleep, locked as it wakes.
+
 Screenshots and screen sharing go through `wlr-screencopy`: `grim` takes pictures, and
 `xdg-desktop-portal-wlr`, which `shell/nekoland-portals.conf` picks, takes them and shares
 the screen for programs that ask the portal, such as browsers. Copy and paste works
@@ -287,7 +294,7 @@ it in effect, or says why not.
   typed letters but not an input method's, the sound menu steps the volume instead of
   sliding it, and the network menu shows the connection without choosing one.
   GNOME's own programs export no menus, so they get the menus Nekoland makes.
-- Settings does not change the display's mode or the keyboard. A wallpaper started by
+- Settings does not change the display's mode. A wallpaper started by
   `autostart` stays under one chosen in Settings until the session ends.
 - One GPU. A second display takes the pointer and windows, but the menu bar, Dock and
   overview stay on the first, and displays are not hot-plugged.

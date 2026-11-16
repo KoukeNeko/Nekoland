@@ -17,6 +17,7 @@ mod lock;
 mod menubar;
 mod notices;
 mod overview;
+mod power;
 mod render;
 mod screencopy;
 mod stacks;

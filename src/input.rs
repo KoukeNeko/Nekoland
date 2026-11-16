@@ -22,6 +22,7 @@ use crate::{
 impl Nekoland {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         self.last_input = std::time::Instant::now();
+        self.screens_off = false;
         let locked = self.lock.is_some();
         match event {
             InputEvent::Keyboard { event, .. } => {
@@ -38,6 +39,13 @@ impl Nekoland {
                     |state, modifiers, keysym| {
                         let code = keysym.raw_code();
                         let pressed = key_state == KeyState::Pressed;
+                        // Locked or not: logind leaves it to Nekoland.
+                        if keysym.modified_sym() == Keysym::XF86_PowerOff {
+                            if pressed {
+                                state.power_action(state.config.power_button);
+                            }
+                            return FilterResult::Intercept(());
+                        }
                         if locked {
                             return state.locked_key(modifiers, keysym.modified_sym(), pressed);
                         }
@@ -222,6 +230,7 @@ impl Nekoland {
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
+            InputEvent::SwitchToggle { event } => self.lid_switched(&event),
             _ => {}
         }
     }

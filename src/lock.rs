@@ -185,26 +185,35 @@ impl IdleInhibitHandler for Nekoland {
 }
 delegate_idle_inhibit!(Nekoland);
 
-/// Locks the screen once there has been no input for `lock_after` seconds.
+/// Once there has been no input for as long as the configuration says, locks the screen,
+/// turns the displays off and sleeps, unless a program keeps the screen awake.
 pub fn watch_idle(handle: &LoopHandle<'static, CalloopData>) {
-    let inserted = handle.insert_source(Timer::from_duration(IDLE_CHECK), |_, _, data| {
+    // The input each was last done after: each is done once until there is more, so that a
+    // locker that does not start is not started every few seconds.
+    let (mut locked_after, mut slept_after) = (None, None);
+    let inserted = handle.insert_source(Timer::from_duration(IDLE_CHECK), move |_, _, data| {
         let state = &mut data.state;
         state.idle_inhibitors.retain(Resource::is_alive);
         // shortcut: a program keeps the screen awake while it lives, seen or not.
-        let after = Duration::from_secs(state.config.lock_after);
-        if !after.is_zero()
-            && state.lock.is_none()
-            && state.idle_inhibitors.is_empty()
-            && state.last_input.elapsed() >= after
-        {
-            // Counted again from here, so that a locker that does not start is not started
-            // every few seconds.
-            state.last_input = Instant::now();
+        if !state.idle_inhibitors.is_empty() {
+            return TimeoutAction::ToDuration(IDLE_CHECK);
+        }
+        let idle = state.last_input.elapsed();
+        let past = |seconds: u64| seconds != 0 && idle >= Duration::from_secs(seconds);
+        if past(state.config.lock_after) && state.lock.is_none() && locked_after != Some(state.last_input) {
+            locked_after = Some(state.last_input);
             state.lock_screen();
+        }
+        if past(state.config.screen_off_after) {
+            state.screens_off = true;
+        }
+        if past(state.config.sleep_after) && slept_after != Some(state.last_input) {
+            slept_after = Some(state.last_input);
+            state.sleep();
         }
         TimeoutAction::ToDuration(IDLE_CHECK)
     });
     if let Err(err) = inserted {
-        tracing::warn!("idle lock: {err}");
+        tracing::warn!("idle: {err}");
     }
 }

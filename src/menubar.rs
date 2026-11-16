@@ -1945,11 +1945,7 @@ impl Nekoland {
             }
         };
         match command {
-            Command::Sleep => {
-                // Locked as it wakes: the locker is given a moment to take the screen first.
-                self.lock_screen();
-                config::spawn("sleep 1; systemctl suspend");
-            }
+            Command::Sleep => self.sleep(),
             Command::Lock => self.lock_screen(),
             // Asked first, in a dialog of its own: these lose what is not saved.
             Command::Settings => config::spawn("nekoland-settings"),
