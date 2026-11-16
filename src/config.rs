@@ -86,6 +86,10 @@ pub struct Config {
     pub pointer_speed: f64,
     /// How many points across the cursor is drawn.
     pub cursor_size: i32,
+    /// The cursor theme and icon theme Nekoland draws with, by folder name; its own choice
+    /// of common ones when empty.
+    pub cursor_theme: String,
+    pub icon_theme: String,
     /// Whether the pointer goes further the faster it is moved, as libinput's adaptive
     /// profile does, instead of as far however fast.
     pub pointer_acceleration: bool,
@@ -387,6 +391,8 @@ impl Default for Config {
             tap_to_click: true,
             pointer_speed: 0.0,
             cursor_size: 24,
+            cursor_theme: String::new(),
+            icon_theme: String::new(),
             pointer_acceleration: true,
             left_handed: false,
             disable_while_typing: true,

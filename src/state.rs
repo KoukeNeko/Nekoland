@@ -151,6 +151,7 @@ impl Nekoland {
 
         let config = Config::load();
         crate::text::set_family(&config.font);
+        crate::text::set_icon_theme(&config.icon_theme);
         config.set_glass_look();
         // A layout XKB does not know is no reason to have no keyboard.
         let (delay, rate) = (config.repeat_delay, config.repeat_rate);
@@ -391,6 +392,7 @@ impl Nekoland {
         let old_keyboard = self.config.keyboard();
         let old_font = std::mem::take(&mut self.config.font);
         self.config = Config::load();
+        crate::text::set_icon_theme(&self.config.icon_theme);
         if self.config.font != old_font {
             crate::text::set_family(&self.config.font);
             // shortcut: the bar and the Dock are drawn again; other text keeps the old font

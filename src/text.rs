@@ -20,6 +20,8 @@ use smithay::{
 static FAMILY: RwLock<String> = RwLock::new(String::new());
 const FALLBACK: &str = "Noto Sans CJK TC, Sans";
 const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
+/// The configuration's `icon_theme`, looked in before `ICON_THEMES`.
+static ICON_THEME: RwLock<String> = RwLock::new(String::new());
 // Largest first: icons are drawn smaller than this more often than larger.
 const ICON_SIZES: [&str; 6] = ["256x256", "128x128", "96x96", "64x64", "48x48", "32x32"];
 
@@ -72,6 +74,19 @@ pub fn set_family(family: &str) {
 
 /// The font `description` names, in pango's words, in Nekoland's family if it names no
 /// family, and at `TEXT_WEIGHT` if it names no weight.
+// shortcut: icons already drawn keep the theme they were found in until drawn again.
+pub fn set_icon_theme(theme: &str) {
+    *ICON_THEME.write().unwrap() = theme.to_string();
+}
+
+fn icon_themes() -> Vec<String> {
+    let chosen = ICON_THEME.read().unwrap().clone();
+    std::iter::once(chosen)
+        .filter(|theme| !theme.is_empty())
+        .chain(ICON_THEMES.map(String::from))
+        .collect()
+}
+
 pub fn font(description: &str) -> pango::FontDescription {
     let mut font = pango::FontDescription::from_string(description);
     if font.family().is_none() {
@@ -380,8 +395,9 @@ fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
     if !extra_dir.is_empty() {
         roots.push(extra_dir.into());
     }
+    let themes = icon_themes();
     for dir in data_dirs() {
-        roots.extend(ICON_THEMES.iter().map(|theme| dir.join("icons").join(theme)));
+        roots.extend(themes.iter().map(|theme| dir.join("icons").join(theme)));
         roots.push(dir.join("pixmaps"));
     }
     // shortcut: walks the theme folders on each lookup; callers keep what they draw.
@@ -517,8 +533,9 @@ fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
         return (path.extension().and_then(|ext| ext.to_str()) == Some("png") && path.is_file())
             .then(|| path.to_path_buf());
     }
+    let themes = icon_themes();
     for dir in dirs {
-        for theme in ICON_THEMES {
+        for theme in &themes {
             for size in ICON_SIZES {
                 let candidate = dir.join(format!("icons/{theme}/{size}/apps/{icon}.png"));
                 if candidate.is_file() {

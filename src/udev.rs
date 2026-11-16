@@ -228,7 +228,7 @@ pub fn init_udev(
         renderer,
         manager,
         surfaces,
-        cursors: Cursors::load(),
+        cursors: Cursors::load(&state.config.cursor_theme),
     }));
 
     // Clients that draw with the GPU hand their buffers over as dmabufs.
@@ -559,6 +559,9 @@ fn cursor_elements(
         CursorImageStatus::Named(icon) => *icon,
     };
 
+    if cursors.asked != state.config.cursor_theme {
+        *cursors = Cursors::load(&state.config.cursor_theme);
+    }
     let Some(image) = cursors.get(icon, scale, state.config.cursor_size) else {
         return Vec::new();
     };

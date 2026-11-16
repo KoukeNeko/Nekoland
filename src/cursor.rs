@@ -18,16 +18,20 @@ pub struct CursorImage {
 }
 
 pub struct Cursors {
+    /// The theme asked for, which may not be the one found.
+    pub asked: String,
     theme: Option<CursorTheme>,
     /// By icon, how many pixels each of its points has, and how many points across it is.
     images: HashMap<(CursorIcon, i32, i32), Option<CursorImage>>,
 }
 
 impl Cursors {
-    pub fn load() -> Self {
-        let theme = std::env::var("XCURSOR_THEME")
-            .ok()
+    /// The cursors of the theme `asked`, else of $XCURSOR_THEME, else of a common one.
+    pub fn load(asked: &str) -> Self {
+        let theme = Some(asked.to_string())
+            .filter(|asked| !asked.is_empty())
             .into_iter()
+            .chain(std::env::var("XCURSOR_THEME").ok())
             .chain(FALLBACK_THEMES.map(String::from))
             .map(|name| CursorTheme::load(&name))
             .find(|theme| load_icon(theme, CursorIcon::Default, 1, 24).is_some());
@@ -35,6 +39,7 @@ impl Cursors {
             tracing::warn!("no cursor theme found; the cursor will not be drawn");
         }
         Self {
+            asked: asked.to_string(),
             theme,
             images: HashMap::new(),
         }

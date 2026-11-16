@@ -850,6 +850,11 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
     style.add(&look);
     page.add(&style);
 
+    let themes = group("");
+    themes.add(&theme_row(config, "圖示主題", "icon_theme", "icon-theme", false));
+    themes.add(&theme_row(config, "游標主題", "cursor_theme", "cursor-theme", true));
+    page.add(&themes);
+
     let bars = glass_group(config, "選單列與 Dock", ("bar", 0.5), |_| {});
     bars.add(&switch_row(config, "選單列背景", "menu_bar_background"));
     page.add(&bars);
@@ -868,6 +873,59 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
 
 /// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
 /// `opacity_changed` is told each new opacity once Nekoland has it.
+/// The icon themes, or with `cursors` the cursor themes, installed, by folder name.
+fn installed_themes(cursors: bool) -> Vec<String> {
+    let mut dirs = vec![home().join(".icons"), home().join(".local/share/icons")];
+    dirs.extend(glib::system_data_dirs().into_iter().map(|dir| dir.join("icons")));
+    let mut names: Vec<String> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .filter(|theme| {
+            let path = theme.path();
+            if cursors {
+                path.join("cursors").is_dir()
+            } else {
+                std::fs::read_to_string(path.join("index.theme"))
+                    .is_ok_and(|index| index.contains("Directories="))
+            }
+        })
+        .filter_map(|theme| theme.file_name().into_string().ok())
+        // The base every theme falls back to, not one of its own.
+        .filter(|name| !["hicolor", "locolor", "default"].contains(&name.as_str()))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// A row choosing a theme for Nekoland's `key` and GNOME's `gsetting` together; 預設 leaves
+/// both to their own choice.
+fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static str, cursors: bool) -> adw::ComboRow {
+    let themes = installed_themes(cursors);
+    let labels: Vec<&str> = std::iter::once("預設").chain(themes.iter().map(String::as_str)).collect();
+    let current = config.word(key);
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(&labels))
+        .selected(themes.iter().position(|theme| theme == current).map_or(0, |at| at + 1) as u32)
+        .build();
+    row.connect_selected_notify(move |row| match row.selected().checked_sub(1) {
+        None => {
+            unset(key);
+            run("gsettings", &["reset", INTERFACE, gsetting]);
+        }
+        Some(at) => {
+            if let Some(theme) = themes.get(at as usize) {
+                set(&format!("{key} = {theme:?}"));
+                set_interface(gsetting, &format!("'{theme}'"));
+            }
+        }
+    });
+    row
+}
+
 fn glass_group(
     config: &Config,
     title: &str,
