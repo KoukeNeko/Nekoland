@@ -272,6 +272,82 @@ tooltip.background {
   font-weight: 500;
 }
 
+/* Motion. What is pressed gives a little and springs back: 150ms for a state, 260ms to
+ * settle, on one curve that starts fast and ends slow; the spring overshoots a little.
+ * Each rule keeps the transitions libadwaita gives the widget, and adds the transform. */
+button,
+toggle-group > toggle {
+  transition: transform 260ms cubic-bezier(0.2, 1.6, 0.4, 1),
+    outline-color 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    outline-width 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    outline-offset 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    background 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+button:active,
+toggle-group > toggle:active {
+  transform: scale(0.95);
+  transition-duration: 90ms, 200ms, 200ms, 200ms, 150ms, 150ms, 200ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* A switch's knob, held, grows into a capsule toward the middle, as on iOS: wider with the
+ * same round ends, staying at the side it is on. The margin takes the growth back, so the
+ * switch's own size and frame stay as they are. */
+switch > slider {
+  border-radius: 9px;
+  transition: min-width 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    margin 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+switch:active > slider {
+  min-width: 24px;
+}
+switch:active:not(:checked) > slider {
+  margin-right: -6px;
+}
+switch:active:checked > slider {
+  margin-left: -6px;
+}
+
+/* A slider's knob grows a little under the pointer and more while held, as the Mac's does,
+ * and settles back with a spring. */
+scale > trough > slider {
+  transition: transform 260ms cubic-bezier(0.2, 1.6, 0.4, 1),
+    box-shadow 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+scale > trough > slider:hover {
+  transform: scale(1.08);
+}
+scale > trough > slider:active {
+  transform: scale(1.22);
+  box-shadow: 0 0 0 1.5px var(--nekoland-ink), 0 2px 8px rgb(0 0 0 / 30%);
+  transition-duration: 120ms, 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* A checkbox or radio button gives when pressed, and its mark comes in. */
+checkbutton > check,
+checkbutton > radio {
+  transition: transform 260ms cubic-bezier(0.2, 1.6, 0.4, 1),
+    background 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+checkbutton:active > check,
+checkbutton:active > radio {
+  transform: scale(0.88);
+  transition-duration: 90ms, 150ms, 150ms;
+}
+
+/* Where one is in a sidebar or a calendar moves there, not jumps. */
+.navigation-sidebar row,
+calendar > grid > label.day-number,
+popover.menu modelbutton {
+  transition: background-color 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 /* Sidebars on glass: Nekoland draws the wallpaper blurred behind every window, so the
  * window's own background goes, everything in it but the split views gets it back, and
  * the sidebar is left see-through. libadwaita puts a window's content a few frames deep,
