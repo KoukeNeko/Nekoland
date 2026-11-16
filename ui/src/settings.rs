@@ -866,6 +866,8 @@ const DESIGN_CSS: &str = r#"
 .nk-note { font-size: 12px; color: var(--nekoland-ink-3); }
 .nk-small { font-size: 12px; color: var(--nekoland-ink-2); }
 .nk-mono { font-family: "Ubuntu Sans Mono", monospace; }
+/* The cards are laid out in a grid of cells; a cell is not something to point at or choose. */
+.nk-design flowbox.nk-cards > flowboxchild, .nk-design flowbox.nk-cards > flowboxchild:hover, .nk-design flowbox.nk-cards > flowboxchild:active, .nk-design flowbox.nk-cards > flowboxchild:selected { padding: 0; background: none; box-shadow: none; outline: none; }
 .nk-card { padding: 20px; border-radius: 12px; background-color: var(--nekoland-sheet); box-shadow: 0 0 0 1px var(--nekoland-line); }
 .nk-rule { padding: 16px; }
 .nk-rule-body { font-size: 13px; color: var(--nekoland-ink-2); }
@@ -967,6 +969,7 @@ fn card(heading: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
 fn cards(width: i32, most: u32, children: &[&gtk::Widget]) -> gtk::FlowBox {
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["nk-cards"])
         .column_spacing(16)
         .row_spacing(16)
         .max_children_per_line(most)
