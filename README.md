@@ -169,6 +169,13 @@ behind it and the wallpaper. Each window has a blur as large as itself, drawn ag
 when what changes under it is near enough to show. An application's menus float over the
 windows on the same glass.
 
+GTK 4's menus are as the Mac's: a submenu opens beside its menu, on the right or, without
+room there, on the left, instead of sliding in over it, and no popover has an arrow. GTK
+leaves both to each program, so `libnekoland_menus.so`, from `menus/`, is loaded into what
+Nekoland starts through `LD_PRELOAD`, from beside the `nekoland` binary, and changes each
+popover as it is made. It reaches programs linked with GTK 4.14 or later, not those that
+load GTK while running, as Python and GJS programs do; others are left as they are.
+
 ## Screen lock and capture
 
 The menu, Super+L and `nekoland msg lock` lock the screen, and so does sleeping and,

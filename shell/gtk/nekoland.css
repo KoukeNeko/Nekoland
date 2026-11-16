@@ -205,14 +205,21 @@ row.spin spinbutton {
   background: none;
 }
 
-/* Menus: the entry pointed at is solid ink, on 6px corners. */
+/* Menus: the entry pointed at is solid ink, on 6px corners, and so is the one whose
+ * submenu is open, and the one moved to with the keyboard. GTK gives a submenu's first
+ * entry the focus as it opens, which marks it as chosen; until a key is pressed it stays
+ * plain. */
 popover.menu modelbutton {
   border-radius: 6px;
 }
 popover.menu modelbutton:hover,
-popover.menu modelbutton:selected {
+popover.menu modelbutton:selected:not(:focus),
+popover.menu modelbutton:selected:focus-visible {
   background-color: var(--nekoland-ink);
   color: var(--nekoland-on-ink);
+}
+popover.menu modelbutton:selected:focus:not(:focus-visible):not(:hover) {
+  background-color: transparent;
 }
 popover > contents {
   border-radius: 12px;

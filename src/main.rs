@@ -113,6 +113,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&path)),
         )?;
         std::env::set_var("PATH", joined);
+        // GTK's submenus open beside their menus, as the Mac's do; see menus/src/lib.rs.
+        let menus = directory.join("libnekoland_menus.so");
+        if menus.exists() {
+            let mut preload = menus.into_os_string();
+            if let Some(others) = std::env::var_os("LD_PRELOAD").filter(|others| !others.is_empty()) {
+                preload.push(" ");
+                preload.push(others);
+            }
+            std::env::set_var("LD_PRELOAD", preload);
+        }
     }
 
     // X11 programs find XWayland through the environment, so everything else starts after it.
@@ -121,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // have to find this display; a nested compositor leaves the outer session's alone.
         if !nested {
             let updated = std::process::Command::new("dbus-update-activation-environment")
-                .args(["--systemd", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP"])
+                .args(["--systemd", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP", "LD_PRELOAD"])
                 .status();
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");

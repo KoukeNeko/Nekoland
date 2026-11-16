@@ -40,4 +40,4 @@ features = [
 ]
 
 [workspace]
-members = ["ui"]
+members = ["ui", "menus"]

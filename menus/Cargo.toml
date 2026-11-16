@@ -1,0 +1,9 @@
+[package]
+name = "nekoland-menus"
+version = "0.1.0"
+edition = "2021"
+description = "Loaded into the programs Nekoland starts, so GTK 4's submenus open beside their menus"
+
+[lib]
+name = "nekoland_menus"
+crate-type = ["cdylib"]

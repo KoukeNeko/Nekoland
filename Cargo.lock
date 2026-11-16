@@ -3204,6 +3204,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nekoland-menus"
+version = "0.1.0"
+
+[[package]]
 name = "nekoland-ui"
 version = "0.1.0"
 dependencies = [
