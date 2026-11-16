@@ -1,5 +1,5 @@
-//! `nekoland-confirm restart|shutdown|logout`: asks before the menu bar's commands that end
-//! the session, then carries out the one asked about.
+//! `nekoland-confirm restart|shutdown|logout|empty-trash`: asks before the commands that
+//! end the session or lose files for good, then carries out the one asked about.
 
 slint::include_modules!();
 
@@ -24,7 +24,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "登出",
             &["nekoland", "msg", "quit"],
         ),
-        other => return Err(format!("expected restart, shutdown or logout, not {other:?}").into()),
+        "empty-trash" => (
+            "要清空垃圾桶嗎？",
+            "垃圾桶裡的項目會永久刪除，無法復原。",
+            "清空垃圾桶",
+            &["gio", "trash", "--empty"],
+        ),
+        other => {
+            return Err(format!("expected restart, shutdown, logout or empty-trash, not {other:?}").into())
+        }
     };
 
     let dialog = Confirm::new()?;
