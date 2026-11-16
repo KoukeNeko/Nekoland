@@ -242,7 +242,7 @@ fn build(app: &adw::Application) {
     let config = Config::load();
     remember_look(&config);
     // A look turned on before keeps up with this version of it.
-    if gtk_look_on() {
+    if look_read_at_start() {
         if let Err(err) = set_gtk_look(true) {
             eprintln!("GTK look: {err}");
         }
@@ -259,6 +259,10 @@ fn build(app: &adw::Application) {
         look,
         move |styles| look.load_from_string(&look_for(styles.is_dark()))
     ));
+    // On already, it is over what GTK read at start, so the glass's opacities show at once.
+    if let Some(display) = gdk::Display::default().filter(|_| look_read_at_start()) {
+        gtk::style_context_add_provider_for_display(&display, &look, gtk::STYLE_PROVIDER_PRIORITY_USER);
+    }
     let make_page = {
         let (look, autostart) = (look.clone(), autostart.clone());
         Rc::new(move |name: &str, config: &Config| -> gtk::Widget {
@@ -428,12 +432,23 @@ fn build(app: &adw::Application) {
         let config = Config::load();
         remember_look(&config);
         let shown = stack.visible_child_name();
+        let scrolled = shown
+            .as_ref()
+            .and_then(|name| stack.child_by_name(name))
+            .and_then(|page| page_scroll(&page))
+            .map(|scroll| scroll.value());
         let transition = stack.transition_type();
         stack.set_transition_type(gtk::StackTransitionType::None);
         for name in REBUILT_PAGES {
             if let Some(old) = stack.child_by_name(name) {
                 stack.remove(&old);
-                stack.add_named(&make_page(name, &config), Some(name));
+                let page = make_page(name, &config);
+                stack.add_named(&page, Some(name));
+                if shown.as_deref() == Some(name) {
+                    if let (Some(offset), Some(scroll)) = (scrolled, page_scroll(&page)) {
+                        scroll_once_laid_out(&scroll, offset);
+                    }
+                }
             }
         }
         if let Some(shown) = shown {
@@ -458,6 +473,47 @@ const REBUILT_PAGES: [&str; 10] = [
     "滑鼠與觸控板",
     "預設應用程式",
 ];
+
+/// Whether the design language's look was on as Settings started, when GTK read it.
+fn look_read_at_start() -> bool {
+    static AT_START: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AT_START.get_or_init(gtk_look_on)
+}
+
+/// The vertical scroll of a page, inside the scrolled window it keeps.
+fn page_scroll(page: &gtk::Widget) -> Option<gtk::Adjustment> {
+    let mut child = page.first_child();
+    while let Some(widget) = child {
+        if let Some(scrolled) = widget.downcast_ref::<gtk::ScrolledWindow>() {
+            return Some(scrolled.vadjustment());
+        }
+        if let Some(found) = page_scroll(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+/// Scrolls a page just made to `offset`, or as far as it goes; until it is laid out it has
+/// no height to scroll.
+fn scroll_once_laid_out(scroll: &gtk::Adjustment, offset: f64) {
+    let handler = Rc::new(RefCell::new(None));
+    let id = scroll.connect_changed(glib::clone!(
+        #[strong]
+        handler,
+        move |scroll| {
+            if scroll.page_size() == 0.0 {
+                return;
+            }
+            scroll.set_value(offset);
+            if let Some(id) = handler.take() {
+                scroll.disconnect(id);
+            }
+        }
+    ));
+    handler.replace(Some(id));
+}
 
 /// The compositor's settings and the GNOME ones the pages show, as text to compare.
 fn outside_settings() -> String {
@@ -1042,11 +1098,7 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
         look.set_subtitle(&format!("需要 GTK 4.{GTK_LOOK_MINOR} 以上"));
     }
     let provider = provider.clone();
-    let read_at_start = gtk_look_on();
-    // On already, it is over what GTK read at start, so the glass's opacities show at once.
-    if let Some(display) = gdk::Display::default().filter(|_| read_at_start) {
-        gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_USER);
-    }
+    let read_at_start = look_read_at_start();
     let glass_look = provider.clone();
     look.connect_active_notify(move |row| {
         let on = row.is_active();
