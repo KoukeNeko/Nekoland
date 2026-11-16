@@ -3092,22 +3092,23 @@ fn open_label(name: &str) -> String {
 }
 
 /// Opens a file or folder in the program the desktop opens it with.
-/// Moves files into a folder, as dropping them on it in a file manager does; what is
-/// already there stays.
+/// Moves files into a folder, as dropping them on it in a file manager does. A program of
+/// its own does it, which shows how far it is and asks when a name is taken there.
 pub(crate) fn move_into(paths: &[PathBuf], folder: &Path) {
-    for path in paths
+    let paths: Vec<&PathBuf> = paths
         .iter()
         .filter(|path| *path != folder && path.parent() != Some(folder))
-    {
-        let Some(name) = path.file_name() else {
-            continue;
-        };
-        let to = gio::File::for_path(folder.join(name));
-        if let Err(err) =
-            gio::File::for_path(path).move_(&to, gio::FileCopyFlags::NONE, gio::Cancellable::NONE, None)
-        {
-            tracing::warn!("{} into {}: {err}", path.display(), folder.display());
-        }
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    let spawned = std::process::Command::new("nekoland-fileop")
+        .arg("move")
+        .arg(folder)
+        .args(paths)
+        .spawn();
+    if let Err(err) = spawned {
+        tracing::warn!("nekoland-fileop: {err}");
     }
 }
 

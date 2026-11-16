@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=File Operations
+Name[zh_TW]=檔案作業
+Exec=nekoland-fileop
+Icon=folder
+NoDisplay=true

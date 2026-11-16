@@ -349,6 +349,16 @@ and a `.sources` file to `/etc/apt/sources.list.d`; it is then listed under 其�
 where it can be removed. `shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among
 the applications.
 
+`nekoland-fileop copy|move <folder> <path>...`, from `ui/`, copies or moves files and folders
+into a folder; files dropped on a folder on the desktop or in the Dock are moved with it, so it
+must be on the `PATH`. Its window shows only when the work takes more than half a second, with
+how far it is and the time left, and comes up at once when a name is taken there: 略過,
+保留兩者 (「季報 2.pdf」) or 取代, which for two folders is 合併 and asks again for the files
+inside, optionally for every later clash. A file and a folder of one name do not overwrite
+each other; the one replaced goes to the trash. When something fails it says why and offers
+略過 or 重試. Copy `shell/io.github.koukeneko.Nekoland.FileOperation.desktop` to
+`~/.local/share/applications/` for its name and icon. Each piece of work has its own window.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

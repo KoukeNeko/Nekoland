@@ -32,6 +32,10 @@ path = "src/store.rs"
 name = "nekoland-askpass"
 path = "src/askpass.rs"
 
+[[bin]]
+name = "nekoland-fileop"
+path = "src/fileop.rs"
+
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
