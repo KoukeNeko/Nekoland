@@ -7,6 +7,7 @@ mod handlers;
 
 mod grabs;
 mod input;
+mod ipc;
 mod overview;
 mod render;
 mod state;
@@ -29,6 +30,14 @@ pub struct CalloopData {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `nekoland msg WORD` talks to the compositor that is already running.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let [command, message] = arguments.as_slice() {
+        if command == "msg" {
+            return Ok(ipc::send(message)?);
+        }
+    }
+
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     } else {
@@ -53,11 +62,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::udev::init_udev(&mut event_loop, &mut data)?;
     }
 
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
     let command = match arguments.as_slice() {
         [flag, command] if flag == "-c" || flag == "--command" => Some(command.clone()),
         _ => None,
     };
+
+    if let Err(err) = ipc::listen(&event_loop.handle(), &data.state.socket_name) {
+        tracing::warn!("no control socket: {err}");
+    }
+    // So that what is started from here finds `nekoland msg`.
+    if let Some(directory) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(std::path::Path::parent)
+    {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(
+            std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&path)),
+        )?;
+        std::env::set_var("PATH", joined);
+    }
 
     // X11 programs find XWayland through the environment, so everything else starts after it.
     x11::start(&event_loop.handle(), &mut data, move |data| {
