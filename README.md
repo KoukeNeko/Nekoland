@@ -349,6 +349,24 @@ and a `.sources` file to `/etc/apt/sources.list.d`; it is then listed under å…¶ä
 where it can be removed. `shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among
 the applications.
 
+`nekoland-filechooser`, from `ui/`, is the window programs open and save files in when they
+ask `xdg-desktop-portal`: browsers, Flatpak and Snap applications, GTK 4's file dialog and
+Electron. The places are on the left (recent files, the home folders, the bookmarks Files
+keeps and mounted drives), the folder as a list or as icons with Files' thumbnails, the
+types the program asked for at the bottom, with what is not of the chosen type shown faded
+rather than hidden. Saving shows only the name and the folder until it is unfolded into the
+whole window, and asks before replacing a file. Ctrl+L, or `/` or `~`, types a path; Ctrl+H
+shows hidden files. It remembers the view, hidden files and the unfolding in
+`~/.config/nekoland/file-chooser.ini`. To use it, install it as
+`/usr/local/bin/nekoland-filechooser` (or change the path in the `.service` file), copy
+`shell/nekoland.portal` to `/usr/share/xdg-desktop-portal/portals/`,
+`shell/org.freedesktop.impl.portal.desktop.nekoland.service` to
+`~/.local/share/dbus-1/services/` and `shell/io.github.koukeneko.Nekoland.FileChooser.desktop`
+to `~/.local/share/applications/`, and `shell/nekoland-portals.conf` as above; they take effect
+once D-Bus reloads its configuration and the portal starts again, as at the next login. The window opens in the middle of the screen, not over the program
+that asked, which needs xdg-foreign; it has no type-ahead in the list, no completion of typed
+paths, and does not take files dropped on it.
+
 `nekoland-fileop copy|move <folder> <path>...`, from `ui/`, copies or moves files and folders
 into a folder; files dropped on a folder on the desktop or in the Dock are moved with it, so it
 must be on the `PATH`. Its window shows only when the work takes more than half a second, with

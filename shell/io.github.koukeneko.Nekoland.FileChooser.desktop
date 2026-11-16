@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=File Chooser
+Name[zh_TW]=檔案選取
+Exec=nekoland-filechooser
+Icon=folder
+NoDisplay=true

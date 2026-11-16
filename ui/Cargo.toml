@@ -2,7 +2,7 @@
 name = "nekoland-ui"
 version = "0.1.0"
 edition = "2021"
-description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings, a calendar and the App Store in GTK"
+description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings, a calendar, the App Store and the file chooser in GTK"
 
 [[bin]]
 name = "nekoland-gallery"
@@ -31,6 +31,10 @@ path = "src/store.rs"
 [[bin]]
 name = "nekoland-askpass"
 path = "src/askpass.rs"
+
+[[bin]]
+name = "nekoland-filechooser"
+path = "src/filechooser.rs"
 
 [[bin]]
 name = "nekoland-fileop"
