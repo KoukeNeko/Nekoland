@@ -867,27 +867,56 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
 
 fn sound_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    fill_sound_page(&page, Rc::default());
+    let shown = Rc::new(SoundPage::default());
+    fill_sound_page(&page, shown.clone());
+    // shortcut: looks every two seconds while the page is on screen; `pw-dump --monitor`
+    // would say at once, for a process kept running beside Settings.
+    let weak = page.downgrade();
+    glib::timeout_add_seconds_local(2, move || {
+        let Some(page) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if page.is_mapped() && device_names(&audio_nodes()) != *shown.devices.borrow() {
+            fill_sound_page(&page, shown.clone());
+        }
+        glib::ControlFlow::Continue
+    });
     page
 }
 
-/// Puts each kind of sound device on the page, again after the default one changes.
-fn fill_sound_page(page: &adw::PreferencesPage, groups: Rc<RefCell<Vec<adw::PreferencesGroup>>>) {
-    for group in groups.take() {
+/// What the sound page shows: its groups, and the devices they were made for.
+#[derive(Default)]
+struct SoundPage {
+    groups: RefCell<Vec<adw::PreferencesGroup>>,
+    devices: RefCell<Vec<(String, String)>>,
+}
+
+/// Which devices there are, by kind and name, to tell when one comes or goes.
+fn device_names(nodes: &[AudioDevice]) -> Vec<(String, String)> {
+    let mut names: Vec<_> = nodes.iter().map(|device| (device.class.clone(), device.name.clone())).collect();
+    names.sort();
+    names
+}
+
+/// Puts each kind of sound device on the page, again after the default one changes and when
+/// a device comes or goes.
+fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
+    for group in shown.groups.take() {
         page.remove(&group);
     }
     let weak = page.downgrade();
     let again = {
-        let groups = groups.clone();
+        let shown = shown.clone();
         Rc::new(move || {
             if let Some(page) = weak.upgrade() {
-                let groups = groups.clone();
+                let shown = shown.clone();
                 // Not while the row that changed is still handling it.
-                glib::idle_add_local_once(move || fill_sound_page(&page, groups));
+                glib::idle_add_local_once(move || fill_sound_page(&page, shown));
             }
         }) as Rc<dyn Fn()>
     };
     let nodes = audio_nodes();
+    *shown.devices.borrow_mut() = device_names(&nodes);
     for (title, class, default, none) in [
         ("輸出", "Audio/Sink", SINK, "沒有音訊輸出"),
         ("輸入", "Audio/Source", SOURCE, "沒有音訊輸入"),
@@ -895,7 +924,7 @@ fn fill_sound_page(page: &adw::PreferencesPage, groups: Rc<RefCell<Vec<adw::Pref
         let devices = nodes.iter().filter(|device| device.class == class).cloned().collect();
         let group = device_group(title, default, devices, none, again.clone());
         page.add(&group);
-        groups.borrow_mut().push(group);
+        shown.groups.borrow_mut().push(group);
     }
     let outputs: Vec<AudioDevice> = nodes
         .into_iter()
@@ -907,7 +936,7 @@ fn fill_sound_page(page: &adw::PreferencesPage, groups: Rc<RefCell<Vec<adw::Pref
     }
     for group in more {
         page.add(&group);
-        groups.borrow_mut().push(group);
+        shown.groups.borrow_mut().push(group);
     }
 }
 
