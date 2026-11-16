@@ -85,7 +85,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   takes effect at once. The sound page picks the output and input, and the sample rate and
   bit depth each sound card is opened with, apart from the others: a WirePlumber rule of
   its own in `~/.config/wireplumber/wireplumber.conf.d/`, which restarts WirePlumber and so
-  stops the sound for a moment. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  stops the sound for a moment. It also makes a multi-output device that plays on the
+  outputs chosen at once, as the Mac's does, through PipeWire's combine stream in
+  `~/.config/pipewire/pipewire.conf.d/`, which restarts PipeWire; and lets PipeWire run at
+  the sample rate of what plays, from 44.1 to 192 kHz, instead of always at 48. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
   user's language too, and takes an input method. Clicking the search field of the

@@ -897,6 +897,172 @@ fn fill_sound_page(page: &adw::PreferencesPage, groups: Rc<RefCell<Vec<adw::Pref
         page.add(&group);
         groups.borrow_mut().push(group);
     }
+    let outputs: Vec<AudioDevice> = nodes
+        .into_iter()
+        .filter(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT)
+        .collect();
+    let mut more = vec![rates_group()];
+    if outputs.len() >= 2 {
+        more.insert(0, multi_output_group(&outputs, again));
+    }
+    for group in more {
+        page.add(&group);
+        groups.borrow_mut().push(group);
+    }
+}
+
+/// What PipeWire knows the output that plays on several at once by.
+const MULTI_OUTPUT: &str = "nekoland_multi_output";
+
+fn pipewire_conf(name: &str) -> PathBuf {
+    home().join(".config/pipewire/pipewire.conf.d").join(name)
+}
+
+/// Writes `text` to `path`, or removes it when `text` is None, gone already or not.
+fn write_or_remove(path: &Path, text: Option<String>) -> std::io::Result<()> {
+    match text {
+        Some(text) => {
+            std::fs::create_dir_all(path.parent().unwrap_or(path)).and_then(|()| std::fs::write(path, text))
+        }
+        None => std::fs::remove_file(path).or_else(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(err),
+        }),
+    }
+}
+
+/// The outputs that play together as one, as macOS's multi-output device: PipeWire's combine
+/// stream, which there is while two or more are chosen.
+fn multi_output_group(outputs: &[AudioDevice], changed: Rc<dyn Fn()>) -> adw::PreferencesGroup {
+    let group = group("多重輸出裝置");
+    let path = pipewire_conf("51-nekoland-multi-output.conf");
+    // Those chosen that are not plugged in stay chosen.
+    let members = Rc::new(RefCell::new(match std::fs::read_to_string(&path) {
+        Ok(text) => multi_output_members(&text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => {
+            eprintln!("{}: {err}", path.display());
+            Vec::new()
+        }
+    }));
+    for device in outputs {
+        let row = adw::SwitchRow::builder()
+            .title(&device.description)
+            .active(members.borrow().contains(&device.name))
+            .build();
+        let (members, changed, path) = (members.clone(), changed.clone(), path.clone());
+        let name = device.name.clone();
+        row.connect_active_notify(move |row| {
+            let mut members = members.borrow_mut();
+            let was = members.len() >= 2;
+            members.retain(|member| *member != name);
+            if row.is_active() {
+                members.push(name.clone());
+            }
+            let is = members.len() >= 2;
+            if !was && !is {
+                return;
+            }
+            if let Err(err) = write_or_remove(&path, is.then(|| multi_output_conf(&members))) {
+                eprintln!("{}: {err}", path.display());
+                return;
+            }
+            // PipeWire loads its modules only as it starts.
+            run("systemctl", &["--user", "restart", "pipewire", "pipewire-pulse", "wireplumber"]);
+            when_multi_output_is(is, changed.clone());
+        });
+        group.add(&row);
+    }
+    group
+}
+
+/// Calls `then` once PipeWire is back with the multi-output device there or not, or after
+/// five seconds.
+fn when_multi_output_is(there: bool, then: Rc<dyn Fn()>) {
+    let mut tries = 0;
+    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+        tries += 1;
+        let nodes = audio_nodes();
+        let back = nodes.iter().any(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT);
+        if (back && nodes.iter().any(|device| device.name == MULTI_OUTPUT) == there) || tries == 25 {
+            then();
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn multi_output_conf(members: &[String]) -> String {
+    let matches: Vec<String> = members
+        .iter()
+        .map(|name| format!("            {{ media.class = \"Audio/Sink\" node.name = {} }}\n", quoted(name)))
+        .collect();
+    format!(
+        "# Written by Nekoland's Settings.\n\
+         context.modules = [\n  {{\n    name = libpipewire-module-combine-stream\n    args = {{\n      \
+         combine.mode = sink\n      node.name = \"{MULTI_OUTPUT}\"\n      \
+         node.description = \"多重輸出裝置\"\n      combine.latency-compensate = true\n      \
+         combine.props = {{ audio.position = [ FL FR ] }}\n      stream.rules = [\n        {{\n          \
+         matches = [\n{}          ]\n          actions = {{ create-stream = {{ }} }}\n        }}\n      \
+         ]\n    }}\n  }}\n]\n",
+        matches.concat()
+    )
+}
+
+/// The outputs `multi_output_conf` was written with.
+fn multi_output_members(conf: &str) -> Vec<String> {
+    conf.lines()
+        .filter_map(|line| {
+            line.trim().strip_prefix("{ media.class = \"Audio/Sink\" node.name = ")?.strip_suffix(" }")
+        })
+        .filter_map(|name| serde_json::from_str(name).ok())
+        .collect()
+}
+
+/// The value `pw-metadata` prints for a key: "update: id:0 key:'clock.rate' value:'48000' type:''".
+fn metadata_value(text: &str) -> Option<String> {
+    let value = text.lines().find_map(|line| line.split_once(" value:'"))?.1;
+    Some(value.split_once('\'')?.0.to_string())
+}
+
+/// A string as PipeWire's configuration, a kind of JSON, takes it.
+fn quoted(text: &str) -> String {
+    serde_json::Value::from(text).to_string()
+}
+
+/// Sample rates PipeWire may run at, following what plays, instead of always its default;
+/// set at once, and kept for when PipeWire starts again.
+fn rates_group() -> adw::PreferencesGroup {
+    let group = group("");
+    let path = pipewire_conf("51-nekoland-rates.conf");
+    let row = adw::SwitchRow::builder().title("取樣率跟隨播放內容").active(path.exists()).build();
+    row.connect_active_notify(move |row| {
+        let rates: Vec<String> = COMMON_RATES.iter().map(u32::to_string).collect();
+        let rates = format!("[ {} ]", rates.join(" "));
+        let conf = row.is_active().then(|| {
+            format!(
+                "# Written by Nekoland's Settings.\n\
+                 context.properties = {{ default.clock.allowed-rates = {rates} }}\n"
+            )
+        });
+        if let Err(err) = write_or_remove(&path, conf) {
+            eprintln!("{}: {err}", path.display());
+            return;
+        }
+        // Off, it is the default rate alone, as PipeWire has it unless told otherwise; not
+        // deleted, which PipeWire 1.6 crashes on.
+        let rates = if row.is_active() {
+            rates
+        } else {
+            let rate = output("pw-metadata", &["-n", "settings", "0", "clock.rate"])
+                .and_then(|text| metadata_value(&text))
+                .unwrap_or_else(|| "48000".into());
+            format!("[ {rate} ]")
+        };
+        run("pw-metadata", &["-n", "settings", "0", "clock.allowed-rates", &rates]);
+    });
+    group.add(&row);
+    group
 }
 
 /// One kind of sound device: which is the default, its volume and whether it is muted, and
@@ -1013,23 +1179,18 @@ fn save_device_format(name: &str, rate: u32, format: &str) {
         props.push(format!("audio.rate = {rate}"));
     }
     if !format.is_empty() {
-        props.push(format!("audio.format = {format:?}"));
+        props.push(format!("audio.format = {}", quoted(format)));
     }
-    let saved = if props.is_empty() {
-        std::fs::remove_file(&path).or_else(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => Ok(()),
-            _ => Err(err),
-        })
-    } else {
-        let rule = format!(
+    let rule = (!props.is_empty()).then(|| {
+        format!(
             "# Written by Nekoland's Settings.\n\
-             monitor.alsa.rules = [\n  {{\n    matches = [ {{ node.name = {name:?} }} ]\n    \
+             monitor.alsa.rules = [\n  {{\n    matches = [ {{ node.name = {name} }} ]\n    \
              actions = {{ update-props = {{ {} }} }}\n  }}\n]\n",
-            props.join(", ")
-        );
-        std::fs::create_dir_all(path.parent().unwrap_or(&path)).and_then(|()| std::fs::write(&path, rule))
-    };
-    match saved {
+            props.join(", "),
+            name = quoted(name),
+        )
+    });
+    match write_or_remove(&path, rule) {
         Ok(()) => run("systemctl", &["--user", "restart", "wireplumber"]),
         Err(err) => eprintln!("{}: {err}", path.display()),
     }
@@ -2250,6 +2411,21 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_values_are_read_from_pw_metadata() {
+        let text = "Found \"settings\" metadata 32\nupdate: id:0 key:'clock.rate' value:'44100' type:''\n";
+        assert_eq!(metadata_value(text).as_deref(), Some("44100"));
+        assert_eq!(metadata_value("Found \"settings\" metadata 32\n"), None);
+    }
+
+    #[test]
+    fn multi_output_members_are_read_back_from_what_is_written() {
+        let members = ["alsa_output.usb".to_string(), "bluez_output.\"quoted\"".to_string()];
+        let conf = multi_output_conf(&members);
+        assert!(conf.contains("libpipewire-module-combine-stream"));
+        assert_eq!(multi_output_members(&conf), members);
+    }
 
     #[test]
     fn audio_nodes_are_read_with_their_formats_and_defaults() {
