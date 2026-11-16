@@ -99,6 +99,8 @@ pub struct Config {
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
     pub pointer_speed: f64,
+    /// How far scrolling goes, times what the mouse or touchpad sends.
+    pub scroll_speed: f64,
     /// How many points across the cursor is drawn.
     pub cursor_size: i32,
     /// The cursor theme and icon theme Nekoland draws with, by folder name; its own choice
@@ -424,6 +426,7 @@ impl Default for Config {
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
+            scroll_speed: 1.0,
             cursor_size: 24,
             cursor_theme: String::new(),
             icon_theme: String::new(),

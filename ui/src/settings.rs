@@ -1269,6 +1269,13 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
         |speed| format!("{:.1}", (speed * 10.0).round() / 10.0 + 0.0),
         |speed| set(&format!("pointer_speed = {speed:.2}")),
     ));
+    pointer.add(&scale_row(
+        "捲動速度",
+        config.number("scroll_speed", 1.0),
+        (0.5, 3.0, 0.1),
+        |speed| format!("{speed:.1}×"),
+        |speed| set(&format!("scroll_speed = {speed:.1}")),
+    ));
     pointer.add(&switch_row(config, "滑鼠加速", "pointer_acceleration"));
     let primary = adw::ComboRow::builder()
         .title("主要按鈕")

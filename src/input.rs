@@ -191,15 +191,18 @@ impl Nekoland {
             }
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
+                let speed = self.config.scroll_speed;
 
                 let horizontal_amount = event
                     .amount(Axis::Horizontal)
-                    .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.);
+                    .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.)
+                    * speed;
                 let vertical_amount = event
                     .amount(Axis::Vertical)
-                    .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
-                let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal);
-                let vertical_amount_discrete = event.amount_v120(Axis::Vertical);
+                    .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.)
+                    * speed;
+                let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal).map(|v120| v120 * speed);
+                let vertical_amount_discrete = event.amount_v120(Axis::Vertical).map(|v120| v120 * speed);
 
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 if horizontal_amount != 0.0 {

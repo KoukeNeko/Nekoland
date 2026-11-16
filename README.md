@@ -50,6 +50,7 @@ wallpaper and an input method. Every key is optional:
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `dock_indicators`, `dock_bounce` | Whether a dot under an icon says its application runs, and whether an icon bounces when clicked: both on unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+| `scroll_speed` | How far scrolling goes, times what the mouse or touchpad sends: 1 unless set |
 | `cursor_size` | How many points across Nekoland draws the cursor: 24 unless set |
 | `cursor_theme`, `icon_theme` | The cursor and icon themes Nekoland draws with, by folder name; a common one, as `$XCURSOR_THEME`, Adwaita or Yaru, unless set. Icons already drawn change when drawn again |
 | `pointer_acceleration`, `left_handed`, `disable_while_typing` | Whether the pointer goes further the faster it moves, the buttons are swapped for the left hand, and a touchpad ignores touches while typing: on, off and on unless set |
