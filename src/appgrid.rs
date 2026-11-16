@@ -26,7 +26,7 @@ use crate::{
     config::{self, AppsView},
     dock::paint_pane,
     glass::Tier,
-    menubar::Overlay,
+    menubar::{colors, draw_field, Overlay, FIELD_HEIGHT},
     overview::{expanded_height, BarAction},
     text::{self, Picture},
     Nekoland,
@@ -36,7 +36,6 @@ const CELL_WIDTH: i32 = 132;
 const CELL_HEIGHT: i32 = 128;
 const ICON: i32 = 66;
 const SEARCH_WIDTH: i32 = 360;
-const SEARCH_HEIGHT: i32 = 38;
 /// Room under the grid for the dots that tell the pages.
 const DOTS: i32 = 40;
 /// How long the view and a folder take to fade in, and a page to slide to the next.
@@ -718,9 +717,9 @@ impl Nekoland {
         };
         let search = Rectangle::new(
             (area.loc.x + (area.size.w - SEARCH_WIDTH) / 2, top).into(),
-            (SEARCH_WIDTH, SEARCH_HEIGHT).into(),
+            (SEARCH_WIDTH, FIELD_HEIGHT).into(),
         );
-        let grid_top = top + SEARCH_HEIGHT + 32;
+        let grid_top = top + FIELD_HEIGHT + 32;
         let bottom = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size) - DOTS - 8;
         let columns = ((area.size.w - 160) / CELL_WIDTH).clamp(4, 8) as usize;
         let rows = ((bottom - grid_top) / CELL_HEIGHT).clamp(2, 5) as usize;
@@ -1014,7 +1013,7 @@ impl Nekoland {
                 fade,
                 id: &apps.ids[2],
                 rect: layout.search,
-                glass: Some((Tier::Menu, SEARCH_HEIGHT / 2)),
+                glass: None,
                 alpha: 1.0,
                 picture,
             });
@@ -1454,21 +1453,16 @@ impl Nekoland {
     }
 }
 
-/// The search field's text on its pane: what was typed and what is being composed, which
-/// is underlined, with the caret after them; or what the field is for.
+/// The search field, the design language's, with what was typed and what is being
+/// composed, which is underlined, and the caret after them; or what the field is for. The
+/// overview is dark, and so is its field.
 fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<Picture> {
     let surface = text::canvas(size.w, size.h).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
-        paint_pane(
-            &cr,
-            f64::from(size.w),
-            f64::from(size.h),
-            f64::from(size.h) / 2.0,
-            true,
-            Tier::Menu,
-        );
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
+        let colors = colors(true);
+        draw_field(&cr, (0.0, 0.0, f64::from(size.w), f64::from(size.h)), &colors);
+        cr.set_source_rgb(colors.ink_3.0, colors.ink_3.1, colors.ink_3.2);
         cr.set_line_width(1.6);
         let (cx, cy) = (22.0, f64::from(size.h) / 2.0 - 1.0);
         cr.arc(cx, cy, 6.0, 0.0, std::f64::consts::TAU);
@@ -1477,15 +1471,15 @@ fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<P
         cr.line_to(cx + 9.0, cy + 9.0);
         cr.stroke().ok()?;
         let empty = query.is_empty() && preedit.is_empty();
-        let (text, alpha) = if empty {
-            ("搜尋應用程式".to_string(), 0.62)
+        let (text, color) = if empty {
+            ("搜尋應用程式".to_string(), colors.ink_3)
         } else {
-            (format!("{query}{preedit}"), 1.0)
+            (format!("{query}{preedit}"), colors.ink)
         };
         let line = text_layout(&cr, &text, 11.0);
         let (width, height) = line.pixel_size();
         let top = f64::from(size.h - height) / 2.0;
-        cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+        cr.set_source_rgb(color.0, color.1, color.2);
         cr.move_to(40.0, top);
         pangocairo::functions::show_layout(&cr, &line);
         if !preedit.is_empty() {
@@ -1719,17 +1713,12 @@ fn draw_folder(
             f64::from(FOLDER_PADDING) + f64::from(FOLDER_TITLE - height) / 2.0 - 6.0,
         );
         if renaming {
-            text::rounded_rectangle(
-                &cr,
-                x - 12.0,
-                y - 5.0,
-                f64::from(width) + 24.0,
-                f64::from(height) + 10.0,
-                8.0,
-            );
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
-            cr.fill().ok()?;
-            cr.set_source_rgb(1.0, 1.0, 1.0);
+            // The design language's field around the name, dark as the overview is.
+            let colors = colors(true);
+            let field = f64::from(FIELD_HEIGHT);
+            let top = y + f64::from(height) / 2.0 - field / 2.0;
+            draw_field(&cr, (x - 12.0, top, f64::from(width) + 24.0, field), &colors);
+            cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
             cr.rectangle(x + f64::from(width) + 2.0, y, 1.5, f64::from(height));
             cr.fill().ok()?;
         }

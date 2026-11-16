@@ -51,7 +51,8 @@ const LOGO: f64 = 16.0;
 /// A menu's rows, separators and text are as GTK's popover menus are, so that every menu
 /// is one size.
 const ROW_HEIGHT: i32 = 32;
-const SEARCH_HEIGHT: i32 = 32;
+/// The Help menu's search row: a field and room around it.
+const SEARCH_HEIGHT: i32 = FIELD_HEIGHT + 6;
 const SEPARATOR_HEIGHT: i32 = 12;
 const MENU_POINTS: f64 = 11.0;
 const MENU_PADDING: i32 = 6;
@@ -359,7 +360,24 @@ pub(crate) struct Colors {
     pub(crate) ink: Rgb,
     pub(crate) ink_3: Rgb,
     pub(crate) on_ink: Rgb,
+    pub(crate) sheet: Rgb,
     pub(crate) edge: (f64, f64, f64, f64),
+}
+
+/// The design language's field, as GTK's are in Nekoland's look.
+pub(crate) const FIELD_HEIGHT: i32 = 36;
+const FIELD_RADIUS: f64 = 8.0;
+
+/// A field of the design language being typed into: sheet on 8px corners, with a line of
+/// ink just inside its edge.
+pub(crate) fn draw_field(cr: &Context, (x, y, width, height): (f64, f64, f64, f64), colors: &Colors) {
+    text::rounded_rectangle(cr, x, y, width, height, FIELD_RADIUS);
+    cr.set_source_rgb(colors.sheet.0, colors.sheet.1, colors.sheet.2);
+    let _ = cr.fill();
+    text::rounded_rectangle(cr, x + 0.75, y + 0.75, width - 1.5, height - 1.5, FIELD_RADIUS - 0.75);
+    cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
+    cr.set_line_width(1.5);
+    let _ = cr.stroke();
 }
 
 // The design language's ink, paper and glass, in both themes.
@@ -411,6 +429,7 @@ pub(crate) fn colors(dark: bool) -> Colors {
             ink: (0.945, 0.937, 0.918),
             ink_3: (0.576, 0.569, 0.592),
             on_ink: (0.090, 0.090, 0.102),
+            sheet: (0.133, 0.133, 0.149),
             edge: (1.0, 1.0, 1.0, 0.16),
         }
     } else {
@@ -418,6 +437,7 @@ pub(crate) fn colors(dark: bool) -> Colors {
             ink: (0.090, 0.090, 0.102),
             ink_3: (0.435, 0.427, 0.447),
             on_ink: (0.984, 0.980, 0.973),
+            sheet: (0.984, 0.980, 0.973),
             edge: (0.0, 0.0, 0.0, 0.10),
         }
     }
@@ -879,20 +899,20 @@ impl MenuBar {
                 continue;
             }
             if entry.search {
-                text::rounded_rectangle(&cr, x, y + 2.0, w, h - 6.0, 7.0);
-                cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.08);
-                let _ = cr.fill();
+                let field = f64::from(FIELD_HEIGHT);
+                draw_field(&cr, (x, y + 2.0, w, field), &colors);
+                let center = y + 2.0 + field / 2.0;
                 let (text, color) = if entry.label.is_empty() {
                     ("搜尋", colors.ink_3)
                 } else {
                     (entry.label.as_str(), colors.ink)
                 };
-                show_text(&cr, text, &label_font, x + 10.0, center - 2.0, color);
+                show_text(&cr, text, &label_font, x + 12.0, center, color);
                 if !entry.label.is_empty() {
                     // The caret, after what was typed.
                     let typed = text_size(&entry.label, &label_font).0;
                     cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
-                    cr.rectangle(x + 11.0 + f64::from(typed), center - 10.0, 1.0, 16.0);
+                    cr.rectangle(x + 13.0 + f64::from(typed), center - 8.0, 1.0, 16.0);
                     let _ = cr.fill();
                 }
                 continue;
