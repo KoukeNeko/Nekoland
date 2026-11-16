@@ -85,7 +85,11 @@ fn ask(app: &adw::Application, given: Rc<Cell<bool>>) {
     buttons.append(&cancel);
     buttons.append(&ok);
     content.append(&buttons);
-    window.set_content(Some(&content));
+    // The look gives a window's background to its content, which must then cover all of it:
+    // around content with margins, the glass behind the window would show.
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.append(&content);
+    window.set_content(Some(&root));
     window.set_default_widget(Some(&ok));
 
     cancel.connect_clicked(glib::clone!(
