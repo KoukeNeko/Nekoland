@@ -49,8 +49,8 @@ const ICON: i32 = 16;
 const KNOB: i32 = 7;
 /// Room for a slider's value, "100%", at the left of its knob's furthest reach.
 const VALUE: i32 = 36;
-/// Where a slider's track starts in its group: after a group's padding, the icon, the
-/// value, the design language's 8 and the knob.
+/// Where a slider's knob can go in its group, at its left: after a group's padding, the
+/// icon, the value, the design language's 8 and the knob, which stays within the line.
 const TRACK_START: i32 = 12 + ICON + 12 + VALUE + 8 + KNOB;
 const OPEN_TIME: f64 = 0.16;
 const EXPAND_TIME: f64 = 0.2;
@@ -354,7 +354,7 @@ impl ControlCenter {
             if let Some(icon) = icon {
                 parts.push((icon, rect(PADDING + 8, row, 24, 24)));
             }
-            // The knob stops a group's padding from the well's edge.
+            // The line stops a group's padding from the well's edge.
             parts.push((track, rect(PADDING + TRACK_START, row, inner - TRACK_START - 12 - KNOB, 24)));
         };
         if self.brightness.is_some() {
@@ -867,10 +867,14 @@ fn draw_speaker(cr: &Context, x: f64, center: f64, color: (f64, f64, f64)) {
     let _ = cr.fill();
 }
 
-/// A track, filled in ink as far as `level`, with its knob there.
+/// A track, filled in ink as far as `level`, with its knob there. `x` and `width` are where
+/// the knob's centre travels; the line runs a knob further each way, out to its far side,
+/// as Settings' sliders do.
 fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f64, f64, f64), level: f64) {
     let at = x + width * level;
-    text::rounded_rectangle(cr, x, center - 2.0, width, 4.0, 2.0);
+    let knob = f64::from(KNOB);
+    let x = x - knob;
+    text::rounded_rectangle(cr, x, center - 2.0, width + knob * 2.0, 4.0, 2.0);
     // Light ink on dark glass shows less, so the empty track takes more of it there.
     let empty = if dark { 0.25 } else { 0.16 };
     cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, empty);
