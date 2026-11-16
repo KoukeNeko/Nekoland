@@ -49,6 +49,7 @@ wallpaper and an input method. Every key is optional:
 | `dock_autohide` | Whether the Dock slides off its edge until the pointer reaches that edge, leaving windows the room; off unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+| `pointer_acceleration`, `left_handed`, `disable_while_typing` | Whether the pointer goes further the faster it moves, the buttons are swapped for the left hand, and a touchpad ignores touches while typing: on, off and on unless set |
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
 | `repeat_delay`, `repeat_rate` | Milliseconds a held key waits before it repeats, and how many times a second it then repeats; 200 and 25 unless set |

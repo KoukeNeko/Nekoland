@@ -428,7 +428,7 @@ impl Nekoland {
 
     /// Sets a pointing device as the configuration says, and keeps it for when that changes.
     pub fn add_pointer_device(&mut self, mut device: smithay::reexports::input::Device) {
-        use smithay::reexports::input::DeviceCapability;
+        use smithay::reexports::input::{AccelProfile, DeviceCapability};
         if !device.has_capability(DeviceCapability::Pointer) {
             return;
         }
@@ -436,6 +436,13 @@ impl Nekoland {
         let _ = device.config_tap_set_enabled(self.config.tap_to_click);
         let _ = device.config_scroll_set_natural_scroll_enabled(self.config.natural_scroll);
         let _ = device.config_accel_set_speed(self.config.pointer_speed.clamp(-1.0, 1.0));
+        let _ = device.config_accel_set_profile(if self.config.pointer_acceleration {
+            AccelProfile::Adaptive
+        } else {
+            AccelProfile::Flat
+        });
+        let _ = device.config_left_handed_set(self.config.left_handed);
+        let _ = device.config_dwt_set_enabled(self.config.disable_while_typing);
         self.pointer_devices.retain(|known| *known != device);
         self.pointer_devices.push(device);
     }

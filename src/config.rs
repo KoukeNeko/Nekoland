@@ -84,6 +84,13 @@ pub struct Config {
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
     pub pointer_speed: f64,
+    /// Whether the pointer goes further the faster it is moved, as libinput's adaptive
+    /// profile does, instead of as far however fast.
+    pub pointer_acceleration: bool,
+    /// Whether the buttons are swapped, for the left hand.
+    pub left_handed: bool,
+    /// Whether a touchpad ignores touches while keys are typed, and for a moment after.
+    pub disable_while_typing: bool,
     /// The XKB layout keys are read with, and its variant and options, as setxkbmap takes
     /// them: `us`, `dvorak`, `ctrl:nocaps`.
     pub keyboard_layout: String,
@@ -377,6 +384,9 @@ impl Default for Config {
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
+            pointer_acceleration: true,
+            left_handed: false,
+            disable_while_typing: true,
             keyboard_layout: "us".into(),
             keyboard_variant: String::new(),
             keyboard_options: String::new(),

@@ -1124,9 +1124,20 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
         (-1.0, 1.0, 0.1),
         |speed| set(&format!("pointer_speed = {speed:.2}")),
     ));
+    pointer.add(&switch_row(config, "滑鼠加速", "pointer_acceleration"));
+    let primary = adw::ComboRow::builder()
+        .title("主要按鈕")
+        .model(&gtk::StringList::new(&["左", "右"]))
+        .selected(u32::from(config.flag("left_handed")))
+        .build();
+    primary.connect_selected_notify(|row| set(&format!("left_handed = {}", row.selected() == 1)));
+    pointer.add(&primary);
     pointer.add(&switch_row(config, "自然捲動", "natural_scroll"));
-    pointer.add(&switch_row(config, "輕觸以點按", "tap_to_click"));
     page.add(&pointer);
+    let touchpad = group("觸控板");
+    touchpad.add(&switch_row(config, "輕觸以點按", "tap_to_click"));
+    touchpad.add(&switch_row(config, "打字時停用", "disable_while_typing"));
+    page.add(&touchpad);
     page
 }
 
