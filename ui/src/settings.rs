@@ -948,7 +948,9 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
             }
         }) as Rc<dyn Fn()>
     };
-    let nodes = audio_nodes();
+    let (nodes, cards) = output("pw-dump", &[])
+        .map(|dump| (parse_audio_nodes(&dump), parse_sound_cards(&dump)))
+        .unwrap_or_default();
     *shown.devices.borrow_mut() = device_names(&nodes);
     for (title, class, default, none) in [
         ("輸出", "Audio/Sink", SINK, "沒有音訊輸出"),
@@ -964,6 +966,9 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
         .filter(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT)
         .collect();
     let mut more = vec![rates_group()];
+    if !cards.is_empty() {
+        more.insert(0, profile_group(cards));
+    }
     if outputs.len() >= 2 {
         more.insert(0, multi_output_group(&outputs, again));
     }
@@ -1275,6 +1280,66 @@ struct AudioDevice {
     formats: Vec<String>,
     rate: u32,
     format: String,
+}
+
+/// A sound card, and the profiles it can be used with, as PipeWire describes them: stereo,
+/// surround, Pro Audio or off.
+struct SoundCard {
+    id: u64,
+    description: String,
+    /// By index, and the one it is in.
+    profiles: Vec<(u64, String)>,
+    profile: u64,
+}
+
+/// The sound cards in `pw-dump`'s output; one it cannot read, `parse_audio_nodes` says so.
+fn parse_sound_cards(dump: &str) -> Vec<SoundCard> {
+    use serde_json::Value;
+    let objects: Vec<Value> = serde_json::from_str(dump).unwrap_or_default();
+    objects
+        .iter()
+        .filter(|object| object["info"]["props"]["media.class"] == "Audio/Device")
+        .filter_map(|object| {
+            let (info, props) = (&object["info"], &object["info"]["props"]);
+            let current = info["params"]["Profile"][0]["index"].as_u64()?;
+            // Those PipeWire says cannot be used, unless it is in one.
+            let profiles = info["params"]["EnumProfile"]
+                .as_array()?
+                .iter()
+                .filter(|profile| profile["available"] != "no" || profile["index"] == current)
+                .filter_map(|profile| {
+                    Some((profile["index"].as_u64()?, profile["description"].as_str()?.into()))
+                })
+                .collect();
+            Some(SoundCard {
+                id: object["id"].as_u64()?,
+                description: props["device.description"].as_str().or(props["device.name"].as_str())?.into(),
+                profiles,
+                profile: current,
+            })
+        })
+        .collect()
+}
+
+/// Each sound card's profile, as macOS's Audio MIDI Setup and pavucontrol pick it.
+fn profile_group(cards: Vec<SoundCard>) -> adw::PreferencesGroup {
+    let group = group("裝置模式");
+    for card in cards {
+        let names: Vec<&str> = card.profiles.iter().map(|(_, name)| name.as_str()).collect();
+        let row = adw::ComboRow::builder()
+            .title(&card.description)
+            .model(&gtk::StringList::new(&names))
+            .selected(card.profiles.iter().position(|(index, _)| *index == card.profile).unwrap_or(0) as u32)
+            .build();
+        // The page follows as the card's devices change.
+        row.connect_selected_notify(move |row| {
+            if let Some((index, _)) = card.profiles.get(row.selected() as usize) {
+                run("wpctl", &["set-profile", &card.id.to_string(), &index.to_string()]);
+            }
+        });
+        group.add(&row);
+    }
+    group
 }
 
 fn audio_nodes() -> Vec<AudioDevice> {
@@ -2487,6 +2552,32 @@ mod tests {
         let conf = multi_output_conf(&members);
         assert!(conf.contains("libpipewire-module-combine-stream"));
         assert_eq!(multi_output_members(&conf), members);
+    }
+
+    #[test]
+    fn sound_cards_are_read_with_the_profiles_they_have() {
+        let dump = r#"[
+            {"id": 46, "info": {"props": {"media.class": "Audio/Device", "device.description": "USB DAC"},
+             "params": {"EnumProfile": [
+                {"index": 0, "description": "Off", "available": "yes"},
+                {"index": 1, "description": "Analog Stereo", "available": "unknown"},
+                {"index": 2, "description": "Digital Stereo (HDMI)", "available": "no"},
+                {"index": 3, "description": "Pro Audio", "available": "yes"}],
+              "Profile": [{"index": 3}]}}},
+            {"id": 47, "info": {"props": {"media.class": "Audio/Device", "device.name": "alsa_card.hdmi"},
+             "params": {"EnumProfile": [{"index": 0, "description": "Off", "available": "yes"},
+                {"index": 1, "description": "Digital Stereo (HDMI)", "available": "no"}],
+              "Profile": [{"index": 1}]}}},
+            {"id": 59, "info": {"props": {"media.class": "Audio/Sink", "node.name": "alsa_output.usb"}}}
+        ]"#;
+        let cards = parse_sound_cards(dump);
+        assert_eq!(cards.len(), 2);
+        let card = &cards[0];
+        assert_eq!((card.id, card.description.as_str(), card.profile), (46, "USB DAC", 3));
+        assert_eq!(card.profiles, [(0, "Off".into()), (1, "Analog Stereo".into()), (3, "Pro Audio".into())]);
+        // An unplugged HDMI screen still shows the profile the card is in.
+        assert_eq!(cards[1].description, "alsa_card.hdmi");
+        assert_eq!(cards[1].profiles, [(0, "Off".into()), (1, "Digital Stereo (HDMI)".into())]);
     }
 
     #[test]
