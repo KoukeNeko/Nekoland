@@ -1,0 +1,139 @@
+// Finds an application by name and starts it, after Spotlight: a search field over the
+// applications that match, on glass. The arrows move, Return starts, Escape closes.
+
+import { Theme, Icon } from "widgets.slint";
+
+export struct AppRow {
+    name: string,
+    detail: string,
+    icon: image,
+}
+
+export component Launcher inherits Window {
+    in-out property <string> query;
+    in property <[AppRow]> apps;
+    in-out property <int> current;
+    callback edited(string);
+    callback chosen(int);
+    callback cancelled();
+
+    title: "搜尋";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font;
+    default-font-size: Theme.text-body;
+    width: 640px;
+    height: layout.preferred-height;
+    forward-focus: field;
+
+    // The glass under it is the compositor's; this is its tint.
+    Rectangle {
+        border-radius: 16px;
+        background: Theme.dark ? #222226b8 : #fbfaf8c8;
+        border-width: 1px;
+        border-color: Theme.dark ? #ffffff29 : #ffffff59;
+    }
+
+    layout := VerticalLayout {
+        padding: 10px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 10px;
+            height: 48px;
+            Icon {
+                name: "search";
+                width: 20px;
+                height: 20px;
+                stroke: Theme.ink-2;
+                stroke-width: 2px;
+                y: (parent.height - self.height) / 2;
+            }
+            Rectangle {
+                field := TextInput {
+                    text <=> root.query;
+                    font-size: 20px;
+                    color: Theme.ink;
+                    single-line: true;
+                    vertical-alignment: center;
+                    selection-background-color: Theme.ink.with-alpha(0.2);
+                    accessible-role: text-input;
+                    accessible-label: "搜尋";
+                    edited => { root.edited(self.text); }
+                    accepted => { root.chosen(root.current); }
+                    key-pressed(event) => {
+                        if event.text == Key.Escape {
+                            root.cancelled();
+                            return accept;
+                        }
+                        if event.text == Key.DownArrow {
+                            root.current = Math.min(root.current + 1, root.apps.length - 1);
+                            return accept;
+                        }
+                        if event.text == Key.UpArrow {
+                            root.current = Math.max(root.current - 1, 0);
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                if root.query == "": Text {
+                    x: 0;
+                    text: "搜尋";
+                    font-size: 20px;
+                    color: Theme.ink-3;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if apps.length > 0: Rectangle {
+            height: 1px;
+            background: Theme.ink.with-alpha(0.12);
+        }
+
+        for app[index] in apps: Rectangle {
+            height: 44px;
+            border-radius: 8px;
+            background: index == current ? Theme.ink : row-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
+            accessible-role: list-item;
+            accessible-label: app.name;
+            accessible-item-selected: index == current;
+            accessible-action-default => { root.chosen(index); }
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 12px;
+                Image {
+                    source: app.icon;
+                    width: 28px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: app.name;
+                        color: index == current ? Theme.on-ink : Theme.ink;
+                        font-weight: 500;
+                        overflow: elide;
+                    }
+                    if app.detail != "": Text {
+                        text: app.detail;
+                        font-size: Theme.text-small;
+                        color: index == current ? Theme.on-ink.with-alpha(0.7) : Theme.ink-2;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            row-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.chosen(index); }
+            }
+        }
+    }
+}
