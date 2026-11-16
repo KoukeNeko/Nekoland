@@ -161,15 +161,30 @@ cat's-eye stone. The surface's own colour goes on top, so it has to be transluce
 for the glass to show; the styles in `shell/` are. Glass behind a bar that spans the
 whole output has square corners.
 
+Behind every window is glass of the wallpaper alone, blurred, as Windows' Mica is: what a
+window leaves see-through, as sidebars in Nekoland's GTK look, shows it, and the windows
+behind do not. The wallpaper seldom changes, so it is seldom blurred again.
+
 ## GTK applications
 
 Nekoland's design language reaches GTK 4 and libadwaita applications through the system's
 style, as a Mac's controls change when the system does, without changing the applications.
 `shell/gtk/nekoland.css` sets libadwaita's colours to Nekoland's paper and ink, with what
-is selected in solid ink, light and dark, and windows to 12px corners. Settings' 外觀 page
+is selected in solid ink, light and dark, and windows to 14px corners; draws GTK's
+buttons, switches, sliders, fields, segmented controls, menus, calendars, tabs, sidebar
+selection, dialogs, toasts and tooltips as the design language has them; and leaves sidebars see-through, on the glass Nekoland
+draws behind every window. Settings' 設計語言 page shows all of it, after the design,
+in this look whether or not it is turned on. Settings' 外觀 page
 turns it on: it puts the file beside `~/.config/gtk-4.0/gtk.css` and imports it from
-there, keeping what else that file has, and keeps it up to date with Settings. An
-application takes it when it is opened again.
+there, keeping what else that file has, and keeps it up to date with Settings. GTK reads
+that file as an application starts, so others take the change when opened again;
+Settings shows it at once, and turned off it opens again without it.
+
+`nekoland-calendar`, from `ui/`, is a small calendar of GTK's and libadwaita's own widgets
+with no styling of its own: a month, the chosen day's events, kept in
+`~/.local/share/nekoland/calendar.tsv`, a search, a menu and a dialog to add one. It is
+there to try the look on an application that knows nothing of it;
+`shell/io.github.koukeneko.Nekoland.Calendar.desktop` puts it among the applications.
 
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Calendar
+Name[zh_TW]=行事曆
+Comment=Days and what is on them
+Comment[zh_TW]=日期與行程
+Exec=nekoland-calendar
+Icon=office-calendar
+Categories=Office;Calendar;
