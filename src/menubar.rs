@@ -78,6 +78,7 @@ const KEY_V: u32 = 55;
 /// What choosing a menu entry does.
 #[derive(Clone, PartialEq)]
 pub enum Command {
+    Settings,
     Sleep,
     Restart,
     ShutDown,
@@ -1412,6 +1413,8 @@ impl Nekoland {
 
         match source {
             Source::System => vec![
+                Entry::item("系統設定⋯", Command::Settings),
+                Entry::separator(),
                 Entry::item("睡眠", Command::Sleep),
                 Entry::item("重新開機⋯", Command::Restart),
                 Entry::item("關機⋯", Command::ShutDown),
@@ -1858,6 +1861,7 @@ impl Nekoland {
         match command {
             Command::Sleep => config::spawn("systemctl suspend"),
             // Asked first, in a dialog of its own: these lose what is not saved.
+            Command::Settings => config::spawn("nekoland-settings"),
             Command::Restart => config::spawn("nekoland-confirm restart"),
             Command::ShutDown => config::spawn("nekoland-confirm shutdown"),
             Command::LogOut => config::spawn("nekoland-confirm logout"),

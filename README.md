@@ -41,7 +41,8 @@ wallpaper and an input method. Every key is optional:
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 
-`nekoland msg reload` reads the file again once it is changed.
+The Settings application changes most of these while Nekoland runs (see below);
+`nekoland msg reload` reads a file changed by hand.
 
 The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 
@@ -68,6 +69,13 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 - Notifications are shown by Nekoland, which serves `org.freedesktop.Notifications`:
   banners on glass under the menu bar, which go when their time is up unless pointed
   at; a click does what the program offers for it.
+- Settings, `nekoland-settings` from `ui/`, opened from the system menu, draws the
+  desktop small: a click on the Dock's first button, the Dock, the menu bar or the
+  wallpaper shows its settings below, the applications' four ways to be shown among
+  them. Its other pages set light or dark, the mouse and touchpad, the sound, what
+  starts at login, and show what the computer is. Each change takes effect at once.
+  Copy `shell/nekoland-settings.desktop` to `~/.local/share/applications/` to find it
+  among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
   user's language too, and takes an input method. Clicking the search field of the
   overview's applications opens it with what was typed there. It closes when anything
@@ -82,7 +90,7 @@ Programs learn whether to be dark from `xdg-desktop-portal`. With
 
 Nekoland draws the bar along the top itself, as the Mac does:
 
-- The cat on the left opens the system menu: sleep, restart, shut down and log out.
+- The cat on the left opens the system menu: Settings, sleep, restart, shut down and log out.
   The last three ask first, in a dialog (`nekoland-confirm`, from `ui/`).
 - Then the active application's menu, by its name, built from the actions it
   exports on D-Bus (About, Settings, Keyboard Shortcuts, Quit) and what Nekoland
@@ -191,6 +199,8 @@ it in effect, or says why not.
   typed letters but not an input method's, the sound menu steps the volume instead of
   sliding it, and the network menu shows the connection without choosing one.
   GNOME's own programs export no menus, so they get the menus Nekoland makes.
+- Settings does not change the display's mode or the keyboard. A wallpaper started by
+  `autostart` stays under one chosen in Settings until the session ends.
 - One GPU and one output; displays are not hot-plugged.
 - No screen capture, screen lock, or idle handling.
 - X11 windows have no title bars, and X11 and Wayland programs do not share a clipboard.

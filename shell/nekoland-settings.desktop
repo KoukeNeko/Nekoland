@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Name[zh_TW]=設定
+Comment=Nekoland's desktop, appearance, mouse, sound and startup settings
+Comment[zh_TW]=Nekoland 的桌面、外觀、滑鼠、聲音與啟動項目設定
+Exec=nekoland-settings
+Icon=preferences-system
+Categories=Settings;System;
+StartupWMClass=nekoland-settings
