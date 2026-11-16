@@ -29,6 +29,9 @@ const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 
 /// What a program printed, or None when it could not be run or failed.
 fn output(program: &str, args: &[&str]) -> Option<String> {
+    if program == "gsettings" && matches!(args.first(), Some(&("set" | "reset"))) {
+        WROTE.set(true);
+    }
     let output = Command::new(program)
         .args(args)
         .output()
@@ -57,6 +60,7 @@ fn unset(key: &str) {
 }
 
 fn change(command: &str) {
+    WROTE.set(true);
     if let Some(reply) = output("nekoland", &["msg", command]) {
         if !reply.trim().is_empty() {
             eprintln!("{}", reply.trim());
@@ -211,6 +215,8 @@ thread_local! {
     static GLASS_OPACITY: Cell<f64> = const { Cell::new(0.8) };
     /// Nekoland's `font`, which the look gives GTK's text too.
     static UI_FONT: RefCell<String> = RefCell::new("Ubuntu Sans".into());
+    /// Set as Settings changes a setting itself, which its pages already show.
+    static WROTE: Cell<bool> = const { Cell::new(false) };
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -418,15 +424,17 @@ fn build(app: &adw::Application) {
         .height_request(480)
         .content(&split)
         .build();
-    // Settings changed elsewhere while the window was in the background show as it comes
-    // back; its own changes, made while it is in front, never rebuild a page under the hand.
-    let left_with: RefCell<Option<String>> = RefCell::new(None);
-    window.connect_is_active_notify(move |window| {
-        if !window.is_active() {
-            left_with.replace(Some(outside_settings()));
+    // Settings changed elsewhere show on the pages: looked for as the window comes and goes,
+    // and every few seconds while it is in front. Its own changes rebuild nothing.
+    let seen = RefCell::new(outside_settings());
+    let refresh = Rc::new(move || {
+        let now = outside_settings();
+        let own = WROTE.take();
+        if *seen.borrow() == now {
             return;
         }
-        if left_with.take().is_none_or(|before| before == outside_settings()) {
+        seen.replace(now);
+        if own {
             return;
         }
         let config = Config::load();
@@ -455,6 +463,21 @@ fn build(app: &adw::Application) {
             stack.set_visible_child_name(&shown);
         }
         stack.set_transition_type(transition);
+    });
+    window.connect_is_active_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |_| refresh()
+    ));
+    let in_front = window.downgrade();
+    glib::timeout_add_seconds_local(2, move || {
+        let Some(window) = in_front.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if window.is_active() {
+            refresh();
+        }
+        glib::ControlFlow::Continue
     });
     window.present();
 }
