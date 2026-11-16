@@ -122,7 +122,9 @@ pub struct Config {
     pub keyboard_layout: String,
     pub keyboard_variant: String,
     pub keyboard_options: String,
-    /// Milliseconds a key is held before it repeats, and how many times a second it then does.
+    /// Whether a held key repeats; milliseconds it is held before it does, and how many
+    /// times a second it then does.
+    pub key_repeat: bool,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
 }
@@ -440,6 +442,7 @@ impl Default for Config {
             keyboard_layout: "us".into(),
             keyboard_variant: String::new(),
             keyboard_options: String::new(),
+            key_repeat: true,
             repeat_delay: 200,
             repeat_rate: 25,
         }
@@ -471,6 +474,11 @@ impl Config {
         // Not `||`: both are set, whichever changed.
         set_look(Tier::Bar, self.bar_opacity, self.bar_blur)
             | set_look(Tier::Menu, self.glass_opacity, self.glass_blur)
+    }
+
+    /// The keyboard's repeat delay and rate, as Wayland takes them: a rate of 0 repeats none.
+    pub fn repeat(&self) -> (i32, i32) {
+        (self.repeat_delay, if self.key_repeat { self.repeat_rate } else { 0 })
     }
 
     /// The keyboard's layout, variant and options, as XKB is given them.

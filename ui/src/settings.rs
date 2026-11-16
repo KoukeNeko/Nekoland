@@ -1237,8 +1237,10 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     ));
     page.add(&layout);
 
-    let repeat = group("按鍵重複");
-    repeat.add(&scale_row(
+    let repeat = group("");
+    let repeats = switch_row(config, "按鍵重複", "key_repeat");
+    repeat.add(&repeats);
+    let delay = scale_row(
         "重複延遲",
         config.number("repeat_delay", 200.0),
         (150.0, 1000.0, 50.0),

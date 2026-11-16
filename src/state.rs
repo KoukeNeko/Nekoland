@@ -156,7 +156,7 @@ impl Nekoland {
         crate::text::set_icon_theme(&config.icon_theme);
         config.set_glass_look();
         // A layout XKB does not know is no reason to have no keyboard.
-        let (delay, rate) = (config.repeat_delay, config.repeat_rate);
+        let (delay, rate) = config.repeat();
         if let Err(err) = seat.add_keyboard(crate::config::xkb(&config.keyboard()), delay, rate) {
             tracing::warn!("keyboard layout {:?}: {err}", config.keyboard_layout);
             seat.add_keyboard(Default::default(), delay, rate).unwrap();
@@ -405,7 +405,8 @@ impl Nekoland {
             crate::text::set_family(&self.config.font);
         }
         let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.change_repeat_info(self.config.repeat_rate, self.config.repeat_delay);
+        let (delay, rate) = self.config.repeat();
+        keyboard.change_repeat_info(rate, delay);
         let names = self.config.keyboard();
         if names != old_keyboard {
             if let Err(err) = keyboard.set_xkb_config(self, crate::config::xkb(&names)) {
