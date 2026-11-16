@@ -340,6 +340,8 @@ pub struct Dock {
     launching: Vec<(String, Instant)>,
     /// Windows on their way into the Dock, from where they were.
     minimizing: Vec<(Window, Rectangle<i32, Logical>, Instant)>,
+    /// Windows brought back from the Dock, growing out of the tile they were in.
+    restoring: Vec<(Window, Rectangle<i32, Logical>, Instant)>,
     preview: Option<Preview>,
     picture: Option<Picture>,
     label: Option<(Key, bool, Picture, Instant)>,
@@ -787,6 +789,9 @@ impl Nekoland {
             .retain(|(app_id, at)| !running(&tiles, app_id) && at.elapsed() < LAUNCH_TIMEOUT);
         self.dock
             .minimizing
+            .retain(|(window, _, at)| window.alive() && at.elapsed().as_secs_f64() < MINIMIZE_TIME);
+        self.dock
+            .restoring
             .retain(|(window, _, at)| window.alive() && at.elapsed().as_secs_f64() < MINIMIZE_TIME);
 
         // A dragged icon leaves its place, and the others of its kind make room where it
@@ -1469,6 +1474,16 @@ impl Nekoland {
             return Vec::new();
         }
         let mut thumbnails = Vec::new();
+        // A window brought back grows from its tile to where it was, drawn here in its place.
+        for (window, from, at) in &self.dock.restoring {
+            if let Some(location) = self.space.element_location(window) {
+                let to = Rectangle::new(location, window.geometry().size);
+                thumbnails.push((
+                    window.clone(),
+                    mix_rect(*from, to, ease_out(at.elapsed().as_secs_f64() / MINIMIZE_TIME)),
+                ));
+            }
+        }
         if let Some(preview) = &self.dock.preview {
             for (window, card) in preview.windows.iter().zip(&preview.cards) {
                 thumbnails.push((window.clone(), Preview::shot(*card)));
@@ -1852,7 +1867,20 @@ impl Nekoland {
                     self.dock.launching.push((app_id, Instant::now()));
                 }
             }
-            Tile::Window { window, .. } => self.reveal_window(&window),
+            Tile::Window { window, .. } => {
+                if let Some(index) = self
+                    .dock
+                    .tiles
+                    .iter()
+                    .position(|tile| tile.key() == Key::Window(window.clone()))
+                {
+                    if let Some(rect) = self.tile_rect(index) {
+                        self.dock.restoring.retain(|(restoring, ..)| *restoring != window);
+                        self.dock.restoring.push((window.clone(), rect, Instant::now()));
+                    }
+                }
+                self.reveal_window(&window);
+            }
             Tile::Stack { index, .. } => self.open_stack(index),
             Tile::Trash { .. } => open_uri("trash:///"),
             Tile::Separator(_) => {}
@@ -1948,6 +1976,14 @@ impl Nekoland {
             // Asked first, in a dialog of its own: what is in the Trash cannot come back.
             DockCommand::EmptyTrash => config::spawn("nekoland-confirm empty-trash"),
         }
+    }
+
+    /// Whether a window is drawn by the Dock for now, growing out of it, and not where it is.
+    pub fn dock_draws(&self, window: &Window) -> bool {
+        self.dock
+            .restoring
+            .iter()
+            .any(|(restoring, ..)| restoring == window)
     }
 
     /// A window was minimized from `rect`; it is drawn shrinking into the Dock.

@@ -83,7 +83,7 @@ pub fn scene_elements(
             .space
             .elements()
             .rev()
-            .filter(|window| !floating.contains(window))
+            .filter(|window| !floating.contains(window) && !state.dock_draws(window))
             .cloned()
             .collect();
         let mut under: Vec<SceneElement> = windows

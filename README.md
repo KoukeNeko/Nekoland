@@ -50,7 +50,8 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   its windows, to go to one or close it. A right click lists its windows and offers a
   new window, keeping it in the Dock, hiding and quitting. Kept icons are dragged to
   reorder them, out of the Dock to take them off, and a running one dragged among them
-  is kept. A minimized window shrinks into its place in the Dock.
+  is kept. A minimized window shrinks into its place in the Dock and grows back out of
+  it.
 - A kept folder shows as its newest items piled up or as its own icon, and opens as a
   fan rising from it, a grid of pages to scroll, or a list with submenus for folders; a
   right click sets its order, how it shows and how it opens. A folder dragged in from a
@@ -157,7 +158,7 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 - One GPU and one output; displays are not hot-plugged.
 - No screen capture, screen lock, or idle handling.
 - X11 windows have no title bars, and X11 and Wayland programs do not share a clipboard.
-- A window brought back from the Dock appears without growing out of it; notifications keep no history and show no buttons for
+- Notifications keep no history and show no buttons for
   their actions; the launcher finds applications only.
 
 ## Origin
