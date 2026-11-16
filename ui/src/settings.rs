@@ -161,7 +161,10 @@ impl Config {
     }
 
     fn number(&self, key: &str, default: f64) -> f64 {
-        self.0.get(key).and_then(toml::Value::as_float).unwrap_or(default)
+        match self.0.get(key) {
+            Some(toml::Value::Integer(number)) => *number as f64,
+            value => value.and_then(toml::Value::as_float).unwrap_or(default),
+        }
     }
 
     fn word(&self, key: &str) -> &str {
@@ -225,9 +228,10 @@ fn build(app: &adw::Application) {
     }
     let config = Config::load();
     let autostart = Rc::new(RefCell::new(config.autostart()));
-    let pages: [(&str, gtk::Widget); 7] = [
+    let pages: [(&str, gtk::Widget); 8] = [
         ("桌面", desktop_page(&config, &autostart).upcast()),
         ("外觀", appearance_page().upcast()),
+        ("鍵盤", keyboard_page(&config).upcast()),
         ("滑鼠與觸控板", mouse_page(&config).upcast()),
         ("聲音", sound_page().upcast()),
         ("啟動項目", startup_page(&autostart).upcast()),
@@ -712,6 +716,103 @@ fn set_window_buttons(on: bool) {
             eprintln!("{}: {err}", saved.display());
         }
     }
+}
+
+const XKB_LIST: &str = "/usr/share/X11/xkb/rules/base.lst";
+
+/// The keyboard layouts XKB knows, each followed by its variants, as
+/// `(layout, variant, description)`.
+fn xkb_layouts(list: &str) -> Vec<(String, String, String)> {
+    let (mut layouts, mut variants) = (Vec::new(), Vec::new());
+    let mut section = "";
+    for line in list.lines() {
+        if let Some(name) = line.strip_prefix("! ") {
+            section = name.trim();
+            continue;
+        }
+        let Some((name, description)) = line.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let description = description.trim();
+        match section {
+            "layout" => layouts.push((name, description)),
+            // A variant says its layout first: "dvorak          us: English (Dvorak)".
+            "variant" => {
+                if let Some((layout, description)) = description.split_once(": ") {
+                    variants.push((layout, name, description));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for (layout, description) in layouts {
+        all.push((layout.into(), String::new(), description.into()));
+        for (_, variant, description) in variants.iter().filter(|(of, ..)| *of == layout) {
+            all.push((layout.into(), variant.to_string(), description.to_string()));
+        }
+    }
+    all
+}
+
+/// What the Caps Lock key can do, as XKB options.
+const CAPS_OPTIONS: [&str; 4] = ["", "ctrl:nocaps", "caps:escape", "ctrl:swapcaps"];
+
+fn keyboard_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let layout = group("");
+    let layouts = match std::fs::read_to_string(XKB_LIST) {
+        Ok(list) => xkb_layouts(&list),
+        Err(err) => {
+            eprintln!("{XKB_LIST}: {err}");
+            Vec::new()
+        }
+    };
+    let descriptions: Vec<&str> = layouts.iter().map(|(.., text)| text.as_str()).collect();
+    let current = (config.word("keyboard_layout"), config.word("keyboard_variant"));
+    let row = adw::ComboRow::builder()
+        .title("鍵盤排列")
+        .model(&gtk::StringList::new(&descriptions))
+        .enable_search(true)
+        .build();
+    let chosen = layouts.iter().position(|(name, variant, _)| (&**name, &**variant) == current);
+    if let Some(at) = chosen {
+        row.set_selected(at as u32);
+    }
+    row.connect_selected_notify(move |row| {
+        if let Some((name, variant, _)) = layouts.get(row.selected() as usize) {
+            // One setting at a time, each a layout and variant XKB has: the variant goes
+            // first so that it is never one the old layout lacks.
+            set("keyboard_variant = \"\"");
+            set(&format!("keyboard_layout = {name:?}"));
+            set(&format!("keyboard_variant = {variant:?}"));
+        }
+    });
+    layout.add(&row);
+    layout.add(&choice_row(
+        config,
+        "Caps Lock 鍵",
+        "keyboard_options",
+        &CAPS_OPTIONS,
+        &["Caps Lock", "Control", "Esc", "與 Control 對調"],
+    ));
+    page.add(&layout);
+
+    let repeat = group("按鍵重複");
+    repeat.add(&scale_row(
+        "重複延遲",
+        config.number("repeat_delay", 200.0),
+        (150.0, 1000.0, 50.0),
+        |delay| set(&format!("repeat_delay = {}", delay.round() as i32)),
+    ));
+    repeat.add(&scale_row(
+        "重複速度",
+        config.number("repeat_rate", 25.0),
+        (10.0, 60.0, 5.0),
+        |rate| set(&format!("repeat_rate = {}", rate.round() as i32)),
+    ));
+    page.add(&repeat);
+    page
 }
 
 fn mouse_page(config: &Config) -> adw::PreferencesPage {
@@ -1872,6 +1973,21 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xkb_layouts_are_each_followed_by_their_variants() {
+        let list = "! model\n  pc105  Generic\n\n! layout\n  us   English (US)\n  fr   French\n\n\
+                    ! variant\n  azerty   fr: French (AZERTY)\n  dvorak   us: English (Dvorak)\n\n\
+                    ! option\n  ctrl:nocaps  Caps Lock as Ctrl\n";
+        let names: Vec<_> = xkb_layouts(list)
+            .into_iter()
+            .map(|(layout, variant, description)| format!("{layout}/{variant}/{description}"))
+            .collect();
+        assert_eq!(
+            names,
+            ["us//English (US)", "us/dvorak/English (Dvorak)", "fr//French", "fr/azerty/French (AZERTY)"]
+        );
+    }
 
     /// Turning the look on and off keeps the user's own rules, and moves an earlier import.
     #[test]

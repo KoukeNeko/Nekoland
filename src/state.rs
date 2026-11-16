@@ -139,9 +139,13 @@ impl Nekoland {
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
 
-        // Notify clients that we have a keyboard, for the sake of the example we assume that keyboard is always present.
-        // You may want to track keyboard hot-plug in real compositor.
-        seat.add_keyboard(Default::default(), 200, 25).unwrap();
+        let config = Config::load();
+        // A layout XKB does not know is no reason to have no keyboard.
+        let (delay, rate) = (config.repeat_delay, config.repeat_rate);
+        if let Err(err) = seat.add_keyboard(crate::config::xkb(&config.keyboard()), delay, rate) {
+            tracing::warn!("keyboard layout {:?}: {err}", config.keyboard_layout);
+            seat.add_keyboard(Default::default(), delay, rate).unwrap();
+        }
 
         // Notify clients that we have a pointer (mouse)
         // Here we assume that there is always pointer plugged in
@@ -160,7 +164,7 @@ impl Nekoland {
 
         Self {
             start_time,
-            config: Config::load(),
+            config,
             wallpaper: None,
             pointer_devices: Vec::new(),
             events: None,
@@ -364,10 +368,19 @@ impl ClientData for ClientState {
 
 impl Nekoland {
     /// Reads the configuration again and applies what changed that is not read anew each
-    /// time it is used: the wallpaper and the pointing devices.
+    /// time it is used: the wallpaper, the keyboard and the pointing devices.
     pub fn reload_config(&mut self) {
         let old_wallpaper = (self.config.wallpaper.clone(), self.config.wallpaper_mode);
+        let old_keyboard = self.config.keyboard();
         self.config = Config::load();
+        let keyboard = self.seat.get_keyboard().unwrap();
+        keyboard.change_repeat_info(self.config.repeat_rate, self.config.repeat_delay);
+        let names = self.config.keyboard();
+        if names != old_keyboard {
+            if let Err(err) = keyboard.set_xkb_config(self, crate::config::xkb(&names)) {
+                tracing::warn!("keyboard layout {:?}: {err}", self.config.keyboard_layout);
+            }
+        }
         if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
             if let Some(mut swaybg) = self.wallpaper.take() {
                 if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {

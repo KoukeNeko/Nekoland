@@ -43,6 +43,8 @@ wallpaper and an input method. Every key is optional:
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `dock_magnify`, `dock_magnify_scale` | Whether the Dock's icons grow as the pointer passes over them, and how big the one under it grows: on, and 1.6 times, from 1 to 2, unless set |
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
+| `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
+| `repeat_delay`, `repeat_rate` | Milliseconds a held key waits before it repeats, and how many times a second it then repeats; 200 and 25 unless set |
 
 The Settings application changes most of these while Nekoland runs (see below);
 `nekoland msg reload` reads a file changed by hand.
@@ -77,9 +79,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
   be shown, the Dock, the menu bar and the wallpaper; its other pages set light or dark,
-  the mouse and touchpad, the sound and what starts at login, show what the computer is,
-  and show GTK's own widgets as the system style draws them. Each change takes effect at
-  once. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  the keyboard, the mouse and touchpad, the sound and what starts at login, show what the
+  computer is, and show GTK's own widgets as the system style draws them. Each change
+  takes effect at once. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
   user's language too, and takes an input method. Clicking the search field of the

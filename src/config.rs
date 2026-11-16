@@ -51,6 +51,14 @@ pub struct Config {
     pub tap_to_click: bool,
     /// From -1, slowest, to 1, fastest.
     pub pointer_speed: f64,
+    /// The XKB layout keys are read with, and its variant and options, as setxkbmap takes
+    /// them: `us`, `dvorak`, `ctrl:nocaps`.
+    pub keyboard_layout: String,
+    pub keyboard_variant: String,
+    pub keyboard_options: String,
+    /// Milliseconds a key is held before it repeats, and how many times a second it then does.
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
 }
 
 /// The ways the applications can be shown.
@@ -255,6 +263,11 @@ impl Default for Config {
             natural_scroll: false,
             tap_to_click: true,
             pointer_speed: 0.0,
+            keyboard_layout: "us".into(),
+            keyboard_variant: String::new(),
+            keyboard_options: String::new(),
+            repeat_delay: 200,
+            repeat_rate: 25,
         }
     }
 }
@@ -278,10 +291,24 @@ impl Config {
         })
     }
 
+    /// The keyboard's layout, variant and options, as XKB is given them.
+    pub fn keyboard(&self) -> [String; 3] {
+        [&self.keyboard_layout, &self.keyboard_variant, &self.keyboard_options].map(String::clone)
+    }
+
     /// The size `mode` asks for.
     pub fn mode_size(&self) -> Option<(u16, u16)> {
         let (width, height) = self.mode.as_deref()?.split_once('x')?;
         Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+    }
+}
+
+pub fn xkb([layout, variant, options]: &[String; 3]) -> smithay::input::keyboard::XkbConfig<'_> {
+    smithay::input::keyboard::XkbConfig {
+        layout,
+        variant,
+        options: Some(options.clone()).filter(|options| !options.is_empty()),
+        ..Default::default()
     }
 }
 
