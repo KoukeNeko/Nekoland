@@ -488,7 +488,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
                 words.next().map(expand)
             })
         });
-    let pictures = wallpapers(current.as_deref());
+    let pictures = Rc::new(RefCell::new(wallpapers(current.as_deref())));
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         .max_children_per_line(8)
@@ -497,16 +497,8 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         .row_spacing(6)
         .homogeneous(true)
         .build();
-    for path in &pictures {
-        let picture = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Cover)
-            .width_request(96)
-            .height_request(60)
-            .css_classes(["card"])
-            .build();
-        picture.set_overflow(gtk::Overflow::Hidden);
-        flow.append(&picture);
-        show_thumbnail(&picture, path.clone());
+    for path in pictures.borrow().iter() {
+        flow.append(&wallpaper_thumbnail(path));
     }
     if current.is_some() {
         flow.select_child(
@@ -516,10 +508,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         );
     }
     let autostart = autostart.clone();
-    flow.connect_child_activated(move |_, child| {
-        let Some(path) = pictures.get(child.index() as usize) else {
-            return;
-        };
+    let use_wallpaper = Rc::new(move |path: &Path| {
         set(&format!("wallpaper = {:?}", path.to_string_lossy()));
         // A wallpaper started at login would stay under this one; it is not started again.
         // shortcut: the one running now stays until the session ends; stopping it needs its process.
@@ -530,22 +519,82 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
             save_autostart(&commands);
         }
     });
-    if flow.first_child().is_none() {
-        wall.add(&adw::ActionRow::builder().title("沒有圖片").build());
-    } else {
-        wall.add(&flow);
-    }
-    let fill = choice_row(
+    flow.connect_child_activated({
+        let (pictures, use_wallpaper) = (pictures.clone(), use_wallpaper.clone());
+        move |_, child| {
+            if let Some(path) = pictures.borrow().get(child.index() as usize) {
+                use_wallpaper(path);
+            }
+        }
+    });
+    // The pictures go under the heading, as a group's rows would come before them.
+    flow.set_visible(flow.first_child().is_some());
+    wall.add(&flow);
+    page.add(&wall);
+
+    let options = adw::PreferencesGroup::new();
+    options.add(&choice_row(
         config,
         "填滿方式",
         "wallpaper_mode",
         &WALLPAPER_MODES,
         &["填滿", "符合", "置中"],
-    );
-    fill.set_margin_top(12);
-    wall.add(&fill);
-    page.add(&wall);
+    ));
+    let choose = gtk::Button::builder()
+        .label("選擇⋯")
+        .valign(gtk::Align::Center)
+        .build();
+    choose.connect_clicked(move |button| {
+        let images = gtk::FileFilter::new();
+        // What swaybg reads, through the same gdk-pixbuf.
+        images.add_pixbuf_formats();
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&images);
+        let dialog = gtk::FileDialog::builder()
+            .title("選擇圖片")
+            .filters(&filters)
+            .build();
+        let (flow, pictures, use_wallpaper) = (flow.clone(), pictures.clone(), use_wallpaper.clone());
+        let window = button.root().and_downcast::<gtk::Window>();
+        dialog.open(window.as_ref(), gio::Cancellable::NONE, move |chosen| {
+            let path = match chosen.map(|file| file.path()) {
+                Ok(Some(path)) => path,
+                Ok(None) => return eprintln!("wallpaper: the file chosen has no local path"),
+                Err(err) if err.matches(gtk::DialogError::Dismissed) => return,
+                Err(err) => return eprintln!("wallpaper: {err}"),
+            };
+            let index = pictures.borrow().iter().position(|picture| *picture == path);
+            let index = index.unwrap_or_else(|| {
+                flow.append(&wallpaper_thumbnail(&path));
+                flow.set_visible(true);
+                pictures.borrow_mut().push(path.clone());
+                pictures.borrow().len() - 1
+            });
+            if let Some(child) = flow.child_at_index(index as i32) {
+                flow.select_child(&child);
+            }
+            use_wallpaper(&path);
+        });
+    });
+    let other = adw::ActionRow::builder().title("其他圖片").build();
+    other.add_suffix(&choose);
+    other.set_activatable_widget(Some(&choose));
+    options.add(&other);
+    page.add(&options);
     page
+}
+
+/// A wallpaper as the 桌布 group shows it to be chosen.
+fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
+    let picture = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Cover)
+        .width_request(96)
+        .height_request(60)
+        .css_classes(["card"])
+        .build();
+    picture.set_overflow(gtk::Overflow::Hidden);
+    show_thumbnail(&picture, path.to_path_buf());
+    picture
 }
 
 /// Puts a picture in small once it is read, so that reading it does not hold the window up.
