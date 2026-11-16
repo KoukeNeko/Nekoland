@@ -35,6 +35,7 @@ use crate::{
     config,
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
     control::{self, ControlCenter},
+    desktop::DesktopCommand,
     dock::DockCommand,
     glass::Tier,
     system::{self, Network, Volume},
@@ -1049,6 +1050,10 @@ impl Nekoland {
     fn left_titles(&mut self) -> Vec<(Source, Option<String>)> {
         let mut titles = vec![(Source::System, None)];
         let Some((app_id, name)) = self.active_app() else {
+            // The desktop in front, as the Finder: its Edit menu copies and pastes its files.
+            if self.desktop_edit_targets().is_some() {
+                titles.push((Source::Edit, Some("編輯".into())));
+            }
             return titles;
         };
         titles.push((Source::App, Some(name)));
@@ -1647,27 +1652,40 @@ impl Nekoland {
                 );
                 entries
             }
-            Source::Edit => vec![
-                Entry::item("還原", Command::Keys(&[KEY_CTRL, KEY_Z]))
-                    .shortcut("Ctrl Z")
-                    .enabled(has_window),
-                Entry::item("重做", Command::Keys(&[KEY_CTRL, KEY_SHIFT, KEY_Z]))
-                    .shortcut("Shift Ctrl Z")
-                    .enabled(has_window),
-                Entry::separator(),
-                Entry::item("剪下", Command::Keys(&[KEY_CTRL, KEY_X]))
-                    .shortcut("Ctrl X")
-                    .enabled(has_window),
-                Entry::item("拷貝", Command::Keys(&[KEY_CTRL, KEY_C]))
-                    .shortcut("Ctrl C")
-                    .enabled(has_window),
-                Entry::item("貼上", Command::Keys(&[KEY_CTRL, KEY_V]))
-                    .shortcut("Ctrl V")
-                    .enabled(has_window),
-                Entry::item("全選", Command::Keys(&[KEY_CTRL, KEY_A]))
-                    .shortcut("Ctrl A")
-                    .enabled(has_window),
-            ],
+            Source::Edit => {
+                // With no window in front, copying, pasting and choosing all act on the
+                // desktop's files, as the Finder's do.
+                let desktop = self.desktop_edit_targets().filter(|_| !has_window);
+                let chosen = desktop.map(<[_]>::to_vec).unwrap_or_default();
+                let on_desktop = |keys, command| match desktop {
+                    Some(_) => Command::Desktop(command),
+                    None => Command::Keys(keys),
+                };
+                let copy = on_desktop(&[KEY_CTRL, KEY_C], DesktopCommand::Copy(chosen.clone()));
+                let paste = on_desktop(&[KEY_CTRL, KEY_V], DesktopCommand::Paste);
+                let all = on_desktop(&[KEY_CTRL, KEY_A], DesktopCommand::SelectAll);
+                vec![
+                    Entry::item("還原", Command::Keys(&[KEY_CTRL, KEY_Z]))
+                        .shortcut("Ctrl Z")
+                        .enabled(has_window),
+                    Entry::item("重做", Command::Keys(&[KEY_CTRL, KEY_SHIFT, KEY_Z]))
+                        .shortcut("Shift Ctrl Z")
+                        .enabled(has_window),
+                    Entry::separator(),
+                    Entry::item("剪下", Command::Keys(&[KEY_CTRL, KEY_X]))
+                        .shortcut("Ctrl X")
+                        .enabled(has_window),
+                    Entry::item("拷貝", copy)
+                        .shortcut("Ctrl C")
+                        .enabled(has_window || !chosen.is_empty()),
+                    Entry::item("貼上", paste)
+                        .shortcut("Ctrl V")
+                        .enabled(has_window || desktop.is_some()),
+                    Entry::item("全選", all)
+                        .shortcut("Ctrl A")
+                        .enabled(has_window || desktop.is_some()),
+                ]
+            }
             Source::View => {
                 let fullscreen = focused.as_ref().is_some_and(|window| self.is_fullscreen(window));
                 let label = if fullscreen {

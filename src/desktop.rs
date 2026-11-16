@@ -9,6 +9,7 @@ use std::{
     io::{Read, Write},
     os::fd::{FromRawFd, OwnedFd},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -127,6 +128,9 @@ pub struct Desktop {
     /// that item, theme and output.
     looking: bool,
     quick_look: Option<(Looked, Picture)>,
+    /// A picture being read for Quick Look away from the compositor's thread, which a
+    /// camera's largest photos would hold up for half a second.
+    reading: Option<(Looked, Arc<Mutex<Option<Option<Pixels>>>>)>,
     /// Where the items were put, read once the desktop keeps them there.
     places: Option<Places>,
     /// Where the pointer was when the drag off the desktop started.
@@ -134,6 +138,10 @@ pub struct Desktop {
 }
 
 type Looked = (PathBuf, bool, Size<i32, Logical>);
+
+/// A picture's pixels as gdk-pixbuf gives them, which, unlike its pixbuf, may cross threads:
+/// the bytes, whether they have alpha, width, height and row stride.
+type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
 
 /// The cell each item was put in, by name, as column from the right and row from the top.
 type Places = std::collections::BTreeMap<String, [i32; 2]>;
@@ -381,12 +389,7 @@ impl Nekoland {
         desktop.looking = looked.is_some();
         match looked.and_then(|path| items.iter().find(|item| item.path == *path)) {
             None => desktop.quick_look = None,
-            Some(item) => {
-                let wanted = (item.path.clone(), dark, size);
-                if desktop.quick_look.as_ref().map(|(drawn, _)| drawn) != Some(&wanted) {
-                    desktop.quick_look = draw_quick_look(item, size, dark).map(|picture| (wanted, picture));
-                }
-            }
+            Some(item) => refresh_quick_look(desktop, item, (item.path.clone(), dark, size)),
         }
         if desktop.candidates.as_ref() != desktop.candidates_picture.as_ref().map(|(drawn, _)| drawn) {
             desktop.candidates_picture = desktop
@@ -963,6 +966,12 @@ impl Nekoland {
         }
     }
 
+    /// What the menu bar's Edit menu copies, pastes and chooses while no window is in
+    /// front: the desktop's files, if it shows any, as the Finder's does.
+    pub(crate) fn desktop_edit_targets(&self) -> Option<&[PathBuf]> {
+        (!self.desktop.items.is_empty()).then_some(self.desktop.selected.as_slice())
+    }
+
     pub fn run_desktop_command(&mut self, command: DesktopCommand) {
         match command {
             DesktopCommand::Open(paths) => paths.iter().for_each(|path| open_path(path)),
@@ -1111,22 +1120,85 @@ fn picture_element(
     .map(SceneElement::Picture)
 }
 
+/// Draws Quick Look's panel for the item looked at once what it needs is read: a picture
+/// on a thread, the panel showing when it is read, anything else at once.
+fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
+    let reading = desktop.reading.as_ref().filter(|(looked, _)| *looked == wanted);
+    let drawn = desktop
+        .quick_look
+        .as_ref()
+        .is_some_and(|(looked, _)| *looked == wanted);
+    if drawn && reading.is_none() {
+        return;
+    }
+    let (_, dark, size) = wanted.clone();
+    if let Some((_, read)) = reading {
+        let Some(pixels) = read.lock().ok().and_then(|mut read| read.take()) else {
+            return;
+        };
+        desktop.reading = None;
+        desktop.quick_look = draw_quick_look(item, pixels, size, dark).map(|picture| (wanted, picture));
+        return;
+    }
+    desktop.reading = None;
+    if !item.kind.starts_with("image/") {
+        desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted, picture));
+        return;
+    }
+    let read = Arc::new(Mutex::new(None));
+    let into = read.clone();
+    let path = item.path.clone();
+    let room = look_room(size) * text::picture_scale();
+    std::thread::spawn(move || {
+        let pixels = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, room.w, room.h, true)
+            .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
+            .ok()
+            .map(|pixbuf| {
+                let stride = pixbuf.rowstride();
+                (
+                    pixbuf.read_pixel_bytes(),
+                    pixbuf.has_alpha(),
+                    pixbuf.width(),
+                    pixbuf.height(),
+                    stride,
+                )
+            });
+        if let Ok(mut read) = into.lock() {
+            *read = Some(pixels);
+        }
+    });
+    desktop.reading = Some((wanted, read));
+    desktop.quick_look = None;
+}
+
+/// The most of the output Quick Look's picture or text takes, under its title.
+fn look_room(output: Size<i32, Logical>) -> Size<i32, Logical> {
+    Size::from((output.w * 7 / 10, output.h * 7 / 10 - LOOK_TITLE))
+}
+
 /// Quick Look's panel for `item`, at most seven tenths of `output`: its name over the
 /// picture it is, the start of the text it holds, or else its icon, kind, size and date.
-// shortcut: a picture is read and scaled on the compositor's thread, which a camera's
-// largest photos make wait a moment; read it on a thread if that shows.
-fn draw_quick_look(item: &Item, output: Size<i32, Logical>, dark: bool) -> Option<Picture> {
+fn draw_quick_look(
+    item: &Item,
+    pixels: Option<Pixels>,
+    output: Size<i32, Logical>,
+    dark: bool,
+) -> Option<Picture> {
     let colors = menubar::colors(dark);
-    let room = Size::<i32, Logical>::from((output.w * 7 / 10, output.h * 7 / 10 - LOOK_TITLE));
+    let room = look_room(output);
     let scale = text::picture_scale();
-    let image = item
-        .kind
-        .starts_with("image/")
-        .then(|| {
-            gdk_pixbuf::Pixbuf::from_file_at_scale(&item.path, room.w * scale, room.h * scale, true).ok()
-        })
-        .flatten()
-        .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None));
+    let image = pixels.and_then(|(bytes, alpha, width, height, stride)| {
+        let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
+            &bytes,
+            gdk_pixbuf::Colorspace::Rgb,
+            alpha,
+            8,
+            width,
+            height,
+            stride,
+        );
+        text::pixbuf_surface(&pixbuf, None)
+    });
     let shown = (!item.is_dir && gio::content_type_is_a(&item.kind, "text/plain"))
         .then(|| {
             let mut start = Vec::new();
