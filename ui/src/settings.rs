@@ -3878,6 +3878,151 @@ fn display_modes(text: &str) -> (Option<(String, u32)>, Vec<(String, Vec<u32>)>)
 
 const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 
+/// Where colord and people keep ICC profiles.
+fn colour_profile_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/usr/share/color/icc"), PathBuf::from("/usr/local/share/color/icc")];
+    dirs.push(glib::user_data_dir().join("icc"));
+    dirs.push(home().join(".color/icc"));
+    dirs
+}
+
+/// The .icc and .icm files under `dir`, by their names and paths.
+fn colour_profiles(dir: &Path, found: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            colour_profiles(&path, found);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("icc") || extension.eq_ignore_ascii_case("icm"))
+        {
+            found.push((colour_profile_name(&path), path.to_string_lossy().into_owned()));
+        }
+    }
+}
+
+/// A profile's own description, its file's name when it has none.
+fn colour_profile_name(path: &Path) -> String {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| profile_description(&bytes))
+        .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned())
+}
+
+/// The `desc` tag of an ICC profile: ASCII in version 2, the first of its UTF-16 strings in 4.
+fn profile_description(bytes: &[u8]) -> Option<String> {
+    let u32_at = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize);
+    if bytes.get(36..40)? != b"acsp" {
+        return None;
+    }
+    let (offset, size) = (0..u32_at(128)?.min(1024)).find_map(|index| {
+        let entry = 132 + index * 12;
+        (bytes.get(entry..entry + 4)? == b"desc").then(|| Some((u32_at(entry + 4)?, u32_at(entry + 8)?)))?
+    })?;
+    let tag = bytes.get(offset..offset.checked_add(size)?)?;
+    let u32_in = |at: usize| Some(u32::from_be_bytes(tag.get(at..at + 4)?.try_into().ok()?) as usize);
+    let name = match tag.get(0..4)? {
+        b"desc" => {
+            let text = tag.get(12..12 + u32_in(8)?)?;
+            String::from_utf8_lossy(text.split(|byte| *byte == 0).next()?).into_owned()
+        }
+        b"mluc" => {
+            let (length, start) = (u32_in(20)?, u32_in(24)?);
+            let units: Vec<u16> = tag
+                .get(start..start.checked_add(length)?)?
+                .chunks_exact(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .collect();
+            String::from_utf16_lossy(&units)
+        }
+        _ => return None,
+    };
+    let name = name.trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The ICC profile whose calibration the compositor gives the displays' gamma, with a button to
+/// choose one from anywhere.
+fn colour_profile_row(config: &Config) -> adw::ComboRow {
+    let mut profiles = Vec::new();
+    for dir in colour_profile_dirs() {
+        colour_profiles(&dir, &mut profiles);
+    }
+    profiles.sort();
+    profiles.dedup_by(|a, b| a.1 == b.1);
+    let current = config.word("color_profile").to_owned();
+    if !current.is_empty() && !profiles.iter().any(|(_, path)| *path == current) {
+        profiles.push((colour_profile_name(Path::new(&current)), current.clone()));
+    }
+    let names = gtk::StringList::new(&["預設"]);
+    for (name, _) in &profiles {
+        names.append(name);
+    }
+    let selected = profiles.iter().position(|(_, path)| *path == current).map_or(0, |index| index + 1);
+    let row = adw::ComboRow::builder()
+        .title("色彩描述檔")
+        .model(&names)
+        .selected(selected as u32)
+        .build();
+    let paths = Rc::new(RefCell::new(profiles.into_iter().map(|(_, path)| path).collect::<Vec<_>>()));
+    row.connect_selected_notify(glib::clone!(
+        #[strong]
+        paths,
+        move |row| match row.selected().checked_sub(1) {
+            None => unset("color_profile"),
+            Some(index) => {
+                if let Some(path) = paths.borrow().get(index as usize) {
+                    set(&format!("color_profile = {path:?}"));
+                }
+            }
+        }
+    ));
+
+    let choose = gtk::Button::builder()
+        .icon_name("document-open-symbolic")
+        .tooltip_text("選擇描述檔…")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    choose.connect_clicked(glib::clone!(
+        #[weak]
+        row,
+        move |button| {
+            let profiles = gtk::FileFilter::new();
+            profiles.set_name(Some("色彩描述檔"));
+            for pattern in ["*.icc", "*.icm", "*.ICC", "*.ICM"] {
+                profiles.add_pattern(pattern);
+            }
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&profiles);
+            let dialog = gtk::FileDialog::builder().title("選擇描述檔").filters(&filters).build();
+            let window = button.root().and_downcast::<gtk::Window>();
+            let (paths, names) = (paths.clone(), names.clone());
+            dialog.open(window.as_ref(), gio::Cancellable::NONE, move |chosen| {
+                let path = match chosen.map(|file| file.path()) {
+                    Ok(Some(path)) => path,
+                    Ok(None) => return eprintln!("colour profile: the file chosen has no local path"),
+                    Err(err) if err.matches(gtk::DialogError::Dismissed) => return,
+                    Err(err) => return eprintln!("colour profile: {err}"),
+                };
+                let text = path.to_string_lossy().into_owned();
+                let index = paths.borrow().iter().position(|known| *known == text);
+                let index = index.unwrap_or_else(|| {
+                    names.append(&colour_profile_name(&path));
+                    paths.borrow_mut().push(text);
+                    paths.borrow().len() - 1
+                });
+                row.set_selected(index as u32 + 1);
+            });
+        }
+    ));
+    row.add_suffix(&choose);
+    row
+}
+
 fn display_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let display = adw::PreferencesGroup::new();
@@ -3980,6 +4125,7 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
         }));
     }
 
+    display.add(&colour_profile_row(config));
 
     let night = adw::PreferencesGroup::new();
     let shift = choice_row(config, "夜覽", "night_shift", &NIGHT_SHIFT, &["關閉", "開啟", "排程"]);
@@ -5743,6 +5889,32 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_profile_is_named_by_its_description() {
+        let profile = |tag: &[u8]| {
+            let mut bytes = vec![0; 128];
+            bytes[36..40].copy_from_slice(b"acsp");
+            bytes.extend(1u32.to_be_bytes());
+            bytes.extend(b"desc");
+            bytes.extend(144u32.to_be_bytes());
+            bytes.extend((tag.len() as u32).to_be_bytes());
+            bytes.extend(tag);
+            bytes
+        };
+        let mut v2 = b"desc\0\0\0\0".to_vec();
+        v2.extend(6u32.to_be_bytes());
+        v2.extend(b"sRGB\0\0");
+        assert_eq!(profile_description(&profile(&v2)).as_deref(), Some("sRGB"));
+        let mut v4 = b"mluc\0\0\0\0".to_vec();
+        v4.extend([0, 0, 0, 1, 0, 0, 0, 12]);
+        v4.extend(b"enUS");
+        v4.extend(8u32.to_be_bytes());
+        v4.extend(28u32.to_be_bytes());
+        v4.extend([0, b'P', 0, b'3', 0, b'2', 0, b'7']);
+        assert_eq!(profile_description(&profile(&v4)).as_deref(), Some("P327"));
+        assert_eq!(profile_description(b"no profile"), None);
+    }
 
     #[test]
     fn disks_are_the_system_and_people_s() {

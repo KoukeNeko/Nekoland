@@ -82,6 +82,8 @@ struct Udev {
     gamma: HashMap<crtc::Handle, u32>,
     /// The red, green and blue gains each output's ramps were last set to.
     ramps: HashMap<crtc::Handle, (f64, f64, f64)>,
+    /// The `color_profile` setting the ramps follow, and the calibration curves read from it.
+    profile: (Option<String>, Option<crate::icc::Curves>),
     /// Each output's modes and size in millimetres, to choose from again as the settings change.
     displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
     /// The `mode` and `scale` settings the outputs were last set up with.
@@ -215,6 +217,7 @@ pub fn init_udev(
         applied: (state.config.mode.clone(), state.config.scale),
         gamma,
         ramps: HashMap::new(),
+        profile: (None, None),
         _power_keys: power_keys,
         glass: surfaces
             .keys()
@@ -356,6 +359,7 @@ fn render(
         dark,
         gamma,
         ramps,
+        profile,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
@@ -363,6 +367,10 @@ fn render(
     };
 
     state.follow_night_shift();
+    if profile.0 != state.config.color_profile {
+        *profile = (state.config.color_profile.clone(), state.config.color_profile.as_deref().and_then(crate::icc::load));
+        ramps.clear();
+    }
     if let Some(&size) = gamma.get(&crtc) {
         let gains = if state.night_shift {
             crate::night::gains(state.config.night_shift_warmth)
@@ -371,12 +379,16 @@ fn render(
         };
         if ramps.get(&crtc) != Some(&gains) {
             let (r, g, b) = gains;
-            let ramp = |gain: f64| -> Vec<u16> {
+            let ramp = |channel: usize, gain: f64| -> Vec<u16> {
                 (0..size)
-                    .map(|i| (f64::from(i) / f64::from(size - 1) * gain * 65535.0).round() as u16)
+                    .map(|i| {
+                        let x = f64::from(i) / f64::from(size - 1);
+                        let level = profile.1.as_ref().map_or(x, |curves| curves.at(channel, x));
+                        (level * gain * 65535.0).round() as u16
+                    })
                     .collect()
             };
-            match manager.device().set_gamma(crtc, &ramp(r), &ramp(g), &ramp(b)) {
+            match manager.device().set_gamma(crtc, &ramp(0, r), &ramp(1, g), &ramp(2, b)) {
                 Ok(()) => {
                     ramps.insert(crtc, gains);
                 }

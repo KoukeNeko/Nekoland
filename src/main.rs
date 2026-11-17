@@ -14,6 +14,7 @@ mod focus;
 mod glass;
 mod handlers;
 mod hover;
+mod icc;
 mod ime;
 
 mod grabs;

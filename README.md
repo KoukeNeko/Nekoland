@@ -52,6 +52,7 @@ wallpaper and an input method. Every key is optional:
 | `mode` | Display mode as `WIDTHxHEIGHT`, at its fastest rate, or `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise |
 | `scale` | How many pixels each point is drawn with: 2 on a display dense enough to be Retina (4K desktop displays, high-resolution laptop panels), 1 otherwise, and the host's own scale when running in a window |
 | `night_shift`, `night_shift_from`, `night_shift_to`, `night_shift_warmth` | Night Shift, warmer colours through the displays' gamma ramps: `off` (the default), `on`, or `scheduled` from `22:00` to `07:00` unless set; and how warm, from 0 to 1, 0.7 unless set |
+| `color_profile` | The path of an ICC profile whose calibration curves (its `vcgt` tag, as colord and DisplayCAL write it) the displays' gamma ramps follow, under Night Shift; none unless set |
 | `autostart` | Shell commands started once the compositor is up |
 | `terminal`, `launcher` | Commands behind the shortcuts below |
 | `launcher_search` | What the launcher takes before the text to search for |

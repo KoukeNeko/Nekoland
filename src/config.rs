@@ -18,6 +18,8 @@ pub struct Config {
     pub night_shift_from: TimeOfDay,
     pub night_shift_to: TimeOfDay,
     pub night_shift_warmth: f64,
+    /// The ICC profile whose calibration curves the displays' gamma ramps take, by its path.
+    pub color_profile: Option<String>,
     /// Shell commands started once the compositor is up: the panel, the wallpaper, and so on.
     pub autostart: Vec<String>,
     pub terminal: String,
@@ -470,6 +472,7 @@ impl Default for Config {
             night_shift_from: TimeOfDay(22 * 60),
             night_shift_to: TimeOfDay(7 * 60),
             night_shift_warmth: 0.7,
+            color_profile: None,
             glass: HashMap::from([("nekoland-launcher".into(), 16)]),
             dock: [
                 "org.gnome.Nautilus",
