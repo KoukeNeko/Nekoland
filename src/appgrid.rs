@@ -963,7 +963,11 @@ impl Nekoland {
         let Some(layout) = apps.layout else {
             return (Vec::new(), None);
         };
-        let fade = apps.fade();
+        // Out as it came in: with the overview it is part of, as that closes.
+        let leaving = (self.overview.as_ref())
+            .filter(|overview| overview.closing)
+            .map_or(1.0, |overview| overview.progress() as f32);
+        let fade = apps.fade().min(leaving);
         let mut front = Vec::new();
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
         if let (Some(held), Some(picture), Some(pos)) = (&apps.held, &apps.held_picture, pointer) {
@@ -989,7 +993,7 @@ impl Nekoland {
         if let (Some(open), Some(FolderPlace { panel, .. })) = (&apps.open, apps.folder_layout(&layout)) {
             if let Some(picture) = &open.picture {
                 front.push(Overlay {
-                    fade: fade_since(open.opened),
+                    fade: fade_since(open.opened).min(leaving),
                     id: &apps.ids[4],
                     rect: panel,
                     glass: Some((Tier::Menu, FOLDER_RADIUS)),
@@ -1021,7 +1025,7 @@ impl Nekoland {
         // shortcut: under the search field even while a folder is renamed, near enough there.
         if let Some((_, picture)) = &apps.candidates_picture {
             front.push(Overlay {
-                fade: 1.0,
+                fade: leaving,
                 id: &apps.ids[6],
                 rect: Rectangle::new(
                     (

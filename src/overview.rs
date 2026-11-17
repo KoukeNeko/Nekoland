@@ -249,7 +249,7 @@ fn draw(width: i32, height: i32, paint: impl FnOnce(&cairo::Context)) -> Option<
 
 pub struct Overview {
     started: Instant,
-    closing: bool,
+    pub(crate) closing: bool,
     /// The windows, bottom of the stack first.
     pub slots: Vec<Slot>,
     pub dim: SolidColorBuffer,
