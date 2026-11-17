@@ -624,7 +624,7 @@ pub struct Dock {
     /// An icon let go off the Dock, fading away where it was let go.
     poof: Option<(Picture, Point<i32, Logical>, Instant)>,
     tag: Option<(bool, Picture)>,
-    icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
+    pub(crate) icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
     badges: Vec<(Option<String>, bool, Option<Picture>)>,
     pub(crate) drawn: Option<Drawn>,
     ids: Option<Ids>,

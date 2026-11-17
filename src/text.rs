@@ -73,7 +73,6 @@ pub fn set_family(family: &str) {
 
 /// The font `description` names, in pango's words, in Nekoland's family if it names no
 /// family, and at `TEXT_WEIGHT` if it names no weight.
-// shortcut: icons already drawn keep the theme they were found in until drawn again.
 pub fn set_icon_theme(theme: &str) {
     *ICON_THEME.write().unwrap() = theme.to_string();
     FOUND_ICONS.lock().unwrap().clear();
