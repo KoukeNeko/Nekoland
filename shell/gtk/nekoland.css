@@ -307,16 +307,16 @@ dialog.floating windowcontrols.start:dir(ltr),
 dialog.floating windowcontrols.end:dir(rtl) {
   margin-left: 0;
 }
-/* An alert as the design language's dialog: a 16/600 question, 6px above its consequence
- * in grey, 24px in from the sides, and 20px from each row's letters or edges to the next:
- * from the sheet's edge to the question, between the rows, to the buttons and below them.
- * A line of text is taller than its letters, 4.5px above them and 3px below, so the padding
- * and spacing here are 20px less that; a field has no such margin and takes the 3px itself.
- * libadwaita pads each part of the message on its own and spaces them differently when
- * narrow, so both are set here. */
+/* An alert as the design language's dialog: a 16/600 question, its consequence in grey,
+ * 24px in from the sides, and 20px from each row's letters or edges to the next: from the
+ * sheet's edge to the question, between the rows, to the buttons and below them. The
+ * question's line is 5px taller than its letters above them and 3px below, so the padding
+ * and spacing are that much less than 20px; a field has no such margin and takes the 3px
+ * itself. GTK lays these out in whole pixels. libadwaita pads each part of the message on
+ * its own and spaces them differently when narrow, so both are set here. */
 dialog.alert .message-area,
 dialog.alert.short .message-area {
-  padding: 15.5px 0 17px;
+  padding: 15px 0 17px;
   border-spacing: 17px;
 }
 dialog.alert .message-area > .child {
@@ -331,12 +331,19 @@ dialog-host > dialog.alert sheet .body-scrolled-window scrollbar.vertical > rang
   margin-top: 0;
   margin-bottom: 0;
 }
+/* The consequence's lines are 21.5px, 6px taller than its letters, split evenly so that
+ * two lines come out whole; one line is laid out 22px, its half pixel left under it. */
 dialog.alert .message-area.has-heading.has-body,
 dialog.alert.short .message-area.has-heading.has-body {
+  padding-bottom: 16px;
   border-spacing: 6px;
 }
+dialog.alert .message-area.has-heading.has-body > .body {
+  margin-top: 6px;
+}
 dialog.alert .message-area.has-heading.has-body > .child {
-  margin-top: 11.5px;
+  margin-top: 12px;
+  margin-bottom: 4px;
 }
 dialog.alert .message-area > .heading-bin,
 dialog.alert .message-area > .body,
@@ -348,9 +355,9 @@ dialog.alert.short .message-area > .child {
   padding-right: 24px;
 }
 /* An alert's icon is 20px from the sheet's edge and from its question, as a row is; the
- * symbol stands 1px inside its image. */
+ * symbol stands 2px inside its image. */
 dialog.alert .message-area > image.alert-icon {
-  margin-top: 3.5px;
+  margin-top: 3px;
 }
 dialog.alert .message-area.has-body > image.alert-icon {
   margin-bottom: 7px;
@@ -362,6 +369,7 @@ dialog.alert .message-area label.title-4 {
   font-weight: 600;
 }
 dialog.alert .message-area label.body {
+  line-height: 21.5px;
   color: var(--nekoland-ink-2);
 }
 dialog.alert .response-area,
