@@ -439,19 +439,37 @@ fn image_data(value: &OwnedValue) -> Option<(i32, i32, Vec<u8>)> {
             _ => None,
         })
         .collect();
-    let (width, height, stride, channels) = (*width, *height, *stride as usize, *channels as usize);
-    if width <= 0 || height <= 0 || bytes.len() < stride * (height as usize - 1) + width as usize * channels {
+    // Any program may send this: one that claims more than its bytes hold, or a picture far
+    // bigger than a notification shows, is left out rather than read past its end.
+    let (Ok(w), Ok(h), Ok(stride), Ok(channels)) = (
+        usize::try_from(*width),
+        usize::try_from(*height),
+        usize::try_from(*stride),
+        usize::try_from(*channels),
+    ) else {
+        return None;
+    };
+    let sides = 1..=MAX_IMAGE_SIDE;
+    if !sides.contains(&w)
+        || !sides.contains(&h)
+        || channels != if *alpha { 4 } else { 3 }
+        || stride < w * channels
+        || bytes.len() < stride.checked_mul(h - 1)?.checked_add(w * channels)?
+    {
         return None;
     }
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height as usize {
-        for x in 0..width as usize {
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
             let pixel = &bytes[y * stride + x * channels..];
             rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], if *alpha { pixel[3] } else { 255 }]);
         }
     }
-    Some((width, height, rgba))
+    Some((*width, *height, rgba))
 }
+
+/// The widest and tallest notification picture taken.
+const MAX_IMAGE_SIDE: usize = 1024;
 
 /// Notification bodies may carry a little markup; it is shown as plain text.
 fn plain_text(markup: &str) -> String {
@@ -1255,6 +1273,37 @@ mod tests {
     fn mnemonics_are_dropped_and_doubled_underscores_kept() {
         assert_eq!(strip_mnemonic("_Restart"), "Restart");
         assert_eq!(strip_mnemonic("snake__case"), "snake_case");
+    }
+
+    #[test]
+    fn notification_pictures_are_read_only_as_far_as_their_bytes_go() {
+        let image = |stride: i32, alpha: bool, channels: i32, bytes: Vec<u8>| {
+            OwnedValue::try_from(Value::from((1i32, 1i32, stride, alpha, 8i32, channels, bytes)))
+                .map(|value| image_data(&value))
+                .unwrap()
+        };
+        assert_eq!(
+            image(3, false, 3, vec![1, 2, 3]),
+            Some((1, 1, vec![1, 2, 3, 255]))
+        );
+        assert_eq!(
+            image(4, true, 4, vec![1, 2, 3, 4]),
+            Some((1, 1, vec![1, 2, 3, 4]))
+        );
+        // Alpha claimed over three channels would read a fourth byte that is not there.
+        assert_eq!(image(3, true, 3, vec![1, 2, 3]), None);
+        assert_eq!(image(-4, true, 4, vec![1, 2, 3, 4]), None);
+        let huge = OwnedValue::try_from(Value::from((
+            20000i32,
+            20000i32,
+            0i32,
+            true,
+            8i32,
+            4i32,
+            vec![0u8; 80_000],
+        )))
+        .unwrap();
+        assert_eq!(image_data(&huge), None);
     }
 
     #[test]

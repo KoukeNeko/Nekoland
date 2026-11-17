@@ -255,6 +255,11 @@ fn copy_frame<E: RenderElement<GlesRenderer>>(
     frame: &Frame,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let region = frame.data().region;
+    // The region was cut from the output as it was when the frame was asked for; a display
+    // made smaller since then no longer holds it.
+    if !Rectangle::from_size(size).contains_rect(region) {
+        return Err("the display changed size since the frame was asked for".into());
+    }
     let mut texture = Offscreen::<smithay::backend::renderer::gles::GlesTexture>::create_buffer(
         renderer,
         Fourcc::Abgr8888,

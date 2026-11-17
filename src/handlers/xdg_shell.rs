@@ -122,16 +122,22 @@ impl XdgShellHandler for Nekoland {
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
             let pointer = seat.get_pointer().unwrap();
 
-            let window = self
+            // A window minimized or on another desktop while its title bar was held is not
+            // in the space, and is left where it is.
+            let Some(window) = self
                 .space
                 .elements()
                 .find(|w| {
                     w.toplevel()
                         .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
                 })
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+                .cloned()
+            else {
+                return;
+            };
+            let Some(initial_window_location) = self.space.element_location(&window) else {
+                return;
+            };
 
             let grab = MoveSurfaceGrab {
                 start_data,
@@ -157,16 +163,22 @@ impl XdgShellHandler for Nekoland {
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
             let pointer = seat.get_pointer().unwrap();
 
-            let window = self
+            // A window minimized or on another desktop while its title bar was held is not
+            // in the space, and is left where it is.
+            let Some(window) = self
                 .space
                 .elements()
                 .find(|w| {
                     w.toplevel()
                         .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
                 })
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+                .cloned()
+            else {
+                return;
+            };
+            let Some(initial_window_location) = self.space.element_location(&window) else {
+                return;
+            };
             let initial_window_size = window.geometry().size;
 
             surface.with_pending_state(|state| {
