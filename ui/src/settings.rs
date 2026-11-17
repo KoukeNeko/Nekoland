@@ -4605,6 +4605,54 @@ fn logo() -> gtk::DrawingArea {
 /// Nekoland's design language, after its design, section by section: GTK's own widgets
 /// in Nekoland's look where GTK has one, drawn here where it has none. Everything can be
 /// tried, and the switch at the top shows it light or dark.
+/// One of the page's rules: its name over a sentence or two.
+fn rule_card(name: &str, body: &str) -> gtk::Widget {
+    let name = text(name, &[]);
+    name.set_markup(&format!("<b>{}</b>", name.label()));
+    let body = text(body, &["nk-rule-body"]);
+    body.set_wrap(true);
+    // Narrow enough for three to a line.
+    body.set_max_width_chars(20);
+    let rule = column(4, &[name.upcast_ref(), body.upcast_ref()]);
+    rule.set_css_classes(&["nk-card", "nk-rule"]);
+    rule.upcast()
+}
+
+/// The construction of an icon, drawn as a sheet: the grid, the layer, and the light.
+const ICON_SHEET: &[u8] = include_bytes!("icon-sheet.svg");
+
+/// How Nekoland's icons are built, with the theme's own icons as the examples.
+fn icons_section() -> gtk::Box {
+    let sheet = gtk::Picture::builder()
+        .can_shrink(true)
+        .content_fit(gtk::ContentFit::Contain)
+        .height_request(312)
+        .build();
+    match gdk::Texture::from_bytes(&glib::Bytes::from_static(ICON_SHEET)) {
+        Ok(drawing) => sheet.set_paintable(Some(&drawing)),
+        Err(err) => eprintln!("icon sheet: {err}"),
+    }
+    // The first of each kind, a line's worth: the whole list is in Appearance.
+    let strip = |name: &str, icons: Vec<PathBuf>| {
+        let spec = text(&format!("{name} {}", icons.len()), &["nk-spec"]);
+        spec.set_size_request(120, -1);
+        let samples = gtk::Box::builder().spacing(10).build();
+        for path in icons.iter().take(12) {
+            samples.append(&gtk::Image::builder().file(path.to_string_lossy()).pixel_size(48).build());
+        }
+        line(16, &[spec.upcast_ref(), samples.upcast_ref()])
+    };
+    section(
+        "圖示",
+        "手繪的和從其他應用程式轉換的圖示照同一張圖製作，合成一個圖示主題。",
+        &[
+            card("", &sheet).upcast_ref(),
+            strip("手繪", icons_in(Path::new(DRAWN_ICONS))).upcast_ref(),
+            strip("自動演算", converted_icons()).upcast_ref(),
+        ],
+    )
+}
+
 fn design_page() -> gtk::ScrolledWindow {
     let provider = gtk::CssProvider::new();
     let styles = adw::StyleManager::default();
@@ -4746,17 +4794,7 @@ fn design_page() -> gtk::ScrolledWindow {
         ),
     ]
     .iter()
-    .map(|(name, body)| {
-        let name = text(name, &[]);
-        name.set_markup(&format!("<b>{}</b>", name.label()));
-        let body = text(body, &["nk-rule-body"]);
-        body.set_wrap(true);
-        // Narrow enough for three to a line.
-        body.set_max_width_chars(20);
-        let rule = column(4, &[name.upcast_ref(), body.upcast_ref()]);
-        rule.set_css_classes(&["nk-card", "nk-rule"]);
-        rule.upcast()
-    })
+    .map(|(name, body)| rule_card(name, body))
     .collect();
     page.append(&section(
         "原則",
@@ -4769,6 +4807,8 @@ fn design_page() -> gtk::ScrolledWindow {
         "每個名稱在淺色與深色各有一個值，切換右上角可以對照。",
         &[cards(240, 4, &swatches.iter().collect::<Vec<_>>()).upcast_ref()],
     ));
+
+    page.append(&icons_section());
 
     let types = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
