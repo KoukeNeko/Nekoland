@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cairo::{Context, Format, ImageSurface, Matrix, Operator};
+use cairo::{Context, Format, ImageSurface, LineCap, LineJoin, Matrix, Operator};
 use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
@@ -516,6 +516,8 @@ pub(crate) struct Drawn {
     target: Option<Key>,
     /// The tile the keyboard is on.
     focused: Option<Key>,
+    /// The folder open over the Dock, whose tile shows the button that closes it.
+    opened: Option<PathBuf>,
 }
 
 struct Ids {
@@ -1647,6 +1649,7 @@ impl Nekoland {
         let drawn = Drawn {
             target,
             focused: self.dock_keyboard_index().map(|index| self.dock.tiles[index].key()),
+            opened: self.dock.stack.as_ref().map(|stack| stack.folder.clone()),
             dark,
             glass,
             art: s.art,
@@ -1792,6 +1795,34 @@ impl Nekoland {
                         text::rounded_rectangle(&cr, ax, ay, size, size, art * 0.15);
                         cr.set_source_rgba(r, g, b, 0.10);
                         let _ = cr.fill();
+                    }
+                    // An open folder's tile closes it, as the Mac's does: a chevron toward the
+                    // Dock's edge, on the fan's pill.
+                    Tile::Stack { path, .. } if drawn.opened.as_ref() == Some(path) => {
+                        // Smaller than the icons around it, so it reads as a button rather than an icon.
+                        let side = size * 0.6;
+                        let (bx, by) = (ax + (size - side) / 2.0, ay + (size - side) / 2.0);
+                        text::rounded_rectangle(&cr, bx, by, side, side, side * 0.25);
+                        let (fill, edge) = if dark {
+                            ((0.13, 0.13, 0.15, 0.88), 0.14)
+                        } else {
+                            ((0.98, 0.98, 0.97, 0.92), 0.5)
+                        };
+                        cr.set_source_rgba(fill.0, fill.1, fill.2, fill.3 * alpha);
+                        let _ = cr.fill_preserve();
+                        cr.set_source_rgba(1.0, 1.0, 1.0, edge * alpha);
+                        cr.set_line_width(1.0);
+                        let _ = cr.stroke();
+                        let (mid, arm) = (bx + side / 2.0, side * 0.16);
+                        let top = by + side / 2.0 - arm / 2.0;
+                        cr.move_to(mid - arm, top);
+                        cr.line_to(mid, top + arm);
+                        cr.line_to(mid + arm, top);
+                        cr.set_source_rgba(r, g, b, alpha);
+                        cr.set_line_width((side * 0.06).max(1.5));
+                        cr.set_line_cap(LineCap::Round);
+                        cr.set_line_join(LineJoin::Round);
+                        let _ = cr.stroke();
                     }
                     Tile::Stack {
                         path, show, covers, ..
@@ -3205,12 +3236,16 @@ impl Nekoland {
                 } else {
                     "在檔案中打開".to_string()
                 });
-                let fan = Fan::new(&labels);
                 // As high as the tile's name stands: over the fully magnified icon.
                 let anchor = Point::from((
                     f64::from(anchor.loc.x + anchor.size.w / 2),
                     f64::from(anchor.loc.y - POPUP_GAP),
                 ));
+                let Some(icon) = self.tile_rect(tile) else {
+                    return;
+                };
+                let middle = icon.to_f64().loc + icon.to_f64().size.to_point().downscale(2.0) - anchor;
+                let fan = Fan::new(&labels, (middle.x, middle.y));
                 let rect = Rectangle::new((anchor + fan.origin).to_i32_round(), fan.size);
                 (Opened::Fan { fan, anchor, labels }, rect)
             }

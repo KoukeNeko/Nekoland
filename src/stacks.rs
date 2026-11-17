@@ -296,6 +296,8 @@ pub fn fan_places(count: usize) -> Vec<(f64, f64, f64)> {
 /// A fan laid out: where it is drawn from, and where each item and its name are.
 pub struct Fan {
     pub places: Vec<(f64, f64, f64)>,
+    /// Where the items come out from and go back to: the middle of the stack's tile.
+    start: (f64, f64),
     /// How wide each name is, with the pill around it.
     pub widths: Vec<f64>,
     /// Where the picture's top left is, from the anchor.
@@ -304,16 +306,18 @@ pub struct Fan {
 }
 
 impl Fan {
-    /// `labels` bottom first; the last one is the line that opens the folder.
-    pub fn new(labels: &[String]) -> Self {
+    /// `labels` bottom first; the last one is the line that opens the folder. `start` is the
+    /// middle of the stack's tile, from the anchor.
+    pub fn new(labels: &[String], start: (f64, f64)) -> Self {
         let places = fan_places(labels.len());
         let widths: Vec<f64> = labels
             .iter()
             .map(|label| text_width(label, 10.0) + 28.0)
             .collect();
-        let (mut min, mut max) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+        let half = FAN_ICON / 2.0;
+        let mut min = (start.0 - half, start.1 - half);
+        let mut max = (start.0 + half, start.1 + half);
         for ((x, y, angle), width) in places.iter().zip(&widths) {
-            let half = FAN_ICON / 2.0;
             for (cx, cy) in [
                 (-(half + PILL_GAP + width), -half),
                 (half, -half),
@@ -334,6 +338,7 @@ impl Fan {
         ));
         Self {
             places,
+            start,
             widths,
             origin,
             size,
@@ -368,7 +373,7 @@ impl Fan {
             let cr = Context::new(&surface).ok()?;
             let (r, g, b) = ink(dark);
             let half = FAN_ICON / 2.0;
-            let start = (0.0, -half);
+            let start = self.start;
             for (index, (((x, y, angle), width), label)) in
                 self.places.iter().zip(&self.widths).zip(labels).enumerate()
             {
@@ -589,7 +594,7 @@ mod tests {
 
     #[test]
     fn a_fan_finds_the_item_under_a_point() {
-        let fan = Fan::new(&["one".into(), "two".into()]);
+        let fan = Fan::new(&["one".into(), "two".into()], (0.0, FAN_ICON));
         let (x, y, _) = fan.places[1];
         assert_eq!(fan.hit(Point::from((x, y))), Some(1));
         // On the second item's name, to the left of its icon.
