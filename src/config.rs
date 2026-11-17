@@ -46,9 +46,12 @@ pub struct Config {
     /// Whether the keyboard goes to the window the pointer moves into, as GNOME's sloppy
     /// focus, instead of the one clicked.
     pub focus_follows_pointer: bool,
-    /// Whether a window dragged to a side of the display fills that half, and to its top,
-    /// all of it.
+    /// Whether a window dragged to the display's edge fills the part of it that edge stands
+    /// for: a side its half, a corner its quarter, the top all of it, the bottom a third.
     pub edge_tiling: bool,
+    /// The points left between windows the window commands put side by side, and around
+    /// them; up to 64.
+    pub window_gap: u32,
     /// What pointing into each corner of a display does, as the Mac's hot corners.
     pub hot_corner_top_left: HotCorner,
     pub hot_corner_top_right: HotCorner,
@@ -467,6 +470,7 @@ impl Default for Config {
             notification_previews: true,
             focus_follows_pointer: false,
             edge_tiling: true,
+            window_gap: 0,
             night_shift: NightShift::Off,
             // The Mac's custom schedule.
             night_shift_from: TimeOfDay(22 * 60),

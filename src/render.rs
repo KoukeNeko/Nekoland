@@ -187,19 +187,7 @@ pub fn scene_elements(
             slot.now.loc - Point::from((OUTLINE, OUTLINE)) - output_geometry.loc,
             slot.now.size + Size::from((OUTLINE * 2, OUTLINE * 2)),
         );
-        let sides = [
-            Rectangle::new(outer.loc, Size::from((outer.size.w, OUTLINE))),
-            Rectangle::new(
-                outer.loc + Point::from((0, outer.size.h - OUTLINE)),
-                Size::from((outer.size.w, OUTLINE)),
-            ),
-            Rectangle::new(outer.loc, Size::from((OUTLINE, outer.size.h))),
-            Rectangle::new(
-                outer.loc + Point::from((outer.size.w - OUTLINE, 0)),
-                Size::from((OUTLINE, outer.size.h)),
-            ),
-        ];
-        for (id, side) in overview.outline.iter().zip(sides) {
+        for (id, side) in overview.outline.iter().zip(outline_sides(outer, OUTLINE)) {
             elements.push(SceneElement::Solid(SolidColorRenderElement::new(
                 id.clone(),
                 side.to_physical_precise_round(scale),
@@ -897,6 +885,12 @@ fn windows_on_glass(
     let mut kept = Vec::new();
     // From the bottom up, so the glass of each one shows those under it, theirs included.
     for window in windows.iter().rev() {
+        // Where a window being dragged will go shows under it, over the rest.
+        if let Some(target) = state.snap.target.as_ref().filter(|target| &target.window == window) {
+            let mut preview = snap_preview(&state.snap.ids, target.rect, output_loc, scale);
+            preview.append(&mut scene);
+            scene = preview;
+        }
         let mut elements = window_body_elements(state, renderer, window, output_loc, scale);
         let area = window_area(state, window, output_loc, scale);
         // Its window is mostly transparent shadow margin, which glass would blur.
@@ -923,6 +917,54 @@ fn windows_on_glass(
     scene
 }
 
+/// How thick the line around a snap preview is, and how strongly it and its inside are tinted.
+const PREVIEW_OUTLINE: i32 = 2;
+const PREVIEW_OUTLINE_ALPHA: f32 = 0.85;
+const PREVIEW_FILL_ALPHA: f32 = 0.18;
+
+/// The four sides of a line width thick just inside outer: top, bottom, left, right.
+fn outline_sides(outer: Rectangle<i32, Logical>, width: i32) -> [Rectangle<i32, Logical>; 4] {
+    [
+        Rectangle::new(outer.loc, Size::from((outer.size.w, width))),
+        Rectangle::new(
+            outer.loc + Point::from((0, outer.size.h - width)),
+            Size::from((outer.size.w, width)),
+        ),
+        Rectangle::new(outer.loc, Size::from((width, outer.size.h))),
+        Rectangle::new(
+            outer.loc + Point::from((outer.size.w - width, 0)),
+            Size::from((width, outer.size.h)),
+        ),
+    ]
+}
+
+/// The accent colour at lpha, premultiplied as the renderer blends it.
+fn accent(alpha: f32) -> [f32; 4] {
+    let [red, green, blue, _] = OUTLINE_COLOR;
+    [red * alpha, green * alpha, blue * alpha, alpha]
+}
+
+/// Where a dragged window goes if let go of now: a tinted area, outlined, front first.
+fn snap_preview(ids: &[Id; 5], rect: Rectangle<i32, Logical>, output_loc: Point<i32, Logical>, scale: f64) -> Vec<SceneElement> {
+    let rect = Rectangle::new(rect.loc - output_loc, rect.size);
+    let [fill_id, side_ids @ ..] = ids;
+    let solid = |id: &Id, area: Rectangle<i32, Logical>, color: [f32; 4]| {
+        SceneElement::Solid(SolidColorRenderElement::new(
+            id.clone(),
+            area.to_physical_precise_round(scale),
+            CommitCounter::default(),
+            color,
+            Kind::Unspecified,
+        ))
+    };
+    let mut elements: Vec<SceneElement> = side_ids
+        .iter()
+        .zip(outline_sides(rect, PREVIEW_OUTLINE))
+        .map(|(id, side)| solid(id, side, accent(PREVIEW_OUTLINE_ALPHA)))
+        .collect();
+    elements.push(solid(fill_id, rect, accent(PREVIEW_FILL_ALPHA)));
+    elements
+}
 /// The part of the output a window covers, without its shadow.
 fn window_area(
     state: &Nekoland,

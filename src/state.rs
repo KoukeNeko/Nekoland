@@ -90,6 +90,8 @@ pub struct Nekoland {
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
+    /// Where the window being dragged goes if it is let go of now.
+    pub snap: crate::windows::SnapPreview,
     pub overview: Option<Overview>,
     pub menu_bar: MenuBar,
     pub dock: Dock,
@@ -210,6 +212,7 @@ impl Nekoland {
 
             space,
             minimized: Vec::new(),
+            snap: Default::default(),
             overview: None,
             menu_bar: MenuBar::default(),
             dock: Dock::new(),

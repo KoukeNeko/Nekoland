@@ -93,7 +93,8 @@ wallpaper and an input method. Every key is optional:
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
 | `notification_previews` | Whether a notification's banner shows its text, or its title alone; its text unless set |
 | `focus_follows_pointer` | Whether the keyboard goes to the window the pointer moves into, without raising it, instead of the one clicked; off unless set |
-| `edge_tiling` | Whether a window dragged to a side of the display fills that half, and to its top, all of it; on unless set |
+| `edge_tiling` | Whether a window dragged to the display's edge fills the part that edge stands for, shown under it while it is held there: a side its half, a corner its quarter, the top all of it, the bottom the third the pointer is over; on unless set |
+| `window_gap` | Points left between windows put side by side, and around them, up to 64; none unless set |
 | `hot_corner_top_left`, `hot_corner_top_right`, `hot_corner_bottom_left`, `hot_corner_bottom_right` | What pointing into that corner of a display does: `none` (the default), `overview`, `apps` or `lock` |
 
 The Settings application changes most of these while Nekoland runs (see below);
@@ -170,7 +171,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   was typed there. It also answers sums, percentages and unit conversions (`5 km to mi`,
   `3 坪 換成 m2`) and offers web, file and menu-item searches for what was typed. Its
   commands lock, sleep, restart and shut down, toggle dark mode, put the window under it
-  in a half, a quarter or a third of the screen, and open views of their own: clipboard
+  in a half, a quarter, a third, a fourth or a sixth of the screen, larger, smaller or against an edge, and open views of their own: clipboard
   history, emoji, files, open windows, snippets, quicklinks and notes. Ctrl+K lists what
   can be done with the chosen item, Ctrl+Return does the second of them, and an item
   can be given an alias to find it by. Snippets paste text with `{date}`, `{time}` and
@@ -202,7 +203,7 @@ Nekoland draws the bar along the top itself, as the Mac does:
   export its menus at all). Their dialogs keep the menus of their program.
 - For a program without menus, File, Edit, View and Help menus as the Mac gives
   every application: the Edit menu's entries press the usual shortcuts for it.
-- The Window menu, from Nekoland: minimize, zoom, tile, move to another desktop,
+- The Window menu, from Nekoland: minimize, zoom, move and resize, move to another desktop,
   and the program's windows. The Help menu searches every other menu as you type.
 - On the right: the status items programs register as StatusNotifierItems, with their
   menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
@@ -501,7 +502,16 @@ application draws itself.
 | Ctrl+F2 | Menu bar |
 | Alt+Space | Launcher |
 | Super+Up / Down | Maximize / restore |
-| Super+Left / Right | Tile to a half |
+| Super+Left / Right | Left / right half; again, two thirds, then a third |
+| Super+Alt+Up / Down | Top / bottom half, cycling as the sides do |
+| Super+Alt+U / I / J / K | Top left / top right / bottom left / bottom right quarter |
+| Super+Alt+D / F / G | First / center / last third |
+| Super+Alt+E / T | First / last two thirds |
+| Super+Alt+Return, Super+Alt+Shift+Up | Maximize, maximize height |
+| Super+Alt+C | Center |
+| Super+Alt+= / - | Larger / smaller |
+| Super+Alt+Backspace | Restore |
+| Dragging a window in a half or maximized | Back to its earlier size |
 | Super+H | Minimize |
 | Super+L | Lock the screen |
 | F11 | Fullscreen |
@@ -520,7 +530,9 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 ## From other programs
 
 `nekoland msg WORD` talks to the running compositor: `overview`, `lock`, `sleep`, `workspace-add`,
-`workspace-next`, `workspace-previous`, `quit`; `reload` reads the configuration again,
+`workspace-next`, `workspace-previous`, `quit`; `'window COMMAND'` arranges the active window
+as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
+`first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
 it in effect, or says why not; `'unset KEY'` puts one back at its default.

@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 
 use smithay::{
+    backend::renderer::element::Id,
     desktop::{find_popup_root_surface, layer_map_for_output, Window, WindowSurface},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
@@ -12,7 +13,14 @@ use smithay::{
     wayland::{compositor::{get_parent, with_states}, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use crate::{config::DockPosition, dock::dock_space, focus::KeyFocus, menubar::MENU_BAR_HEIGHT, Nekoland};
+use crate::{
+    arrange::{self, Arrangement, MAX_GAP},
+    config::DockPosition,
+    dock::dock_space,
+    focus::KeyFocus,
+    menubar::MENU_BAR_HEIGHT,
+    Nekoland,
+};
 
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
@@ -48,16 +56,44 @@ struct WindowData {
     restore: RefCell<Option<Rectangle<i32, Logical>>>,
     /// Whether the window has been given its first position.
     placed: Cell<bool>,
+    /// The part a window command last put the window in, to go on to the next size when
+    /// the same command comes again.
+    arranged: RefCell<Option<Arranged>>,
+    /// Whether the window fills a part of the display, as a half or maximized, so that
+    /// dragging it out brings back its earlier size.
+    snapped: Cell<bool>,
+}
+
+struct Arranged {
+    command: String,
+    step: usize,
+    at: Point<i32, Logical>,
 }
 
 fn data(window: &Window) -> &WindowData {
     window.user_data().get_or_insert(WindowData::default)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Side {
-    Left,
-    Right,
+/// Where a window being dragged will go if it is let go of where it is, shown under it.
+pub struct SnapPreview {
+    pub target: Option<SnapTarget>,
+    /// The fill and the four sides of the outline, which keep their ids from frame to frame.
+    pub ids: [Id; 5],
+}
+
+pub struct SnapTarget {
+    pub window: Window,
+    pub command: &'static str,
+    pub rect: Rectangle<i32, Logical>,
+}
+
+impl Default for SnapPreview {
+    fn default() -> Self {
+        Self {
+            target: None,
+            ids: std::array::from_fn(|_| Id::new()),
+        }
+    }
 }
 
 /// What gets the keyboard when a window does.
@@ -322,110 +358,88 @@ impl Nekoland {
         };
         self.remember_place(window);
         self.put_window(window, area, &[ToplevelState::Maximized]);
+        mark(window, None, true);
     }
 
-    /// With `edge_tiling`, a window let go of at a side of the display fills that half, and
-    /// at its top, all of it, as on GNOME and the Mac.
-    pub fn tile_at_edge(&mut self, window: &Window, pos: Point<f64, Logical>) {
-        let Some(display) = self.space.outputs().next().and_then(|output| self.space.output_geometry(output)) else {
-            return;
-        };
-        match edge_at(display.to_f64(), pos) {
-            Some(Edge::Side(side)) if self.config.edge_tiling => self.tile(window, side),
-            Some(Edge::Top) if self.config.edge_tiling => self.maximize(window),
-            _ => {}
+    /// Where a window is and how large, its shadow left out: the size it was last asked to
+    /// be, so that a command given again before it has been drawn at it goes on from there.
+    fn frame(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
+        let asked = window
+            .toplevel()
+            .and_then(|toplevel| toplevel.with_pending_state(|pending| pending.size))
+            .filter(|size| size.w > 0 && size.h > 0);
+        let size = asked.unwrap_or_else(|| window.geometry().size);
+        Some(Rectangle::new(self.space.element_location(window)?, size))
+    }
+
+    /// The points left between windows put side by side, and around them.
+    fn window_gap(&self) -> i32 {
+        i32::try_from(self.config.window_gap).unwrap_or(MAX_GAP).min(MAX_GAP)
+    }
+
+    /// Does to the active window what a window command names, as the launcher, the menu bar
+    /// and the shortcuts give them; a half or a quarter given again in a row goes on to its
+    /// next size. Returns whether `command` is one.
+    pub fn window_command(&mut self, command: &str) -> bool {
+        match self.focused_window().filter(is_managed) {
+            Some(window) => self.arrange_window(&window, command, true),
+            None => arrange::arrangement(command).is_some() || OTHER_COMMANDS.contains(&command),
         }
     }
 
-    pub fn tile(&mut self, window: &Window, side: Side) {
-        let Some(area) = self.usable_area() else {
-            return;
-        };
-        self.remember_place(window);
-        let half = area.size.w / 2;
-        let (x, width, edge) = match side {
-            Side::Left => (area.loc.x, half, ToplevelState::TiledLeft),
-            Side::Right => (area.loc.x + half, area.size.w - half, ToplevelState::TiledRight),
-        };
-        let rect = Rectangle::new(Point::from((x, area.loc.y)), (width, area.size.h).into());
-        self.put_window(
-            window,
-            rect,
-            &[edge, ToplevelState::TiledTop, ToplevelState::TiledBottom],
-        );
-    }
-
-    /// Puts a window over a part of the usable area, given as the fractions of it its
-    /// left, top, right and bottom edges are at.
-    pub fn place_in(&mut self, window: &Window, [left, top, right, bottom]: [f64; 4]) {
-        let Some(area) = self.usable_area() else {
-            return;
-        };
-        self.remember_place(window);
-        let at = |fraction: f64, length: i32| (fraction * f64::from(length)).round() as i32;
-        let (x, y) = (area.loc.x + at(left, area.size.w), area.loc.y + at(top, area.size.h));
-        let size = (at(right, area.size.w) - at(left, area.size.w), at(bottom, area.size.h) - at(top, area.size.h));
-        self.put_window(window, Rectangle::new(Point::from((x, y)), size.into()), &[]);
-    }
-
-    /// Does to the active window what the launcher's window commands name. Returns whether
-    /// `command` is one.
-    pub fn window_command(&mut self, command: &str) -> bool {
-        let Some(window) = self.focused_window().filter(is_managed) else {
-            return true;
-        };
-        let part = match command {
-            "left" => [0.0, 0.0, 0.5, 1.0],
-            "right" => [0.5, 0.0, 1.0, 1.0],
-            "top" => [0.0, 0.0, 1.0, 0.5],
-            "bottom" => [0.0, 0.5, 1.0, 1.0],
-            "top-left" => [0.0, 0.0, 0.5, 0.5],
-            "top-right" => [0.5, 0.0, 1.0, 0.5],
-            "bottom-left" => [0.0, 0.5, 0.5, 1.0],
-            "bottom-right" => [0.5, 0.5, 1.0, 1.0],
-            "first-third" => [0.0, 0.0, 1.0 / 3.0, 1.0],
-            "center-third" => [1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0],
-            "last-third" => [2.0 / 3.0, 0.0, 1.0, 1.0],
-            "first-two-thirds" => [0.0, 0.0, 2.0 / 3.0, 1.0],
-            "last-two-thirds" => [1.0 / 3.0, 0.0, 1.0, 1.0],
-            "almost-maximize" => [0.05, 0.05, 0.95, 0.95],
-            "center" => {
-                let (Some(area), size) = (self.usable_area(), window.geometry().size) else {
-                    return true;
+    fn arrange_window(&mut self, window: &Window, command: &str, cycle: bool) -> bool {
+        match command {
+            "restore" => self.restore(window),
+            "minimize" => self.minimize(window),
+            "fullscreen" => self.toggle_fullscreen(window),
+            "close" => crate::menubar::close(window),
+            _ => {
+                let Some(arrangement) = arrange::arrangement(command) else {
+                    return false;
                 };
-                let (width, height) = (f64::from(area.size.w), f64::from(area.size.h));
-                let left = ((width - f64::from(size.w)) / 2.0).max(0.0) / width;
-                let top = ((height - f64::from(size.h)) / 2.0).max(0.0) / height;
-                [left, top, 1.0 - left, 1.0 - top]
+                self.apply_arrangement(window, command, arrangement, cycle);
             }
-            "maximize" => {
-                self.maximize(&window);
-                return true;
-            }
-            "restore" => {
-                self.restore(&window);
-                return true;
-            }
-            "minimize" => {
-                self.minimize(&window);
-                return true;
-            }
-            "fullscreen" => {
-                if self.is_fullscreen(&window) {
-                    self.restore(&window);
-                } else {
-                    self.fullscreen(&window);
-                }
-                return true;
-            }
-            "close" => {
-                crate::menubar::close(&window);
-                return true;
-            }
-            _ => return false,
-        };
-        self.place_in(&window, part);
+        }
         true
+    }
+
+    fn apply_arrangement(&mut self, window: &Window, command: &str, arrangement: Arrangement, cycle: bool) {
+        let (Some(area), Some(frame)) = (self.usable_area(), self.frame(window)) else {
+            return;
+        };
+        let inner = arrange::inset(area, self.window_gap());
+        match arrangement {
+            Arrangement::Maximize => self.maximize(window),
+            Arrangement::Part(part) => {
+                let step = if cycle { next_step(window, command, frame.loc) } else { 0 };
+                let rect = arrange::part_rect(area, arrange::cycled(part, step), self.window_gap());
+                // Without gaps, the sides it is against are tiled, which GTK draws square.
+                let states = if self.window_gap() == 0 {
+                    tiled_states(area, rect)
+                } else {
+                    Vec::new()
+                };
+                self.remember_place(window);
+                self.put_window(window, rect, &states);
+                let arranged = Arranged {
+                    command: command.to_string(),
+                    step,
+                    at: rect.loc,
+                };
+                mark(window, Some(arranged), true);
+            }
+            Arrangement::MaximizeHeight => self.reframe(window, arrange::full_height(inner, frame), true),
+            Arrangement::Center => self.reframe(window, arrange::centered(inner, frame.size), false),
+            Arrangement::Resize(by) => self.reframe(window, arrange::resized(inner, frame, by), false),
+            Arrangement::Move(direction) => self.reframe(window, arrange::moved(inner, frame, direction), false),
+        }
+    }
+
+    /// Puts a window somewhere a command worked out from where it was.
+    fn reframe(&mut self, window: &Window, rect: Rectangle<i32, Logical>, snapped: bool) {
+        self.remember_place(window);
+        self.put_window(window, rect, &[]);
+        mark(window, None, snapped);
     }
 
     pub fn is_fullscreen(&self, window: &Window) -> bool {
@@ -435,6 +449,14 @@ impl Nekoland {
                 .states
                 .contains(ToplevelState::Fullscreen),
             WindowSurface::X11(surface) => surface.is_fullscreen(),
+        }
+    }
+
+    pub fn toggle_fullscreen(&mut self, window: &Window) {
+        if self.is_fullscreen(window) {
+            self.restore(window);
+        } else {
+            self.fullscreen(window);
         }
     }
 
@@ -463,6 +485,57 @@ impl Nekoland {
             return;
         };
         self.put_window(window, rect, &[]);
+        mark(window, None, false);
+    }
+
+    /// Brings a window dragged out of a half, or out of the whole display, back to the size
+    /// it had before, still under the pointer that started the drag at `grabbed`. Returns
+    /// where it is now, if it changed.
+    pub fn lift_dragged(&mut self, window: &Window, grabbed: Point<f64, Logical>) -> Option<Point<i32, Logical>> {
+        if !data(window).snapped.get() {
+            return None;
+        }
+        let frame = self.frame(window)?;
+        let earlier = (*data(window).restore.borrow())?;
+        let lifted = Rectangle::new(arrange::lifted(frame, grabbed, earlier.size), earlier.size);
+        self.put_window(window, lifted, &[]);
+        // Kept as where it goes back to, since the client takes a while to draw it at that
+        // size: snapped again before then, the window would remember the size of the half.
+        *data(window).restore.borrow_mut() = Some(lifted);
+        mark(window, None, false);
+        Some(lifted.loc)
+    }
+
+    /// With `edge_tiling`, shows where a window being dragged goes if it is let go of with
+    /// the pointer at `pos`.
+    pub fn preview_snap(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        self.snap.target = self.snap_target(window, pos);
+    }
+
+    fn snap_target(&self, window: &Window, pos: Point<f64, Logical>) -> Option<SnapTarget> {
+        if !self.config.edge_tiling {
+            return None;
+        }
+        let output = self.space.outputs().next()?;
+        let display = self.space.output_geometry(output)?;
+        let command = arrange::snap_command(display.to_f64(), pos)?;
+        let area = self.usable_area()?;
+        let rect = match arrange::arrangement(command)? {
+            Arrangement::Part(part) => arrange::part_rect(area, part, self.window_gap()),
+            _ => area,
+        };
+        Some(SnapTarget {
+            window: window.clone(),
+            command,
+            rect,
+        })
+    }
+
+    /// Puts a dragged window where its preview showed, when it was let go of over one.
+    pub fn drop_dragged(&mut self, window: &Window) {
+        if let Some(target) = self.snap.target.take().filter(|target| &target.window == window) {
+            self.arrange_window(window, target.command, false);
+        }
     }
 
     pub fn minimize(&mut self, window: &Window) {
@@ -527,37 +600,33 @@ impl Nekoland {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Edge {
-    Side(Side),
-    Top,
+
+/// What a window command does besides putting the window in a part of the display.
+const OTHER_COMMANDS: [&str; 4] = ["restore", "minimize", "fullscreen", "close"];
+
+fn mark(window: &Window, arranged: Option<Arranged>, snapped: bool) {
+    *data(window).arranged.borrow_mut() = arranged;
+    data(window).snapped.set(snapped);
 }
 
-/// The edge of `display` the pointer is at, which it cannot pass.
-fn edge_at(display: Rectangle<f64, Logical>, pos: Point<f64, Logical>) -> Option<Edge> {
-    if pos.y < display.loc.y + 1.0 {
-        Some(Edge::Top)
-    } else if pos.x < display.loc.x + 1.0 {
-        Some(Edge::Side(Side::Left))
-    } else if pos.x >= display.loc.x + display.size.w - 1.0 {
-        Some(Edge::Side(Side::Right))
-    } else {
-        None
-    }
+/// The step a command given to a window goes on to: the next, when the same command last
+/// put the window where it still is, or the first.
+fn next_step(window: &Window, command: &str, at: Point<i32, Logical>) -> usize {
+    data(window)
+        .arranged
+        .borrow()
+        .as_ref()
+        .filter(|last| last.command == command && last.at == at)
+        .map_or(0, |last| last.step + 1)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_the_displays_top_and_sides_tile() {
-        let display = Rectangle::new((0.0, 0.0).into(), (1920.0, 1080.0).into());
-        let at = |x, y| edge_at(display, (x, y).into());
-        assert_eq!(at(0.0, 500.0), Some(Edge::Side(Side::Left)));
-        assert_eq!(at(1919.0, 500.0), Some(Edge::Side(Side::Right)));
-        assert_eq!(at(800.0, 0.0), Some(Edge::Top));
-        assert_eq!(at(800.0, 1079.0), None);
-        assert_eq!(at(800.0, 500.0), None);
-    }
+/// The tiled states for the sides of `area` that `rect` is against.
+fn tiled_states(area: Rectangle<i32, Logical>, rect: Rectangle<i32, Logical>) -> Vec<ToplevelState> {
+    let sides = [
+        (rect.loc.x == area.loc.x, ToplevelState::TiledLeft),
+        (rect.loc.x + rect.size.w == area.loc.x + area.size.w, ToplevelState::TiledRight),
+        (rect.loc.y == area.loc.y, ToplevelState::TiledTop),
+        (rect.loc.y + rect.size.h == area.loc.y + area.size.h, ToplevelState::TiledBottom),
+    ];
+    sides.into_iter().filter(|(against, _)| *against).map(|(_, state)| state).collect()
 }

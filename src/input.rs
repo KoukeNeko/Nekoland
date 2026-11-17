@@ -16,7 +16,7 @@ use crate::{
     config,
     grabs::MoveSurfaceGrab,
     state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
-    windows::{window_names, Side, LAUNCHER_APP_ID},
+    windows::{window_names, LAUNCHER_APP_ID},
 };
 
 impl Nekoland {
@@ -287,15 +287,12 @@ impl Nekoland {
                 .get_keyboard()
                 .is_some_and(|keyboard| keyboard.modifier_state().logo);
             if logo && button == BUTTON_LEFT {
-                let grab = MoveSurfaceGrab {
-                    start_data: GrabStartData {
-                        focus: None,
-                        button,
-                        location: pos,
-                    },
-                    window,
-                    initial_window_location: location,
+                let start_data = GrabStartData {
+                    focus: None,
+                    button,
+                    location: pos,
                 };
+                let grab = MoveSurfaceGrab::new(start_data, window, location);
                 pointer.set_grab(self, grab, serial, Focus::Clear);
             }
         } else if left_or_right && self.desktop_press(pos, button == BUTTON_RIGHT, serial) {
@@ -366,6 +363,11 @@ impl Nekoland {
             return true;
         }
 
+        if let Some(command) = arrange_shortcut(sym, logo && !ctrl, alt, shift) {
+            self.window_command(command);
+            return true;
+        }
+
         match sym {
             // The only way out on a bare console.
             Keysym::BackSpace if ctrl && alt => self.loop_signal.stop(),
@@ -391,26 +393,6 @@ impl Nekoland {
             Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
             Keysym::Page_Up if logo => self.switch_workspace_by(-1),
             Keysym::Page_Down if logo => self.switch_workspace_by(1),
-            Keysym::Up if logo => {
-                if let Some(window) = focused {
-                    self.maximize(&window);
-                }
-            }
-            Keysym::Down if logo => {
-                if let Some(window) = focused {
-                    self.restore(&window);
-                }
-            }
-            Keysym::Left if logo => {
-                if let Some(window) = focused {
-                    self.tile(&window, Side::Left);
-                }
-            }
-            Keysym::Right if logo => {
-                if let Some(window) = focused {
-                    self.tile(&window, Side::Right);
-                }
-            }
             Keysym::h if logo => {
                 if let Some(window) = focused {
                     self.minimize(&window);
@@ -418,11 +400,7 @@ impl Nekoland {
             }
             Keysym::F11 if !(ctrl || alt || logo) => {
                 if let Some(window) = focused {
-                    if self.is_fullscreen(&window) {
-                        self.restore(&window);
-                    } else {
-                        self.fullscreen(&window);
-                    }
+                    self.toggle_fullscreen(&window);
                 }
             }
             Keysym::XF86_AudioRaiseVolume => config::spawn(&self.config.volume_up),
@@ -461,6 +439,41 @@ impl Nekoland {
     }
 }
 
+/// The window command a shortcut with Super stands for: the arrows alone halve, maximize and
+/// restore, as on GNOME; with Alt too, Rectangle's keys, its Ctrl and Option being Super and
+/// Alt here, since Ctrl+Alt with the arrows switches desktops.
+fn arrange_shortcut(sym: Keysym, logo: bool, alt: bool, shift: bool) -> Option<&'static str> {
+    if !logo {
+        return None;
+    }
+    let command = match sym {
+        Keysym::Left => "left",
+        Keysym::Right => "right",
+        Keysym::Up if alt && shift => "maximize-height",
+        Keysym::Up if alt => "top",
+        Keysym::Down if alt => "bottom",
+        Keysym::Up => "maximize",
+        Keysym::Down => "restore",
+        _ if !alt => return None,
+        Keysym::u => "top-left",
+        Keysym::i => "top-right",
+        Keysym::j => "bottom-left",
+        Keysym::k => "bottom-right",
+        Keysym::d => "first-third",
+        Keysym::f => "center-third",
+        Keysym::g => "last-third",
+        Keysym::e => "first-two-thirds",
+        Keysym::t => "last-two-thirds",
+        Keysym::Return => "maximize",
+        Keysym::c => "center",
+        Keysym::BackSpace => "restore",
+        Keysym::equal => "larger",
+        Keysym::minus => "smaller",
+        _ => return None,
+    };
+    Some(command)
+}
+
 fn close(window: Option<Window>) {
     match window.as_ref().map(Window::underlying_surface) {
         Some(WindowSurface::Wayland(toplevel)) => toplevel.send_close(),
@@ -468,5 +481,43 @@ fn close(window: Option<Window>) {
             let _ = surface.close();
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn super_with_the_arrows_halves_maximizes_and_restores() {
+        assert_eq!(arrange_shortcut(Keysym::Left, true, false, false), Some("left"));
+        assert_eq!(arrange_shortcut(Keysym::Right, true, false, false), Some("right"));
+        assert_eq!(arrange_shortcut(Keysym::Up, true, false, false), Some("maximize"));
+        assert_eq!(arrange_shortcut(Keysym::Down, true, false, false), Some("restore"));
+        assert_eq!(arrange_shortcut(Keysym::Left, false, false, false), None);
+    }
+
+    #[test]
+    fn super_alt_takes_rectangles_keys_and_leaves_super_alone() {
+        assert_eq!(arrange_shortcut(Keysym::Up, true, true, false), Some("top"));
+        assert_eq!(arrange_shortcut(Keysym::Up, true, true, true), Some("maximize-height"));
+        assert_eq!(arrange_shortcut(Keysym::u, true, true, false), Some("top-left"));
+        assert_eq!(arrange_shortcut(Keysym::g, true, true, false), Some("last-third"));
+        assert_eq!(arrange_shortcut(Keysym::BackSpace, true, true, false), Some("restore"));
+        assert_eq!(arrange_shortcut(Keysym::minus, true, true, false), Some("smaller"));
+        // Super alone keeps its own: H minimizes, Return opens a terminal.
+        assert_eq!(arrange_shortcut(Keysym::h, true, false, false), None);
+        assert_eq!(arrange_shortcut(Keysym::Return, true, false, false), None);
+        assert_eq!(arrange_shortcut(Keysym::u, true, false, false), None);
+    }
+
+    #[test]
+    fn every_shortcut_names_a_window_command() {
+        let keys = [Keysym::u, Keysym::i, Keysym::j, Keysym::k, Keysym::d, Keysym::f, Keysym::g, Keysym::e,
+            Keysym::t, Keysym::Return, Keysym::c, Keysym::equal, Keysym::minus, Keysym::Up, Keysym::Down];
+        for key in keys {
+            let command = arrange_shortcut(key, true, true, false).expect("a shortcut");
+            assert!(command == "restore" || crate::arrange::arrangement(command).is_some(), "{command}");
+        }
     }
 }

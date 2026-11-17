@@ -40,7 +40,7 @@ use crate::{
     glass::Tier,
     system::{self, Network, Volume},
     text::{self, Picture},
-    windows::{is_managed, window_names, Side, LAUNCHER_APP_ID},
+    windows::{is_managed, window_names, LAUNCHER_APP_ID},
     Nekoland,
 };
 
@@ -105,8 +105,8 @@ pub enum Command {
     FullScreen,
     Minimize,
     Zoom,
-    TileLeft,
-    TileRight,
+    /// A window command, as the launcher's and the shortcuts' are named.
+    Arrange(&'static str),
     MoveToDesktop(usize),
     BringAllToFront,
     /// What the Dock's menu for an application offers.
@@ -1711,10 +1711,7 @@ impl Nekoland {
                         .shortcut("Super ↑")
                         .enabled(has_window),
                     Entry {
-                        children: vec![
-                            Entry::item("左半邊", Command::TileLeft).shortcut("Super ←"),
-                            Entry::item("右半邊", Command::TileRight).shortcut("Super →"),
-                        ],
+                        children: arrange_entries(),
                         ..Entry::note("移動與調整大小").enabled(has_window)
                     },
                 ];
@@ -2240,11 +2237,7 @@ impl Nekoland {
             }
             Command::FullScreen => {
                 if let Some(window) = focused {
-                    if self.is_fullscreen(&window) {
-                        self.restore(&window);
-                    } else {
-                        self.fullscreen(&window);
-                    }
+                    self.toggle_fullscreen(&window);
                 }
             }
             Command::Minimize => {
@@ -2261,15 +2254,8 @@ impl Nekoland {
                     }
                 }
             }
-            Command::TileLeft => {
-                if let Some(window) = focused {
-                    self.tile(&window, Side::Left);
-                }
-            }
-            Command::TileRight => {
-                if let Some(window) = focused {
-                    self.tile(&window, Side::Right);
-                }
+            Command::Arrange(command) => {
+                self.window_command(command);
             }
             Command::MoveToDesktop(index) => {
                 if let Some(window) = focused {
@@ -2296,6 +2282,50 @@ impl Nekoland {
     }
 }
 
+/// The Window menu's 移動與調整大小, in groups: each entry's label, window command and shortcut.
+const ARRANGEMENTS: [&[(&str, &str, &str)]; 5] = [
+    &[
+        ("左半邊", "left", "Super ←"),
+        ("右半邊", "right", "Super →"),
+        ("上半部", "top", "Super Alt ↑"),
+        ("下半部", "bottom", "Super Alt ↓"),
+    ],
+    &[
+        ("左上角", "top-left", "Super Alt U"),
+        ("右上角", "top-right", "Super Alt I"),
+        ("左下角", "bottom-left", "Super Alt J"),
+        ("右下角", "bottom-right", "Super Alt K"),
+    ],
+    &[
+        ("左邊三分之一", "first-third", "Super Alt D"),
+        ("中間三分之一", "center-third", "Super Alt F"),
+        ("右邊三分之一", "last-third", "Super Alt G"),
+        ("左邊三分之二", "first-two-thirds", "Super Alt E"),
+        ("右邊三分之二", "last-two-thirds", "Super Alt T"),
+    ],
+    &[
+        ("最大化高度", "maximize-height", "Super Alt Shift ↑"),
+        ("置中", "center", "Super Alt C"),
+        ("加大", "larger", "Super Alt ="),
+        ("縮小", "smaller", "Super Alt -"),
+    ],
+    &[("回到先前的大小", "restore", "Super ↓")],
+];
+
+fn arrange_entries() -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for (index, group) in ARRANGEMENTS.iter().enumerate() {
+        if index > 0 {
+            entries.push(Entry::separator());
+        }
+        entries.extend(
+            group
+                .iter()
+                .map(|&(label, command, shortcut)| Entry::item(label, Command::Arrange(command)).shortcut(shortcut)),
+        );
+    }
+    entries
+}
 fn is_maximized(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {
@@ -2407,7 +2437,7 @@ mod tests {
         let menus = vec![(
             "視窗".to_string(),
             vec![Entry {
-                children: vec![Entry::item("左半邊", Command::TileLeft)],
+                children: vec![Entry::item("左半邊", Command::Arrange("left"))],
                 ..Entry::note("移動與調整大小")
             }],
         )];

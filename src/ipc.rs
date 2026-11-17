@@ -224,6 +224,13 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         force if force.starts_with("force-quit-app ") => {
             state.force_quit_app(&force["force-quit-app ".len()..]);
         }
+        // For keys bound elsewhere, as Rectangle's are from a script: `window left`.
+        action if action.starts_with("window ") => {
+            let command = &action["window ".len()..];
+            if !state.window_command(command) {
+                return Some(format!("unknown window command: {command}\n"));
+            }
+        }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),
         "sleep" => state.sleep(),

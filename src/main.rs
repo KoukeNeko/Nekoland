@@ -1,6 +1,7 @@
 #![allow(irrefutable_let_patterns)]
 
 mod appgrid;
+mod arrange;
 mod config;
 mod control;
 mod corners;

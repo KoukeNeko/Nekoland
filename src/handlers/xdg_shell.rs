@@ -182,12 +182,7 @@ impl XdgShellHandler for Nekoland {
                 return;
             };
 
-            let grab = MoveSurfaceGrab {
-                start_data,
-                window,
-                initial_window_location,
-            };
-
+            let grab = MoveSurfaceGrab::new(start_data, window, initial_window_location);
             pointer.set_grab(self, grab, serial, Focus::Clear);
         }
     }

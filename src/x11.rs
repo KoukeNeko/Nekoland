@@ -235,15 +235,12 @@ impl XwmHandler for Nekoland {
         else {
             return;
         };
-        let grab = MoveSurfaceGrab {
-            start_data: GrabStartData {
-                focus: None,
-                button,
-                location: pointer.current_location(),
-            },
-            window,
-            initial_window_location,
+        let start_data = GrabStartData {
+            focus: None,
+            button,
+            location: pointer.current_location(),
         };
+        let grab = MoveSurfaceGrab::new(start_data, window, initial_window_location);
         pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
     }
 

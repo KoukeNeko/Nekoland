@@ -846,6 +846,13 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     }
     windows.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
     windows.add(&switch_row(config, "拖到螢幕邊緣時並排", "edge_tiling"));
+    windows.add(&scale_row(
+        "並排間距",
+        config.number("window_gap", 0.0),
+        (0.0, 32.0, 2.0),
+        |gap| format!("{gap:.0} px"),
+        |gap| set(&format!("window_gap = {gap:.0}")),
+    ));
     page.add(&windows);
 
     let corners = group("熱點");

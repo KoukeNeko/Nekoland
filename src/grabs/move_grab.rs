@@ -11,10 +11,30 @@ use smithay::{
     utils::{Logical, Point, Rectangle},
 };
 
+/// How far the pointer goes before a window in a half or maximized comes out at its
+/// earlier size, so that a click does not.
+const LIFT_DISTANCE: f64 = 8.0;
+
 pub struct MoveSurfaceGrab {
-    pub start_data: PointerGrabStartData<Nekoland>,
-    pub window: Window,
-    pub initial_window_location: Point<i32, Logical>,
+    start_data: PointerGrabStartData<Nekoland>,
+    window: Window,
+    initial_window_location: Point<i32, Logical>,
+    lifted: bool,
+}
+
+impl MoveSurfaceGrab {
+    pub fn new(
+        start_data: PointerGrabStartData<Nekoland>,
+        window: Window,
+        initial_window_location: Point<i32, Logical>,
+    ) -> Self {
+        Self {
+            start_data,
+            window,
+            initial_window_location,
+            lifted: false,
+        }
+    }
 }
 
 impl PointerGrab<Nekoland> for MoveSurfaceGrab {
@@ -29,6 +49,13 @@ impl PointerGrab<Nekoland> for MoveSurfaceGrab {
         handle.motion(data, None, event);
 
         let delta = event.location - self.start_data.location;
+        if !self.lifted && delta.x.hypot(delta.y) >= LIFT_DISTANCE {
+            self.lifted = true;
+            if let Some(location) = data.lift_dragged(&self.window, self.start_data.location) {
+                self.initial_window_location = location;
+            }
+        }
+        data.preview_snap(&self.window, event.location);
         let new_location = self.initial_window_location.to_f64() + delta;
         let new_location = new_location.to_i32_round();
         data.space.map_element(self.window.clone(), new_location, true);
@@ -61,7 +88,7 @@ impl PointerGrab<Nekoland> for MoveSurfaceGrab {
         const BTN_LEFT: u32 = 0x110;
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
-            data.tile_at_edge(&self.window, handle.current_location());
+            data.drop_dragged(&self.window);
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
@@ -156,5 +183,8 @@ impl PointerGrab<Nekoland> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut Nekoland) {}
+    /// However the drag ends, its preview goes.
+    fn unset(&mut self, data: &mut Nekoland) {
+        data.snap.target = None;
+    }
 }
