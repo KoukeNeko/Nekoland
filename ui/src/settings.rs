@@ -2590,14 +2590,32 @@ fn list_input_methods(
         let drag = gtk::DragSource::new();
         drag.set_actions(gdk::DragAction::MOVE);
         let dragged = id.clone();
+        let grabbed = Rc::new(Cell::new((0, 0)));
         drag.connect_prepare(glib::clone!(
+            #[strong]
+            grabbed,
+            move |_, x, y| {
+                grabbed.set((x as i32, y as i32));
+                Some(gdk::ContentProvider::for_value(&dragged.to_value()))
+            }
+        ));
+        // The row is drawn anew on a card of its own to follow the pointer, as GNOME's
+        // Settings does: a picture of the row itself would be clear where the list is.
+        let name = name.clone();
+        drag.connect_drag_begin(glib::clone!(
             #[weak]
             row,
-            #[upgrade_or]
-            None,
-            move |drag, x, y| {
-                drag.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), x as i32, y as i32);
-                Some(gdk::ContentProvider::for_value(&dragged.to_value()))
+            move |_, drag| {
+                let copy = adw::ActionRow::builder()
+                    .title(glib::markup_escape_text(&name))
+                    .build();
+                copy.add_prefix(&gtk::Image::from_icon_name("list-drag-handle-symbolic"));
+                let card = gtk::ListBox::builder().css_classes(["boxed-list"]).build();
+                card.set_size_request(row.width(), row.height());
+                card.append(&copy);
+                gtk::DragIcon::for_drag(drag).set_child(Some(&card));
+                let (x, y) = grabbed.get();
+                drag.set_hotspot(x, y);
             }
         ));
         row.add_controller(drag);
