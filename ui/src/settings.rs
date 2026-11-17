@@ -4148,6 +4148,61 @@ fn remote_page() -> adw::PreferencesPage {
         }
     });
     page
+/// The disks that hold the system and people's files, with how full each is; the boot and
+/// EFI partitions are left out.
+fn storage_group() -> Option<adw::PreferencesGroup> {
+    let listed = output(
+        "df",
+        &["-B1", "--output=target,size,used", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs", "-x", "overlay", "-x", "efivarfs"],
+    )?;
+    let disks = disks(&listed);
+    if disks.is_empty() {
+        return None;
+    }
+    let rows = group("儲存空間");
+    for (place, size, used) in disks {
+        let title = if place == "/" { "系統磁碟".to_string() } else { place.clone() };
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(format!("已使用 {}，共 {}", gb(used), gb(size)))
+            .activatable(true)
+            .build();
+        // What takes the space is shown by 磁碟用量.
+        row.connect_activated(move |_| {
+            let program = nekoland_program("nekoland-disk");
+            if let Err(err) = gio::Subprocess::newv(&[program.as_os_str(), std::ffi::OsStr::new(&place)], gio::SubprocessFlags::NONE) {
+                eprintln!("nekoland-disk: {err}");
+            }
+        });
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        let bar = gtk::LevelBar::builder()
+            .value(used as f64 / size.max(1) as f64)
+            .width_request(160)
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&bar);
+        rows.add(&row);
+    }
+    Some(rows)
+}
+
+/// df's "Mounted on, size, used" lines, past its heading, of the disks storage_group shows.
+fn disks(listed: &str) -> Vec<(String, u64, u64)> {
+    listed
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let (place, size, used) = (words.next()?, words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+            let shown = ["/", "/home"].contains(&place)
+                || ["/home/", "/media/", "/mnt/", "/run/media/"].iter().any(|start| place.starts_with(start));
+            shown.then(|| (place.to_string(), size, used))
+        })
+        .collect()
+}
+
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
 }
 
 /// Runs `args` as root through `sudo -A`, whose password Nekoland's askpass asks for,
@@ -4416,6 +4471,9 @@ fn about_page() -> adw::PreferencesPage {
         computer.add(&fact_row(title, &value));
     }
     page.add(&computer);
+    if let Some(storage) = storage_group() {
+        page.add(&storage);
+    }
     page
 }
 
@@ -5560,6 +5618,15 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disks_are_the_system_and_people_s() {
+        let listed = "Mounted on     1B-blocks        Used\n/ 32021266432 22749257728\n/boot 2040373248 128360448\n/boot/efi 1124995072 6840320\n/home 100 40\n/media/usb 10 5\n/homework 1 1\n";
+        assert_eq!(
+            disks(listed),
+            [("/".into(), 32021266432, 22749257728), ("/home".into(), 100, 40), ("/media/usb".into(), 10, 5)]
+        );
+    }
 
     #[test]
     fn xrdp_port_is_read_from_its_globals_only() {

@@ -3239,6 +3239,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libc",
+ "pangocairo",
  "serde",
  "serde_json",
  "slint",

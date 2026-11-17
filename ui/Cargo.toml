@@ -2,7 +2,7 @@
 name = "nekoland-ui"
 version = "0.1.0"
 edition = "2021"
-description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings, a calendar, Market, the file chooser, the file manager and the task manager in GTK"
+description = "Nekoland's own windows: widgets in Slint and a window that shows them all, and the settings, a calendar, Market, the file chooser, the file manager, the task manager and the disk usage in GTK"
 
 [[bin]]
 name = "nekoland-gallery"
@@ -48,11 +48,16 @@ path = "src/files.rs"
 name = "nekoland-tasks"
 path = "src/tasks.rs"
 
+[[bin]]
+name = "nekoland-disk"
+path = "src/disk.rs"
+
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 flate2 = "1"
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
 libc = "0.2"
+pangocairo = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 slint = "1.18"

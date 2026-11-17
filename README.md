@@ -503,6 +503,17 @@ seconds is marked 沒有回應. It asks the compositor through `nekoland msg tas
 each window's process, application and whether it answers, and `quit-app` and
 `force-quit-app`.
 
+`nekoland-disk`, from `ui/`, is 磁碟用量: where a folder's space went. A place in its sidebar,
+a folder chosen or dropped on it, or a folder opened with it is scanned on a thread of its
+own, staying on its disk, counting the blocks each file takes and a file with several names
+once, and leaving out the places listed under 排除的位置. It is drawn as a sunburst or a
+treemap, beside a list that sorts by name, date or size, searches the folder shown or the
+whole scan and filters by kind and size, and an inspector of what the pointer is on. A
+folder's many smallest files are drawn as one item. 快速查看, 在「檔案」中顯示, 複製路徑 and
+丟到垃圾桶 act on one item; 清理清單 gathers several to put in the trash together. Each scan is
+kept in `~/.local/state/nekoland/disk`, five of each folder, for 最近的掃描 and for comparing
+with a later one; 儲存掃描檔 writes one as a gzipped `.nekoscan` to open elsewhere.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

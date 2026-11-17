@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Usage
+Name[zh_TW]=磁碟用量
+Comment=See what takes up space and clear it
+Comment[zh_TW]=查看占用空間的項目並清理
+Exec=nekoland-disk %U
+Icon=io.github.koukeneko.Nekoland.Disk
+Categories=System;Utility;Filesystem;
