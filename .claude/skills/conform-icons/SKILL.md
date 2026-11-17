@@ -13,13 +13,7 @@ generated SVGs or the hand-drawn icons in `shell/icons/apps`.
 
        /usr/bin/python3 shell/conform-icons.py --sheet /tmp/conform-sheet.html --report
 
-   Add `--ai` on a machine that has the local model (`~/.local/share/nekoland-icon-ai`
-   holds `sd/sd-cli`, `models/sd15-fp16.safetensors` and, for a full repaint with
-   outlines locked, `models/control-canny-fp16.safetensors`): it paints relief and
-   lighting on each tile and keeps the icon's own pixels. The VM has no model;
-   generate on the host with `--out DIR` and copy the SVGs over.
-
-   It writes to `~/.local/share/icons/hicolor/scalable/apps` and prints one JSON
+   It writes to `~/.local/share/icons/Nekoland/scalable/apps` and prints one JSON
    entry per icon: `mode`, `tile`, `fill` (share of the bounding box covered),
    `light` (share of near-white pixels).
 

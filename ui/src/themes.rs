@@ -60,8 +60,9 @@ pub fn installed(cursors: bool) -> Vec<Installed> {
                 path: theme.path(),
             })
         })
-        // The base every theme falls back to, not one of its own.
-        .filter(|theme| !["hicolor", "locolor", "default"].contains(&theme.name.as_str()))
+        // The bases every theme falls back to, not ones to pick or remove: Nekoland's own
+        // is what "default" means.
+        .filter(|theme| !["hicolor", "locolor", "default", "Nekoland"].contains(&theme.name.as_str()))
         .collect();
     // A stable sort keeps the first place each name was found in first.
     found.sort_by(|a, b| a.name.cmp(&b.name));

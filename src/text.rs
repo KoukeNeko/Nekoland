@@ -20,7 +20,7 @@ use smithay::{
 /// families that fill in what it lacks: CJK first.
 static FAMILY: RwLock<String> = RwLock::new(String::new());
 const FALLBACK: &str = "Noto Sans CJK TC, Sans";
-const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
+const ICON_THEMES: [&str; 4] = ["Nekoland", "Yaru", "Adwaita", "hicolor"];
 /// The configuration's `icon_theme`, looked in before `ICON_THEMES`.
 static ICON_THEME: RwLock<String> = RwLock::new(String::new());
 

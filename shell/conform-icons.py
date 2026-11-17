@@ -2,11 +2,12 @@
 """Restyle installed apps' own icons as Nekoland tiles.
 
 Each app's icon is read from where the app installed it and laid on the
-same thick, grained squircle tile the shipped Nekoland icons use. Nothing
-is downloaded: the result is a local, per-user restyle of what is already
+squircle tile Nekoland's own icons use: flat, and lit along its edges by
+SVG's lighting filters. The result goes in the person's half of Nekoland's
+icon theme. Nothing is downloaded: the result is a local, per-user restyle of what is already
 on the machine.
 
-    conform-icons.py [--out DIR] [--overrides FILE] [--report] [--sheet HTML] [--ai] [ICON ...]
+    conform-icons.py [--out DIR] [--overrides FILE] [--report] [--sheet HTML] [ICON ...]
 
 With no ICON names, every app with a .desktop file is processed; icons in
 --out that this tool did not write (the hand-drawn ones) are left alone.
@@ -19,13 +20,6 @@ then runs the tool again:
 
 The overrides file defaults to ~/.config/nekoland/icon-overrides.json.
 
---ai lets a local Stable Diffusion 1.5 (stable-diffusion.cpp's sd-cli and
-a model file under ~/.local/share/nekoland-icon-ai) paint relief and
-lighting on each app's original icon before it goes on the tile, a few
-seconds an icon. With control-canny-fp16.safetensors next to the model, the
-icon is repainted with its outlines locked; without it only the model's
-light is laid over the icon's own pixels. Either way a logo keeps its shape.
-
 mode   "plate"  the icon already has its own background. When that is a plain
                 colour with a shape on it, the two are split: the colour
                 becomes the tile and the shape a layer on it ("layers" in
@@ -36,25 +30,25 @@ makes the set look like one family.
 tile   tile colour (#rrggbb)
 scale  size relative to the default (1.0); above 1 crops a plate's own rim
 """
-import argparse, base64, configparser, glob, io, json, math, os, subprocess, sys, tempfile
+import argparse, base64, configparser, glob, io, json, math, os, shutil, sys
 
 import gi
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf, GLib
 
 HOME = os.path.expanduser("~")
-OUT = f"{HOME}/.local/share/icons/hicolor/scalable/apps"
+THEME = f"{HOME}/.local/share/icons/Nekoland"  # the user's half of Nekoland's icon theme
+OUT = f"{THEME}/scalable/apps"
 OVERRIDES = f"{os.environ.get('XDG_CONFIG_HOME', HOME + '/.config')}/nekoland/icon-overrides.json"
-HAND_DRAWN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "apps")
+# The hand-drawn icons: installed, or beside this file in a checkout.
+HAND_DRAWN = ["/usr/local/share/icons/Nekoland/scalable/apps",
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "apps")]
+INDEX = "/usr/local/share/icons/Nekoland/index.theme"
 DATA_DIRS = [f"{HOME}/.local/share", f"{HOME}/.local/share/flatpak/exports/share", "/var/lib/flatpak/exports/share",
              *os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")]
 SHIPPED = "io.github.koukeneko.Nekoland."
-LIGHT, DARK = "#eeeeec", "#22262c"
+LIGHT, DARK = "#f7f7f9", "#232327"
 SIZE = 256  # analysis and embedding resolution
-AI_HOME = f"{HOME}/.local/share/nekoland-icon-ai"
-AI_PROMPT = ("app icon, glossy 3d rendered object on a rounded square tile, embossed, realistic materials, "
-             "soft studio lighting from above, specular highlights, subtle shadow, highly detailed, sharp")
-AI_NEGATIVE = "text, watermark, blurry, distorted, deformed, noisy, photo, people, flat, long shadow"
 MARK = "<!-- conform-icons -->"  # only files carrying this are ours to overwrite
 
 
@@ -69,19 +63,22 @@ SQ = squircle()
 
 # The tile, its thickness, grain, vignette and rim are the shipped icons' materials.
 DEFS = f'''
-    <filter id="drop" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur in="SourceAlpha" stdDeviation="1.4"/><feOffset dy="1.4"/><feComponentTransfer><feFuncA type="linear" slope=".32"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-    <filter id="cast" x="-40%" y="-40%" width="180%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="4.6" result="a"/><feOffset in="a" dy="5.2" result="a2"/><feComponentTransfer in="a2" result="amb"><feFuncA type="linear" slope=".34"/></feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="1" result="c"/><feOffset in="c" dy="1.3" result="c2"/><feComponentTransfer in="c2" result="con"><feFuncA type="linear" slope=".5"/></feComponentTransfer>
-      <feOffset in="SourceAlpha" dy="1.2" result="down"/><feComposite in="SourceAlpha" in2="down" operator="out" result="top"/><feGaussianBlur in="top" stdDeviation=".35" result="tops"/><feFlood flood-color="#fff" flood-opacity=".8"/><feComposite in2="tops" operator="in" result="hi0"/><feComposite in="hi0" in2="SourceAlpha" operator="in" result="hi"/>
-      <feOffset in="SourceAlpha" dy="-1.4" result="up"/><feComposite in="SourceAlpha" in2="up" operator="out" result="bottom"/><feGaussianBlur in="bottom" stdDeviation=".5" result="bots"/><feFlood flood-color="#fff" flood-opacity=".5"/><feComposite in2="bots" operator="in" result="lo0"/><feComposite in="lo0" in2="SourceAlpha" operator="in" result="lo"/>
-      <feMerge><feMergeNode in="amb"/><feMergeNode in="con"/><feMergeNode in="SourceGraphic"/><feMergeNode in="lo"/><feMergeNode in="hi"/></feMerge></filter>
-    <filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="1.3" numOctaves="2" seed="7"/><feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  .55 0 0 0 -.2"/></filter>
-    <radialGradient id="vig" cx=".5" cy=".42" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".09"/></radialGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur in="SourceAlpha" stdDeviation="1.8"/><feOffset dy="1.6"/><feComponentTransfer><feFuncA type="linear" slope=".24"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="cast" x="-40%" y="-40%" width="180%" height="200%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3.6" result="a"/><feOffset in="a" dy="3.4" result="a2"/><feComponentTransfer in="a2" result="amb"><feFuncA type="linear" slope=".18"/></feComponentTransfer>
+      <feGaussianBlur in="SourceAlpha" stdDeviation=".8" result="c"/><feOffset in="c" dy=".8" result="c2"/><feComponentTransfer in="c2" result="con"><feFuncA type="linear" slope=".22"/></feComponentTransfer>
+      <feGaussianBlur in="SourceAlpha" stdDeviation=".7" result="bump"/>
+      <feSpecularLighting in="bump" surfaceScale="5" specularConstant=".7" specularExponent="22" lighting-color="#fff" result="s1"><feDistantLight azimuth="270" elevation="22"/></feSpecularLighting>
+      <feSpecularLighting in="bump" surfaceScale="5" specularConstant=".32" specularExponent="26" lighting-color="#fff" result="s2"><feDistantLight azimuth="90" elevation="18"/></feSpecularLighting>
+      <feComposite in="s1" in2="s2" operator="arithmetic" k2="1" k3="1" result="s"/><feComposite in="s" in2="SourceAlpha" operator="in" result="light"/>
+      <feMerge><feMergeNode in="amb"/><feMergeNode in="con"/><feMergeNode in="SourceGraphic"/><feMergeNode in="light"/></feMerge></filter>
+    <filter id="edge" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="1.1" result="bump"/>
+      <feSpecularLighting in="bump" surfaceScale="7" specularConstant=".7" specularExponent="22" lighting-color="#fff" result="s1"><feDistantLight azimuth="270" elevation="22"/></feSpecularLighting>
+      <feSpecularLighting in="bump" surfaceScale="7" specularConstant=".32" specularExponent="26" lighting-color="#fff" result="s2"><feDistantLight azimuth="90" elevation="18"/></feSpecularLighting>
+      <feComposite in="s1" in2="s2" operator="arithmetic" k2="1" k3="1" result="s"/><feComposite in="s" in2="SourceAlpha" operator="in" result="light"/>
+      <feMerge><feMergeNode in="light"/></feMerge></filter>
     <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".24" stop-color="#fff" stop-opacity="0"/><stop offset=".74" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity=".55"/></linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".3"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>
-    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".12"/></linearGradient>
-    <radialGradient id="spot" cx=".5" cy=".08" r=".7"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
     <clipPath id="clip"><path d="{SQ}"/></clipPath>'''
 
 
@@ -89,9 +86,6 @@ def icon_id(name):
     """Icon= may be a path; the output is named after its file without .svg/.png."""
     base = os.path.basename(name)
     return base[:-4] if base.endswith((".svg", ".png")) else base
-
-
-LIGHTING = f'<path d="{SQ}" fill="url(#spot)"/><path d="{SQ}" fill="url(#gloss)"/><path d="{SQ}" fill="url(#floor)"/>'
 
 
 def mix(colour, other, amount):
@@ -105,7 +99,7 @@ def lit_layer(png):
     layer = Image.open(io.BytesIO(png)).convert("RGBA")
     w, h = layer.size
     ramp = Image.new("L", (1, h))
-    ramp.putdata([round(140 - 34 * y / max(h - 1, 1)) for y in range(h)])  # 128 is no change
+    ramp.putdata([round(132 - 12 * y / max(h - 1, 1)) for y in range(h)])  # 128 is no change
     ramp = ramp.resize((w, h))
     shaded = ImageChops.add(layer.convert("RGB"), Image.merge("RGB", (ramp, ramp, ramp)), offset=-128)
     shaded.putalpha(layer.getchannel("A"))
@@ -123,8 +117,8 @@ def find_source(name):
         for theme in ("hicolor", "Yaru", "Adwaita"):
             # Exactly name.svg or name.png: "name.*" would also take name.Other-symbolic.svg.
             for path in glob.glob(f"{data}/icons/{theme}/*/apps/{glob.escape(name)}.[sp][vn]g"):
-                if path.startswith(OUT) or os.path.dirname(path) == OUT_DIR:
-                    continue
+                if os.path.dirname(path) == OUT_DIR or (path.endswith(".svg") and MARK in open(path, errors="replace").read(200)):
+                    continue  # one of ours, from this run or an earlier version's place
                 size_dir = path.split("/")[-3]
                 size = 10_000 if size_dir == "scalable" else int(size_dir.split("x")[0]) if "x" in size_dir else 0
                 if path.endswith((".svg", ".png")) and size > best_size:
@@ -241,7 +235,7 @@ def png_bytes(pixbuf, box):
     return buf
 
 
-def render(name, source, override, ai=False):
+def render(name, source, override):
     pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(source, SIZE, SIZE, True)
     if not pixbuf.get_has_alpha():
         pixbuf = pixbuf.add_alpha(False, 0, 0, 0)
@@ -262,14 +256,12 @@ def render(name, source, override, ai=False):
         lw, lh = Image.open(io.BytesIO(art)).size
         k = 66 * override.get("scale", 1.0) / max(lw, lh)
         iw, ih = lw * k, lh * k
-        data = base64.b64encode(lit_layer(ai_light(art) if ai else art)).decode()
+        data = base64.b64encode(lit_layer(art)).decode()
         inner = f'<g filter="url(#cast)"><image x="{64 - iw / 2:.2f}" y="{64 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/></g>'
-        strength = .1
         top = override.get("tile") or top
     else:
         top = None
-        painted = ai_light(art) if ai else art
-        data = base64.b64encode(painted if mode == "plate" else lit_layer(painted)).decode()
+        data = base64.b64encode(art if mode == "plate" else lit_layer(art)).decode()
     if layers:
         pass
     elif mode == "plate":
@@ -282,7 +274,6 @@ def render(name, source, override, ai=False):
         iw, ih = w * k, h * k
         art = f'<image x="{64 - iw / 2:.2f}" y="{64 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/>'
         inner = art
-        strength = .18
     else:
         # A mostly light shape would vanish on the light tile.
         tile = override.get("tile") or (DARK if info["light"] > 0.55 else LIGHT)
@@ -290,22 +281,18 @@ def render(name, source, override, ai=False):
         k = side / max(w, h)
         iw, ih = w * k, h * k
         inner = f'<g filter="url(#cast)"><image x="{64 - iw / 2:.2f}" y="{62 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/></g>'
-        strength = .22
     # Every tile is lit from above: lighter at the top, darker at the foot, whatever its colour.
     top, fill = top or tile, "url(#bg)"
-    gradient = (f'\n    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{mix(top, "#ffffff", .14)}"/>'
-                f'<stop offset="1" stop-color="{mix(tile, "#000000", .08)}"/></linearGradient>')
+    gradient = (f'\n    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{mix(top, "#ffffff", .05)}"/>'
+                f'<stop offset="1" stop-color="{mix(tile, "#000000", .05)}"/></linearGradient>')
     svg = f'''{MARK}
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>{DEFS}{gradient}
   </defs>
   <g filter="url(#drop)"><path d="{SQ}" fill="{fill}"/></g>
   <g clip-path="url(#clip)">
-    {"" if mode == "plate" else LIGHTING}
     {inner}
-    {LIGHTING if mode == "plate" else ""}
-    <rect width="128" height="128" filter="url(#grain)" opacity="{strength}"/>
-    <path d="{SQ}" fill="url(#vig)"/><path d="{SQ}" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="1.4"/><path d="{SQ}" fill="none" stroke="url(#rim)" stroke-width="2.6"/>
+    <path d="{SQ}" filter="url(#edge)"/>
   </g>
 </svg>
 '''
@@ -324,47 +311,6 @@ def write_sheet(path, report):
         f.write(f'''<!doctype html><meta charset="utf-8"><title>conform-icons</title><style>
 body{{margin:0;padding:20px;background:#8b8b8b;color:#fff;font:12px sans-serif;display:grid;grid-template-columns:repeat(6,1fr);gap:14px}}
 figure{{margin:0;text-align:center}} img{{width:66px;height:66px;vertical-align:middle}}</style>{cells}''')
-
-
-def ai_light(png):
-    """The app's own icon (PNG bytes, with alpha) with the model's relief and lighting painted on."""
-    from PIL import Image, ImageChops, ImageFilter
-    icon = Image.open(io.BytesIO(png)).convert("RGBA")
-    # The model wants 512x512 without alpha: the icon centred on grey.
-    k = 448 / max(icon.size)
-    fitted = icon.resize((round(icon.width * k), round(icon.height * k)), Image.LANCZOS)
-    left, top = (512 - fitted.width) // 2, (512 - fitted.height) // 2
-    flat = Image.new("RGB", (512, 512), "#8b8b8b")
-    flat.paste(fitted, (left, top), fitted.getchannel("A"))
-    # With the edge ControlNet the model may repaint far more: the icon's outlines hold its shapes.
-    control = f"{AI_HOME}/models/control-canny-fp16.safetensors"
-    locked = os.path.exists(control)
-    with tempfile.TemporaryDirectory() as tmp:
-        flat.save(f"{tmp}/in.png")
-        subprocess.run(
-            [f"{AI_HOME}/sd/sd-cli", "-m", f"{AI_HOME}/models/sd15-fp16.safetensors", "-i", f"{tmp}/in.png",
-             "-o", f"{tmp}/out.png", "-p", AI_PROMPT, "-n", AI_NEGATIVE, "--strength", "0.62" if locked else "0.45",
-             "--steps", "24", "--cfg-scale", "8", "-W", "512", "-H", "512", "--seed", "11",
-             *(["--control-net", control, "--control-image", f"{tmp}/in.png", "--image-preprocess",
-                "target=control,canny=true", "--control-strength", "0.9"] if locked else [])],
-            check=True, capture_output=True, env={**os.environ, "LD_LIBRARY_PATH": f"{AI_HOME}/sd"})
-        painted = Image.open(f"{tmp}/out.png").convert("RGB")
-    # The model's shading and colour at coarse scale over the icon's own fine detail: it
-    # repaints small features wrong (eyes, glyphs), so those never come from the model.
-    # Without the ControlNet its shapes drift, so only a broader, grey light is trusted.
-    blur = ImageFilter.GaussianBlur(4 if locked else 10)
-    if not locked:
-        painted = painted.convert("L").convert("RGB")
-    grey = flat if locked else flat.convert("L").convert("RGB")
-    change = ImageChops.add(painted.filter(blur), ImageChops.invert(grey.filter(blur)), scale=2)
-    gain = 2.0 if locked else 3.2
-    change = change.point(lambda v: max(0, min(255, int(128 + (v - 127.5) * gain))))
-    lit = ImageChops.add(flat, change, offset=-128)
-    lit = lit.crop((left, top, left + fitted.width, top + fitted.height))
-    lit.putalpha(fitted.getchannel("A"))
-    out = io.BytesIO()
-    lit.save(out, "png")
-    return out.getvalue()
 
 
 def desktop_icons():
@@ -394,17 +340,23 @@ def main():
     parser.add_argument("--overrides", default=OVERRIDES)
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--sheet")
-    parser.add_argument("--ai", action="store_true")
+    parser.add_argument("--remove", action="store_true", help="delete the icons this tool wrote")
     args = parser.parse_args()
-    if args.ai and not os.path.exists(f"{AI_HOME}/sd/sd-cli"):
-        sys.exit(f"--ai needs sd-cli in {AI_HOME}/sd and sd15-fp16.safetensors in {AI_HOME}/models")
     OUT_DIR = os.path.abspath(args.out)
     os.makedirs(OUT_DIR, exist_ok=True)
+    if args.remove:
+        for path in glob.glob(f"{OUT_DIR}/*.svg"):
+            if MARK in open(path).read(200):
+                os.remove(path)
+        return
+    if OUT_DIR == OUT and not os.path.exists(f"{THEME}/index.theme") and os.path.exists(INDEX):
+        # GTK reads a theme's index from the first folder it finds the theme in.
+        shutil.copy(INDEX, f"{THEME}/index.theme")
     overrides = json.load(open(args.overrides)) if os.path.exists(args.overrides) else {}
     report = []
     for name in args.icons or desktop_icons():
         target = f"{OUT_DIR}/{icon_id(name)}.svg"
-        if os.path.exists(f"{HAND_DRAWN}/{icon_id(name)}.svg") or (
+        if any(os.path.exists(f"{drawn}/{icon_id(name)}.svg") for drawn in HAND_DRAWN) or (
                 os.path.exists(target) and MARK not in open(target).read(200)):
             continue  # a hand-drawn icon already matches
         source = find_source(name)
@@ -412,12 +364,9 @@ def main():
             print(f"no icon found for {name}", file=sys.stderr)
             continue
         try:
-            result = render(icon_id(name), source, overrides.get(name, {}), args.ai)
+            result = render(icon_id(name), source, overrides.get(name, {}))
         except GLib.Error as err:
             print(f"cannot read {source}: {err.message}", file=sys.stderr)
-            continue
-        except subprocess.CalledProcessError as err:
-            print(f"model failed on {name}: {err.stderr.decode()[-300:]}", file=sys.stderr)
             continue
         if result:
             report.append(result)

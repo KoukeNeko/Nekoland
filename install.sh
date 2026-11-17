@@ -79,7 +79,12 @@ sudo install -m 644 "$target/release/libnekoland_menus.so" /usr/local/bin/
 sudo install -Dm 644 -t /usr/local/share/applications "$src"/shell/*.desktop
 # Icons Files uses that Adwaita lacks; a theme that has its own still draws its own.
 sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/actions "$src"/shell/icons/*.svg
-sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/apps "$src"/shell/icons/apps/*.svg
+# Nekoland's applications keep their icons under any theme; the other applications' icons it
+# draws are its own theme, the one used until the person picks another.
+sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/apps "$src"/shell/icons/apps/io.github.koukeneko.Nekoland.*.svg
+sudo install -Dm 644 -t /usr/local/share/icons/Nekoland "$src/shell/icons/Nekoland/index.theme"
+sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
+sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
     "$src/shell/org.freedesktop.FileManager1.service"
@@ -87,9 +92,9 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
 
-# Other apps' icons on Nekoland's tile, for this user; run it again after installing apps.
+# Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
-"$src/shell/conform-icons.py"
+nekoland-conform-icons
 
 config=${XDG_CONFIG_HOME:-$HOME/.config}/nekoland/config.toml
 if [ ! -e "$config" ]; then
