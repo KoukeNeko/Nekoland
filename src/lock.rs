@@ -1,4 +1,4 @@
-//! The screen lock. A locker, swaylock unless the configuration names another, asks for it
+//! The screen lock. A locker, nekoland-lock unless the configuration names another, asks for it
 //! through ext-session-lock; while it holds it, only its surfaces are drawn and take input,
 //! and only it lets go. Nekoland starts the locker from the menu, Super+L,
 //! `nekoland msg lock`, before sleeping, and after `lock_after` seconds without input,
@@ -54,8 +54,8 @@ impl Lock {
 }
 
 impl Nekoland {
-    /// Starts the locker, unless one holds the screen already. swaylock shows the
-    /// wallpaper, as the desktop has it.
+    /// Starts the locker, unless one holds the screen already. swaylock is given the
+    /// wallpaper, as the desktop has it; nekoland-lock reads it itself.
     pub fn lock_screen(&mut self) {
         // One started a moment ago is still coming up.
         let starting = self.locker_started.is_some_and(|at| at.elapsed() < LOCKER_START);

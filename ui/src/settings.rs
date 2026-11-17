@@ -306,6 +306,7 @@ fn build(app: &adw::Application) {
                 "隱私" => privacy_page().upcast(),
                 "桌面" => desktop_page(config, &autostart).upcast(),
                 "視窗" => windows_page(config).upcast(),
+                "鎖定畫面" => lock_page(config).upcast(),
                 "懸停資訊" => hover_page(config).upcast(),
                 "顯示" => display_page(config).upcast(),
                 "電源" => power_page(config).upcast(),
@@ -338,6 +339,7 @@ fn build(app: &adw::Application) {
         vec![
             ("桌面", "user-desktop-symbolic"),
             ("視窗", "preferences-desktop-multitasking-symbolic"),
+            ("鎖定畫面", "system-lock-screen-symbolic"),
             ("懸停資訊", "document-properties-symbolic"),
             ("顯示", "video-display-symbolic"),
             ("電源", "battery-level-100-symbolic"),
@@ -523,13 +525,14 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 13] = [
+const REBUILT_PAGES: [&str; 14] = [
     "外觀",
     "字型",
     "協助工具",
     "隱私",
     "桌面",
     "視窗",
+    "鎖定畫面",
     "懸停資訊",
     "顯示",
     "電源",
@@ -808,10 +811,6 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     bar.add(&switch_row(config, "音量", "menu_bar_sound"));
     page.add(&bar);
 
-    let lock = group("鎖定螢幕");
-    lock.add(&idle_row(config, "閒置後鎖定", "lock_after"));
-    page.add(&lock);
-
     let notices = group("通知");
     let current = config.0.get("notification_seconds").and_then(toml::Value::as_integer).unwrap_or(5);
     let banner = adw::ComboRow::builder()
@@ -1042,6 +1041,36 @@ fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
 
 /// The hover panel: when it shows, where, how it looks and which fields, a group each, as
 /// FinderHover's settings have them.
+/// How nekoland-lock looks, and when the screen locks by itself.
+fn lock_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+
+    let when = group("鎖定");
+    when.add(&idle_row(config, "閒置後鎖定", "lock_after"));
+    page.add(&when);
+
+    // Both on unless set, unlike the switches switch_row makes.
+    let on_unless_set = |title: &str, key: &'static str| {
+        let row = adw::SwitchRow::builder()
+            .title(title)
+            .active(config.0.get(key).and_then(toml::Value::as_bool).unwrap_or(true))
+            .build();
+        row.connect_active_notify(move |row| set(&format!("{key} = {}", row.is_active())));
+        row
+    };
+    let background = group("背景");
+    let wallpaper = on_unless_set("顯示桌布", "lock_wallpaper");
+    let blur = on_unless_set("模糊桌布", "lock_blur");
+    wallpaper
+        .bind_property("active", &blur, "sensitive")
+        .sync_create()
+        .build();
+    background.add(&wallpaper);
+    background.add(&blur);
+    page.add(&background);
+    page
+}
+
 /// The window arrangement shortcuts, as the compositor takes them, by what they do.
 const ARRANGE_SHORTCUTS: [(&str, &str); 10] = [
     ("左半邊、右半邊", "Super ← →"),

@@ -1,0 +1,2 @@
+# Nekoland's screen lock checks passwords as logging in does.
+@include common-auth

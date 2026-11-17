@@ -35,6 +35,9 @@ pub struct Config {
     pub font: String,
     /// Seconds without input after which the screen locks; 0 for never.
     pub lock_after: u64,
+    /// Whether nekoland-lock shows the wallpaper, and blurs it, rather than the paper alone.
+    pub lock_wallpaper: bool,
+    pub lock_blur: bool,
     /// Seconds without input after which the displays go dark, and after which the
     /// computer sleeps; 0 for never.
     pub screen_off_after: u64,
@@ -443,20 +446,11 @@ impl Default for Config {
             volume_mute: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
             brightness_up: "brightnessctl set 5%+".into(),
             brightness_down: "brightnessctl set 5%-".into(),
-            // The ring in Nekoland's paper over dark paper, shown before anything is typed,
-            // red when the password is wrong.
-            lock: concat!(
-                "swaylock -c 1b1b1e --indicator-idle-visible --indicator-radius 64",
-                " --inside-color 1b1b1ecc --inside-clear-color 1b1b1ecc --inside-ver-color 1b1b1ecc",
-                " --inside-wrong-color c4372fcc --ring-color f4f3f0 --ring-clear-color f4f3f0",
-                " --ring-ver-color f4f3f0 --ring-wrong-color c4372f --key-hl-color 6f6d72",
-                " --bs-hl-color c4372f --line-color 00000000 --separator-color 00000000",
-                " --text-color f4f3f0 --text-clear-color f4f3f0 --text-ver-color f4f3f0",
-                " --text-wrong-color f4f3f0",
-            )
-            .into(),
+            lock: "nekoland-lock".into(),
             font: "Ubuntu Sans".into(),
             lock_after: 0,
+            lock_wallpaper: true,
+            lock_blur: true,
             screen_off_after: 0,
             sleep_after: 0,
             // logind's own: it powers off, which Nekoland asks about first.

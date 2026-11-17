@@ -19,8 +19,8 @@ command -v apt-get >/dev/null || die "it needs Ubuntu's apt-get"
 build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
-    libadwaita-1-dev libfontconfig-dev libfreetype-dev"
-# What it runs with: Mesa to draw, Xwayland, the locker, wallpaper, terminal, portals, the network,
+    libadwaita-1-dev libfontconfig-dev libfreetype-dev libpam0g-dev"
+# What it runs with: Mesa to draw, Xwayland, the wallpaper, terminal, portals, the network,
 # sound, clipboard, fonts and icons, the input method, and the applications the example
 # configuration keeps in the Dock.
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland swaylock swaybg foot grim
@@ -119,6 +119,7 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
+sudo install -Dm 644 "$src/shell/nekoland-lock.pam" /etc/pam.d/nekoland-lock
 
 # The boot menu in Nekoland's look, where GRUB is what boots the computer; a board that boots
 # some other way has no /etc/default/grub and is left as it is.

@@ -17,7 +17,7 @@ cargo run
 
 It needs the development files of Wayland, libinput, libseat, libudev, GBM, EGL,
 xkbcommon, Cairo, Pango and gdk-pixbuf, GTK 4 and libadwaita for the settings, and at
-run time `Xwayland` for X11 programs, `swaylock` to lock the screen, and a D-Bus
+run time `Xwayland` for X11 programs, PAM for `nekoland-lock` to check passwords, and a D-Bus
 session bus for the menu bar.
 
 With no configuration it starts a terminal. `-c COMMAND` starts something else.
@@ -88,6 +88,7 @@ wallpaper and an input method. Every key is optional:
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
 | `key_repeat`, `repeat_delay`, `repeat_rate` | Whether a held key repeats, how many milliseconds it waits before it does, and how many times a second it then repeats; on, 200 and 25 unless set |
+| `lock_wallpaper`, `lock_blur` | Whether the lock shows the wallpaper rather than dark paper, and blurs it; both on unless set |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
@@ -338,12 +339,18 @@ already: GTK's OpenGL on llvmpipe costs each of them some 150 MB more.
 ## Screen lock and capture
 
 The menu, Super+L and `nekoland msg lock` lock the screen, and so does sleeping and,
-when Settings' 鎖定螢幕 says so, or `lock_after` in seconds, a time without input, unless a
+when Settings' 鎖定畫面 says so, or `lock_after` in seconds, a time without input, unless a
 program such as a video player keeps the screen awake. A locker program locks it through
-`ext-session-lock`, swaylock in Nekoland's dark paper unless `lock` names another; while
+`ext-session-lock`, `nekoland-lock` unless `lock` names another, such as swaylock; while
 it is locked only the locker is drawn and takes keys, except for switching virtual
 terminals and quitting. A locker that goes away leaves the screen locked, and a key
 starts it again.
+
+`nekoland-lock` shows the wallpaper a little nearer and blurred, under ink, with the time,
+the date, the user's name and a field for the password, which PAM checks through the
+`nekoland-lock` service, `shell/nekoland-lock.pam` in `/etc/pam.d`. Enter checks it,
+Escape clears it; a wrong one shakes the field red. The right one lifts the ink off the
+wallpaper before the desktop shows.
 
 Nekoland takes the power button and the lid from logind, through an inhibitor lock, and
 does what `power_button` and `lid_close` say; closing the lid does nothing while another

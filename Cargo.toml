@@ -41,4 +41,4 @@ features = [
 ]
 
 [workspace]
-members = ["ui", "menus"]
+members = ["ui", "menus", "lock"]
