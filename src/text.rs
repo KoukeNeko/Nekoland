@@ -1,11 +1,11 @@
 //! Text and icons drawn by the compositor itself, for the overview and the menu bar.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicI32, Ordering},
-        RwLock,
+        Mutex, RwLock,
     },
 };
 
@@ -77,7 +77,12 @@ pub fn set_family(family: &str) {
 // shortcut: icons already drawn keep the theme they were found in until drawn again.
 pub fn set_icon_theme(theme: &str) {
     *ICON_THEME.write().unwrap() = theme.to_string();
+    FOUND_ICONS.lock().unwrap().clear();
 }
+
+/// Where icons were found, by name and the folder looked in first, until the theme changes:
+/// a theme holds thousands of files, too many to walk for each icon drawn.
+static FOUND_ICONS: Mutex<BTreeMap<(String, String), PathBuf>> = Mutex::new(BTreeMap::new());
 
 fn icon_themes() -> Vec<String> {
     let chosen = ICON_THEME.read().unwrap().clone();
@@ -391,6 +396,15 @@ fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
     if path.is_absolute() {
         return path.is_file().then(|| path.to_path_buf());
     }
+    let key = (name.to_string(), extra_dir.to_string());
+    if let Some(found) = FOUND_ICONS
+        .lock()
+        .unwrap()
+        .get(&key)
+        .filter(|found| found.is_file())
+    {
+        return Some(found.clone());
+    }
     let mut roots: Vec<PathBuf> = Vec::new();
     if !extra_dir.is_empty() {
         roots.push(extra_dir.into());
@@ -400,8 +414,11 @@ fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
         roots.extend(themes.iter().map(|theme| dir.join("icons").join(theme)));
         roots.push(dir.join("pixmaps"));
     }
-    // shortcut: walks the theme folders on each lookup; callers keep what they draw.
-    roots.iter().find_map(|root| find_file(root, name, 4))
+    // shortcut: a name not found is looked for again each time, walking the theme folders;
+    // remember those too if names without icons turn out to be asked for often.
+    let found = roots.iter().find_map(|root| find_file(root, name, 4))?;
+    FOUND_ICONS.lock().unwrap().insert(key, found.clone());
+    Some(found)
 }
 
 fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {

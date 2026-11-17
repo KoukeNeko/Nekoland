@@ -1347,6 +1347,11 @@ impl Nekoland {
         {
             return icon.clone();
         }
+        // shortcut: forgets every icon once there are many, as sizes changed in Settings
+        // leave old ones behind, rather than the oldest.
+        if self.dock.icons.len() > 400 {
+            self.dock.icons.clear();
+        }
         let icon =
             text::named_icon(name, "", (size * 3).max(96), ink(dark)).and_then(|icon| trimmed(icon, size));
         self.dock.icons.push((name.to_string(), size, dark, icon.clone()));
@@ -1699,7 +1704,10 @@ impl Nekoland {
             );
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
-        let big = (f64::from(s.art) * self.magnify_scale()).ceil() as i32;
+        // While the Dock is resized its icons are scaled from the size it started at, rather
+        // than made again at each size it passes; they are made once more when it is let go.
+        let art = self.dock.resizing.map_or(s.art, |(_, start)| start);
+        let big = (f64::from(art) * self.magnify_scale()).ceil() as i32;
         let (icons_width, icons_height) = turn(width.max(1), s.height + rise);
         let Ok(surface) = text::canvas(icons_width, icons_height) else {
             return;
