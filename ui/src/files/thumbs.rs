@@ -5,10 +5,11 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{mpsc, Arc, Mutex},
+    time::SystemTime,
 };
 
 use gtk::gdk_pixbuf::Pixbuf;
@@ -18,6 +19,8 @@ use gtk::{gdk, gio, glib};
 /// The spec's large thumbnails.
 const LARGE: i32 = 256;
 const WORKERS: usize = 3;
+/// How many thumbnails stay read: 256 px each side, about 256 kB each.
+const KEPT: usize = 128;
 
 enum Job {
     Thumbnail {
@@ -77,6 +80,9 @@ thread_local! {
     static PICTURES: RefCell<HashMap<u64, Read>> = RefCell::new(HashMap::new());
     /// What could not be made a thumbnail of, not tried again while the window is open.
     static FAILED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Thumbnails read lately, oldest first, each with when it was made.
+    static KEPT_THUMBNAILS: RefCell<VecDeque<(PathBuf, SystemTime, gdk::Texture)>> =
+        const { RefCell::new(VecDeque::new()) };
 }
 
 fn queue(job: Job) -> u64 {
@@ -163,14 +169,17 @@ pub fn show(picture: &gtk::Picture, image: &gtk::Image, info: &gio::FileInfo, fi
     let set = {
         let (picture, image, uri) = (picture.downgrade(), image.downgrade(), uri.clone());
         move |path: Option<PathBuf>| {
-            let (Some(picture), Some(image), Some(path)) = (picture.upgrade(), image.upgrade(), path) else {
-                return;
-            };
-            if picture.widget_name() == uri {
-                picture.set_filename(Some(&path));
-                picture.set_visible(true);
-                image.set_visible(false);
-            }
+            let Some(path) = path else { return };
+            thumbnail(path, move |texture| {
+                let (Some(picture), Some(image)) = (picture.upgrade(), image.upgrade()) else {
+                    return;
+                };
+                if picture.widget_name() == uri {
+                    picture.set_paintable(Some(&texture));
+                    picture.set_visible(true);
+                    image.set_visible(false);
+                }
+            });
         }
     };
     if let Some(kept) = info
@@ -204,6 +213,37 @@ pub fn show(picture: &gtk::Picture, image: &gtk::Image, info: &gio::FileInfo, fi
             content_type,
         });
     }
+}
+
+/// Hands over a thumbnail's picture: at once when it was read lately and not made anew
+/// since, else once a thread has read it, so a folder never waits on its thumbnails.
+fn thumbnail(path: PathBuf, shown: impl FnOnce(gdk::Texture) + 'static) {
+    let Ok(made) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+        return;
+    };
+    let kept = KEPT_THUMBNAILS.with_borrow_mut(|kept| {
+        let at = kept.iter().position(|(p, _, _)| *p == path)?;
+        let (p, when, texture) = kept.remove(at)?;
+        (when == made).then(|| {
+            kept.push_back((p, when, texture.clone()));
+            texture
+        })
+    });
+    if let Some(texture) = kept {
+        shown(texture);
+        return;
+    }
+    let file = path.clone();
+    read(&file, LARGE, move |texture| {
+        let Some(texture) = texture else { return };
+        KEPT_THUMBNAILS.with_borrow_mut(|kept| {
+            kept.push_back((path, made, texture.clone()));
+            if kept.len() > KEPT {
+                kept.pop_front();
+            }
+        });
+        shown(texture);
+    });
 }
 
 /// Reads a picture file whole, at most `size` pixels on its longer side, turned as its

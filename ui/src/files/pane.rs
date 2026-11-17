@@ -13,7 +13,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::{
-    browse::{home, info_file, is_dir, modified_label, EDGE, GAP},
+    browse::{forget, home, info_file, is_dir, listing, modified_label, EDGE, GAP, READ_WAIT},
     ops,
     preview::Facts,
     search, tags, thumbs, Window,
@@ -158,7 +158,9 @@ pub struct Pane {
     here: RefCell<Where>,
     back: RefCell<Vec<Where>>,
     forward: RefCell<Vec<Where>>,
-    directory: gtk::DirectoryList,
+    directory: RefCell<gtk::DirectoryList>,
+    /// The directory's handlers, to take off when another folder is listed.
+    watching: RefCell<Vec<glib::SignalHandlerId>>,
     results: gio::ListStore,
     shown: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
@@ -212,7 +214,6 @@ impl Pane {
     pub fn new(win: &Rc<Window>, at: Where) -> Rc<Pane> {
         let prefs = win.prefs.borrow();
         let directory = gtk::DirectoryList::new(Some(ATTRIBUTES), None::<&gio::File>);
-        directory.set_monitored(true);
         let results = gio::ListStore::new::<gio::FileInfo>();
         let shown = gtk::CustomFilter::new(|_| true);
         let filtered = gtk::FilterListModel::new(None::<gio::ListModel>, Some(shown.clone()));
@@ -231,8 +232,8 @@ impl Pane {
                 if !expandable.get() || !is_dir(info) {
                     return None;
                 }
-                let list = gtk::DirectoryList::new(Some(ATTRIBUTES), info_file(info).as_ref());
-                list.set_monitored(true);
+                // Asked as each folder row is shown, so a folder is read before it unfolds.
+                let list = listing(&info_file(info)?, ATTRIBUTES);
                 let filtered = gtk::FilterListModel::new(Some(list), Some(shown.clone()));
                 Some(gtk::SortListModel::new(Some(filtered), Some(sorter.clone())).upcast())
             })
@@ -240,12 +241,10 @@ impl Pane {
         let tree_selection = gtk::MultiSelection::new(Some(tree));
 
         let column_view = gtk::ColumnView::builder()
-            .model(&tree_selection)
             .show_column_separators(false)
             .css_classes(["nf-list"])
             .build();
         let grid = gtk::GridView::builder()
-            .model(&flat)
             .min_columns(2)
             .max_columns(24)
             .css_classes(["nf-grid"])
@@ -269,7 +268,6 @@ impl Pane {
         stage_stack.add_named(&stage, Some("picture"));
         stage_stack.add_named(&stage_icon, Some("icon"));
         let strip = gtk::ListView::builder()
-            .model(&flat)
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(["nf-strip"])
             .build();
@@ -395,7 +393,8 @@ impl Pane {
             here: RefCell::new(Where::Recent),
             back: RefCell::new(Vec::new()),
             forward: RefCell::new(Vec::new()),
-            directory,
+            directory: RefCell::new(directory),
+            watching: RefCell::new(Vec::new()),
             results,
             shown,
             filtered,
@@ -962,10 +961,19 @@ impl Pane {
         }
         self.filtered
             .connect_items_changed(on!(self, |p, _m, _a, _b, _c| p.update_status()));
-        self.directory
-            .connect_loading_notify(on!(self, |p, _l| p.update_status()));
-        self.directory
-            .connect_error_notify(on!(self, |p, _l| p.update_status()));
+        self.views.connect_visible_child_name_notify(on!(self, |p, _v| {
+            p.feed_views(false);
+            // Once the view going is gone, or has started to fade.
+            let weak = Rc::downgrade(&p);
+            glib::idle_add_local_once(move || {
+                if let Some(pane) = weak.upgrade() {
+                    pane.feed_views(true);
+                }
+            });
+        }));
+        self.views
+            .connect_transition_running_notify(on!(self, |p, _v| p.feed_views(true)));
+        self.feed_views(true);
         self.flat
             .connect_selection_changed(on!(self, |p, _m, _a, _b| p.selection_changed()));
         self.tree_selection
@@ -1069,10 +1077,7 @@ impl Pane {
         self.scope.set_reveal_child(false);
         self.expandable.set(true);
         match &to {
-            Where::Folder(file) => {
-                self.directory.set_file(Some(file));
-                self.filtered.set_model(Some(&self.directory));
-            }
+            Where::Folder(file) => self.set_directory(listing(file, ATTRIBUTES)),
             Where::Recent => {
                 self.fill_recent();
                 self.expandable.set(false);
@@ -1108,6 +1113,52 @@ impl Pane {
         }
     }
 
+    /// Lists a folder's files here. Until the first of them are read, the folder before
+    /// stays in view, not a frame of nothing, unless the reading takes a while.
+    fn set_directory(self: &Rc<Self>, list: gtk::DirectoryList) {
+        let old = self.directory.replace(list.clone());
+        for id in self.watching.take() {
+            old.disconnect(id);
+        }
+        self.watching.replace(vec![
+            list.connect_items_changed(on!(self, |p, _l, _a, _r, _d| p.show_directory())),
+            list.connect_loading_notify(on!(self, |p, _l| {
+                p.show_directory();
+                p.update_status()
+            })),
+            list.connect_error_notify(on!(self, |p, _l| {
+                p.show_directory();
+                p.update_status()
+            })),
+        ]);
+        if list.n_items() > 0 || !list.is_loading() {
+            self.show_directory();
+            return;
+        }
+        // What was chosen there is not chosen here.
+        self.unselect_all();
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(READ_WAIT, move || {
+            if let Some(pane) = weak.upgrade() {
+                pane.show_directory();
+                pane.update_status();
+            }
+        });
+    }
+
+    /// Shows the directory's files, if the tab is still in that folder and not searching.
+    fn show_directory(&self) {
+        let list = self.directory.borrow().clone();
+        let here =
+            matches!(&*self.here.borrow(), Where::Folder(f) if list.file().is_some_and(|l| l.equal(f)));
+        if here && !self.is_searching() && self.filtered.model().as_ref() != Some(list.upcast_ref()) {
+            // Emptied first, in the same moment, so the views start at the top as for any
+            // folder rather than keep where they were in the one before.
+            self.filtered.set_model(None::<&gio::ListModel>);
+            self.filtered.set_model(Some(&list));
+        }
+    }
+
     /// Back (-1) or forward (1) in where the tab has been.
     pub fn step(self: &Rc<Self>, direction: i32) {
         let (from, to) = if direction < 0 {
@@ -1130,6 +1181,9 @@ impl Pane {
 
     pub fn reload(self: &Rc<Self>) {
         let here = self.here();
+        if let Some(folder) = here.folder() {
+            forget(&folder);
+        }
         self.go(here, false);
     }
 
@@ -1369,14 +1423,31 @@ impl Pane {
         };
     }
 
+    /// Gives the files to the view in sight alone, and to the one fading out: a view out of
+    /// sight would still make a row or tile of each file, and read its picture, at every
+    /// folder.
+    fn feed_views(&self, starve: bool) {
+        let shown = self.views.visible_child_name();
+        let starve = starve && !self.views.is_transition_running();
+        let fed = |name: &str, fed: bool| shown.as_deref() == Some(name) || (fed && !starve);
+        self.grid
+            .set_model(fed("icons", self.grid.model().is_some()).then_some(&self.flat));
+        self.strip
+            .set_model(fed("gallery", self.strip.model().is_some()).then_some(&self.flat));
+        self.column_view
+            .set_model(fed("list", self.column_view.model().is_some()).then_some(&self.tree_selection));
+    }
+
     fn set_icon_size(self: &Rc<Self>, size: i32) {
         if size == self.icon_size.get() {
             return;
         }
         self.icon_size.set(size);
         // Binds every tile again at the new size.
-        self.grid.set_model(None::<&gtk::SelectionModel>);
-        self.grid.set_model(Some(&self.flat));
+        if self.grid.model().is_some() {
+            self.grid.set_model(None::<&gtk::SelectionModel>);
+            self.grid.set_model(Some(&self.flat));
+        }
         if let Some(win) = self.window() {
             win.prefs.borrow_mut().icon_size = size;
             win.prefs.borrow().save();
@@ -1387,8 +1458,8 @@ impl Pane {
         let view = self.view.get();
         let error = matches!(*self.here.borrow(), Where::Folder(_))
             && !self.is_searching()
-            && self.directory.error().is_some();
-        let loading = self.directory.is_loading() && matches!(*self.here.borrow(), Where::Folder(_));
+            && self.directory.borrow().error().is_some();
+        let loading = self.directory.borrow().is_loading() && matches!(*self.here.borrow(), Where::Folder(_));
         let empty = self.filtered.n_items() == 0 && !loading;
         let text = if error {
             Some("無法讀取這個檔案夾")
@@ -1566,8 +1637,7 @@ impl Pane {
     }
 
     fn make_column(self: &Rc<Self>, folder: &gio::File) -> Column {
-        let list = gtk::DirectoryList::new(Some(ATTRIBUTES), Some(folder));
-        list.set_monitored(true);
+        let list = listing(folder, ATTRIBUTES);
         let filtered = gtk::FilterListModel::new(Some(list.clone()), Some(self.shown.clone()));
         let sorted = gtk::SortListModel::new(Some(filtered), Some(self.sorter.clone()));
         let selection = gtk::SingleSelection::builder()
@@ -1881,6 +1951,12 @@ impl Pane {
 
     fn selection_changed(self: &Rc<Self>) {
         let chosen = self.selected();
+        // A folder chosen is read while the second click of opening it comes.
+        if let [one] = chosen.as_slice() {
+            if let Some(folder) = info_file(one).filter(|f| is_dir(one) && f.is_native()) {
+                listing(&folder, ATTRIBUTES);
+            }
+        }
         self.chosen_files
             .replace(chosen.iter().filter_map(info_file).collect());
         if self.preview.is_visible() {
@@ -1946,13 +2022,12 @@ impl Pane {
         };
         if content_type.starts_with("image/") || content_type == "application/pdf" {
             thumbs::read(&path, 1600, show);
-        } else if thumbs::can_make(&content_type) {
+        } else if let Some(frame) = info
+            .attribute_byte_string("thumbnail::path")
+            .filter(|_| thumbs::can_make(&content_type))
+        {
             // A video's frame, from its thumbnail.
-            let (picture, image) = (gtk::Picture::new(), gtk::Image::new());
-            thumbs::show(&picture, &image, info, Some(&gio::File::for_path(&path)));
-            if let Some(texture) = picture.paintable().and_downcast::<gdk::Texture>() {
-                show(Some(texture));
-            }
+            thumbs::read(std::path::Path::new(frame.as_str()), 1600, show);
         }
     }
 

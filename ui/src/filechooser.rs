@@ -12,11 +12,17 @@ use std::{
 };
 
 use adw::prelude::*;
-use browse::{home, icon_button, info_file, is_dir, modified_label, places, scrolled, Location, EDGE, GAP};
+use browse::{
+    home, icon_button, info_file, is_dir, listing, modified_label, places, scrolled, Location, EDGE, GAP,
+    READ_WAIT,
+};
 use gtk::{gdk, gio, glib};
 
 mod alert;
 mod browse;
+#[allow(dead_code)]
+#[path = "files/thumbs.rs"]
+mod thumbs;
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.FileChooser";
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.nekoland";
@@ -495,7 +501,9 @@ struct Dialog {
     here: RefCell<Location>,
     back: RefCell<Vec<Location>>,
     forward: RefCell<Vec<Location>>,
-    directory: gtk::DirectoryList,
+    directory: RefCell<gtk::DirectoryList>,
+    /// The directory's handlers, to take off when another folder is listed.
+    watching: RefCell<Vec<glib::SignalHandlerId>>,
     recent: gio::ListStore,
     shown: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
@@ -553,9 +561,7 @@ impl Dialog {
             single.set_can_unselect(true);
             single.upcast()
         };
-        column_view.set_model(Some(&selection));
         let grid_view = gtk::GridView::builder()
-            .model(&selection)
             .min_columns(3)
             .max_columns(12)
             .css_classes(["fc-grid"])
@@ -796,7 +802,8 @@ impl Dialog {
             here: RefCell::new(Location::Recent),
             back: RefCell::new(Vec::new()),
             forward: RefCell::new(Vec::new()),
-            directory,
+            directory: RefCell::new(directory),
+            watching: RefCell::new(Vec::new()),
             recent,
             shown,
             filtered,
@@ -1088,18 +1095,7 @@ impl Dialog {
                 .last_child()
                 .and_downcast::<gtk::Label>()
                 .expect("set up above");
-            // shortcut: thumbnails already made by Files or tumbler, loaded as the tile is shown; no thumbnailer of its own.
-            let thumbnail = info
-                .attribute_byte_string("thumbnail::path")
-                .filter(|p| Path::new(p.as_str()).exists());
-            picture.set_filename(thumbnail.as_deref());
-            picture.set_visible(thumbnail.is_some());
-            image.set_visible(thumbnail.is_none());
-            image.set_from_gicon(
-                &info
-                    .icon()
-                    .unwrap_or_else(|| gio::ThemedIcon::new("text-x-generic").upcast()),
-            );
+            thumbs::show(&picture, &image, &info, info_file(&info).as_ref());
             label.set_label(&info.display_name());
             let ok = dialog.choosable(&info);
             tile.set_opacity(if ok { 1.0 } else { 0.38 });
@@ -1142,10 +1138,19 @@ impl Dialog {
         }
         self.filtered
             .connect_items_changed(on!(|d, _m, _p, _r, _a| d.update_status()));
-        self.directory
-            .connect_loading_notify(on!(|d, _l| d.update_status()));
-        self.directory
-            .connect_error_notify(on!(|d, _l| d.update_status()));
+        // Only the view in sight is given the files: one out of sight would still make a row
+        // or tile of each, and read its picture, at every folder.
+        let feed = {
+            let (column_view, grid_view, selection) =
+                (column_view.clone(), grid_view.clone(), self.selection.clone());
+            move |views: &gtk::Stack| {
+                let shown = views.visible_child_name();
+                column_view.set_model((shown.as_deref() == Some("list")).then_some(&selection));
+                grid_view.set_model((shown.as_deref() == Some("grid")).then_some(&selection));
+            }
+        };
+        feed(&self.views);
+        self.views.connect_visible_child_name_notify(feed);
         self.selection
             .connect_selection_changed(on!(|d, _m, _p, _n| d.selected_changed()));
 
@@ -1295,10 +1300,7 @@ impl Dialog {
         }
         self.search.set_text("");
         match &location {
-            Location::Folder(file) => {
-                self.directory.set_file(Some(file));
-                self.filtered.set_model(Some(&self.directory));
-            }
+            Location::Folder(file) => self.set_directory(listing(file, ATTRIBUTES)),
             Location::Recent => {
                 self.fill_recent();
                 self.filtered.set_model(Some(&self.recent));
@@ -1313,6 +1315,56 @@ impl Dialog {
             .set_sensitive(!self.forward.borrow().is_empty());
         self.update_status();
         self.update_accept();
+    }
+
+    /// Lists a folder's files here. Until the first of them are read, the folder before
+    /// stays in view, not a frame of nothing, unless the reading takes a while.
+    fn set_directory(self: &Rc<Self>, list: gtk::DirectoryList) {
+        let old = self.directory.replace(list.clone());
+        for id in self.watching.take() {
+            old.disconnect(id);
+        }
+        let weak = Rc::downgrade(self);
+        let read = move || {
+            if let Some(dialog) = weak.upgrade() {
+                dialog.show_directory();
+                dialog.update_status();
+            }
+        };
+        self.watching.replace(vec![
+            list.connect_items_changed({
+                let read = read.clone();
+                move |_, _, _, _| read()
+            }),
+            list.connect_loading_notify({
+                let read = read.clone();
+                move |_| read()
+            }),
+            list.connect_error_notify({
+                let read = read.clone();
+                move |_| read()
+            }),
+        ]);
+        if list.n_items() > 0 || !list.is_loading() {
+            self.show_directory();
+            return;
+        }
+        // What was chosen there is not chosen here.
+        self.selection.unselect_all();
+        glib::timeout_add_local_once(READ_WAIT, read);
+    }
+
+    /// Shows the directory's files, if the window is still in that folder.
+    fn show_directory(&self) {
+        let list = self.directory.borrow().clone();
+        let here =
+            matches!(&*self.here.borrow(), Location::Folder(f) if list.file().is_some_and(|l| l.equal(f)));
+        if here && self.filtered.model().as_ref() != Some(list.upcast_ref()) {
+            // Emptied first, in the same moment, so the views start at the top as for any
+            // folder rather than keep where they were in the one before.
+            self.filtered.set_model(None::<&gio::ListModel>);
+            self.filtered.set_model(Some(&list));
+        }
     }
 
     /// Back (-1) or forward (1) in where the window has been.
@@ -1581,7 +1633,7 @@ impl Dialog {
             let Some(dialog) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if dialog.directory.is_loading() {
+            if dialog.directory.borrow().is_loading() {
                 return glib::ControlFlow::Continue;
             }
             for position in 0..dialog.selection.n_items() {
@@ -1620,8 +1672,9 @@ impl Dialog {
 
     fn update_status(&self) {
         let grid = self.prefs.borrow().grid;
-        let error = matches!(*self.here.borrow(), Location::Folder(_)) && self.directory.error().is_some();
-        let empty = self.filtered.n_items() == 0 && !self.directory.is_loading();
+        let error =
+            matches!(*self.here.borrow(), Location::Folder(_)) && self.directory.borrow().error().is_some();
+        let empty = self.filtered.n_items() == 0 && !self.directory.borrow().is_loading();
         let text = if error {
             Some("無法讀取這個檔案夾")
         } else if empty && !self.search.text().is_empty() {
