@@ -100,6 +100,7 @@ pub struct Nekoland {
     pub desktop: crate::desktop::Desktop,
     pub hover: crate::hover::Hover,
     pub notices: Notices,
+    pub fps: crate::fps::FpsMeter,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
     pub apps: Apps,
@@ -222,6 +223,7 @@ impl Nekoland {
             desktop: Default::default(),
             hover: Default::default(),
             notices: Notices::default(),
+            fps: Default::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),
             super_tap: false,

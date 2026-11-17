@@ -181,6 +181,30 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
             return Some(lines.join("\n") + "\n");
         }
+        // The output as Settings shows it: `current` and `preferred` modes as WIDTHxHEIGHT@HZ,
+        // the `scale` drawn with and the `density_scale` used when the settings name none.
+        "display" => {
+            let output = state.space.outputs().next()?;
+            let name = |mode: smithay::output::Mode| {
+                format!("{}x{}@{}", mode.size.w, mode.size.h, (mode.refresh + 500) / 1000)
+            };
+            let preferred = output.preferred_mode().or_else(|| output.current_mode())?;
+            let size_mm = output.physical_properties().size;
+            let density = crate::udev::density_scale(
+                preferred.size.w,
+                preferred.size.h,
+                size_mm.w.max(0) as u32,
+                size_mm.h.max(0) as u32,
+            );
+            return Some(format!(
+                "current {}\npreferred {}\nscale {}\ndensity_scale {density}\n",
+                output.current_mode().map(name).unwrap_or_default(),
+                name(preferred),
+                output.current_scale().fractional_scale(),
+            ));
+        }
+        // Today's sunset and sunrise where the time zone is, for Night Shift's schedule.
+        "sun" => return Some(crate::night::sun_text() + "\n"),
         // The settings in effect, as TOML, with what is not in the file at its default.
         "config" => {
             return Some(toml::to_string(&state.config).unwrap_or_else(|err| format!("# {err}\n")));

@@ -54,7 +54,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
 
 use crate::{
-    config::Config,
+    config::{Config, Rotation},
     cursor::Cursors,
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
@@ -86,8 +86,8 @@ struct Udev {
     profile: (Option<String>, Option<crate::icc::Curves>),
     /// Each output's modes and size in millimetres, to choose from again as the settings change.
     displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
-    /// The `mode` and `scale` settings the outputs were last set up with.
-    applied: (Option<String>, Option<f64>),
+    /// The `mode`, `scale` and `rotation` settings the outputs were last set up with.
+    applied: (Option<String>, Option<f64>, Rotation),
     /// While it is open, the power button and the lid are Nekoland's.
     _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
@@ -174,7 +174,7 @@ pub fn init_udev(
         output.set_preferred(mode);
         output.change_current_state(
             Some(mode),
-            None,
+            Some(state.config.rotation.transform()),
             Some(Scale::Fractional(scale)),
             Some((x, 0).into()),
         );
@@ -214,7 +214,7 @@ pub fn init_udev(
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
         dark: HashSet::new(),
         displays,
-        applied: (state.config.mode.clone(), state.config.scale),
+        applied: applied_settings(&state.config),
         gamma,
         ramps: HashMap::new(),
         profile: (None, None),
@@ -346,8 +346,9 @@ fn render(
     state.refresh_hover();
     state.refresh_apps();
     state.refresh_notices();
+    state.refresh_fps();
     let mut guard = udev.borrow_mut();
-    if guard.applied.0 != state.config.mode || guard.applied.1 != state.config.scale {
+    if guard.applied != applied_settings(&state.config) {
         apply_display_settings(&mut guard, state);
     }
     let Udev {
@@ -420,6 +421,9 @@ fn render(
     };
     let output = output.clone();
     drop(guard);
+    if queued {
+        state.count_frame();
+    }
 
     if !queued {
         let udev = udev.clone();
@@ -466,12 +470,15 @@ fn chosen_scale(config: &Config, mode: Mode, (width_mm, height_mm): (u32, u32)) 
         .unwrap_or_else(|| density_scale(mode.size.w, mode.size.h, width_mm, height_mm))
 }
 
-/// Sets every output to the mode and scale the settings now ask for, and lays the outputs
-/// out side by side again.
-// shortcut: windows keep their size and place, maximized ones too; fit them to the output
-// once that matters.
+/// The settings the outputs are set up from, to tell when they change.
+fn applied_settings(config: &Config) -> (Option<String>, Option<f64>, Rotation) {
+    (config.mode.clone(), config.scale, config.rotation)
+}
+
+/// Sets every output to the mode, scale and rotation the settings now ask for, lays the
+/// outputs out side by side again, and fits the windows to them.
 fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
-    udev.applied = (state.config.mode.clone(), state.config.scale);
+    udev.applied = applied_settings(&state.config);
     for (crtc, (surface, output)) in &mut udev.surfaces {
         let Some((modes, size_mm)) = udev.displays.get(crtc) else {
             continue;
@@ -489,7 +496,12 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
             info!("{}: {}x{}", output.name(), mode.size.w, mode.size.h);
         }
         let scale = chosen_scale(&state.config, mode, *size_mm);
-        output.change_current_state(Some(mode), None, Some(Scale::Fractional(scale)), None);
+        output.change_current_state(
+            Some(mode),
+            Some(state.config.rotation.transform()),
+            Some(Scale::Fractional(scale)),
+            None,
+        );
         crate::text::set_picture_scale(scale);
         smithay::desktop::layer_map_for_output(output).arrange();
     }
@@ -501,6 +513,7 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
     }
     state.dock.drawn = None;
     state.menu_bar.drawn = None;
+    state.fit_windows_to_display();
 }
 
 /// Returns whether a frame was handed to the display.
@@ -617,7 +630,7 @@ fn cursor_elements(
 /// The scale the Mac would give a display: twice for one dense enough to be Retina,
 /// which a 4K desktop display and a laptop's high-resolution panel are, and none for one
 /// as coarse as a 1080p or 1440p monitor, whose points would then be too big.
-fn density_scale(width: i32, height: i32, width_mm: u32, height_mm: u32) -> f64 {
+pub fn density_scale(width: i32, height: i32, width_mm: u32, height_mm: u32) -> f64 {
     const RETINA_PPI: f64 = 130.0;
     const RETINA_ROWS: i32 = 1600;
     // 4K and up is drawn at twice whatever size it claims: virtual displays, QEMU's

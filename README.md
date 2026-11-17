@@ -51,7 +51,9 @@ wallpaper and an input method. Every key is optional:
 | --- | --- |
 | `mode` | Display mode as `WIDTHxHEIGHT`, at its fastest rate, or `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise |
 | `scale` | How many pixels each point is drawn with: 2 on a display dense enough to be Retina (4K desktop displays, high-resolution laptop panels), 1 otherwise, and the host's own scale when running in a window |
-| `night_shift`, `night_shift_from`, `night_shift_to`, `night_shift_warmth` | Night Shift, warmer colours through the displays' gamma ramps: `off` (the default), `on`, or `scheduled` from `22:00` to `07:00` unless set; and how warm, from 0 to 1, 0.7 unless set |
+| `rotation` | How far the picture is turned, clockwise, for a display stood on its side: 0 (the default), 90, 180 or 270 |
+| `show_fps` | Whether the frames drawn each second are counted in the top right corner; off unless set |
+| `night_shift`, `night_shift_from`, `night_shift_to`, `night_shift_warmth` | Night Shift, warmer colours through the displays' gamma ramps: `off` (the default), `on`, `sunset` from the sun's setting to its rising where the time zone is, as worked out from its place in `zone1970.tab` (from `night_shift_from` to `night_shift_to` in a zone with none, as UTC), or `scheduled` from `22:00` to `07:00` unless set; and how warm, from 0 to 1, 0.7 unless set |
 | `color_profile` | The path of an ICC profile whose calibration curves (its `vcgt` tag, as colord and DisplayCAL write it) the displays' gamma ramps follow, under Night Shift; none unless set |
 | `autostart` | Shell commands started once the compositor is up |
 | `terminal`, `launcher` | Commands behind the shortcuts below |
@@ -149,7 +151,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   wallpaper; its windows page sets what clicking a GTK title bar does, edge tiling, the gap
   between tiled windows and focus following the pointer, and lists the shortcuts that arrange
   windows; its other pages set light or dark, the icon and
-  cursor themes, the display's resolution, refresh rate, scale and Night Shift, the
+  cursor themes, the display as the Mac's Displays (its name from its EDID, the sizes it can look like, its brightness, refresh rate, rotation, a frame counter, a colour profile, and Night Shift with its sunset schedule), the
   fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
   permission store, the cursor size, high contrast and reduced motion, the applications
@@ -599,6 +601,8 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
 `first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
+`display` its mode, preferred mode, scale and the scale its density gives, `sun` today's
+sunset and sunrise where the time zone is,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
 it in effect, or says why not; `'unset KEY'` puts one back at its default.
 

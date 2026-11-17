@@ -12,6 +12,10 @@ pub struct Config {
     pub mode: Option<String>,
     /// How many pixels a point is drawn with; worked out from the display's density otherwise.
     pub scale: Option<f64>,
+    /// How far the picture is turned on the displays, clockwise, for one stood on its side.
+    pub rotation: Rotation,
+    /// Whether the frames drawn each second are counted in a corner of the screen.
+    pub show_fps: bool,
     /// Whether Night Shift is on, off, or on from `night_shift_from` to `night_shift_to`, and
     /// how warm it is, from 0 to 1.
     pub night_shift: NightShift,
@@ -215,11 +219,51 @@ pub enum AppsView {
     Sidebar,
 }
 
+/// A quarter turn of the picture, written as its degrees: 0, 90, 180 or 270.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct Rotation(u16);
+
+const QUARTER_TURN: u16 = 90;
+const FULL_TURN: u16 = 360;
+
+impl TryFrom<u16> for Rotation {
+    type Error = String;
+
+    fn try_from(degrees: u16) -> Result<Self, String> {
+        (degrees % QUARTER_TURN == 0 && degrees < FULL_TURN)
+            .then_some(Rotation(degrees))
+            .ok_or(format!("{degrees} is not 0, 90, 180 or 270"))
+    }
+}
+
+impl From<Rotation> for u16 {
+    fn from(rotation: Rotation) -> u16 {
+        rotation.0
+    }
+}
+
+impl Rotation {
+    /// The output transform that turns the picture this far clockwise; Wayland's turn the
+    /// other way.
+    pub fn transform(self) -> smithay::utils::Transform {
+        use smithay::utils::Transform;
+        match self.0 {
+            90 => Transform::_270,
+            180 => Transform::_180,
+            270 => Transform::_90,
+            _ => Transform::Normal,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum NightShift {
     Off,
     On,
+    /// From the sun's setting to its rising where the time zone is.
+    Sunset,
     Scheduled,
 }
 
@@ -458,6 +502,8 @@ impl Default for Config {
         Self {
             mode: None,
             scale: None,
+            rotation: Rotation::default(),
+            show_fps: false,
             autostart: Vec::new(),
             terminal: "foot".into(),
             launcher: "nekoland-launcher".into(),

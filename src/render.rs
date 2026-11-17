@@ -153,7 +153,8 @@ pub fn scene_elements(
             .cloned()
             .collect();
         let under = windows_on_glass(state, renderer, output, glass.as_deref_mut(), &windows);
-        let mut overlays = state.hover_overlays();
+        let mut overlays = state.fps_overlays();
+        overlays.extend(state.hover_overlays());
         overlays.extend(state.menu_bar_overlays());
         overlays.extend(state.notice_overlays());
         overlays.extend(state.dock_overlays());

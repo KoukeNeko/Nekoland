@@ -42,3 +42,11 @@ features = [
 
 [workspace]
 members = ["ui", "menus", "lock"]
+exclude = ["third_party"]
+
+# Smithay 0.7.0 with its DRM compositor's damage clips turned with the output: upstream
+# reports a rotated output's damage unturned, and displays that update only what is
+# damaged, as virtual machines' and panels with self refresh, then show part of the frame.
+# Drop this once a release fixes it.
+[patch.crates-io]
+smithay = { path = "third_party/smithay" }

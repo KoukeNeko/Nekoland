@@ -117,10 +117,16 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Nekoland {
             .unwrap_or_default();
         let whole = Rectangle::from_size(size);
         let scale = output.as_ref().map_or(1.0, |output| output.current_scale().fractional_scale());
+        // The frame is the display's own picture, unturned, as wlroots gives it: the region
+        // asked for is on the output as it is turned, and is turned back onto it here; the
+        // client turns the picture upright by the output's transform.
+        let transform = output.as_ref().map_or(Transform::Normal, Output::current_transform);
+        let turned = Rectangle::from_size(transform.transform_size(size));
         let region = region
             .map(|region| region.to_physical_precise_round(scale))
-            .map_or(Some(whole), |region| region.intersection(whole))
-            .filter(|region| !region.is_empty());
+            .map_or(Some(turned), |region| region.intersection(turned))
+            .filter(|region| !region.is_empty())
+            .map(|region| transform.invert().transform_rect_in(region, &turned.size));
         let (Some(output), Some(region)) = (output, region) else {
             let data = FrameData {
                 output: None,
@@ -229,7 +235,8 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
     for frame in frames {
         let data = frame.data();
         let elements = if data.cursor { elements } else { &elements[cursor.min(elements.len())..] };
-        match copy_frame(renderer, size, output.current_scale().fractional_scale(), elements, &frame) {
+        let drawn = (size, output.current_scale().fractional_scale(), output.current_transform());
+        match copy_frame(renderer, drawn, elements, &frame) {
             Ok(()) => {
                 if frame.with_damage {
                     let region = data.region.size;
@@ -249,8 +256,7 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
 
 fn copy_frame<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
-    size: Size<i32, Physical>,
-    scale: f64,
+    (size, scale, transform): (Size<i32, Physical>, f64, Transform),
     elements: &[E],
     frame: &Frame,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -266,7 +272,8 @@ fn copy_frame<E: RenderElement<GlesRenderer>>(
         size.to_logical(1).to_buffer(1, Transform::Normal),
     )?;
     let mut target = renderer.bind(&mut texture)?;
-    OutputDamageTracker::new(size, scale, Transform::Normal).render_output(
+    // Drawn as the display is, turned with the output.
+    OutputDamageTracker::new(size, scale, transform).render_output(
         renderer,
         &mut target,
         0,

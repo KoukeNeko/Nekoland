@@ -141,6 +141,7 @@ pub fn init_winit(
                 state.refresh_hover();
                 state.refresh_apps();
                 state.refresh_notices();
+                state.refresh_fps();
 
                 // The host draws the cursor: none is among the elements.
                 let wanted = match &state.cursor_status {
@@ -171,6 +172,7 @@ pub fn init_winit(
                     .damage_output(1, &elements)
                     .ok()
                     .and_then(|(damage, _)| damage.cloned());
+                let submitted = changed.is_some();
                 if let Some(changed) = changed {
                     // The buffer's age is known once it is bound. Mesa's software EGL, as
                     // in an xrdp session, cannot tell it: each frame is then drawn whole.
@@ -196,6 +198,9 @@ pub fn init_winit(
                 }
 
                 state.finish_frame(&output);
+                if submitted {
+                    state.count_frame();
+                }
                 let _ = display.flush_clients();
             }
             WinitEvent::CloseRequested => {

@@ -14,7 +14,7 @@ use smithay::{
 };
 
 use crate::{
-    arrange::{self, Arrangement, MAX_GAP},
+    arrange::{self, Arrangement, Part, MAX_GAP},
     config::DockPosition,
     dock::dock_space,
     focus::KeyFocus,
@@ -94,6 +94,43 @@ impl Default for SnapPreview {
             ids: std::array::from_fn(|_| Id::new()),
         }
     }
+}
+
+/// How a window was put on the display.
+enum Placement {
+    Fullscreen,
+    Maximized,
+    /// In a part of it, by a window command.
+    Arranged,
+    Free,
+}
+
+fn placement_of(window: &Window) -> Placement {
+    let (fullscreen, maximized) = match window.underlying_surface() {
+        WindowSurface::Wayland(toplevel) => {
+            let states = toplevel.current_state().states;
+            (states.contains(ToplevelState::Fullscreen), states.contains(ToplevelState::Maximized))
+        }
+        WindowSurface::X11(surface) => (surface.is_fullscreen(), surface.is_maximized()),
+    };
+    if fullscreen {
+        Placement::Fullscreen
+    } else if maximized {
+        Placement::Maximized
+    } else if data(window).arranged.borrow().is_some() {
+        Placement::Arranged
+    } else {
+        Placement::Free
+    }
+}
+
+/// `rect` moved, and shrunk where it is larger, to lie inside `area`.
+fn keep_inside(rect: Rectangle<i32, Logical>, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let width = rect.size.w.min(area.size.w);
+    let height = rect.size.h.min(area.size.h);
+    let x = rect.loc.x.clamp(area.loc.x, area.loc.x + area.size.w - width);
+    let y = rect.loc.y.clamp(area.loc.y, area.loc.y + area.size.h - height);
+    Rectangle::new((x, y).into(), (width, height).into())
 }
 
 /// What gets the keyboard when a window does.
@@ -412,26 +449,47 @@ impl Nekoland {
             Arrangement::Maximize => self.maximize(window),
             Arrangement::Part(part) => {
                 let step = if cycle { next_step(window, command, frame.loc) } else { 0 };
-                let rect = arrange::part_rect(area, arrange::cycled(part, step), self.window_gap());
-                // Without gaps, the sides it is against are tiled, which GTK draws square.
-                let states = if self.window_gap() == 0 {
-                    tiled_states(area, rect)
-                } else {
-                    Vec::new()
-                };
                 self.remember_place(window);
-                self.put_window(window, rect, &states);
-                let arranged = Arranged {
-                    command: command.to_string(),
-                    step,
-                    at: rect.loc,
-                };
-                mark(window, Some(arranged), true);
+                self.put_in_part(window, area, command, arrange::cycled(part, step), step);
             }
             Arrangement::MaximizeHeight => self.reframe(window, arrange::full_height(inner, frame), true),
             Arrangement::Center => self.reframe(window, arrange::centered(inner, frame.size), false),
             Arrangement::Resize(by) => self.reframe(window, arrange::resized(inner, frame, by), false),
             Arrangement::Move(direction) => self.reframe(window, arrange::moved(inner, frame, direction), false),
+        }
+    }
+
+    /// Puts a window in a part of `area`, as `command` at its `step` named it.
+    fn put_in_part(&mut self, window: &Window, area: Rectangle<i32, Logical>, command: &str, part: Part, step: usize) {
+        let rect = arrange::part_rect(area, part, self.window_gap());
+        // Without gaps, the sides it is against are tiled, which GTK draws square.
+        let states = if self.window_gap() == 0 {
+            tiled_states(area, rect)
+        } else {
+            Vec::new()
+        };
+        self.put_window(window, rect, &states);
+        let arranged = Arranged {
+            command: command.to_string(),
+            step,
+            at: rect.loc,
+        };
+        mark(window, Some(arranged), true);
+    }
+
+    /// Puts a window a command put in a part of the display back in that part, as the
+    /// display now is.
+    fn rearrange(&mut self, window: &Window, area: Rectangle<i32, Logical>) {
+        let Some((command, step)) = data(window)
+            .arranged
+            .borrow()
+            .as_ref()
+            .map(|arranged| (arranged.command.clone(), arranged.step))
+        else {
+            return;
+        };
+        if let Some(Arrangement::Part(part)) = arrange::arrangement(&command) {
+            self.put_in_part(window, area, &command, arrange::cycled(part, step), step);
         }
     }
 
@@ -477,6 +535,41 @@ impl Nekoland {
         };
         self.remember_place(window);
         self.put_window(window, geometry, &[ToplevelState::Fullscreen]);
+    }
+
+    /// Fits the windows to the display once its size, scale or rotation changed: those that
+    /// filled it or a part of it fill it again, and the others, with the places they go back
+    /// to, are moved and shrunk to lie inside it, so that none is left partly off screen.
+    // shortcut: windows on the workspaces not shown are fitted only as they are put back.
+    pub fn fit_windows_to_display(&mut self) {
+        let display = self.space.outputs().next().and_then(|output| self.space.output_geometry(output));
+        let (Some(display), Some(area)) = (display, self.usable_area()) else {
+            return;
+        };
+        let windows: Vec<Window> = self.space.elements().filter(|window| is_managed(window)).cloned().collect();
+        for window in &windows {
+            match placement_of(window) {
+                Placement::Fullscreen => self.put_window(window, display, &[ToplevelState::Fullscreen]),
+                Placement::Maximized => self.put_window(window, area, &[ToplevelState::Maximized]),
+                Placement::Arranged => self.rearrange(window, area),
+                Placement::Free => {
+                    let Some(location) = self.space.element_location(window) else {
+                        continue;
+                    };
+                    let rect = Rectangle::new(location, window.geometry().size);
+                    let inside = keep_inside(rect, area);
+                    if inside != rect {
+                        self.put_window(window, inside, &[]);
+                    }
+                }
+            }
+            if let Some(rect) = data(window).restore.borrow_mut().as_mut() {
+                *rect = keep_inside(*rect, area);
+            }
+        }
+        for (window, location) in &mut self.minimized {
+            *location = keep_inside(Rectangle::new(*location, window.geometry().size), area).loc;
+        }
     }
 
     /// Puts a maximized, tiled or fullscreen window back where it was.
@@ -629,4 +722,19 @@ fn tiled_states(area: Rectangle<i32, Logical>, rect: Rectangle<i32, Logical>) ->
         (rect.loc.y + rect.size.h == area.loc.y + area.size.h, ToplevelState::TiledBottom),
     ];
     sides.into_iter().filter(|(against, _)| *against).map(|(_, state)| state).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_is_kept_inside_a_display_turned_on_its_side() {
+        let rect = |x, y, width, height| Rectangle::<i32, Logical>::new((x, y).into(), (width, height).into());
+        let portrait = rect(0, 30, 1440, 2460);
+        assert_eq!(keep_inside(rect(1600, 200, 1200, 800), portrait), rect(240, 200, 1200, 800));
+        assert_eq!(keep_inside(rect(100, 100, 2400, 1300), portrait), rect(0, 100, 1440, 1300));
+        assert_eq!(keep_inside(rect(100, 100, 400, 300), portrait), rect(100, 100, 400, 300));
+        assert_eq!(keep_inside(rect(-50, 0, 400, 300), portrait), rect(0, 30, 400, 300));
+    }
 }
