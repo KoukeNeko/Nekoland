@@ -792,15 +792,14 @@ impl Nekoland {
             self.overview = None;
             return;
         }
-        if overview.drag.as_ref().is_some_and(|drag| {
-            overview
-                .slots
-                .get(drag.slot)
-                .is_none_or(|slot| !slot.window.alive())
-        }) {
-            overview.drag = None;
-        }
+        // A window gone moves the ones after it up the list, where the drag and the
+        // hovered slot are held by position: they are let go rather than point at another.
+        let before = overview.slots.len();
         overview.slots.retain(|slot| slot.window.alive());
+        if overview.slots.len() != before {
+            overview.drag = None;
+            overview.hovered = None;
+        }
         let fade = progress as f32;
         overview.dim.set_color([0.0, 0.0, 0.0, DIM * fade]);
 
