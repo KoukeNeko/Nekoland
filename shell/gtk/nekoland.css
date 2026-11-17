@@ -308,21 +308,35 @@ dialog.floating windowcontrols.end:dir(rtl) {
   margin-left: 0;
 }
 /* An alert as the design language's dialog: a 16/600 question, 6px above its consequence
- * in grey, 12px above anything else it holds, 24px around, 20px above buttons of the usual
- * height and corners. The question's line is taller than its letters, so 20px above it
- * puts them 24px from the top. libadwaita pads each part of the message on its own and
- * spaces them differently when narrow, so both are set here. */
+ * in grey, 24px in from the sides, and 20px from each row's letters or edges to the next:
+ * from the sheet's edge to the question, between the rows, to the buttons and below them.
+ * A line of text is taller than its letters, 4.5px above them and 3px below, so the padding
+ * and spacing here are 20px less that; a field has no such margin and takes the 3px itself.
+ * libadwaita pads each part of the message on its own and spaces them differently when
+ * narrow, so both are set here. */
 dialog.alert .message-area,
 dialog.alert.short .message-area {
-  padding: 20px 0 20px;
-  border-spacing: 12px;
+  padding: 15.5px 0 17px;
+  border-spacing: 17px;
+}
+dialog.alert .message-area > .child {
+  margin-bottom: 3px;
+}
+/* The alert's scrollbar is as tall as its margins at least, taller than a message of one
+ * line, which then stands too far above its buttons. */
+dialog-host > dialog.alert sheet .body-scrolled-window scrollbar.vertical {
+  padding-top: 0;
+}
+dialog-host > dialog.alert sheet .body-scrolled-window scrollbar.vertical > range > trough {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 dialog.alert .message-area.has-heading.has-body,
 dialog.alert.short .message-area.has-heading.has-body {
   border-spacing: 6px;
 }
 dialog.alert .message-area.has-heading.has-body > .child {
-  margin-top: 6px;
+  margin-top: 11.5px;
 }
 dialog.alert .message-area > .heading-bin,
 dialog.alert .message-area > .body,
@@ -333,15 +347,17 @@ dialog.alert.short .message-area > .child {
   padding-left: 24px;
   padding-right: 24px;
 }
-/* An alert's icon is 24px from the top, as the 20px there allows for a question's taller line,
- * and stands 12px above its question, as what is under the question does. */
+/* An alert's icon is 20px from the sheet's edge and from its question, as a row is; the
+ * symbol stands 1px inside its image. */
 dialog.alert .message-area > image.alert-icon {
-  margin-top: 4px;
+  margin-top: 3.5px;
 }
 dialog.alert .message-area.has-body > image.alert-icon {
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
-dialog.alert .message-area label.title-2 {
+/* A question too long for one line wraps in a label of its own. */
+dialog.alert .message-area label.title-2,
+dialog.alert .message-area label.title-4 {
   font-size: 16px;
   font-weight: 600;
 }
@@ -350,7 +366,7 @@ dialog.alert .message-area label.body {
 }
 dialog.alert .response-area,
 dialog.alert.short .response-area {
-  padding: 0 24px 24px;
+  padding: 0 24px 20px;
   border-spacing: 8px;
 }
 dialog.alert .response-area > button,

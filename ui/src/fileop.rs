@@ -11,13 +11,15 @@ use std::{
 };
 
 use adw::prelude::*;
+use browse::{free_name, EDGE, GAP};
 use gtk::{gio, glib};
 
-/// The same padding and gap as the file chooser's.
-const EDGE: i32 = 12;
-const GAP: i32 = 8;
+mod browse;
+
 /// Work done sooner than this never shows a window.
 const SHOW_AFTER: Duration = Duration::from_millis(500);
+/// Between buttons side by side, as an alert's are.
+const BUTTON_GAP: i32 = 12;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Verb {
@@ -124,6 +126,8 @@ struct Window {
     finished: Cell<bool>,
     conflict_is_dir: Cell<bool>,
     shown: Cell<bool>,
+    /// Whether how far it is goes to stdout too.
+    report: bool,
 }
 
 impl Window {
@@ -190,7 +194,7 @@ impl Window {
             .css_classes(["suggested-action"])
             .build();
         let failure = gtk::Box::builder()
-            .spacing(GAP)
+            .spacing(BUTTON_GAP)
             .halign(gtk::Align::End)
             .visible(false)
             .build();
@@ -219,7 +223,7 @@ impl Window {
         let skip = gtk::Button::with_label("略過");
         let keep_both = gtk::Button::with_label("保留兩者");
         let replace = gtk::Button::builder().css_classes(["suggested-action"]).build();
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, BUTTON_GAP);
         actions.append(&apply_all);
         actions.append(&gtk::Box::builder().hexpand(true).build());
         actions.append(&skip);
@@ -260,6 +264,7 @@ impl Window {
             total: Cell::new(0),
             done: Cell::new(0),
             rate_from: Cell::new((now, 0)),
+            report: std::env::var_os(browse::REPORT_PROGRESS).is_some(),
             finished: Cell::new(false),
             conflict_is_dir: Cell::new(false),
             shown: Cell::new(false),
@@ -338,13 +343,19 @@ impl Window {
                 }
                 Ok(Update::Finished) | Err(mpsc::TryRecvError::Disconnected) => {
                     self.finished.set(true);
-                    self.window.close();
+                    // Not close: a window never shown ignores it, and would keep this running.
+                    self.window.destroy();
                     return glib::ControlFlow::Break;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
         self.show_progress();
+        if self.report {
+            use std::io::Write;
+            // Whoever reads it may have quit; the work goes on without them.
+            let _ = writeln!(std::io::stdout(), "{} {}", self.done.get(), self.total.get());
+        }
         if self.started.elapsed() >= SHOW_AFTER {
             self.show();
         }
@@ -384,10 +395,7 @@ impl Window {
             "「{folder}」裡已有名為「{}」的{kind}",
             display_name(&existing.path)
         ));
-        let newer = match (existing.modified, incoming.modified) {
-            (Some(a), Some(b)) if a != b => Some(b > a),
-            _ => None,
-        };
+        let newer = incoming_is_newer(existing.modified, incoming.modified);
         let came = match self.verb {
             Verb::Copy => "拷貝來的",
             Verb::Move => "移來的",
@@ -485,6 +493,16 @@ fn fill_side(card: &gtk::Box, side: &Side, tag: &str, newer: bool) {
         ));
     }
     card.append(&inner);
+}
+
+/// Which side's date to mark, only where the dates as shown differ: one of two equal
+/// dates in bold reads as a mistake.
+fn incoming_is_newer(existing: Option<SystemTime>, incoming: Option<SystemTime>) -> Option<bool> {
+    let shown = |time: SystemTime| date_time(time).map(|when| modified_label(&when));
+    match (existing, incoming) {
+        (Some(a), Some(b)) if shown(a) != shown(b) => Some(b > a),
+        _ => None,
+    }
 }
 
 fn date_time(time: SystemTime) -> Option<glib::DateTime> {
@@ -778,19 +796,6 @@ fn size_of(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// The first name not taken beside `path`: 「季報 2.pdf」, 「季報 3.pdf」…
-fn free_name(path: &Path) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = path.extension().map(|e| format!(".{}", e.to_string_lossy()));
-    (2..)
-        .map(|n| path.with_file_name(format!("{stem} {n}{}", extension.as_deref().unwrap_or(""))))
-        .find(|candidate| std::fs::symlink_metadata(candidate).is_err())
-        .expect("some number is free")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,5 +809,16 @@ mod tests {
         assert_eq!(free_name(&dir.join("季報.pdf")), dir.join("季報 3.pdf"));
         assert_eq!(free_name(&dir.join("2025 季報")), dir.join("2025 季報 2"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_date_shown_differently_is_marked_newer() {
+        // A whole minute, so the seconds below stay within it in any whole-minute time zone.
+        let minute = SystemTime::UNIX_EPOCH + Duration::from_secs(1_699_999_980);
+        let at = |secs| Some(minute + Duration::from_secs(secs));
+        assert_eq!(incoming_is_newer(at(5), at(40)), None);
+        assert_eq!(incoming_is_newer(at(5), at(125)), Some(true));
+        assert_eq!(incoming_is_newer(at(125), at(5)), Some(false));
+        assert_eq!(incoming_is_newer(None, at(5)), None);
     }
 }

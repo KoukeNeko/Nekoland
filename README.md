@@ -434,6 +434,23 @@ each other; the one replaced goes to the trash. When something fails it says why
 略過 or 重試. Copy `shell/io.github.koukeneko.Nekoland.FileOperation.desktop` to
 `~/.local/share/applications/` for its name and icon. Each piece of work has its own window.
 
+`nekoland-files`, from `ui/`, is a file manager after the Mac's Finder: tabs, the places on
+glass at the left (最近使用, the home folders, 垃圾桶, the bookmarks, drives with an eject
+button, the network and the tags), and a folder seen as icons, as a list with folders that
+unfold, as columns or as a gallery, with a preview at the right. A search looks in the folder
+or in the home folder and mounted drives, by name or by tag, and narrows by kind and date. Space opens 快速查看 on
+what is chosen; Ctrl+I opens 取得資訊, where the name, the tags, the application that opens it
+and the permissions change. Tags are seven colours kept in the `user.xdg.tags` attribute, so
+other programs see them. Several files are renamed at once by replacing or adding text or by a
+numbered name; files compress into a `.zip`, a picture turns or becomes the wallpaper, and
+連接伺服器 (Ctrl+K) mounts smb, sftp, ftp or WebDAV through GVfs. Copying and moving are
+`nekoland-fileop`'s, a drag held over a folder opens it, and pictures, PDFs and videos show
+thumbnails from Files' cache, made with `pdftoppm` and `ffmpeg` when missing. It answers
+`org.freedesktop.FileManager1` when Nautilus does not hold it, so 在檔案中顯示 comes to it;
+`install.sh` installs `shell/org.freedesktop.FileManager1.service` and
+`shell/io.github.koukeneko.Nekoland.Files.desktop`. It remembers the view, the preview, hidden
+files and the icon size in `~/.config/nekoland/files.ini`.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

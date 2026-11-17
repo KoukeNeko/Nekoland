@@ -12,7 +12,11 @@ use std::{
 };
 
 use adw::prelude::*;
+use browse::{home, icon_button, info_file, is_dir, modified_label, places, scrolled, Location, EDGE, GAP};
 use gtk::{gdk, gio, glib};
+
+mod alert;
+mod browse;
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.FileChooser";
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.nekoland";
@@ -32,10 +36,6 @@ const RULE_MIME: u32 = 1;
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::icon,\
 standard::is-hidden,standard::is-backup,standard::content-type,standard::size,time::modified,thumbnail::path";
 
-/// One padding for the whole window: its edges and around each bar, and one gap between
-/// the controls in them.
-const EDGE: i32 = 12;
-const GAP: i32 = 8;
 const SIDEBAR_WIDTH: i32 = 188;
 /// The save window with only the name and the folder.
 const COLLAPSED_WIDTH: i32 = 520;
@@ -422,128 +422,6 @@ fn stem_chars(name: &str) -> i32 {
     stem.chars().count() as i32
 }
 
-/// The lines of GTK's bookmarks file as (URI, label), for local folders only.
-fn parse_bookmarks(text: &str) -> Vec<(String, Option<String>)> {
-    text.lines()
-        .filter(|line| line.starts_with("file://"))
-        .map(|line| match line.split_once(' ') {
-            Some((uri, label)) => (
-                uri.to_owned(),
-                Some(label.trim().to_owned()).filter(|l| !l.is_empty()),
-            ),
-            None => (line.trim().to_owned(), None),
-        })
-        .collect()
-}
-
-/// When a file was changed, as short as it can be said: the time today or yesterday, the
-/// day this year, the date before.
-fn modified_label(when: &glib::DateTime, now: &glib::DateTime) -> String {
-    let (year, month, day) = when.ymd();
-    let time = format!("{:02}:{:02}", when.hour(), when.minute());
-    if (year, month, day) == now.ymd() {
-        format!("今天 {time}")
-    } else if now
-        .add_days(-1)
-        .is_ok_and(|yesterday| yesterday.ymd() == (year, month, day))
-    {
-        format!("昨天 {time}")
-    } else if year == now.year() {
-        format!("{month}月{day}日")
-    } else {
-        format!("{year}年{month}月{day}日")
-    }
-}
-
-#[derive(Clone, Debug)]
-enum Location {
-    Recent,
-    Folder(gio::File),
-}
-
-impl PartialEq for Location {
-    fn eq(&self, other: &Location) -> bool {
-        match (self, other) {
-            (Location::Recent, Location::Recent) => true,
-            (Location::Folder(a), Location::Folder(b)) => a.equal(b),
-            _ => false,
-        }
-    }
-}
-
-/// A sidebar place.
-struct Place {
-    icon: gio::Icon,
-    label: String,
-    location: Location,
-}
-
-fn home() -> PathBuf {
-    glib::home_dir()
-}
-
-/// The places the sidebar lists, in sections: recent and the home folders, the GTK
-/// bookmarks Files keeps too, and mounted drives.
-fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
-    let themed = |name: &str| gio::ThemedIcon::new(name).upcast::<gio::Icon>();
-    let folder = |icon: &str, label: &str, path: PathBuf| Place {
-        icon: themed(icon),
-        label: label.to_owned(),
-        location: Location::Folder(gio::File::for_path(path)),
-    };
-    let mut first = vec![
-        Place {
-            icon: themed("document-open-recent-symbolic"),
-            label: "最近使用".into(),
-            location: Location::Recent,
-        },
-        folder("user-home-symbolic", &glib::user_name().to_string_lossy(), home()),
-    ];
-    for (dir, icon, label) in [
-        (glib::UserDirectory::Desktop, "user-desktop-symbolic", "桌面"),
-        (
-            glib::UserDirectory::Documents,
-            "folder-documents-symbolic",
-            "文件",
-        ),
-        (glib::UserDirectory::Downloads, "folder-download-symbolic", "下載"),
-        (glib::UserDirectory::Pictures, "folder-pictures-symbolic", "圖片"),
-        (glib::UserDirectory::Music, "folder-music-symbolic", "音樂"),
-        (glib::UserDirectory::Videos, "folder-videos-symbolic", "影片"),
-    ] {
-        // xdg-user-dirs points one it has no folder for at home.
-        if let Some(path) = glib::user_special_dir(dir).filter(|p| p.is_dir() && *p != home()) {
-            first.push(folder(icon, label, path));
-        }
-    }
-    let bookmarks_file = glib::user_config_dir().join("gtk-3.0/bookmarks");
-    let bookmarks = std::fs::read_to_string(&bookmarks_file)
-        .map(|text| parse_bookmarks(&text))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(uri, label)| {
-            let file = gio::File::for_uri(&uri);
-            let label = label.or_else(|| file.basename().map(|b| b.to_string_lossy().into_owned()))?;
-            file.path().is_some_and(|p| p.is_dir()).then(|| Place {
-                icon: themed("folder-symbolic"),
-                label,
-                location: Location::Folder(file),
-            })
-        })
-        .collect();
-    let mounts = gio::VolumeMonitor::get()
-        .mounts()
-        .into_iter()
-        .filter(|mount| !mount.is_shadowed())
-        .map(|mount| Place {
-            icon: mount.symbolic_icon(),
-            label: mount.name().into(),
-            location: Location::Folder(mount.root()),
-        })
-        .collect();
-    vec![(None, first), (Some("書籤"), bookmarks), (Some("裝置"), mounts)]
-}
-
 /// What the window remembers between uses.
 #[derive(Default)]
 struct Prefs {
@@ -608,14 +486,6 @@ impl ChoiceWidget {
 }
 
 type Reply = Box<dyn FnOnce(u32, glib::Variant)>;
-
-fn info_file(info: &gio::FileInfo) -> Option<gio::File> {
-    info.attribute_object("standard::file").and_downcast()
-}
-
-fn is_dir(info: &gio::FileInfo) -> bool {
-    info.file_type() == gio::FileType::Directory
-}
 
 struct Dialog {
     request: Request,
@@ -1874,51 +1744,39 @@ impl Dialog {
     }
 
     fn ask_replace(self: &Rc<Self>, name: String, target: gio::File) {
-        let alert = adw::AlertDialog::new(Some(&format!("取代「{name}」？")), Some("原本的檔案會被取代。"));
-        alert.add_responses(&[("cancel", "取消"), ("replace", "取代")]);
-        alert.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
-        alert.set_default_response(Some("cancel"));
-        alert.set_close_response("cancel");
         let weak = Rc::downgrade(self);
-        alert.choose(&self.window, gio::Cancellable::NONE, move |response| {
-            if let (Some(dialog), "replace") = (weak.upgrade(), response.as_str()) {
-                dialog.finish(RESPONSE_OK, vec![target.uri().to_string()]);
-            }
-        });
+        let title = format!("取代「{name}」？");
+        alert::confirm(
+            &self.window,
+            &title,
+            Some("原本的檔案會被取代。"),
+            "取代",
+            move || {
+                if let Some(dialog) = weak.upgrade() {
+                    dialog.finish(RESPONSE_OK, vec![target.uri().to_string()]);
+                }
+            },
+        );
     }
 
     fn ask_new_folder(self: &Rc<Self>) {
         let Some(folder) = self.here_folder() else { return };
-        let entry = gtk::Entry::builder()
-            .text(NEW_FOLDER)
-            .activates_default(true)
-            .build();
-        let alert = adw::AlertDialog::new(Some("新增檔案夾"), None);
-        alert.set_extra_child(Some(&entry));
-        alert.add_responses(&[("cancel", "取消"), ("create", "建立")]);
-        alert.set_response_appearance("create", adw::ResponseAppearance::Suggested);
-        alert.set_default_response(Some("create"));
-        alert.set_close_response("cancel");
         let weak = Rc::downgrade(self);
-        let typed = entry.clone();
-        alert.choose(&self.window, gio::Cancellable::NONE, move |response| {
-            let Some(dialog) = weak.upgrade() else { return };
-            let name = typed.text().trim().to_owned();
-            if response != "create" || name.is_empty() {
-                return;
-            }
-            let new = folder.child(&name);
-            match new.make_directory(gio::Cancellable::NONE) {
-                Ok(()) => dialog.go(Location::Folder(new), true),
-                Err(err) => {
-                    let failed = adw::AlertDialog::new(Some("無法建立檔案夾"), Some(err.message()));
-                    failed.add_response("close", "關閉");
-                    failed.present(Some(&dialog.window));
+        alert::prompt(
+            &self.window,
+            "新增檔案夾",
+            NEW_FOLDER,
+            -1,
+            "建立",
+            move |name| {
+                let Some(dialog) = weak.upgrade() else { return };
+                let new = folder.child(&name);
+                match new.make_directory(gio::Cancellable::NONE) {
+                    Ok(()) => dialog.go(Location::Folder(new), true),
+                    Err(err) => alert::notice(&dialog.window, "無法建立檔案夾", Some(err.message())),
                 }
-            }
-        });
-        entry.grab_focus();
-        entry.select_region(0, -1);
+            },
+        );
     }
 
     /// Answers the portal and closes the window.
@@ -1953,21 +1811,6 @@ impl Dialog {
         }
         reply(response, results.end());
     }
-}
-
-fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .icon_name(icon)
-        .tooltip_text(tooltip)
-        .css_classes(["flat"])
-        .build()
-}
-
-fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(child)
-        .build()
 }
 
 #[cfg(test)]
@@ -2013,32 +1856,6 @@ mod tests {
         assert_eq!(stem_chars("海報.png"), 2);
         assert_eq!(stem_chars("海報"), 2);
         assert_eq!(stem_chars(".bashrc"), 7);
-    }
-
-    #[test]
-    fn bookmarks_keep_their_labels() {
-        let text = "file:///home/neko/Nekoland\nfile:///home/neko/Documents/%E5%A0%B1%E5%91%8A 報告\nsftp://host/x\n";
-        assert_eq!(
-            parse_bookmarks(text),
-            vec![
-                ("file:///home/neko/Nekoland".into(), None),
-                (
-                    "file:///home/neko/Documents/%E5%A0%B1%E5%91%8A".into(),
-                    Some("報告".into())
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn dates_are_said_as_short_as_they_can_be() {
-        let tz = glib::TimeZone::utc();
-        let at = |y, mo, d, h, mi| glib::DateTime::new(&tz, y, mo, d, h, mi, 0.0).unwrap();
-        let now = at(2026, 11, 17, 14, 30);
-        assert_eq!(modified_label(&at(2026, 11, 17, 9, 5), &now), "今天 09:05");
-        assert_eq!(modified_label(&at(2026, 11, 16, 22, 40), &now), "昨天 22:40");
-        assert_eq!(modified_label(&at(2026, 3, 18, 8, 0), &now), "3月18日");
-        assert_eq!(modified_label(&at(2024, 1, 5, 8, 0), &now), "2024年1月5日");
     }
 
     #[test]

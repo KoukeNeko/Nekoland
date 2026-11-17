@@ -36,11 +36,10 @@ fn main() -> glib::ExitCode {
 
 fn ask(app: &adw::Application, given: Rc<Cell<bool>>) {
     let reason = std::env::var("NEKOLAND_ASKPASS_REASON").unwrap_or_default();
-    // As wide as the design language's dialog, less its padding.
     let entry = gtk::PasswordEntry::builder()
         .show_peek_icon(true)
         .activates_default(true)
-        .width_request(312)
+        .width_request(alert::FIELD_WIDTH)
         .build();
     let alert = adw::AlertDialog::new(
         Some("需要管理員密碼"),
