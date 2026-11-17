@@ -7,6 +7,7 @@ mod alert;
 mod focus;
 mod network;
 mod themes;
+mod web;
 mod wifi;
 
 use std::{
@@ -3650,7 +3651,7 @@ fn gsettings_switch(title: &str, schema: &'static str, key: &'static str) -> adw
 /// What opens each kind of file or link, by the types it is the default for; the first
 /// lists the choices.
 const DEFAULT_APPS: [(&str, &[&str]); 7] = [
-    ("網頁瀏覽器", &["x-scheme-handler/http", "x-scheme-handler/https", "text/html"]),
+    ("網頁瀏覽器", &web::WEB_TYPES),
     ("郵件", &["x-scheme-handler/mailto"]),
     ("檔案", &["inode/directory"]),
     ("文字", &["text/plain"]),
@@ -3665,6 +3666,10 @@ fn default_apps_page(config: &Config) -> adw::PreferencesPage {
     for (title, types) in DEFAULT_APPS {
         let choices = gio::AppInfo::all_for_type(types[0]);
         if choices.is_empty() {
+            // Nekoland comes with no browser; Market has them.
+            if *types == web::WEB_TYPES {
+                apps.add(&missing_browser_row(title));
+            }
             continue;
         }
         let current = gio::AppInfo::default_for_type(types[0], false).and_then(|app| app.id());
@@ -3702,6 +3707,26 @@ fn default_apps_page(config: &Config) -> adw::PreferencesPage {
     }
     page.add(&apps);
     page
+}
+
+/// The browser row while there is none: a way to Market's 瀏覽器 page.
+fn missing_browser_row(title: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(title).subtitle("未安裝").build();
+    let get = gtk::Button::builder()
+        .label("取得")
+        .valign(gtk::Align::Center)
+        .build();
+    get.connect_clicked(|_| {
+        if let Err(err) = Command::new("nekoland-store")
+            .env("NEKOLAND_STORE_PAGE", "browsers")
+            .spawn()
+        {
+            eprintln!("nekoland-store: {err}");
+        }
+    });
+    row.add_suffix(&get);
+    row.set_activatable_widget(Some(&get));
+    row
 }
 
 /// A row choosing one of `apps`, by name, with the first that `is_current` selected.

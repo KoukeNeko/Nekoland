@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Market
+Name[zh_TW]=Market
+Comment=Choose a web browser to install
+Comment[zh_TW]=選擇要安裝的網頁瀏覽器
+Exec=nekoland-store --choose-browser
+Icon=io.github.koukeneko.Nekoland.Store
+NoDisplay=true

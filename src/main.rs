@@ -54,6 +54,8 @@ const DRI_DIRECTORY: &str = "/dev/dri";
 const RENDER_NODE_PREFIX: &str = "renderD";
 const GTK_RENDERER: &str = "GSK_RENDERER";
 const GTK_RENDERER_WITHOUT_GL: &str = "cairo";
+const SESSION_TYPE: &str = "XDG_SESSION_TYPE";
+const SESSION_TYPE_WAYLAND: &str = "wayland";
 
 /// Without a GPU, GTK 4 draws with OpenGL on llvmpipe, whose buffers and compiled shaders
 /// cost each program of it some 150 MB more than Cairo does (243 MB against 89 MB for the
@@ -140,6 +142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if owns_session {
         // Portals pick their backends by the desktop's name.
         std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
+        // A session logged into on a console is "tty" to logind, and Chrome, Electron and
+        // others choose X11 then, as XWayland's DISPLAY is there too: drawn through XWayland,
+        // Chrome has no window buttons and its menus' shadows take glass.
+        std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
     }
     if nested {
         // XWayland takes DISPLAY; the clipboard of xrdp's client is on this one.
@@ -195,6 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "WAYLAND_DISPLAY",
                     "DISPLAY",
                     "XDG_CURRENT_DESKTOP",
+                    SESSION_TYPE,
                     "LD_PRELOAD",
                     "FREETYPE_PROPERTIES",
                 ])
@@ -211,6 +218,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // The launcher's clipboard history; it ends with the display it watches.
         config::spawn("wl-paste --type text --watch nekoland-launcher --remember-clipboard");
+        // Nekoland comes with no web browser: Market asks for one until there is one or the
+        // person skips it, and otherwise ends at once.
+        config::spawn("nekoland-store --choose-browser");
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         let wallpaper = config::start_wallpaper(config);

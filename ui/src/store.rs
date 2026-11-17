@@ -4,6 +4,10 @@
 //! install it from; and icon and cursor themes from Pling, tried on before they are applied.
 
 mod alert;
+#[path = "store/browsers.rs"]
+mod browsers;
+#[path = "store/choice.rs"]
+mod choice;
 mod focus;
 mod ipc;
 #[path = "store/pling.rs"]
@@ -11,6 +15,7 @@ mod pling;
 #[path = "store/sources.rs"]
 mod sources;
 mod themes;
+mod web;
 
 use std::{
     cell::{Cell, RefCell},
@@ -23,7 +28,7 @@ use pling::{Look, Theme};
 use sources::{App, Kind, Offer, Repository};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Store";
-/// Opens on a page other than Explore: installed, updates, icons, cursors, a sidebar row's index,
+/// Opens on a page other than Explore: browsers, installed, updates, icons, cursors, a sidebar row's index,
 /// search:WORDS, or app:WORDS for the first found app's page; for screenshots, as NEKOLAND_SETTINGS_PAGE is for Settings.
 const PAGE_ENV: &str = "NEKOLAND_STORE_PAGE";
 
@@ -137,7 +142,21 @@ row.store-source.picked { background: alpha(currentColor, .08); }
 .store-zone + .store-zone { border-left: 1px solid alpha(currentColor, .1); }
 .store-using { padding: 6px 14px; border-radius: 999px; background: alpha(currentColor, .08); font-weight: 600; }
 .store-dock { padding: 12px 16px; border-radius: 18px; background: alpha(currentColor, .06); }
+.store-hero { padding: 0 40px; min-height: 220px; border-radius: 18px; background: @window_fg_color; color: @window_bg_color; }
+.store-hero-title { font-size: 36px; font-weight: 700; }
+.store-hero-line { opacity: .72; }
+row.store-choice { min-height: 56px; }
+row.store-choice.picked { background: @window_fg_color; color: @window_bg_color; }
+row.store-choice.picked .store-chip { border-color: alpha(currentColor, .3); }
 ";
+
+/// How the 瀏覽器 page's banner fans its icons: how big, how far apart, how much each tilts
+/// and drops from the middle one.
+const FAN_ICON: i32 = 96;
+const FAN_STEP: f32 = 78.0;
+const FAN_TILT_DEGREES: f32 = 7.0;
+const FAN_DROP: f32 = 12.0;
+const FAN_ICONS: usize = 5;
 
 struct Store {
     window: adw::ApplicationWindow,
@@ -152,6 +171,7 @@ struct Store {
 #[derive(Clone)]
 enum Place {
     Explore,
+    Browsers,
     Installed,
     Updates,
     Look(Look),
@@ -160,9 +180,20 @@ enum Place {
 }
 
 fn main() -> glib::ExitCode {
+    if std::env::args().any(|arg| arg == choice::FLAG) {
+        return choice::run();
+    }
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build);
     app.run()
+}
+
+fn load_css() {
+    let css = gtk::CssProvider::new();
+    css.load_from_string(CSS);
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
 }
 
 fn build(app: &adw::Application) {
@@ -170,11 +201,7 @@ fn build(app: &adw::Application) {
         window.present();
         return;
     }
-    let css = gtk::CssProvider::new();
-    css.load_from_string(CSS);
-    if let Some(display) = gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-    }
+    load_css();
 
     let search = gtk::SearchEntry::builder()
         .placeholder_text("搜尋")
@@ -258,6 +285,7 @@ fn build(app: &adw::Application) {
             };
             let page = match place {
                 Place::Explore => explore_page(&store),
+                Place::Browsers => browsers_page(&store),
                 Place::Installed => installed_page(&store),
                 Place::Updates => updates_page(&store),
                 Place::Look(look) => look_page(&store, look),
@@ -302,10 +330,11 @@ fn build(app: &adw::Application) {
         );
     } else {
         let at = match start.as_str() {
-            "installed" => 1,
-            "updates" => 2,
-            "icons" => 3,
-            "cursors" => 4,
+            "browsers" => 1,
+            "installed" => 2,
+            "updates" => 3,
+            "icons" => 4,
+            "cursors" => 5,
             other => other.parse().unwrap_or(0),
         };
         store.sidebar.select_row(store.sidebar.row_at_index(at).as_ref());
@@ -319,7 +348,7 @@ fn fill_sidebar(store: &Rc<Store>) {
     while let Some(row) = store.sidebar.row_at_index(0) {
         store.sidebar.remove(&row);
     }
-    let mut places = vec![Place::Explore, Place::Installed, Place::Updates];
+    let mut places = vec![Place::Explore, Place::Browsers, Place::Installed, Place::Updates];
     let row = |label: &str, end: Option<&gtk::Label>| {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         line.append(
@@ -336,6 +365,7 @@ fn fill_sidebar(store: &Rc<Store>) {
         line
     };
     store.sidebar.append(&row("探索", None));
+    store.sidebar.append(&row("瀏覽器", None));
     store.sidebar.append(&row("已安裝", None));
     store.sidebar.append(&row("更新", Some(&store.updates_label)));
     let first_look = places.len();
@@ -486,8 +516,41 @@ fn section(title: &str, end: &str) -> gtk::Box {
     line
 }
 
-/// An app's icon, or the first letter of its name on a tile.
+/// An app's icon: its own file, its theme's, or the first letter of its name on a tile; the
+/// tile gives way to the icon on the web, where there is one, once it is fetched.
 fn icon(app: &App, size: i32) -> gtk::Widget {
+    let local = local_icon(app, size);
+    if app.icon.is_some() || app.icon_url.is_empty() || local.is::<gtk::Image>() {
+        return local;
+    }
+    let holder = gtk::Box::builder()
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    holder.append(&local);
+    let url = app.icon_url.clone();
+    background(
+        move || sources::fetch(&url),
+        glib::clone!(
+            #[weak]
+            holder,
+            move |bytes: Option<Vec<u8>>| {
+                let Some(texture) =
+                    bytes.and_then(|bytes| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok())
+                else {
+                    return;
+                };
+                if let Some(tile) = holder.first_child() {
+                    holder.remove(&tile);
+                }
+                holder.append(&gtk::Image::builder().paintable(&texture).pixel_size(size).build());
+            }
+        ),
+    );
+    holder.upcast()
+}
+
+fn local_icon(app: &App, size: i32) -> gtk::Widget {
     if let Some(path) = &app.icon {
         return gtk::Image::builder()
             .file(path.to_string_lossy())
@@ -662,18 +725,7 @@ fn show_category(
                     holder.append(&empty("沒有軟體"));
                     return;
                 }
-                let grid = gtk::FlowBox::builder()
-                    .selection_mode(gtk::SelectionMode::None)
-                    .min_children_per_line(2)
-                    .max_children_per_line(4)
-                    .column_spacing(10)
-                    .row_spacing(10)
-                    .homogeneous(true)
-                    .build();
-                for app in apps {
-                    grid.append(&card(&store, app));
-                }
-                holder.append(&grid);
+                holder.append(&card_grid(&store, apps));
             }
         ),
     );
@@ -718,6 +770,116 @@ fn card(store: &Rc<Store>, app: App) -> gtk::Widget {
         move |_| store.nav.push(&detail_page(&store, app.clone()))
     ));
     button.upcast()
+}
+
+// Browsers: Nekoland comes with none.
+
+fn browsers_page(store: &Rc<Store>) -> adw::NavigationPage {
+    let content = column();
+    let fan = gtk::Fixed::builder().valign(gtk::Align::Center).build();
+    content.append(&browsers_hero(&fan));
+    let grid_holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    grid_holder.append(&loading());
+    content.append(&grid_holder);
+    background(
+        browsers::available,
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            grid_holder,
+            #[weak]
+            fan,
+            move |apps: Vec<App>| {
+                while let Some(child) = grid_holder.first_child() {
+                    grid_holder.remove(&child);
+                }
+                if apps.is_empty() {
+                    grid_holder.append(&empty("沒有可安裝的瀏覽器"));
+                    return;
+                }
+                fill_fan(&fan, &apps);
+                grid_holder.append(&card_grid(&store, apps));
+            }
+        ),
+    );
+    page("瀏覽器", &content, None)
+}
+
+/// The banner: what the default browser is, and the browsers fanned out.
+fn browsers_hero(fan: &gtk::Fixed) -> gtk::Widget {
+    let hero = gtk::Box::builder().css_classes(["store-hero"]).spacing(24).build();
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .spacing(10)
+        .build();
+    text.append(
+        &gtk::Label::builder()
+            .label("網頁瀏覽器")
+            .xalign(0.0)
+            .css_classes(["store-hero-title"])
+            .build(),
+    );
+    text.append(
+        &gtk::Label::builder()
+            .label(browser_state())
+            .xalign(0.0)
+            .css_classes(["store-hero-line"])
+            .build(),
+    );
+    hero.append(&text);
+    hero.append(fan);
+    hero.upcast()
+}
+
+fn browser_state() -> String {
+    match web::default() {
+        Some(app) => format!("預設：{}", app.display_name()),
+        None if web::installed().is_empty() => "尚未安裝".into(),
+        None => "未設定預設".into(),
+    }
+}
+
+/// The first browsers' icons side by side, each tilted away from the middle one, which is
+/// drawn last so that it lies on top.
+fn fill_fan(fan: &gtk::Fixed, apps: &[App]) {
+    let shown = &apps[..apps.len().min(FAN_ICONS)];
+    let middle = (shown.len() as f32 - 1.0) / 2.0;
+    let half = FAN_ICON as f32 / 2.0;
+    let mut order: Vec<usize> = (0..shown.len()).collect();
+    order.sort_by(|a, b| (*b as f32 - middle).abs().total_cmp(&(*a as f32 - middle).abs()));
+    for at in order {
+        let offset = at as f32 - middle;
+        let widget = icon(&shown[at], FAN_ICON);
+        fan.put(&widget, 0.0, 0.0);
+        let transform = gtk::gsk::Transform::new()
+            .translate(&gtk::graphene::Point::new(
+                at as f32 * FAN_STEP + half,
+                offset.abs() * FAN_DROP + half + FAN_DROP,
+            ))
+            .rotate(offset * FAN_TILT_DEGREES)
+            .translate(&gtk::graphene::Point::new(-half, -half));
+        fan.set_child_transform(&widget, Some(&transform));
+    }
+    let reach = (shown.len() as f32 - 1.0) * FAN_STEP + FAN_ICON as f32;
+    fan.set_size_request(reach as i32, (FAN_ICON as f32 + middle * FAN_DROP * 2.0 + FAN_DROP) as i32);
+}
+
+fn card_grid(store: &Rc<Store>, apps: Vec<App>) -> gtk::FlowBox {
+    let grid = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(2)
+        .max_children_per_line(4)
+        .column_spacing(10)
+        .row_spacing(10)
+        .homogeneous(true)
+        .build();
+    for app in apps {
+        grid.append(&card(store, app));
+    }
+    grid
 }
 
 // Looks: icon and cursor themes.
@@ -1093,7 +1255,7 @@ fn render_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
         }
     );
     if detail.busy.get() {
-        detail.actions.append(&working());
+        detail.actions.append(&working(None));
     } else if !theme.folders.is_empty() {
         let at = detail.picked.get().min(theme.folders.len() - 1);
         let folder = theme.folders[at].clone();
@@ -1987,6 +2149,8 @@ struct Detail {
     /// The offer the header's button installs, by its index in the app's offers.
     picked: RefCell<usize>,
     busy: RefCell<bool>,
+    /// How far the change running, if one is, has got.
+    watch: RefCell<Option<sources::Watch>>,
     actions: gtk::Box,
     table: gtk::Box,
     command: gtk::Box,
@@ -2090,6 +2254,7 @@ fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
         app: RefCell::new(app),
         picked: RefCell::new(picked),
         busy: RefCell::new(false),
+        watch: RefCell::default(),
         actions,
         table,
         command,
@@ -2234,7 +2399,7 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
     let busy = *detail.busy.borrow();
 
     if busy {
-        detail.actions.append(&working());
+        detail.actions.append(&working(detail.watch.borrow().clone()));
     } else if let Some(installed) = &installed {
         detail.actions.append(
             &gtk::Label::builder()
@@ -2480,25 +2645,43 @@ fn or_dash(value: &str) -> String {
 }
 
 /// What a page's main button becomes while it works.
-fn working() -> gtk::Widget {
+fn working(watch: Option<sources::Watch>) -> gtk::Widget {
     let bar = gtk::ProgressBar::builder()
         .width_request(120)
         .valign(gtk::Align::Center)
         .build();
+    follow_progress(&bar, watch);
+    bar.upcast()
+}
+
+/// How often a working bar moves, or looks at how far its change has got.
+const PROGRESS_TICK: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Keeps `bar` at how far the change `watch` follows has got, going back and forth until it
+/// says (while the password is asked, say) or where nothing tells.
+fn follow_progress(bar: &gtk::ProgressBar, watch: Option<sources::Watch>) {
     glib::timeout_add_local(
-        std::time::Duration::from_millis(120),
+        PROGRESS_TICK,
         glib::clone!(
             #[weak]
             bar,
             #[upgrade_or]
             glib::ControlFlow::Break,
             move || {
-                bar.pulse();
+                let progress = watch.as_ref().and_then(|watch| *watch.lock().ok()?);
+                match progress {
+                    Some(progress) => {
+                        let stage = if progress.downloading { "下載中" } else { "安裝中" };
+                        bar.set_fraction(progress.fraction);
+                        bar.set_text(Some(&format!("{stage} {:.0}%", progress.fraction * 100.0)));
+                        bar.set_show_text(true);
+                    }
+                    None => bar.pulse(),
+                }
                 glib::ControlFlow::Continue
             }
         ),
     );
-    bar.upcast()
 }
 
 /// A button showing the one of `labels` at `at`, whose menu picks another.
@@ -2621,6 +2804,22 @@ fn start_install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing
         install(store, detail, offer, replacing);
         return;
     };
+    confirm_repository(
+        &store.window,
+        vendor,
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            detail,
+            move || install(&store, &detail, offer.clone(), replacing.clone())
+        ),
+    );
+}
+
+/// Asks before adding a vendor's repository, which can then install or update any package;
+/// `then` installs with it.
+fn confirm_repository(parent: &impl IsA<gtk::Widget>, vendor: &sources::Vendor, then: impl Fn() + 'static) {
     let dialog = adw::AlertDialog::new(
         Some(&format!("加入 {} 的套件庫？", vendor.name)),
         Some(&format!(
@@ -2630,17 +2829,8 @@ fn start_install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing
     );
     dialog.add_responses(&[("cancel", "取消"), ("add", "加入")]);
     dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
-    dialog.connect_response(
-        Some("add"),
-        glib::clone!(
-            #[weak]
-            store,
-            #[weak]
-            detail,
-            move |_, _| install(&store, &detail, offer.clone(), replacing.clone())
-        ),
-    );
-    dialog.present(Some(&store.window));
+    dialog.connect_response(Some("add"), move |_, _| then());
+    dialog.present(Some(parent));
 }
 
 fn confirm_switch(store: &Rc<Store>, detail: &Rc<Detail>, to: Offer, from: Offer) {
@@ -2708,6 +2898,7 @@ fn install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing: Opti
         plan.admin.extend(remove.admin);
         plan.after.extend(remove.user);
     }
+    let browser = browsers::is_browser(&offer).then(|| offer.clone());
     let (id, origin, old_id) = (offer.id.clone(), offer.origin.clone(), replacing.map(|o| o.id));
     change(
         store,
@@ -2715,6 +2906,9 @@ fn install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing: Opti
         plan,
         format!("安裝 {name}"),
         Rc::new(move |app: &mut App| {
+            if let Some(offer) = &browser {
+                default_browser_if_none(offer.clone());
+            }
             for o in &mut app.offers {
                 if o.id == id && o.origin == origin {
                     o.installed = Some(o.version.clone());
@@ -2727,6 +2921,20 @@ fn install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing: Opti
     );
 }
 
+/// The first browser installed opens links, as there was nothing else to open them.
+fn default_browser_if_none(offer: Offer) {
+    if web::default().is_some() {
+        return;
+    }
+    web::when_listed(
+        move || browsers::entry_of(&offer),
+        |found| match found {
+            Some(app) => web::make_default(&app),
+            None => eprintln!("store: the installed browser's desktop entry did not appear"),
+        },
+    );
+}
+
 /// Runs a change in the background, the page showing it working, and on success updates
 /// what the page knows; a failure is said in a toast with a way to try again.
 fn change(
@@ -2736,13 +2944,15 @@ fn change(
     reason: String,
     done: Rc<dyn Fn(&mut App)>,
 ) {
+    let watch = sources::Watch::default();
     *detail.busy.borrow_mut() = true;
+    *detail.watch.borrow_mut() = Some(watch.clone());
     render(store, detail);
     let plan = Rc::new(plan);
     let job = {
         let plan = sources::Plan::clone(&plan);
         let reason = reason.clone();
-        move || sources::run(&plan, &reason)
+        move || sources::run_watched(&plan, &reason, &watch)
     };
     background(
         job,
@@ -2753,6 +2963,7 @@ fn change(
             detail,
             move |result: Result<(), String>| {
                 *detail.busy.borrow_mut() = false;
+                *detail.watch.borrow_mut() = None;
                 match result {
                     Ok(()) => {
                         done(&mut detail.app.borrow_mut());

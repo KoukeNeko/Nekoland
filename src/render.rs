@@ -30,7 +30,7 @@ use crate::{
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
-    windows::{has_square_corners, window_names, CONFIRM_APP_ID},
+    windows::{has_square_corners, is_managed, window_names, CONFIRM_APP_ID},
     Nekoland,
 };
 
@@ -893,8 +893,10 @@ fn windows_on_glass(
         }
         let mut elements = window_body_elements(state, renderer, window, output_loc, scale);
         let area = window_area(state, window, output_loc, scale);
-        // Its window is mostly transparent shadow margin, which glass would blur.
-        let area = area.filter(|_| window_names(window).1 != CONFIRM_APP_ID);
+        // These windows are mostly transparent shadow margin, which glass would blur: the
+        // confirmation's, and an X11 program's menus and tooltips, which X11 gives no way to
+        // tell their shadow from their body and which draw their own background anyway.
+        let area = area.filter(|_| window_names(window).1 != CONFIRM_APP_ID && is_managed(window));
         if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
             let id = window_glass_id(window);
             if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {

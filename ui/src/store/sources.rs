@@ -6,10 +6,14 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -78,6 +82,8 @@ pub struct App {
     pub icon: Option<PathBuf>,
     /// An icon theme's name for it, when AppStream gives a name rather than a file.
     pub icon_name: String,
+    /// Its icon on the web, for one known before any source's data is on this computer.
+    pub icon_url: String,
     pub screenshot: String,
     /// A command-line program, without a window: shown by its command.
     pub cli: bool,
@@ -111,6 +117,7 @@ pub fn merge(apps: impl IntoIterator<Item = App>) -> Vec<App> {
                     (&mut into.homepage, app.homepage),
                     (&mut into.license, app.license),
                     (&mut into.screenshot, app.screenshot),
+                    (&mut into.icon_url, app.icon_url),
                 ] {
                     if field.is_empty() {
                         *field = value;
@@ -270,6 +277,7 @@ fn appstream_app(block: &HashMap<String, String>) -> Option<App> {
         icon,
         cli,
         offers: vec![offer],
+        ..Default::default()
     })
 }
 
@@ -784,7 +792,7 @@ pub fn search_vendors(query: &str, repos: &[Repository]) -> Vec<App> {
     let query = query.to_lowercase();
     VENDORS
         .iter()
-        .filter(|vendor| !repos.iter().any(|repo| same_place(&repo.uri, vendor.uri)))
+        .filter(|vendor| !vendor_added(vendor, repos))
         .flat_map(|vendor| vendor.packages.iter().map(move |package| (vendor, package)))
         .filter(|(_, (package, name, _, _))| package.contains(&query) || name.to_lowercase().contains(&query))
         .map(|(vendor, &(package, name, summary, cli))| App {
@@ -793,20 +801,30 @@ pub fn search_vendors(query: &str, repos: &[Repository]) -> Vec<App> {
             summary: summary.to_string(),
             developer: vendor.name.to_string(),
             cli,
-            offers: vec![Offer {
-                kind: Some(Kind::Apt),
-                id: package.to_string(),
-                origin: vendor.name.to_string(),
-                via: "apt · 自家套件庫".into(),
-                publisher: vendor.name.to_string(),
-                verified: true,
-                admin: true,
-                repo: Some(vendor),
-                ..Default::default()
-            }],
+            offers: vec![vendor_offer(vendor, package, true)],
             ..Default::default()
         })
         .collect()
+}
+
+/// A package from a vendor's repository; `adding` when the repository is not added yet.
+pub fn vendor_offer(vendor: &'static Vendor, package: &str, adding: bool) -> Offer {
+    Offer {
+        kind: Some(Kind::Apt),
+        id: package.to_string(),
+        origin: vendor.name.to_string(),
+        via: "apt · 自家套件庫".into(),
+        publisher: vendor.name.to_string(),
+        verified: true,
+        admin: true,
+        repo: adding.then_some(vendor),
+        ..Default::default()
+    }
+}
+
+/// Whether a vendor's repository is among the ones apt already uses.
+pub fn vendor_added(vendor: &Vendor, repos: &[Repository]) -> bool {
+    repos.iter().any(|repo| same_place(&repo.uri, vendor.uri))
 }
 
 fn same_place(a: &str, b: &str) -> bool {
@@ -891,8 +909,10 @@ pub fn flatpak_updates() -> Vec<(String, String)> {
 
 // The Snap Store, through snapd's socket.
 
+pub const SNAPD_SOCKET: &str = "/run/snapd.socket";
+
 fn snapd(path: &str) -> Option<serde_json::Value> {
-    let mut stream = UnixStream::connect("/run/snapd.socket").ok()?;
+    let mut stream = UnixStream::connect(SNAPD_SOCKET).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(8))).ok()?;
     write!(stream, "GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").ok()?;
     let mut response = String::new();
@@ -1255,7 +1275,8 @@ fn words(list: &[&str]) -> Vec<String> {
 /// apt-get as Market runs it, with nothing to answer: a configuration file changed
 /// both here and in the new version keeps the one here, as dpkg would otherwise ask on a
 /// closed input and leave the package half set up.
-pub const APT_GET: [&str; 8] = [
+/// Its status lines go to what it prints, where `run_one` reads them for the progress.
+pub const APT_GET: [&str; 12] = [
     "env",
     "DEBIAN_FRONTEND=noninteractive",
     "apt-get",
@@ -1264,7 +1285,19 @@ pub const APT_GET: [&str; 8] = [
     "Dpkg::Options::=--force-confdef",
     "-o",
     "Dpkg::Options::=--force-confold",
+    "-o",
+    APT_LOCK_WAIT,
+    "-o",
+    "APT::Status-Fd=1",
 ];
+
+/// apt fails at once while another apt holds its lock, as a second install started before
+/// the first ends would; this has it wait for that one instead, for up to ten minutes.
+const APT_LOCK_WAIT: &str = "DPkg::Lock::Timeout=600";
+
+fn apt_update() -> Vec<String> {
+    words(&["apt-get", "-o", APT_LOCK_WAIT, "update"])
+}
 
 pub fn install_plan(offer: &Offer) -> Plan {
     let mut plan = Plan::default();
@@ -1389,7 +1422,7 @@ pub fn add_repository(vendor: &Vendor) -> Vec<Vec<String>> {
                 vendor.file
             ),
         ]),
-        words(&["apt-get", "update"]),
+        apt_update(),
     ]
 }
 
@@ -1399,7 +1432,7 @@ pub fn remove_repository(repo: &Repository) -> Plan {
         after: Vec::new(),
         admin: vec![
             words(&["rm", "-f", &repo.file.to_string_lossy()]),
-            words(&["apt-get", "update"]),
+            apt_update(),
         ],
     }
 }
@@ -1421,19 +1454,97 @@ pub fn shell_quote(word: &str) -> String {
 /// first failure stops it, and what the failing command said is returned, or nothing if the
 /// password was not given.
 pub fn run(plan: &Plan, reason: &str) -> Result<(), String> {
+    run_watched(plan, reason, &Watch::default())
+}
+
+/// As `run`, saying in `watch` how far it has got where apt or snapd tell.
+pub fn run_watched(plan: &Plan, reason: &str, watch: &Watch) -> Result<(), String> {
     for command in &plan.user {
-        run_one(Command::new(&command[0]).args(&command[1..]), command)?;
+        run_one(Command::new(&command[0]).args(&command[1..]), command, watch)?;
     }
     if !plan.admin.is_empty() {
-        run_admin(&plan.admin, reason)?;
+        run_admin(&plan.admin, reason, watch)?;
     }
     for command in &plan.after {
-        run_one(Command::new(&command[0]).args(&command[1..]), command)?;
+        run_one(Command::new(&command[0]).args(&command[1..]), command, watch)?;
     }
     Ok(())
 }
 
-fn run_admin(admin: &[Vec<String>], reason: &str) -> Result<(), String> {
+/// How far a running change has got: downloading or installing, and how much of that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Progress {
+    pub downloading: bool,
+    pub fraction: f64,
+}
+
+/// What a change has said of its progress so far, None until it says anything.
+pub type Watch = Arc<Mutex<Option<Progress>>>;
+
+fn report(watch: &Watch, progress: Progress) {
+    if let Ok(mut held) = watch.lock() {
+        *held = Some(progress);
+    }
+}
+
+/// apt's own status line, written to APT::Status-Fd: `dlstatus:` while it downloads and
+/// `pmstatus:` while dpkg installs, each with the percentage done as its third field.
+fn apt_progress(line: &str) -> Option<Progress> {
+    let mut fields = line.splitn(4, ':');
+    let downloading = match fields.next()? {
+        "dlstatus" => true,
+        "pmstatus" => false,
+        _ => return None,
+    };
+    let percent: f64 = fields.nth(1)?.parse().ok()?;
+    Some(Progress {
+        downloading,
+        fraction: (percent / 100.0).clamp(0.0, 1.0),
+    })
+}
+
+/// How often snapd is asked about a snap being installed.
+const SNAP_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const SNAP_DOWNLOAD_TASK: &str = "download-snap";
+
+/// The progress of the snap change in progress, from snapd: its download by bytes while
+/// that runs, then its remaining tasks by count.
+fn snap_progress() -> Option<Progress> {
+    let changes = snapd("/v2/changes?select=in-progress")?;
+    let change = changes
+        .as_array()?
+        .iter()
+        .find(|change| change["kind"].as_str().is_some_and(|kind| kind.ends_with("-snap")))?;
+    let tasks = change["tasks"].as_array()?;
+    let downloading = tasks.iter().find(|task| {
+        task["kind"] == SNAP_DOWNLOAD_TASK && task["status"] == "Doing"
+    });
+    if let Some(task) = downloading {
+        let done = task["progress"]["done"].as_f64()?;
+        let total = task["progress"]["total"].as_f64().filter(|total| *total > 0.0)?;
+        return Some(Progress {
+            downloading: true,
+            fraction: (done / total).clamp(0.0, 1.0),
+        });
+    }
+    let finished = tasks.iter().filter(|task| task["status"] == "Done").count();
+    Some(Progress {
+        downloading: false,
+        fraction: finished as f64 / tasks.len().max(1) as f64,
+    })
+}
+
+/// Asks snapd about the change in progress until `running` is cleared.
+fn watch_snap(watch: &Watch, running: &AtomicBool) {
+    while running.load(Ordering::Relaxed) {
+        if let Some(progress) = snap_progress() {
+            report(watch, progress);
+        }
+        std::thread::sleep(SNAP_POLL_INTERVAL);
+    }
+}
+
+fn run_admin(admin: &[Vec<String>], reason: &str, watch: &Watch) -> Result<(), String> {
     let script = admin
         .iter()
         .map(|command| {
@@ -1454,15 +1565,52 @@ fn run_admin(admin: &[Vec<String>], reason: &str) -> Result<(), String> {
     sudo.env("SUDO_ASKPASS", askpass)
         .env("NEKOLAND_ASKPASS_REASON", reason)
         .args(["-A", "--", "sh", "-c", &script]);
-    run_one(&mut sudo, &words(&["sudo", "sh", "-c", &script]))
+    let shown = words(&["sudo", "sh", "-c", &script]);
+    let installs_snap = admin.iter().any(|command| command.starts_with(&words(&["snap", "install"])));
+    if !installs_snap {
+        return run_one(&mut sudo, &shown, watch);
+    }
+    // snap says nothing of its progress unless on a terminal; snapd tells it instead.
+    let running = AtomicBool::new(true);
+    std::thread::scope(|scope| {
+        scope.spawn(|| watch_snap(watch, &running));
+        let result = run_one(&mut sudo, &shown, watch);
+        running.store(false, Ordering::Relaxed);
+        result
+    })
 }
 
-fn run_one(command: &mut Command, words: &[String]) -> Result<(), String> {
-    let out = command.output().map_err(|err| format!("{}: {err}", words[0]))?;
-    if out.status.success() {
+/// Runs a command, reading apt's status lines from what it prints as it prints them.
+fn run_one(command: &mut Command, words: &[String], watch: &Watch) -> Result<(), String> {
+    let spawn_failed = |err: std::io::Error| format!("{}: {err}", words[0]);
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(spawn_failed)?;
+    let (stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
+    // Read apart, so that neither pipe fills while the other is read.
+    let said = std::thread::scope(|scope| {
+        let errors = scope.spawn(move || {
+            let mut text = String::new();
+            if let Some(stderr) = stderr.as_mut() {
+                if let Err(err) = stderr.read_to_string(&mut text) {
+                    eprintln!("{}: {err}", words[0]);
+                }
+            }
+            text
+        });
+        for line in stdout.into_iter().flat_map(|out| BufReader::new(out).lines().map_while(Result::ok)) {
+            if let Some(progress) = apt_progress(&line) {
+                report(watch, progress);
+            }
+        }
+        errors.join().unwrap_or_default()
+    });
+    let status = child.wait().map_err(spawn_failed)?;
+    if status.success() {
         return Ok(());
     }
-    let said = String::from_utf8_lossy(&out.stderr);
     // The password dialog was cancelled: not a failure to report.
     if said.contains("no password was provided") || said.contains("a password is required") {
         return Err(String::new());
@@ -1683,5 +1831,18 @@ mod tests {
     fn shell_quoting_keeps_words_whole() {
         assert_eq!(shell_quote("apt-get"), "apt-get");
         assert_eq!(shell_quote("it's here"), r"'it'\''s here'");
+    }
+
+    #[test]
+    fn apt_status_lines_give_the_stage_and_share_done() {
+        assert_eq!(
+            apt_progress("dlstatus:3:42.5:Retrieving file 3 of 9"),
+            Some(Progress { downloading: true, fraction: 0.425 })
+        );
+        assert_eq!(
+            apt_progress("pmstatus:epiphany-browser:100:Installed epiphany-browser"),
+            Some(Progress { downloading: false, fraction: 1.0 })
+        );
+        assert_eq!(apt_progress("Reading package lists..."), None);
     }
 }

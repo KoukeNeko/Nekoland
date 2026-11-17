@@ -431,6 +431,16 @@ before it is installed; an icon theme's page draws the Dock's applications in it
 `icon_theme` or `cursor_theme`, and GNOME's matching setting, as Settings does.
 `shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications.
 
+Nekoland comes with no web browser. Market's 瀏覽器 page lists the ones it can install on
+this computer (`ui/src/store/browsers.rs`): each from Flathub, the Snap Store, Ubuntu or its
+vendor's repository, whichever this computer has, with its icon fetched from Flathub; the
+first one installed becomes the default for web links. At each login the compositor runs
+`nekoland-store --choose-browser`, which ends at once if there is a browser or the choice
+was skipped (`~/.local/state/nekoland/browser-choice-skipped`), and otherwise asks for one:
+the same browsers in a new order each time, none picked, the one picked installed, made the
+default and opened. While there is none, Settings' 預設應用程式 shows 網頁瀏覽器 as 未安裝,
+with 取得 opening Market's 瀏覽器 page.
+
 `nekoland-filechooser`, from `ui/`, is the window programs open and save files in when they
 ask `xdg-desktop-portal`: browsers, Flatpak and Snap applications, GTK 4's file dialog and
 Electron. The places are on the left (recent files, the home folders, the bookmarks Files
