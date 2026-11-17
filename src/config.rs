@@ -700,7 +700,9 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
         }
         // On the disk before it takes the old one's place, for a power cut in between.
         file.sync_all()?;
-        std::fs::rename(&partial, &target)
+        std::fs::rename(&partial, &target)?;
+        // The rename itself is on the disk only once its folder is.
+        std::fs::File::open(target.parent().unwrap_or(&target))?.sync_all()
     };
     write().map_err(failed)
 }
