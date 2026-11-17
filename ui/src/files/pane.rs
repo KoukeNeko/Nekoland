@@ -188,6 +188,9 @@ pub struct Pane {
     chosen_files: RefCell<Vec<gio::File>>,
     gallery_facts: Facts,
     views: gtk::Stack,
+    /// The files of where the tab was, fading out over the ones of where it is.
+    fade: gtk::Picture,
+    fading: adw::TimedAnimation,
     status: gtk::Label,
     view: Cell<View>,
     search: RefCell<Option<Search>>,
@@ -378,8 +381,29 @@ impl Pane {
         path_bar.append(&count);
         path_bar.append(&zoom);
 
+        let fade = gtk::Picture::builder()
+            .can_target(false)
+            .content_fit(gtk::ContentFit::Fill)
+            .visible(false)
+            .build();
+        let fading = adw::TimedAnimation::new(
+            &fade,
+            1.0,
+            0.0,
+            150,
+            adw::PropertyAnimationTarget::new(&fade, "opacity"),
+        );
+        fading.set_easing(adw::Easing::EaseOutCubic);
+        fading.connect_done(|fading| {
+            if let Some(fade) = fading.widget().downcast_ref::<gtk::Picture>() {
+                fade.set_visible(false);
+                fade.set_paintable(None::<&gdk::Paintable>);
+            }
+        });
+        let fading_over = gtk::Overlay::builder().child(&views).build();
+        fading_over.add_overlay(&fade);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        body.append(&views);
+        body.append(&fading_over);
         body.append(&preview_box);
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.append(&scope);
@@ -420,6 +444,8 @@ impl Pane {
             chosen_files: RefCell::new(Vec::new()),
             gallery_facts,
             views,
+            fade,
+            fading,
             status,
             view: Cell::new(prefs.view),
             search: RefCell::new(None),
@@ -1079,11 +1105,13 @@ impl Pane {
         match &to {
             Where::Folder(file) => self.set_directory(listing(file, ATTRIBUTES)),
             Where::Recent => {
+                self.crossfade();
                 self.fill_recent();
                 self.expandable.set(false);
                 self.filtered.set_model(Some(&self.results));
             }
             Where::Tag(tag) => {
+                self.crossfade();
                 self.results.remove_all();
                 self.expandable.set(false);
                 self.filtered.set_model(Some(&self.results));
@@ -1152,11 +1180,26 @@ impl Pane {
         let here =
             matches!(&*self.here.borrow(), Where::Folder(f) if list.file().is_some_and(|l| l.equal(f)));
         if here && !self.is_searching() && self.filtered.model().as_ref() != Some(list.upcast_ref()) {
+            self.crossfade();
             // Emptied first, in the same moment, so the views start at the top as for any
             // folder rather than keep where they were in the one before.
             self.filtered.set_model(None::<&gio::ListModel>);
             self.filtered.set_model(Some(&list));
         }
+    }
+
+    /// What the tab shows fades into what it shows next, as the sidebar's choice moves to
+    /// where it goes: a picture of it now, over the files that replace them, fading out.
+    fn crossfade(&self) {
+        // The columns move along to the folder themselves.
+        if self.view.get() == View::Columns || !self.views.is_mapped() {
+            return;
+        }
+        let now = gtk::WidgetPaintable::new(Some(&self.views)).current_image();
+        self.fade.set_paintable(Some(&now));
+        self.fade.set_visible(true);
+        self.fading.reset();
+        self.fading.play();
     }
 
     /// Back (-1) or forward (1) in where the tab has been.
@@ -1479,7 +1522,14 @@ impl Pane {
             None => view.name(),
         };
         if self.views.visible_child_name().as_deref() != Some(name) {
-            self.views.set_visible_child_name(name);
+            // Under a crossfade the page changes at once; a fade of its own would show the
+            // page going already emptied.
+            let transition = if self.fading.state() == adw::AnimationState::Playing {
+                gtk::StackTransitionType::None
+            } else {
+                self.views.transition_type()
+            };
+            self.views.set_visible_child_full(name, transition);
         }
         self.update_count();
     }
