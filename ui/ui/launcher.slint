@@ -1,5 +1,6 @@
-// Finds an application by name and starts it, after Spotlight: a search field over the
-// applications that match, on glass. The arrows move, Return starts, Escape closes.
+// Finds an application by name and starts it, after Spotlight: a search field on glass that
+// opens down into the applications that match, the first of them the answer. The arrows
+// move, Return starts, Escape closes.
 
 import { Theme, Icon, SmoothRect } from "widgets.slint";
 
@@ -13,9 +14,15 @@ export component Launcher inherits Window {
     in-out property <string> query;
     in property <[AppRow]> apps;
     in-out property <int> current;
+    // The Appearance settings' glass, as solid as the compositor's menus.
+    in property <float> glass-opacity: 0.8;
     callback edited(string);
     callback chosen(int);
     callback cancelled();
+
+    // The answer's row, with the gap under it, and every other row.
+    property <length> answer-height: 64px;
+    property <length> row-height: 36px;
 
     title: "搜尋";
     no-frame: true;
@@ -23,116 +30,186 @@ export component Launcher inherits Window {
     default-font-family: Theme.font;
     default-font-size: Theme.text-body;
     width: 640px;
-    height: layout.preferred-height;
+    height: shown-height;
     forward-focus: field;
+
+    // Opens down as results come and closes up as they go.
+    property <length> shown-height: layout.preferred-height;
+    animate shown-height { duration: 160ms; easing: Theme.ease; }
 
     // The glass under it is the compositor's; this is its tint.
     SmoothRect {
         radius: 16px;
-        background: Theme.dark ? #222226b8 : #fbfaf8c8;
+        background: (Theme.dark ? #222226 : #fbfaf8).with-alpha(root.glass-opacity);
         border-width: 1px;
         border-color: Theme.dark ? #ffffff29 : #ffffff59;
     }
 
-    layout := VerticalLayout {
-        padding: 10px;
-        spacing: 4px;
-
-        HorizontalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
-            spacing: 10px;
-            height: 48px;
-            Icon {
-                name: "search";
-                width: 20px;
-                height: 20px;
-                stroke: Theme.ink-2;
-                stroke-width: 2px;
-                y: (parent.height - self.height) / 2;
-            }
-            Rectangle {
-                field := TextInput {
-                    text <=> root.query;
-                    font-size: 20px;
-                    color: Theme.ink;
-                    single-line: true;
-                    vertical-alignment: center;
-                    selection-background-color: Theme.ink.with-alpha(0.2);
-                    accessible-role: text-input;
-                    accessible-label: "搜尋";
-                    edited => { root.edited(self.text); }
-                    accepted => { root.chosen(root.current); }
-                    key-pressed(event) => {
-                        if event.text == Key.Escape {
-                            root.cancelled();
-                            return accept;
-                        }
-                        if event.text == Key.DownArrow {
-                            root.current = Math.min(root.current + 1, root.apps.length - 1);
-                            return accept;
-                        }
-                        if event.text == Key.UpArrow {
-                            root.current = Math.max(root.current - 1, 0);
-                            return accept;
-                        }
-                        reject
-                    }
-                }
-                if root.query == "": Text {
-                    x: 0;
-                    text: "搜尋";
-                    font-size: 20px;
-                    color: Theme.ink-3;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        if apps.length > 0: Rectangle {
-            height: 1px;
-            background: Theme.ink.with-alpha(0.12);
-        }
-
-        for app[index] in apps: Rectangle {
-            height: 44px;
-            border-radius: 8px;
-            background: index == current ? Theme.ink : row-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
-            accessible-role: list-item;
-            accessible-label: app.name;
-            accessible-item-selected: index == current;
-            accessible-action-default => { root.chosen(index); }
+    Rectangle {
+        clip: true;
+        layout := VerticalLayout {
+            alignment: start;
 
             HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
+                padding-left: 18px;
+                padding-right: 18px;
                 spacing: 12px;
-                Image {
-                    source: app.icon;
-                    width: 28px;
-                    height: 28px;
+                height: 56px;
+                Icon {
+                    name: "search";
+                    width: 20px;
+                    height: 20px;
+                    stroke: Theme.ink-2;
+                    stroke-width: 2px;
                     y: (parent.height - self.height) / 2;
                 }
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: app.name;
-                        color: index == current ? Theme.on-ink : Theme.ink;
-                        font-weight: 500;
-                        overflow: elide;
+                Rectangle {
+                    field := TextInput {
+                        text <=> root.query;
+                        font-size: 22px;
+                        color: Theme.ink;
+                        single-line: true;
+                        vertical-alignment: center;
+                        selection-background-color: Theme.ink.with-alpha(0.2);
+                        accessible-role: text-input;
+                        accessible-label: "搜尋";
+                        edited => { root.edited(self.text); }
+                        accepted => { root.chosen(root.current); }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape {
+                                root.cancelled();
+                                return accept;
+                            }
+                            if event.text == Key.DownArrow {
+                                root.current = Math.min(root.current + 1, root.apps.length - 1);
+                                return accept;
+                            }
+                            if event.text == Key.UpArrow {
+                                root.current = Math.max(root.current - 1, 0);
+                                return accept;
+                            }
+                            reject
+                        }
                     }
-                    if app.detail != "": Text {
-                        text: app.detail;
-                        font-size: Theme.text-small;
-                        color: index == current ? Theme.on-ink.with-alpha(0.7) : Theme.ink-2;
-                        overflow: elide;
+                    if root.query == "": Text {
+                        x: 0;
+                        text: "搜尋";
+                        font-size: 22px;
+                        color: Theme.ink-3;
+                        vertical-alignment: center;
                     }
                 }
             }
 
-            row-touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.chosen(index); }
+            if root.query != "": Rectangle {
+                height: 1px;
+                background: Theme.ink.with-alpha(0.1);
+            }
+
+            if root.query != "" && root.apps.length == 0: Text {
+                height: 56px;
+                // Under the text typed.
+                x: 50px;
+                text: "沒有符合的應用程式";
+                color: Theme.ink-2;
+                vertical-alignment: center;
+            }
+
+            if root.apps.length > 0: Rectangle {
+                height: rows.preferred-height;
+
+                // What is chosen is solid ink, and slides to the row the arrows move to.
+                Rectangle {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    y: 6px + (root.current == 0 ? 0px : root.answer-height + (root.current - 1) * root.row-height);
+                    height: root.current == 0 ? root.answer-height - 4px : root.row-height;
+                    border-radius: 10px;
+                    background: Theme.ink;
+                    animate y, height { duration: 120ms; easing: Theme.ease; }
+                }
+
+                rows := VerticalLayout {
+                    padding: 6px;
+
+                    for app[index] in root.apps: Rectangle {
+                        property <bool> chosen: index == root.current;
+                        property <bool> answer: index == 0;
+                        height: answer ? root.answer-height : root.row-height;
+                        accessible-role: list-item;
+                        accessible-label: app.name;
+                        accessible-item-selected: chosen;
+                        accessible-action-default => { root.chosen(index); }
+
+                        if row-touch.has-hover && !chosen: Rectangle {
+                            height: answer ? root.answer-height - 4px : root.row-height;
+                            y: 0;
+                            border-radius: 10px;
+                            background: Theme.ink.with-alpha(0.08);
+                        }
+
+                        if answer: HorizontalLayout {
+                            height: root.answer-height - 4px;
+                            y: 0;
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 14px;
+                            Image {
+                                source: app.icon;
+                                width: 40px;
+                                height: 40px;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: app.name;
+                                    font-size: 17px;
+                                    font-weight: 600;
+                                    color: chosen ? Theme.on-ink : Theme.ink;
+                                    overflow: elide;
+                                }
+                                if app.detail != "": Text {
+                                    text: app.detail;
+                                    font-size: 13px;
+                                    color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-2;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        if !answer: HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 12px;
+                            Image {
+                                source: app.icon;
+                                width: 24px;
+                                height: 24px;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Text {
+                                text: app.name;
+                                font-weight: 500;
+                                color: chosen ? Theme.on-ink : Theme.ink;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                            Text {
+                                text: app.detail;
+                                color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-3;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+
+                        row-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.chosen(index); }
+                        }
+                    }
+                }
             }
         }
     }

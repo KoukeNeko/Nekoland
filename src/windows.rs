@@ -273,7 +273,12 @@ impl Nekoland {
 
         if let Some(area) = self.usable_area() {
             let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
-            let y = area.loc.y + (area.size.h - size.h).max(0) / 2;
+            // The launcher opens down from a fifth of the way, as its results come.
+            let y = if window_names(window).1 == LAUNCHER_APP_ID {
+                area.loc.y + area.size.h / 5
+            } else {
+                area.loc.y + (area.size.h - size.h).max(0) / 2
+            };
             self.space.map_element(window.clone(), (x, y), false);
         }
         self.focus_window(window);

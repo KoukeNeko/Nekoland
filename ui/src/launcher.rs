@@ -13,6 +13,53 @@ slint::include_modules!();
 /// How many matches are listed.
 const SHOWN: usize = 8;
 const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
+/// What an application without an icon of its own shows.
+const NO_ICON: &str = "application-x-executable";
+
+/// What the Appearance settings say the launcher looks like: how solid its glass is, and
+/// the icon theme looked in before `ICON_THEMES`.
+struct Look {
+    glass_opacity: f32,
+    icon_theme: Option<String>,
+}
+
+impl Look {
+    fn load() -> Self {
+        let config: toml::Table = std::process::Command::new("nekoland")
+            .args(["msg", "config"])
+            .output()
+            .inspect_err(|err| eprintln!("nekoland msg config: {err}"))
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|text| {
+                toml::from_str(&text)
+                    .inspect_err(|err| eprintln!("nekoland msg config: {err}"))
+                    .ok()
+            })
+            .unwrap_or_default();
+        let glass_opacity = match config.get("glass_opacity") {
+            Some(toml::Value::Integer(number)) => *number as f32,
+            value => value.and_then(toml::Value::as_float).unwrap_or(0.8) as f32,
+        };
+        let icon_theme = config
+            .get("icon_theme")
+            .and_then(toml::Value::as_str)
+            .filter(|theme| !theme.is_empty())
+            .map(String::from);
+        Self {
+            glass_opacity,
+            icon_theme,
+        }
+    }
+
+    fn icon_themes(&self) -> Vec<&str> {
+        self.icon_theme
+            .as_deref()
+            .into_iter()
+            .chain(ICON_THEMES)
+            .collect()
+    }
+}
 
 #[derive(Clone)]
 struct App {
@@ -88,18 +135,20 @@ fn strip_field_codes(exec: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
+fn find_icon(dirs: &[PathBuf], themes: &[&str], icon: &str) -> Option<PathBuf> {
     let path = Path::new(icon);
     if path.is_absolute() {
         return path.is_file().then(|| path.to_path_buf());
     }
     for dir in dirs {
-        for theme in ICON_THEMES {
+        for theme in themes {
             for size in ["scalable", "256x256", "128x128", "64x64", "48x48"] {
-                for ext in ["svg", "png"] {
-                    let candidate = dir.join(format!("icons/{theme}/{size}/apps/{icon}.{ext}"));
-                    if candidate.is_file() {
-                        return Some(candidate);
+                for context in ["apps", "mimetypes"] {
+                    for ext in ["svg", "png"] {
+                        let candidate = dir.join(format!("icons/{theme}/{size}/{context}/{icon}.{ext}"));
+                        if candidate.is_file() {
+                            return Some(candidate);
+                        }
                     }
                 }
             }
@@ -113,7 +162,7 @@ fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
 }
 
 /// Every application the user can start, once each, by name.
-fn applications() -> Vec<App> {
+fn applications(themes: &[&str]) -> Vec<App> {
     let dirs = data_dirs();
     let languages = languages();
     let mut seen = std::collections::HashSet::new();
@@ -144,7 +193,11 @@ fn applications() -> Vec<App> {
             let (Some(name), Some(exec)) = (get("Name"), get("Exec")) else {
                 continue;
             };
-            let detail = get("GenericName").or_else(|| get("Comment")).unwrap_or_default();
+            // A generic name that only says the name again says nothing.
+            let detail = get("GenericName")
+                .filter(|generic| !generic.eq_ignore_ascii_case(&name))
+                .or_else(|| get("Comment"))
+                .unwrap_or_default();
             let words = [
                 name.clone(),
                 value(&entry, "Name", &[]).unwrap_or_default(),
@@ -160,7 +213,7 @@ fn applications() -> Vec<App> {
                 detail,
                 words,
                 exec: strip_field_codes(&exec),
-                icon: get("Icon").and_then(|icon| find_icon(&dirs, &icon)),
+                icon: get("Icon").and_then(|icon| find_icon(&dirs, themes, &icon)),
             });
         }
     }
@@ -168,20 +221,29 @@ fn applications() -> Vec<App> {
     apps
 }
 
-/// The applications for what was typed: names starting with it first, then the rest
-/// that mention it anywhere.
+/// The applications for what was typed, none before anything is: names starting with it
+/// first, then names with a word starting with it, then the rest that mention it anywhere.
 fn matching<'a>(apps: &'a [App], query: &str) -> Vec<&'a App> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
-        return apps.iter().take(SHOWN).collect();
+        return Vec::new();
     }
     let mut found: Vec<&App> = apps.iter().filter(|app| app.words.contains(&query)).collect();
-    found.sort_by_key(|app| !app.name.to_lowercase().starts_with(&query));
+    found.sort_by_key(|app| {
+        let name = app.name.to_lowercase();
+        if name.starts_with(&query) {
+            0
+        } else if name.split_whitespace().any(|word| word.starts_with(&query)) {
+            1
+        } else {
+            2
+        }
+    });
     found.truncate(SHOWN);
     found
 }
 
-fn rows(apps: &[&App]) -> ModelRc<AppRow> {
+fn rows(apps: &[&App], no_icon: &Image) -> ModelRc<AppRow> {
     let rows: Vec<AppRow> = apps
         .iter()
         .map(|app| AppRow {
@@ -191,29 +253,35 @@ fn rows(apps: &[&App]) -> ModelRc<AppRow> {
                 .icon
                 .as_deref()
                 .and_then(|path| Image::load_from_path(path).ok())
-                .unwrap_or_default(),
+                .unwrap_or_else(|| no_icon.clone()),
         })
         .collect();
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let apps = Rc::new(applications());
+    let look = Look::load();
+    let themes = look.icon_themes();
+    let apps = Rc::new(applications(&themes));
+    let no_icon = find_icon(&data_dirs(), &themes, NO_ICON)
+        .and_then(|path| Image::load_from_path(&path).ok())
+        .unwrap_or_default();
     let search = std::env::args()
         .find_map(|argument| argument.strip_prefix("--search=").map(String::from))
         .unwrap_or_default();
 
     let launcher = Launcher::new()?;
     slint::set_xdg_app_id("nekoland-launcher")?;
+    launcher.set_glass_opacity(look.glass_opacity);
     launcher.set_query(search.clone().into());
-    launcher.set_apps(rows(&matching(&apps, &search)));
+    launcher.set_apps(rows(&matching(&apps, &search), &no_icon));
     launcher.set_current(0);
 
     let weak = launcher.as_weak();
     let shown = apps.clone();
     launcher.on_edited(move |query| {
         if let Some(launcher) = weak.upgrade() {
-            launcher.set_apps(rows(&matching(&shown, &query)));
+            launcher.set_apps(rows(&matching(&shown, &query), &no_icon));
             launcher.set_current(0);
         }
     });
@@ -264,6 +332,21 @@ mod tests {
             .map(|app| app.name.as_str())
             .collect();
         assert_eq!(found, ["Terminal", "Files"]);
+    }
+
+    #[test]
+    fn a_word_of_the_name_comes_before_the_rest() {
+        let apps = [
+            app("Files", "text"),
+            app("Text Editor", "gedit"),
+            app("GNOME Text", ""),
+        ];
+        let found: Vec<&str> = matching(&apps, "tex")
+            .iter()
+            .map(|app| app.name.as_str())
+            .collect();
+        assert_eq!(found, ["Text Editor", "GNOME Text", "Files"]);
+        assert!(matching(&apps, " ").is_empty());
     }
 
     #[test]
