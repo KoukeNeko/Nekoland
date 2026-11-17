@@ -23,7 +23,7 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
 # What it runs with: Mesa to draw, Xwayland, the locker, wallpaper, terminal, portals, the network,
 # sound, clipboard, fonts and icons, the input method, and the applications the example
 # configuration keeps in the Dock.
-run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 xwayland swaylock swaybg foot grim
+run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     network-manager network-manager-openvpn

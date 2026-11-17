@@ -16,13 +16,13 @@ use smithay::{
     backend::{
         allocator::{
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Fourcc,
+            Buffer, Fourcc,
         },
         drm::{
-            compositor::FrameFlags,
+            compositor::{FrameFlags, PrimaryPlaneElement, RenderFrameResult},
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, Framebuffer, NodeType,
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -522,10 +522,11 @@ fn draw(
     let cursor = elements.len();
     elements.extend(scene_elements(state, renderer, output, glass)?);
 
-    let is_empty = surface
+    let frame = surface
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
-        .map_err(|err| err.to_string())?
-        .is_empty;
+        .map_err(|err| err.to_string())?;
+    wait_until_drawn(&frame);
+    let is_empty = frame.is_empty;
     if !screencopy.is_empty() {
         crate::screencopy::copy(renderer, output, &elements, cursor, screencopy);
     }
@@ -534,6 +535,20 @@ fn draw(
     }
     surface.queue_frame(()).map_err(|err| err.to_string())?;
     Ok(true)
+}
+
+/// Where the display cannot be told to wait for the renderer, waits for it here. Without
+/// this a software renderer's frame is shown half drawn: on Hyper-V the menu bar and the
+/// Dock, drawn last, were missing or flickered.
+fn wait_until_drawn<B: Buffer, F: Framebuffer, E>(frame: &RenderFrameResult<'_, B, F, E>) {
+    if !frame.needs_sync() {
+        return;
+    }
+    if let PrimaryPlaneElement::Swapchain(element) = &frame.primary_element {
+        if let Err(err) = element.sync.wait() {
+            warn!("the frame may be shown before it is drawn: {err:?}");
+        }
+    }
 }
 
 /// The cursor a client drew itself, or the theme's picture for the one it named.
