@@ -3,6 +3,7 @@
 //! each program once however many places have it, and on its page the places side by side
 //! to install it from.
 
+mod alert;
 mod focus;
 #[path = "store/sources.rs"]
 mod sources;
@@ -874,19 +875,16 @@ fn repository_page(store: &Rc<Store>, repo: Repository) -> adw::NavigationPage {
         #[strong]
         repo,
         move |_| {
-            let dialog = adw::AlertDialog::new(
-                Some(&format!("移除 {} 套件庫？", repo.name)),
-                Some("已安裝的套件會留著，但不會再收到更新。"),
-            );
-            dialog.add_responses(&[("cancel", "取消"), ("remove", "移除")]);
-            dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
             let repo = repo.clone();
-            dialog.connect_response(
-                Some("remove"),
+            alert::confirm(
+                &store.window,
+                &format!("移除 {} 套件庫？", repo.name),
+                Some("已安裝的套件會留著，但不會再收到更新。"),
+                "移除",
                 glib::clone!(
                     #[weak]
                     store,
-                    move |_, _| {
+                    move || {
                         let plan = sources::remove_repository(&repo);
                         let reason = format!("移除 {} 套件庫", repo.name);
                         background(
@@ -907,7 +905,6 @@ fn repository_page(store: &Rc<Store>, repo: Repository) -> adw::NavigationPage {
                     }
                 ),
             );
-            dialog.present(Some(&store.window));
         }
     ));
     let page = page(&repo.name, &content, Some(remove.upcast_ref()));
@@ -1827,17 +1824,17 @@ fn confirm_switch(store: &Rc<Store>, detail: &Rc<Detail>, to: Offer, from: Offer
 
 fn confirm_remove(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer) {
     let name = detail.app.borrow().name.clone();
-    let dialog = adw::AlertDialog::new(Some(&format!("移除 {name}？")), None);
-    dialog.add_responses(&[("cancel", "取消"), ("remove", "移除")]);
-    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
-    dialog.connect_response(
-        Some("remove"),
+    alert::confirm(
+        &store.window,
+        &format!("移除 {name}？"),
+        None,
+        "移除",
         glib::clone!(
             #[weak]
             store,
             #[weak]
             detail,
-            move |_, _| {
+            move || {
                 let plan = sources::remove_plan(&offer);
                 let id = offer.id.clone();
                 change(
@@ -1856,7 +1853,6 @@ fn confirm_remove(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer) {
             }
         ),
     );
-    dialog.present(Some(&store.window));
 }
 
 /// Installs an offer; switching, the one it replaces is removed only once the new one is
