@@ -865,9 +865,11 @@ fn repository_page(store: &Rc<Store>, repo: Repository) -> adw::NavigationPage {
         ("權限", "需要管理員"),
     ]));
     content.append(&loading());
+    // Removing deletes the repository's file, so not one that names others too.
     let remove = gtk::Button::builder()
         .label("移除套件庫")
         .css_classes(["flat"])
+        .visible(sources::removable(&repo))
         .build();
     remove.connect_clicked(glib::clone!(
         #[weak]
@@ -1120,16 +1122,11 @@ fn update_plan(found: &Updates) -> sources::Plan {
         .map(|(name, ..)| name.as_str())
         .collect();
     if !apt.is_empty() {
-        let mut command: Vec<String> = [
-            "env",
-            "DEBIAN_FRONTEND=noninteractive",
-            "apt-get",
-            "-y",
-            "install",
-            "--only-upgrade",
-        ]
-        .map(String::from)
-        .to_vec();
+        let mut command: Vec<String> = sources::APT_GET
+            .iter()
+            .chain(&["install", "--only-upgrade"])
+            .map(|word| word.to_string())
+            .collect();
         command.extend(apt.iter().map(|name| name.to_string()));
         plan.admin.push(command);
     }
@@ -1861,9 +1858,11 @@ fn install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing: Opti
     let name = detail.app.borrow().name.clone();
     let mut plan = sources::install_plan(&offer);
     if let Some(old) = &replacing {
+        // The administrator's part of the removal follows the install's in the same sudo;
+        // the person's own waits for both, so that a password not given keeps the old one.
         let remove = sources::remove_plan(old);
-        plan.user.extend(remove.user);
         plan.admin.extend(remove.admin);
+        plan.after.extend(remove.user);
     }
     let (id, origin, old_id) = (offer.id.clone(), offer.origin.clone(), replacing.map(|o| o.id));
     change(
@@ -1897,11 +1896,9 @@ fn change(
     render(store, detail);
     let plan = Rc::new(plan);
     let job = {
-        let plan = plan.clone();
-        let user = plan.user.clone();
-        let admin = plan.admin.clone();
+        let plan = sources::Plan::clone(&plan);
         let reason = reason.clone();
-        move || sources::run(&sources::Plan { user, admin }, &reason)
+        move || sources::run(&plan, &reason)
     };
     background(
         job,
@@ -1937,10 +1934,7 @@ fn change(
                             #[strong]
                             done,
                             move |_| {
-                                let plan = sources::Plan {
-                                    user: plan.user.clone(),
-                                    admin: plan.admin.clone(),
-                                };
+                                let plan = sources::Plan::clone(&plan);
                                 change(&store, &detail, plan, reason.clone(), done.clone());
                             }
                         ));

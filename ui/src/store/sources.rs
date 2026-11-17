@@ -493,8 +493,26 @@ const UBUNTU_HOSTS: [&str; 4] = [
     "esm.ubuntu.com",
 ];
 
-/// The repositories a sources file names: deb822 `.sources`, or one-line `.list`.
+/// The repositories a sources file names other than Ubuntu's own: deb822 `.sources`, or
+/// one-line `.list`. Ubuntu's archive is known by its file or its key as well as by its
+/// hosts, since a mirror may have any address.
 pub fn parse_sources(file: &Path, text: &str) -> Vec<Repository> {
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    if stem == "ubuntu" || stem.starts_with("ubuntu-esm") || text.contains("ubuntu-archive-keyring") {
+        return Vec::new();
+    }
+    let mut repos = every_source(file, text);
+    repos.retain(|repo| !UBUNTU_HOSTS.iter().any(|host| repo.uri.contains(host)));
+    repos
+}
+
+/// Whether removing `repo`, which deletes its file, takes no other repository with it.
+pub fn removable(repo: &Repository) -> bool {
+    std::fs::read_to_string(&repo.file).is_ok_and(|text| every_source(&repo.file, &text).len() == 1)
+}
+
+/// Every repository a sources file names.
+fn every_source(file: &Path, text: &str) -> Vec<Repository> {
     let mut repos = Vec::new();
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     let fallback = |uri: &str| -> String {
@@ -568,7 +586,6 @@ pub fn parse_sources(file: &Path, text: &str) -> Vec<Repository> {
             });
         }
     }
-    repos.retain(|repo| !UBUNTU_HOSTS.iter().any(|host| repo.uri.contains(host)));
     repos
 }
 
@@ -1222,17 +1239,32 @@ pub fn apt_updates() -> Vec<(String, String, String)> {
 
 /// What to run for a change: commands that take the administrator's password all go in
 /// one `sudo`, so that one password covers them.
-#[derive(Default, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct Plan {
     pub user: Vec<Vec<String>>,
     pub admin: Vec<Vec<String>>,
+    /// The person's own commands that wait for the administrator's, as removing what an
+    /// install replaces does.
+    pub after: Vec<Vec<String>>,
 }
 
 fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|w| w.to_string()).collect()
 }
 
-const APT_GET: [&str; 4] = ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y"];
+/// apt-get as the App Store runs it, with nothing to answer: a configuration file changed
+/// both here and in the new version keeps the one here, as dpkg would otherwise ask on a
+/// closed input and leave the package half set up.
+pub const APT_GET: [&str; 8] = [
+    "env",
+    "DEBIAN_FRONTEND=noninteractive",
+    "apt-get",
+    "-y",
+    "-o",
+    "Dpkg::Options::=--force-confdef",
+    "-o",
+    "Dpkg::Options::=--force-confold",
+];
 
 pub fn install_plan(offer: &Offer) -> Plan {
     let mut plan = Plan::default();
@@ -1364,6 +1396,7 @@ pub fn add_repository(vendor: &Vendor) -> Vec<Vec<String>> {
 pub fn remove_repository(repo: &Repository) -> Plan {
     Plan {
         user: Vec::new(),
+        after: Vec::new(),
         admin: vec![
             words(&["rm", "-f", &repo.file.to_string_lossy()]),
             words(&["apt-get", "update"]),
@@ -1384,17 +1417,24 @@ pub fn shell_quote(word: &str) -> String {
 }
 
 /// Runs a plan: the person's own commands first, then the administrator's under one sudo,
-/// whose password the askpass program asks for. The first failure stops it, and what the
-/// failing command said is returned, or nothing if the password was not given.
+/// whose password the askpass program asks for, then the person's that wait for those. The
+/// first failure stops it, and what the failing command said is returned, or nothing if the
+/// password was not given.
 pub fn run(plan: &Plan, reason: &str) -> Result<(), String> {
     for command in &plan.user {
         run_one(Command::new(&command[0]).args(&command[1..]), command)?;
     }
-    if plan.admin.is_empty() {
-        return Ok(());
+    if !plan.admin.is_empty() {
+        run_admin(&plan.admin, reason)?;
     }
-    let script = plan
-        .admin
+    for command in &plan.after {
+        run_one(Command::new(&command[0]).args(&command[1..]), command)?;
+    }
+    Ok(())
+}
+
+fn run_admin(admin: &[Vec<String>], reason: &str) -> Result<(), String> {
+    let script = admin
         .iter()
         .map(|command| {
             command
@@ -1593,6 +1633,12 @@ mod tests {
         );
         let ubuntu = "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: stonking\n";
         assert!(parse_sources(Path::new("/x/ubuntu.sources"), ubuntu).is_empty());
+        // Ubuntu's archive from a mirror elsewhere is still not anyone else's to remove.
+        let mirror = "Types: deb\nURIs: http://free.nchc.org.tw/ubuntu/\nSuites: stonking\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n";
+        assert!(parse_sources(Path::new("/x/ubuntu.sources"), mirror).is_empty());
+        assert!(parse_sources(Path::new("/x/mirror.sources"), mirror).is_empty());
+        let two = "deb https://a.example/apt stable main\ndeb https://b.example/apt stable main\n";
+        assert_eq!(every_source(Path::new("/x/two.list"), two).len(), 2);
         let ppa = "deb https://ppa.launchpadcontent.net/mozillateam/ppa/ubuntu/ noble main\n";
         assert_eq!(
             parse_sources(Path::new("/x/m.list"), ppa)[0].name,
