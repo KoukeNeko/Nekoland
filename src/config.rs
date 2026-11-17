@@ -689,10 +689,20 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
     // Written whole or not at all, to a configuration linked from a dotfiles folder there.
     let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let partial = target.with_extension("toml.partial");
-    std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|_| std::fs::write(&partial, changed))
-        .and_then(|_| std::fs::rename(&partial, &target))
-        .map_err(failed)
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
+        let mut file = std::fs::File::create(&partial)?;
+        file.write_all(changed.as_bytes())?;
+        // The one there keeps who may read it.
+        if let Ok(old) = std::fs::metadata(&target) {
+            file.set_permissions(old.permissions())?;
+        }
+        // On the disk before it takes the old one's place, for a power cut in between.
+        file.sync_all()?;
+        std::fs::rename(&partial, &target)
+    };
+    write().map_err(failed)
 }
 
 /// The configuration text with its `key = [...]` setting, on one line or several, replaced,
