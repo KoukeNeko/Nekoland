@@ -1662,7 +1662,11 @@ impl Nekoland {
         let drawn = Drawn {
             target,
             focused: self.dock_keyboard_index().map(|index| self.dock.tiles[index].key()),
-            opened: self.dock.stack.as_ref().map(|stack| stack.folder.clone()),
+            // Until a folder has gone all the way back in, its tile is still the button that
+            // closed it: the folder's own icon returns where the last item lands.
+            opened: (self.dock.stack.as_ref())
+                .or(self.dock.closing.as_ref())
+                .map(|stack| stack.folder.clone()),
             day: text::today(),
             dark,
             glass,
