@@ -5,6 +5,6 @@ Name[zh_TW]=檔案
 Comment=Browse, find, tag and arrange files
 Comment[zh_TW]=瀏覽、搜尋、加上標籤與整理檔案
 Exec=nekoland-files %U
-Icon=system-file-manager
+Icon=io.github.koukeneko.Nekoland.Files
 Categories=System;FileTools;FileManager;
 MimeType=inode/directory;

@@ -5,5 +5,5 @@ Name[zh_TW]=App Store
 Comment=Find and install apps from apt, Snap, Flathub and Homebrew
 Comment[zh_TW]=從 apt、Snap、Flathub 與 Homebrew 尋找並安裝 app
 Exec=nekoland-store
-Icon=system-software-install
+Icon=io.github.koukeneko.Nekoland.Store
 Categories=System;PackageManager;

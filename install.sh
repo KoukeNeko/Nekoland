@@ -79,6 +79,7 @@ sudo install -m 644 "$target/release/libnekoland_menus.so" /usr/local/bin/
 sudo install -Dm 644 -t /usr/local/share/applications "$src"/shell/*.desktop
 # Icons Files uses that Adwaita lacks; a theme that has its own still draws its own.
 sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/actions "$src"/shell/icons/*.svg
+sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
     "$src/shell/org.freedesktop.FileManager1.service"
