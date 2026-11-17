@@ -4331,6 +4331,7 @@ const DESIGN_CSS: &str = r#"
 .nk-dialog { padding: 15px 24px 20px; border-radius: 14px; background-color: var(--nekoland-sheet); box-shadow: inset 0 0 0 1px var(--nekoland-line), 0 30px 60px -20px rgb(0 0 0 / 50%); }
 .nk-dialog-title { font-size: 16px; font-weight: 600; }
 .nk-dialog .nk-lead { font-size: 14px; line-height: 21px; }
+.nk-dialog button { min-height: 32px; padding: 0 14px; }
 "#;
 
 fn classes(names: &[&str]) -> Vec<String> {
@@ -5029,41 +5030,113 @@ fn design_page() -> gtk::ScrolledWindow {
         });
         window.upcast::<gtk::Widget>()
     };
-    // Spaced as an alert is: 20px from each row's letters or edges to the next.
-    let body = text("上面的 3 個視窗會移到桌面 1。", &["nk-lead"]);
-    body.set_margin_top(13);
-    let actions = line(
-        12,
-        &[
-            gtk::Button::with_label("取消").upcast_ref(),
-            button("刪除", &["destructive-action"]).upcast_ref(),
-        ],
-    );
-    actions.set_halign(gtk::Align::End);
-    actions.set_margin_top(17);
-    let dialog = column(
-        0,
-        &[
-            text("刪除桌面 2？", &["nk-dialog-title"]).upcast_ref(),
-            body.upcast_ref(),
-            actions.upcast_ref(),
-        ],
-    );
-    dialog.add_css_class("nk-dialog");
-    dialog.set_size_request(360, -1);
-    dialog.set_halign(gtk::Align::Center);
-    let scrim = column(0, &[dialog.upcast_ref()]);
-    scrim.add_css_class("nk-scrim");
     let windows = [window("設定", true), window("檔案", false)];
     page.append(&section(
-        "視窗與對話框",
+        "視窗",
         "標題列和內容同一張紙，沒有分隔的色帶。非作用中的視窗只把標題退成灰色。",
-        &[
-            cards(240, 4, &windows.iter().collect::<Vec<_>>()).upcast_ref(),
-            scrim.upcast_ref(),
-        ],
+        &[cards(240, 4, &windows.iter().collect::<Vec<_>>()).upcast_ref()],
     ));
 
+    // An alert as nekoland.css has libadwaita draw it: 20px from each row's letters or edges
+    // to the next. A line of the question stands 5px above its letters and 3px below, one of
+    // the consequence 4px and 3px, and the icon's symbol 2px inside its image, so the margins
+    // are that much less; a field and the buttons are spaced from their edges.
+    let alert = |icon: Option<&str>,
+                 title: &str,
+                 body: Option<&str>,
+                 field: Option<gtk::Widget>,
+                 responses: &[(&str, &[&str])]| {
+        let dialog = column(0, &[]);
+        dialog.add_css_class("nk-dialog");
+        let mut gap = 0;
+        if let Some(icon) = icon {
+            let image = gtk::Image::builder()
+                .icon_name(icon)
+                .pixel_size(32)
+                .margin_top(3)
+                .build();
+            dialog.append(&image);
+            gap = 13;
+        }
+        let centred = |label: &str, names: &[&str]| {
+            let label = text(label, names);
+            label.set_xalign(0.5);
+            label.set_justify(gtk::Justification::Center);
+            label.set_wrap(true);
+            label
+        };
+        let question = centred(title, &["nk-dialog-title"]);
+        question.set_margin_top(gap);
+        dialog.append(&question);
+        if let Some(body) = body {
+            let body = centred(body, &["nk-lead"]);
+            body.set_margin_top(13);
+            dialog.append(&body);
+        }
+        gap = 17;
+        if let Some(field) = field {
+            field.set_margin_top(gap);
+            dialog.append(&field);
+            gap = 20;
+        }
+        let actions = line(12, &[]);
+        actions.set_homogeneous(true);
+        actions.set_margin_top(gap);
+        for (label, names) in responses {
+            actions.append(&button(label, names));
+        }
+        dialog.append(&actions);
+        // An alert's width, as alert::FIELD_WIDTH and the 24px each side make it.
+        dialog.set_size_request(360, -1);
+        let scrim = column(0, &[dialog.upcast_ref()]);
+        scrim.add_css_class("nk-scrim");
+        scrim.set_halign(gtk::Align::Start);
+        scrim.set_valign(gtk::Align::Start);
+        scrim.upcast::<gtk::Widget>()
+    };
+    let alerts = [
+        alert(
+            None,
+            "刪除桌面 2？",
+            Some("上面的 3 個視窗會移到桌面 1。"),
+            None,
+            &[("取消", &[]), ("刪除", &["destructive-action"])],
+        ),
+        alert(
+            None,
+            "新增檔案夾",
+            None,
+            Some(gtk::Entry::builder().text("未命名檔案夾").build().upcast()),
+            &[("取消", &[]), ("建立", &["suggested-action"])],
+        ),
+        alert(
+            None,
+            "無法建立檔案夾",
+            Some("沒有寫入這個檔案夾的權限。"),
+            None,
+            &[("關閉", &[])],
+        ),
+        alert(
+            Some("system-lock-screen-symbolic"),
+            "需要管理員密碼",
+            Some("App Store 要安裝 GIMP。"),
+            Some(
+                gtk::PasswordEntry::builder()
+                    .show_peek_icon(true)
+                    .build()
+                    .upcast(),
+            ),
+            &[("取消", &[]), ("認證", &["suggested-action"])],
+        ),
+    ];
+    // Each scrim only as large as its alert, so it is 32px on every side.
+    let grid = cards(424, 2, &alerts.iter().collect::<Vec<_>>());
+    grid.set_homogeneous(false);
+    page.append(&section(
+        "對話框",
+        "問題置中，後果用灰字。四邊和每一列之間都隔 20px，從字算起；按鈕平分一列，相隔 12px。",
+        &[grid.upcast_ref()],
+    ));
     let clamp = adw::Clamp::builder()
         .maximum_size(1120)
         .tightening_threshold(1120)

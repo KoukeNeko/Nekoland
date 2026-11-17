@@ -718,17 +718,20 @@ export component DesignLanguage {
                     MockWindow { title: "設定"; }
                     MockWindow { title: "檔案"; active: false; }
                 }
-                Rectangle {
-                    border-radius: Theme.radius-l;
-                    background: Theme.scrim;
-                    HorizontalLayout {
-                        padding: 32px;
-                        alignment: center;
-                        Dialog {
-                            title: "刪除桌面 2？";
-                            body: "上面的 3 個視窗會移到桌面 1。";
-                            Button { text: "取消"; kind: "secondary"; }
-                            Button { text: "刪除"; kind: "danger"; }
+                // The scrim only as large as the dialog, so it is 32px on every side.
+                HorizontalLayout {
+                    alignment: start;
+                    Rectangle {
+                        border-radius: Theme.radius-l;
+                        background: Theme.scrim;
+                        HorizontalLayout {
+                            padding: 32px;
+                            Dialog {
+                                title: "刪除桌面 2？";
+                                body: "上面的 3 個視窗會移到桌面 1。";
+                                Button { text: "取消"; kind: "secondary"; }
+                                Button { text: "刪除"; kind: "danger"; }
+                            }
                         }
                     }
                 }
