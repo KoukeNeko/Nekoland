@@ -451,6 +451,16 @@ thumbnails from Files' cache, made with `pdftoppm` and `ffmpeg` when missing. It
 `shell/io.github.koukeneko.Nekoland.Files.desktop`. It remembers the view, the preview, hidden
 files and the icon size in `~/.config/nekoland/files.ini`.
 
+`nekoland-tasks`, from `ui/`, is the task manager: four meters across the top, the CPU,
+memory, disks and network over the last minute, and below them each application with its
+processes, then the user's other processes, read from `/proc` every second. Pressing the CPU,
+記憶體 or 磁碟 meter sorts the table by it and draws each row's share as a bar. 結束 (Delete)
+asks an application to quit as the Dock does, or sends a process SIGTERM; 強制結束 kills it
+after asking. An application whose window does not answer the compositor's ping within three
+seconds is marked 沒有回應. It asks the compositor through `nekoland msg tasks`, which lists
+each window's process, application and whether it answers, and `quit-app` and
+`force-quit-app`.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an
