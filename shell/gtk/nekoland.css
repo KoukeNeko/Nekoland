@@ -290,6 +290,75 @@ floating-sheet > sheet,
 dialog-host > dialog.alert sheet {
   border-radius: 14px;
 }
+/* A dialog's title bar is only as tall as its close button and the 6px around it, the title
+ * set as a window's is; the button sits as far from the side as from the top. */
+dialog.floating headerbar {
+  min-height: 36px;
+}
+dialog.floating headerbar .title {
+  font-size: 14px;
+  font-weight: 600;
+}
+dialog.floating windowcontrols.end:dir(ltr),
+dialog.floating windowcontrols.start:dir(rtl) {
+  margin-right: 0;
+}
+dialog.floating windowcontrols.start:dir(ltr),
+dialog.floating windowcontrols.end:dir(rtl) {
+  margin-left: 0;
+}
+/* An alert as the design language's dialog: a 16/600 question, 6px above its consequence
+ * in grey, 12px above anything else it holds, 24px around, 20px above buttons of the usual
+ * height and corners. The question's line is taller than its letters, so 20px above it
+ * puts them 24px from the top. libadwaita pads each part of the message on its own and
+ * spaces them differently when narrow, so both are set here. */
+dialog.alert .message-area,
+dialog.alert.short .message-area {
+  padding: 20px 0 20px;
+  border-spacing: 12px;
+}
+dialog.alert .message-area.has-heading.has-body,
+dialog.alert.short .message-area.has-heading.has-body {
+  border-spacing: 6px;
+}
+dialog.alert .message-area.has-heading.has-body > .child {
+  margin-top: 6px;
+}
+dialog.alert .message-area > .heading-bin,
+dialog.alert .message-area > .body,
+dialog.alert .message-area > .child,
+dialog.alert.short .message-area > .heading-bin,
+dialog.alert.short .message-area > .body,
+dialog.alert.short .message-area > .child {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+/* An alert's icon is 24px from the top, as the 20px there allows for a question's taller line,
+ * and stands 12px above its question, as what is under the question does. */
+dialog.alert .message-area > image.alert-icon {
+  margin-top: 4px;
+}
+dialog.alert .message-area.has-body > image.alert-icon {
+  margin-bottom: 6px;
+}
+dialog.alert .message-area label.title-2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+dialog.alert .message-area label.body {
+  color: var(--nekoland-ink-2);
+}
+dialog.alert .response-area,
+dialog.alert.short .response-area {
+  padding: 0 24px 24px;
+  border-spacing: 8px;
+}
+dialog.alert .response-area > button,
+dialog.alert.short .response-area > button {
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+}
 
 /* A calendar's chosen day is solid ink on a button's corners; today is marked by a line. */
 calendar {

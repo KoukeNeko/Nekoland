@@ -416,7 +416,11 @@ fn build(app: &adw::Application) {
 /// Asks for an event on the chosen day: its title, whether it takes the whole day or when
 /// it starts, and its calendar.
 fn ask_event(state: &Rc<State>, window: &adw::ApplicationWindow) {
-    let title = adw::EntryRow::builder().title("標題").build();
+    // Return in the title adds it, as the button does.
+    let title = adw::EntryRow::builder()
+        .title("標題")
+        .activates_default(true)
+        .build();
     let all_day = adw::SwitchRow::builder().title("整天").build();
     let hour = adw::SpinRow::with_range(0.0, 23.0, 1.0);
     hour.set_title("時");
@@ -445,77 +449,43 @@ fn ask_event(state: &Rc<State>, window: &adw::ApplicationWindow) {
         group.add(row);
     }
 
-    let cancel = gtk::Button::with_label("取消");
-    let add = gtk::Button::builder()
-        .label("新增")
-        .css_classes(["suggested-action"])
-        .sensitive(false)
-        .build();
+    // An alert is as wide as what it holds.
+    group.set_width_request(372);
+    let alert = adw::AlertDialog::new(Some("新增行程"), None);
+    alert.set_extra_child(Some(&group));
+    alert.add_responses(&[("cancel", "取消"), ("add", "新增")]);
+    alert.set_response_appearance("add", adw::ResponseAppearance::Suggested);
+    alert.set_response_enabled("add", false);
+    alert.set_default_response(Some("add"));
+    alert.set_close_response("cancel");
     title.connect_changed(glib::clone!(
         #[weak]
-        add,
-        move |title| add.set_sensitive(!title.text().trim().is_empty())
+        alert,
+        move |title| alert.set_response_enabled("add", !title.text().trim().is_empty())
     ));
-    let bar = adw::HeaderBar::builder()
-        .show_start_title_buttons(false)
-        .show_end_title_buttons(false)
-        .build();
-    bar.pack_start(&cancel);
-    bar.pack_end(&add);
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&bar);
-    view.set_content(Some(
-        &adw::Clamp::builder()
-            .margin_top(12)
-            .margin_bottom(24)
-            .margin_start(12)
-            .margin_end(12)
-            .child(&group)
-            .build(),
-    ));
-    let dialog = adw::Dialog::builder()
-        .title("新增行程")
-        .content_width(420)
-        .child(&view)
-        .build();
-
-    cancel.connect_clicked(glib::clone!(
-        #[weak]
-        dialog,
-        move |_| {
-            dialog.close();
-        }
-    ));
-    add.connect_clicked(glib::clone!(
-        #[strong]
-        state,
-        #[weak]
-        dialog,
-        #[strong]
-        title,
-        move |_| {
-            state.add(Event {
-                date: state.date(),
-                time: (!all_day.is_active()).then(|| (hour.value() as u32, minute.value() as u32)),
-                calendar: calendar.selected() as usize,
-                title: title.text().trim().to_string(),
-            });
-            dialog.close();
-        }
-    ));
-    // Return in the title adds it, as the button does.
-    title.connect_entry_activated(glib::clone!(
-        #[weak]
-        add,
-        move |_| {
-            if add.is_sensitive() {
-                add.emit_clicked();
+    alert.connect_response(
+        None,
+        glib::clone!(
+            #[strong]
+            state,
+            #[strong]
+            title,
+            move |_, response| {
+                if response != "add" {
+                    return;
+                }
+                state.add(Event {
+                    date: state.date(),
+                    time: (!all_day.is_active()).then(|| (hour.value() as u32, minute.value() as u32)),
+                    calendar: calendar.selected() as usize,
+                    title: title.text().trim().to_string(),
+                });
             }
-        }
-    ));
+        ),
+    );
     // Typing goes to the title at once.
-    dialog.set_focus(Some(&title));
-    dialog.present(Some(window));
+    alert.set_focus(Some(&title));
+    alert.present(Some(window));
 }
 
 #[cfg(test)]

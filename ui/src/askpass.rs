@@ -2,10 +2,16 @@
 //! as its SUDO_ASKPASS and reads the password from what it prints. Nekoland has no polkit
 //! agent, so the App Store asks this way. NEKOLAND_ASKPASS_REASON says what it is for.
 
-use std::{cell::Cell, io::Write, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    io::Write,
+    rc::Rc,
+};
 
 use adw::prelude::*;
 use gtk::glib;
+
+mod alert;
 
 fn main() -> glib::ExitCode {
     let given = Rc::new(Cell::new(false));
@@ -30,89 +36,39 @@ fn main() -> glib::ExitCode {
 
 fn ask(app: &adw::Application, given: Rc<Cell<bool>>) {
     let reason = std::env::var("NEKOLAND_ASKPASS_REASON").unwrap_or_default();
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("需要管理員密碼")
-        .default_width(360)
-        .resizable(false)
-        .build();
-    let content = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(24)
-        .margin_bottom(20)
-        .margin_start(24)
-        .margin_end(24)
-        .build();
-    content.append(
-        &gtk::Image::builder()
-            .icon_name("system-lock-screen-symbolic")
-            .pixel_size(32)
-            .build(),
-    );
-    content.append(
-        &gtk::Label::builder()
-            .label("需要管理員密碼")
-            .css_classes(["title-4"])
-            .build(),
-    );
-    if !reason.is_empty() {
-        content.append(
-            &gtk::Label::builder()
-                .label(&reason)
-                .wrap(true)
-                .justify(gtk::Justification::Center)
-                .css_classes(["dim-label"])
-                .build(),
-        );
-    }
+    // As wide as the design language's dialog, less its padding.
     let entry = gtk::PasswordEntry::builder()
         .show_peek_icon(true)
         .activates_default(true)
-        .margin_top(4)
+        .width_request(312)
         .build();
-    content.append(&entry);
-    let buttons = gtk::Box::builder()
-        .spacing(8)
-        .homogeneous(true)
-        .margin_top(8)
-        .build();
-    let cancel = gtk::Button::with_label("取消");
-    let ok = gtk::Button::builder()
-        .label("認證")
-        .css_classes(["suggested-action"])
-        .build();
-    buttons.append(&cancel);
-    buttons.append(&ok);
-    content.append(&buttons);
-    // The look gives a window's background to its content, which must then cover all of it:
-    // around content with margins, the glass behind the window would show.
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&content);
-    window.set_content(Some(&root));
-    window.set_default_widget(Some(&ok));
-
-    cancel.connect_clicked(glib::clone!(
-        #[weak]
-        window,
-        move |_| window.close()
-    ));
-    ok.connect_clicked(glib::clone!(
-        #[weak]
-        window,
-        #[weak]
-        entry,
-        move |_| {
-            let mut out = std::io::stdout();
-            if writeln!(out, "{}", entry.text())
-                .and_then(|()| out.flush())
-                .is_ok()
-            {
-                given.set(true);
-            }
-            window.close();
+    let alert = adw::AlertDialog::new(
+        Some("需要管理員密碼"),
+        Some(reason.as_str()).filter(|reason| !reason.is_empty()),
+    );
+    alert::set_icon(&alert, "system-lock-screen-symbolic");
+    alert.set_extra_child(Some(&entry));
+    alert.add_responses(&[("cancel", "取消"), ("auth", "認證")]);
+    alert.set_response_appearance("auth", adw::ResponseAppearance::Suggested);
+    alert.set_default_response(Some("auth"));
+    alert.set_close_response("cancel");
+    let typed = entry.clone();
+    alert.connect_response(None, move |_, response| {
+        if response != "auth" {
+            return;
         }
-    ));
-    window.present();
+        let mut out = std::io::stdout();
+        if writeln!(out, "{}", typed.text())
+            .and_then(|()| out.flush())
+            .is_ok()
+        {
+            given.set(true);
+        }
+    });
+    // Shown without a parent, the alert is a window of its own, which the application does not
+    // count; it is kept running until the alert closes.
+    let running = RefCell::new(Some(app.hold()));
+    alert.connect_closed(move |_| drop(running.take()));
+    alert.present(None::<&gtk::Widget>);
     entry.grab_focus();
 }

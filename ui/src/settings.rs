@@ -1714,9 +1714,10 @@ fn font_picker(
     let body = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
-        .margin_start(16)
-        .margin_end(16)
-        .margin_bottom(16)
+        .margin_top(12)
+        .margin_start(24)
+        .margin_end(24)
+        .margin_bottom(24)
         .build();
     body.append(&preview);
     body.append(&face_line);
@@ -2726,9 +2727,10 @@ fn input_method_picker(
     let body = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
-        .margin_start(16)
-        .margin_end(16)
-        .margin_bottom(16)
+        .margin_top(12)
+        .margin_start(24)
+        .margin_end(24)
+        .margin_bottom(24)
         .build();
     body.append(&search);
     body.append(
