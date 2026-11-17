@@ -308,7 +308,7 @@ dialog.floating windowcontrols.end:dir(rtl) {
   margin-left: 0;
 }
 /* An alert as the design language's dialog: a 16/600 question, its consequence in grey,
- * 24px in from the sides, and 20px from each row's letters or edges to the next: from the
+ * 20px in from the sides, and 20px from each row's letters or edges to the next: from the
  * sheet's edge to the question, between the rows, to the buttons and below them. The
  * question's line is 5px taller than its letters above them and 3px below, so the padding
  * and spacing are that much less than 20px; a field has no such margin and takes the 3px
@@ -349,8 +349,8 @@ dialog.alert .message-area > .child,
 dialog.alert.short .message-area > .heading-bin,
 dialog.alert.short .message-area > .body,
 dialog.alert.short .message-area > .child {
-  padding-left: 24px;
-  padding-right: 24px;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 /* An alert's icon is 20px from the sheet's edge and from its question, as a row is; the
  * symbol stands 2px inside its image. */
@@ -373,7 +373,7 @@ dialog.alert .message-area label.body {
 }
 dialog.alert .response-area,
 dialog.alert.short .response-area {
-  padding: 0 24px 20px;
+  padding: 0 20px 20px;
   border-spacing: 8px;
 }
 dialog.alert .response-area > button,

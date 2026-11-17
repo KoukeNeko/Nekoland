@@ -4328,7 +4328,7 @@ const DESIGN_CSS: &str = r#"
 .nk-window.inactive .nk-titlebar .title, .nk-design .nk-window.inactive .nk-titlebar button { color: var(--nekoland-ink-3); }
 .nk-window-body { min-height: 120px; border-top: 1px solid var(--nekoland-line); border-radius: 0 0 14px 14px; background-color: var(--nekoland-sheet); }
 .nk-scrim { padding: 32px; border-radius: 12px; background-color: rgb(0 0 0 / 40%); }
-.nk-dialog { padding: 15px 24px 20px; border-radius: 14px; background-color: var(--nekoland-sheet); box-shadow: inset 0 0 0 1px var(--nekoland-line), 0 30px 60px -20px rgb(0 0 0 / 50%); }
+.nk-dialog { padding: 15px 20px 20px; border-radius: 14px; background-color: var(--nekoland-sheet); box-shadow: inset 0 0 0 1px var(--nekoland-line), 0 30px 60px -20px rgb(0 0 0 / 50%); }
 .nk-dialog-title { font-size: 16px; font-weight: 600; }
 .nk-dialog .nk-lead { font-size: 14px; line-height: 21px; }
 .nk-dialog button { min-height: 32px; padding: 0 14px; }
@@ -5086,7 +5086,7 @@ fn design_page() -> gtk::ScrolledWindow {
             actions.append(&button(label, names));
         }
         dialog.append(&actions);
-        // An alert's width, as alert::FIELD_WIDTH and the 24px each side make it.
+        // An alert's width, as alert::FIELD_WIDTH and the 20px each side make it.
         dialog.set_size_request(360, -1);
         let scrim = column(0, &[dialog.upcast_ref()]);
         scrim.add_css_class("nk-scrim");

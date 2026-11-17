@@ -9,7 +9,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 /// How wide a field in an alert is: the design language's dialog, less its padding.
-pub const FIELD_WIDTH: i32 = 312;
+pub const FIELD_WIDTH: i32 = 320;
 
 /// Tells what happened, with nothing to decide.
 pub fn notice(parent: &impl IsA<gtk::Widget>, title: &str, body: Option<&str>) {
