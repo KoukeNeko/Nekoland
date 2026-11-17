@@ -425,7 +425,7 @@ that asked, which needs xdg-foreign; it has no type-ahead in the list, no comple
 paths, and does not take files dropped on it.
 
 `nekoland-fileop copy|move <folder> <path>...`, from `ui/`, copies or moves files and folders
-into a folder; files dropped on a folder on the desktop or in the Dock are moved with it, so it
+into a folder; files dropped on a folder on the desktop or in the Dock are moved with it, or copied when the folder is on another drive, so it
 must be on the `PATH`. Its window shows only when the work takes more than half a second, with
 how far it is and the time left, and comes up at once when a name is taken there: 略過,
 保留兩者 (「季報 2.pdf」) or 取代, which for two folders is 合併 and asks again for the files

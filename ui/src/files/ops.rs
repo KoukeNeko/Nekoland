@@ -641,12 +641,13 @@ pub fn empty_trash(win: &Rc<Window>) {
     });
 }
 
-/// Deletes files and everything in folders, away from the window's thread.
+/// Deletes items in the trash, folders whole, away from the window's thread. The trash
+/// deletes a folder with what it holds itself, and refuses to change what is inside one.
 fn delete_all(win: &Rc<Window>, files: Vec<gio::File>) {
     let (sender, receiver) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         for file in files {
-            if let Err(err) = delete(&file) {
+            if let Err(err) = file.delete(gio::Cancellable::NONE) {
                 let _ = sender.send(format!("{}：{}", display_name(&file), err.message()));
             }
         }
@@ -662,24 +663,6 @@ fn delete_all(win: &Rc<Window>, files: Vec<gio::File>) {
         Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
         Err(_) => glib::ControlFlow::Break,
     });
-}
-
-fn delete(file: &gio::File) -> Result<(), glib::Error> {
-    let info = file.query_info(
-        "standard::type",
-        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-        gio::Cancellable::NONE,
-    )?;
-    if info.file_type() == gio::FileType::Directory {
-        for child in file.enumerate_children(
-            "standard::name",
-            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-            gio::Cancellable::NONE,
-        )? {
-            delete(&file.child(child?.name()))?;
-        }
-    }
-    file.delete(gio::Cancellable::NONE)
 }
 
 // Making things.

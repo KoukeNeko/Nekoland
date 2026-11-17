@@ -599,7 +599,7 @@ impl Work {
         }
         let from_meta = std::fs::symlink_metadata(from);
         let is_dir = from_meta.as_ref().is_ok_and(|meta| meta.is_dir());
-        if is_dir && to.starts_with(from) {
+        if is_dir && inside_itself(from, to) {
             let message = format!("無法把「{}」放進它自己裡面", display_name(from));
             return match self.ask(Update::Failed { message }).0 {
                 Answer::Stop => Err(Stopped),
@@ -660,9 +660,20 @@ impl Work {
     }
 
     fn transfer_folder(&mut self, from: &Path, to: &Path) -> Result<(), Stopped> {
-        if self.verb == Verb::Move && !to.exists() && std::fs::rename(from, to).is_ok() {
-            self.done += size_of(to);
-            return Ok(());
+        if self.verb == Verb::Move && !to.exists() && on_one_disk(from, to) {
+            return match std::fs::rename(from, to) {
+                Ok(()) => {
+                    self.done += size_of(to);
+                    Ok(())
+                }
+                Err(err) => {
+                    let message = format!("無法移動「{}」：{err}", display_name(from));
+                    match self.ask(Update::Failed { message }).0 {
+                        Answer::Stop => Err(Stopped),
+                        _ => Ok(()),
+                    }
+                }
+            };
         }
         // Copied item by item, into the folder there when the two merge; a move across
         // disks too, then emptied.
@@ -796,6 +807,22 @@ fn size_of(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether `to` is in the folder `from`, through links too: a folder dropped on a link to
+/// itself would otherwise be copied into itself without end.
+fn inside_itself(from: &Path, to: &Path) -> bool {
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    to.parent()
+        .is_some_and(|parent| real(parent).starts_with(real(from)))
+}
+
+/// Whether `to`'s folder is on the disk `from` is on, where a move is a rename.
+fn on_one_disk(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let disk = |path: &Path| std::fs::metadata(path).map(|meta| meta.dev()).ok();
+    to.parent()
+        .is_some_and(|parent| disk(from).is_some() && disk(from) == disk(parent))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,6 +835,18 @@ mod tests {
         std::fs::write(dir.join("季報 2.pdf"), "").unwrap();
         assert_eq!(free_name(&dir.join("季報.pdf")), dir.join("季報 3.pdf"));
         assert_eq!(free_name(&dir.join("2025 季報")), dir.join("2025 季報 2"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_is_not_put_into_itself_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("nekoland-fileop-link-{}", std::process::id()));
+        let folder = dir.join("A");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::os::unix::fs::symlink(&folder, dir.join("A 的連結")).unwrap();
+        assert!(inside_itself(&folder, &dir.join("A 的連結").join("A")));
+        assert!(inside_itself(&folder, &folder.join("A")));
+        assert!(!inside_itself(&folder, &dir.join("B")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

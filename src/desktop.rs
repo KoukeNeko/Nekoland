@@ -34,7 +34,7 @@ use smithay::{
 use crate::{
     appgrid::draw_candidates,
     config::{self, Sort},
-    dock::{ask_file_manager, move_into, open_path, reveal_path, uri_paths},
+    dock::{ask_file_manager, drop_into, move_into, open_path, reveal_path, uri_paths},
     ime::Candidates,
     menubar::{self, Command, Entry, MENU_BAR_HEIGHT},
     render::{SceneElement, OUTLINE_COLOR},
@@ -677,7 +677,7 @@ impl Nekoland {
             return;
         }
         if let Some(folder) = self.desktop_folder_at(pos) {
-            move_into(&paths, &folder.path);
+            drop_into(&paths, &folder.path);
         } else if self.config.desktop_free
             && self.space.element_under(pos).is_none()
             && !self.dock_covers(pos)

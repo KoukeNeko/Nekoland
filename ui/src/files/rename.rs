@@ -88,29 +88,48 @@ pub fn refused(new_names: &[String], others: &HashSet<String>) -> Vec<bool> {
         .collect()
 }
 
-/// Renames `files` to `new_names`. Through a name of its own first when one item takes
-/// another's old name, so that two can swap.
+/// Renames `files` to `new_names`. When one fails, those renamed before it get their old
+/// names back, so that none is left under the hidden name it went through.
 pub fn rename_all(files: &[gio::File], new_names: &[String]) -> Result<(), glib::Error> {
-    let old: HashSet<String> = files
-        .iter()
-        .filter_map(|f| f.basename().map(|b| b.to_string_lossy().into_owned()))
-        .collect();
-    let through_temp = new_names.iter().any(|n| old.contains(n));
     let mut current: Vec<gio::File> = files.to_vec();
-    if through_temp {
-        for (index, file) in files.iter().enumerate() {
-            current[index] = file.set_display_name(
-                &format!(".nekoland-rename-{}-{index}", std::process::id()),
-                gio::Cancellable::NONE,
-            )?;
+    let renamed = rename_to(&mut current, new_names);
+    if renamed.is_err() {
+        let old_names: Vec<String> = files.iter().map(base_name).collect();
+        if let Err(err) = rename_to(&mut current, &old_names) {
+            eprintln!("could not give the old names back: {err}");
         }
     }
-    for (file, name) in current.iter().zip(new_names) {
-        if file.basename().is_some_and(|b| b.to_string_lossy() != *name) {
-            file.set_display_name(name, gio::Cancellable::NONE)?;
+    renamed
+}
+
+/// Gives each of `current` its name, and keeps where it is now. Through a name of its own
+/// first when one item takes another's old name, so that two can swap.
+fn rename_to(current: &mut [gio::File], new_names: &[String]) -> Result<(), glib::Error> {
+    let old: HashSet<String> = current.iter().map(base_name).collect();
+    if new_names.iter().any(|n| old.contains(n)) {
+        for (index, file) in current.iter_mut().enumerate() {
+            rename_one(file, &format!(".nekoland-rename-{}-{index}", std::process::id()))?;
         }
+    }
+    for (file, name) in current.iter_mut().zip(new_names) {
+        rename_one(file, name)?;
     }
     Ok(())
+}
+
+/// Renames `file` and keeps where it is now; one that has the name already is left, as GIO
+/// would refuse to rename it to itself.
+fn rename_one(file: &mut gio::File, name: &str) -> Result<(), glib::Error> {
+    if base_name(file) != name {
+        *file = file.set_display_name(name, gio::Cancellable::NONE)?;
+    }
+    Ok(())
+}
+
+fn base_name(file: &gio::File) -> String {
+    file.basename()
+        .map(|b| b.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// The sheet for renaming several items: how, and each name before and after.
@@ -453,6 +472,28 @@ mod tests {
         rename_all(&files, &names(&["b", "a"])).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "B");
         assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "A");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_gives_the_old_names_back() {
+        let dir = std::env::temp_dir().join(format!("nekoland-rename-undo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), "A").unwrap();
+        std::fs::write(dir.join("b"), "B").unwrap();
+        let files = [
+            gio::File::for_path(dir.join("a")),
+            gio::File::for_path(dir.join("b")),
+        ];
+        // "b" goes through a hidden name; the second cannot take a name with a slash.
+        assert!(rename_all(&files, &names(&["b", "c/d"])).is_err());
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["a", "b"]);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "A");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

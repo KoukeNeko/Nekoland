@@ -3540,7 +3540,7 @@ impl Nekoland {
                 self.dock.trash = None;
             }
             // Into a kept folder, as onto a folder in a file manager.
-            Some(Tile::Stack { path: folder, .. }) => move_into(paths, &folder),
+            Some(Tile::Stack { path: folder, .. }) => drop_into(paths, &folder),
             _ => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let before = self.config.stacks.len();
@@ -3632,9 +3632,27 @@ fn desktop_file(app_id: &str) -> Option<PathBuf> {
 }
 
 /// Opens a file or folder in the program the desktop opens it with.
-/// Moves files into a folder, as dropping them on it in a file manager does. A program of
-/// its own does it, which shows how far it is and asks when a name is taken there.
+/// Moves files into a folder, as pasting what was cut does.
 pub(crate) fn move_into(paths: &[PathBuf], folder: &Path) {
+    file_op("move", paths, folder);
+}
+
+/// Files dropped on a folder: moved there on the same disk and copied to another, as the
+/// Finder does, so that the only copy does not leave for a removable drive unasked.
+pub(crate) fn drop_into(paths: &[PathBuf], folder: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let disk = |path: &Path| std::fs::metadata(path).map(|meta| meta.dev()).ok();
+    let (same, other): (Vec<PathBuf>, Vec<PathBuf>) = paths
+        .iter()
+        .cloned()
+        .partition(|path| disk(path).is_some() && disk(path) == disk(folder));
+    file_op("move", &same, folder);
+    file_op("copy", &other, folder);
+}
+
+/// A program of its own copies or moves, which shows how far it is and asks when a name is
+/// taken there.
+fn file_op(verb: &str, paths: &[PathBuf], folder: &Path) {
     let paths: Vec<&PathBuf> = paths
         .iter()
         .filter(|path| *path != folder && path.parent() != Some(folder))
@@ -3643,7 +3661,7 @@ pub(crate) fn move_into(paths: &[PathBuf], folder: &Path) {
         return;
     }
     let spawned = std::process::Command::new("nekoland-fileop")
-        .arg("move")
+        .arg(verb)
         .arg(folder)
         .args(paths)
         .spawn();

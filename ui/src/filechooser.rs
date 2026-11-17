@@ -1722,20 +1722,31 @@ impl Dialog {
             }
             Mode::SaveFiles => {
                 let Some(folder) = self.here_folder() else { return };
+                let taken: Vec<String> = self
+                    .request
+                    .files
+                    .iter()
+                    .filter(|name| folder.child(name).query_exists(gio::Cancellable::NONE))
+                    .cloned()
+                    .collect();
                 let uris = self
                     .request
                     .files
                     .iter()
                     .map(|name| folder.child(name).uri().to_string())
                     .collect();
-                self.finish(RESPONSE_OK, uris);
+                if taken.is_empty() {
+                    self.finish(RESPONSE_OK, uris);
+                } else {
+                    self.ask_replace(&taken, uris);
+                }
             }
             Mode::Save => {
                 let Some(folder) = self.here_folder() else { return };
                 let name = self.name.text().trim().to_owned();
                 let target = folder.child(&name);
                 if target.query_exists(gio::Cancellable::NONE) {
-                    self.ask_replace(name, target);
+                    self.ask_replace(&[name], vec![target.uri().to_string()]);
                 } else {
                     self.finish(RESPONSE_OK, vec![target.uri().to_string()]);
                 }
@@ -1743,9 +1754,13 @@ impl Dialog {
         }
     }
 
-    fn ask_replace(self: &Rc<Self>, name: String, target: gio::File) {
+    /// Asks before saving over what is there: `taken` are the names already used.
+    fn ask_replace(self: &Rc<Self>, taken: &[String], uris: Vec<String>) {
         let weak = Rc::downgrade(self);
-        let title = format!("取代「{name}」？");
+        let title = match taken {
+            [name] => format!("取代「{name}」？"),
+            _ => format!("取代 {} 個項目？", taken.len()),
+        };
         alert::confirm(
             &self.window,
             &title,
@@ -1753,7 +1768,7 @@ impl Dialog {
             "取代",
             move || {
                 if let Some(dialog) = weak.upgrade() {
-                    dialog.finish(RESPONSE_OK, vec![target.uri().to_string()]);
+                    dialog.finish(RESPONSE_OK, uris);
                 }
             },
         );
