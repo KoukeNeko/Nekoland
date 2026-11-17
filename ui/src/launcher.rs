@@ -1410,13 +1410,6 @@ mod tests {
     }
 
     #[test]
-    fn localized_values_win_over_the_default() {
-        let entry = "[Desktop Entry]\nName=Files\nName[zh_TW]=檔案\n";
-        assert_eq!(apps::value(entry, "Name", &["zh_TW".into(), "zh".into()]).as_deref(), Some("檔案"));
-        assert_eq!(apps::value(entry, "Name", &[]).as_deref(), Some("Files"));
-    }
-
-    #[test]
     fn snippets_fill_in_what_they_hold() {
         let text = expand_placeholders("{clipboard}!", Some("hi"));
         assert_eq!(text, "hi!");

@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use gtk::{gio, prelude::*};
+
 pub const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
 /// What an application without an icon of its own shows.
 pub const NO_ICON: &str = "application-x-executable";
@@ -60,23 +62,6 @@ pub fn data_dirs() -> Vec<PathBuf> {
     let system = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
     dirs.extend(system.split(':').filter(|dir| !dir.is_empty()).map(PathBuf::from));
     dirs
-}
-
-/// The value of a key in a desktop entry's main group, in the user's language if it has one.
-pub fn value(entry: &str, key: &str, languages: &[String]) -> Option<String> {
-    let lines: Vec<&str> = entry
-        .lines()
-        .skip_while(|line| line.trim() != "[Desktop Entry]")
-        .skip(1)
-        .take_while(|line| !line.starts_with('['))
-        .collect();
-    let find = |key: &str| {
-        lines.iter().find_map(|line| {
-            let (name, value) = line.split_once('=')?;
-            (name.trim() == key).then(|| value.trim().to_string())
-        })
-    };
-    languages.iter().find_map(|language| find(&format!("{key}[{language}]"))).or_else(|| find(key))
 }
 
 /// The user's language, most specific first: zh_TW.UTF-8 gives zh_TW, then zh.
@@ -140,63 +125,49 @@ pub fn find_icon(dirs: &[PathBuf], themes: &[&str], icon: &str) -> Option<PathBu
     None
 }
 
-/// Every application the user can start, once each, by name.
+/// Every application the user can start, once each, by name, as GIO lists them: the same
+/// ones the app grid shows, those kept to other desktops left out.
 pub fn applications(themes: &[&str]) -> Vec<App> {
     let dirs = data_dirs();
-    let languages = languages();
-    let mut seen = std::collections::HashSet::new();
-    let mut apps = Vec::new();
-    for dir in &dirs {
-        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
-            continue;
-        };
-        for path in entries.flatten().map(|entry| entry.path()) {
-            if path.extension().and_then(|ext| ext.to_str()) != Some("desktop") {
-                continue;
-            }
-            // The first directory to have an entry wins, as a user's own overrides the system's.
-            let Some(id) = path.file_name().map(|name| name.to_string_lossy().to_string()) else {
-                continue;
-            };
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            let Ok(entry) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let get = |key: &str| value(&entry, key, &languages);
-            let flag = |key: &str| get(key).is_some_and(|value| value == "true");
-            if get("Type").as_deref() != Some("Application") || flag("NoDisplay") || flag("Hidden") {
-                continue;
-            }
-            let (Some(name), Some(exec)) = (get("Name"), get("Exec")) else {
-                continue;
-            };
+    let mut apps: Vec<App> = gio::AppInfo::all()
+        .into_iter()
+        .filter(|info| info.should_show())
+        .filter_map(|info| {
+            let entry = info.downcast::<gio::DesktopAppInfo>().ok()?;
+            let id = entry.id()?.to_string();
+            let name = entry.name().to_string();
+            let exec = entry.commandline()?.to_string_lossy().into_owned();
             // A generic name that only says the name again says nothing.
-            let detail = get("GenericName")
+            let detail = entry
+                .generic_name()
+                .map(String::from)
                 .filter(|generic| !generic.eq_ignore_ascii_case(&name))
-                .or_else(|| get("Comment"))
+                .or_else(|| entry.description().map(String::from))
                 .unwrap_or_default();
+            // Found by its name and keywords in the user's language and in the entry's own.
             let words = [
                 name.clone(),
-                value(&entry, "Name", &[]).unwrap_or_default(),
+                entry.string("Name").map(String::from).unwrap_or_default(),
                 detail.clone(),
-                get("Keywords").unwrap_or_default(),
-                value(&entry, "Keywords", &[]).unwrap_or_default(),
+                entry.keywords().join(" "),
+                entry.string("Keywords").map(String::from).unwrap_or_default(),
                 exec.split_whitespace().next().unwrap_or_default().to_string(),
             ]
             .join(" ")
             .to_lowercase();
-            apps.push(App {
+            let icon = entry
+                .string("Icon")
+                .and_then(|icon| find_icon(&dirs, themes, &icon));
+            Some(App {
                 id,
                 name,
                 detail,
                 words,
                 exec: strip_field_codes(&exec),
-                icon: get("Icon").and_then(|icon| find_icon(&dirs, themes, &icon)),
-            });
-        }
-    }
+                icon,
+            })
+        })
+        .collect();
     apps.sort_by_key(|app| app.name.to_lowercase());
     apps
 }

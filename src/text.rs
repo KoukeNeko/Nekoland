@@ -22,8 +22,6 @@ const FALLBACK: &str = "Noto Sans CJK TC, Sans";
 const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
 /// The configuration's `icon_theme`, looked in before `ICON_THEMES`.
 static ICON_THEME: RwLock<String> = RwLock::new(String::new());
-// Largest first: icons are drawn smaller than this more often than larger.
-const ICON_SIZES: [&str; 6] = ["256x256", "128x128", "96x96", "64x64", "48x48", "32x32"];
 
 /// How many pixels a point of the compositor's own pictures is drawn with: the output's
 /// scale, rounded up, so that a fractionally scaled output shrinks them rather than
@@ -233,7 +231,6 @@ fn label_surface(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> 
 #[derive(Clone, Default)]
 pub struct AppInfo {
     pub name: Option<String>,
-    icon: Option<PathBuf>,
     /// The icon's name in the themes, for drawing it at any size, SVG included.
     pub icon_name: Option<String>,
     /// The command line that starts it, without the desktop entry's field codes.
@@ -286,11 +283,6 @@ impl Apps {
                     cr.paint().ok()?;
                     cr.restore().ok()
                 })
-                .or_else(|| {
-                    info.icon
-                        .as_deref()
-                        .and_then(|path| draw_icon(&cr, path, icon_x, 0.0, icon_size))
-                })
                 .is_some();
             if !drawn {
                 // No icon to be found: a plain tile in its place.
@@ -310,17 +302,6 @@ impl Apps {
         }
         picture(surface)
     }
-}
-
-fn draw_icon(cr: &Context, path: &Path, x: f64, y: f64, size: i32) -> Option<()> {
-    let icon = ImageSurface::create_from_png(&mut std::fs::File::open(path).ok()?).ok()?;
-    let scale = f64::from(size) / f64::from(icon.width().max(icon.height()).max(1));
-    cr.save().ok()?;
-    cr.translate(x, y);
-    cr.scale(scale, scale);
-    cr.set_source_surface(&icon, 0.0, 0.0).ok()?;
-    cr.paint().ok()?;
-    cr.restore().ok()
 }
 
 /// An icon by name from the icon themes, or from `extra_dir` first, `size` pixels square.
@@ -463,7 +444,6 @@ fn lookup(app_id: &str) -> AppInfo {
     let Some(entry) = desktop_entry(&dirs, app_id) else {
         return AppInfo {
             name: None,
-            icon: find_icon(&dirs, &app_id.to_lowercase()),
             icon_name: Some(app_id.to_lowercase()),
             exec: None,
         };
@@ -482,7 +462,6 @@ fn lookup(app_id: &str) -> AppInfo {
     };
     AppInfo {
         name: value("Name"),
-        icon: value("Icon").and_then(|icon| find_icon(&dirs, &icon)),
         icon_name: value("Icon"),
         exec: value("Exec").map(|exec| strip_field_codes(&exec)),
     }
@@ -541,31 +520,6 @@ fn desktop_entry(dirs: &[PathBuf], app_id: &str) -> Option<String> {
         }
     }
     by_class
-}
-
-// shortcut: PNG icons only; an application that ships just an SVG gets the plain tile.
-fn find_icon(dirs: &[PathBuf], icon: &str) -> Option<PathBuf> {
-    let path = Path::new(icon);
-    if path.is_absolute() {
-        return (path.extension().and_then(|ext| ext.to_str()) == Some("png") && path.is_file())
-            .then(|| path.to_path_buf());
-    }
-    let themes = icon_themes();
-    for dir in dirs {
-        for theme in &themes {
-            for size in ICON_SIZES {
-                let candidate = dir.join(format!("icons/{theme}/{size}/apps/{icon}.png"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        let candidate = dir.join(format!("pixmaps/{icon}.png"));
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
