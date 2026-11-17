@@ -2138,21 +2138,26 @@ impl Nekoland {
         }
     }
 
+    /// The process behind a window.
+    pub(crate) fn window_pid(&self, window: &Window) -> Option<i32> {
+        match window.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => {
+                smithay::reexports::wayland_server::Resource::client(toplevel.wl_surface())?
+                    .get_credentials(&self.display_handle)
+                    .ok()
+                    .map(|credentials| credentials.pid)
+            }
+            WindowSurface::X11(surface) => surface.pid().and_then(|pid| i32::try_from(pid).ok()),
+        }
+    }
+
     /// Ends an application at once, whether it answers or not: the processes behind its
     /// windows are killed.
     pub(crate) fn force_quit_app(&mut self, app_id: &str) {
         let mut pids: Vec<i32> = self
             .all_windows()
             .filter(|window| is_managed(window) && window_names(window).1 == app_id)
-            .filter_map(|window| match window.underlying_surface() {
-                WindowSurface::Wayland(toplevel) => {
-                    smithay::reexports::wayland_server::Resource::client(toplevel.wl_surface())?
-                        .get_credentials(&self.display_handle)
-                        .ok()
-                        .map(|credentials| credentials.pid)
-                }
-                WindowSurface::X11(surface) => surface.pid().and_then(|pid| i32::try_from(pid).ok()),
-            })
+            .filter_map(|window| self.window_pid(window))
             .collect();
         pids.sort_unstable();
         pids.dedup();

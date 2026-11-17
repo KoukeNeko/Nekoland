@@ -143,6 +143,23 @@ fn launcher_windows(state: &crate::Nekoland) -> Vec<smithay::desktop::Window> {
         .collect()
 }
 
+fn task_windows(state: &crate::Nekoland) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for window in state.all_windows().filter(|window| is_managed(window)) {
+        let Some(pid) = state.window_pid(window) else {
+            continue;
+        };
+        let answers = window
+            .toplevel()
+            .is_none_or(|toplevel| crate::handlers::xdg_shell::answers_pings(&toplevel.client()));
+        let line = format!("{pid}\t{}\t{}\n", window_names(window).1, u8::from(answers));
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines.concat()
+}
+
 /// Does what a message asks; a question gets its answer back.
 fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
     match message {
@@ -199,6 +216,13 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                     })
                     .collect(),
             );
+        }
+        // The applications' windows, for the task manager, one a line: the process behind
+        // it, its application ID, and `1` or `0` for whether it answers pings.
+        "tasks" => return Some(task_windows(state)),
+        quit if quit.starts_with("quit-app ") => state.quit_app(&quit["quit-app ".len()..]),
+        force if force.starts_with("force-quit-app ") => {
+            state.force_quit_app(&force["force-quit-app ".len()..]);
         }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),
