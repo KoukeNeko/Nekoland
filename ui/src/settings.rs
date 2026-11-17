@@ -320,13 +320,12 @@ fn build(app: &adw::Application) {
     };
     // The pages in groups with a line between, as the Mac's System Settings has them.
     let groups: Vec<Vec<(&str, &str)>> = vec![
-        [
-            (("Wi-Fi", "network-wireless-symbolic"), wifi::has_wifi()),
-            (("網路", "network-wired-symbolic"), wifi::network_manager_runs()),
-        ]
-        .into_iter()
-        .filter_map(|(page, there)| there.then_some(page))
-        .collect(),
+        // 網路 has the proxy and the firewall too, which are not NetworkManager's.
+        wifi::has_wifi()
+            .then_some(("Wi-Fi", "network-wireless-symbolic"))
+            .into_iter()
+            .chain([("網路", "network-wired-symbolic")])
+            .collect(),
         vec![
             ("外觀", "preferences-desktop-appearance-symbolic"),
             ("字型", "preferences-desktop-font-symbolic"),
@@ -352,8 +351,6 @@ fn build(app: &adw::Application) {
         ],
         vec![("設計語言", "applications-graphics-symbolic")],
     ];
-    // Without NetworkManager there are no network pages, and no empty group for them.
-    let groups: Vec<_> = groups.into_iter().filter(|group| !group.is_empty()).collect();
     let starts: Vec<usize> = groups
         .iter()
         .scan(0, |at, group| {
@@ -3946,16 +3943,8 @@ fn remote_page() -> adw::PreferencesPage {
             ("disable", "關閉遠端桌面")
         };
         row.set_sensitive(false);
-        let askpass = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
-            .filter(|path| path.exists())
-            .unwrap_or_else(|| PathBuf::from("nekoland-askpass"));
-        let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
-        launcher.setenv("SUDO_ASKPASS", askpass, true);
-        launcher.setenv("NEKOLAND_ASKPASS_REASON", reason, true);
         let show = show.clone();
-        match launcher.spawn(&["sudo", "-A", "--", "systemctl", verb, "--now", "xrdp"].map(std::ffi::OsStr::new)) {
+        match sudo(reason, &["systemctl", verb, "--now", "xrdp"]) {
             // Turned down or failed, the switch goes back to what xrdp is.
             Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
                 if let Err(err) = result {
@@ -3975,6 +3964,23 @@ fn remote_page() -> adw::PreferencesPage {
         }
     });
     page
+}
+
+/// Runs `args` as root through `sudo -A`, whose password Nekoland's askpass asks for,
+/// saying `reason`.
+fn sudo(reason: &str, args: &[&str]) -> Result<gio::Subprocess, glib::Error> {
+    let askpass = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
+        .filter(|path| path.exists())
+        // sudo takes only an absolute path.
+        .or_else(|| glib::find_program_in_path("nekoland-askpass"))
+        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/nekoland-askpass"));
+    let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+    launcher.setenv("SUDO_ASKPASS", askpass, true);
+    launcher.setenv("NEKOLAND_ASKPASS_REASON", reason, true);
+    let argv: Vec<&std::ffi::OsStr> = ["sudo", "-A", "--"].iter().chain(args).map(std::ffi::OsStr::new).collect();
+    launcher.spawn(&argv)
 }
 
 /// Whether xrdp is running, or None when it is not installed.

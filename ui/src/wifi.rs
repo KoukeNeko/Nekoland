@@ -197,12 +197,6 @@ pub(crate) fn setting(uuid: &str, name: &str) -> Option<String> {
     Some(nmcli_fields(text.trim_end_matches('\n')).join(":"))
 }
 
-/// Whether NetworkManager runs, which the Wi-Fi and 網路 pages work through; without it
-/// Settings has neither.
-pub fn network_manager_runs() -> bool {
-    output("nmcli", &["-t", "-f", "RUNNING", "general"]).is_some_and(|text| text.trim() == "running")
-}
-
 /// Whether NetworkManager has a Wi-Fi device, without which there is no Wi-Fi page.
 pub fn has_wifi() -> bool {
     output("nmcli", &["-t", "-f", "TYPE", "device"]).is_some_and(|text| text.lines().any(|kind| kind == "wifi"))

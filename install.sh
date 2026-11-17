@@ -19,12 +19,13 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
     libadwaita-1-dev libfontconfig-dev libfreetype-dev"
-# What it runs with: Mesa to draw, Xwayland, the locker, wallpaper, terminal, portals,
+# What it runs with: Mesa to draw, Xwayland, the locker, wallpaper, terminal, portals, the network,
 # sound, clipboard, fonts and icons, the input method, and the applications the example
 # configuration keeps in the Dock.
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 xwayland swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
+    network-manager network-manager-openvpn
     pipewire pipewire-pulse wireplumber brightnessctl
     fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator

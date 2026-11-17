@@ -52,7 +52,8 @@ struct Vpn {
     uuid: String,
     name: String,
     kind: String,
-    up: bool,
+    /// The connection's state, as activated or activating, or empty when it is down.
+    state: String,
 }
 
 /// What `nmcli -t -f DEVICE,TYPE,STATE,CON-UUID device status` printed: the Ethernet ports.
@@ -82,7 +83,7 @@ fn parse_vpns(text: &str) -> Vec<Vpn> {
                 uuid: uuid.clone(),
                 name: name.clone(),
                 kind: kind.clone(),
-                up: state == "activated",
+                state: state.clone(),
             })
         })
         .collect()
@@ -139,7 +140,6 @@ fn manual_addresses(address: &str, mask: &str, router: &str) -> Result<(String, 
     Ok((format!("{address}/{prefix}"), router.to_string()))
 }
 
-
 /// How IPv6 can be set, as people read it and as NetworkManager's ipv6.method has it.
 const IPV6_METHODS: [(&str, &str); 4] = [
     ("自動", "auto"),
@@ -177,7 +177,11 @@ fn dns_servers(typed: &str) -> Result<(String, String), &'static str> {
 
 /// Words typed apart by commas or spaces, as nmcli takes a list.
 fn typed_list(typed: &str) -> String {
-    typed.split([',', ' ']).filter(|word| !word.is_empty()).collect::<Vec<_>>().join(",")
+    typed
+        .split([',', ' '])
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// How a connection's IPv4 and IPv6 addresses and DNS servers are set, with what applies
@@ -191,9 +195,17 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
     let first = setting(uuid, "ipv4.addresses").unwrap_or_default();
     let first = first.split(',').next().unwrap_or_default().trim().to_string();
     let (address, prefix) = first.split_once('/').unwrap_or((first.as_str(), ""));
-    let mask = prefix.parse().map(prefix_mask).map(|mask| mask.to_string()).unwrap_or_default();
+    let mask = prefix
+        .parse()
+        .map(prefix_mask)
+        .map(|mask| mask.to_string())
+        .unwrap_or_default();
     let entry = |title: &str, text: &str, visible: bool| {
-        adw::EntryRow::builder().title(title).text(text).visible(visible).build()
+        adw::EntryRow::builder()
+            .title(title)
+            .text(text)
+            .visible(visible)
+            .build()
     };
 
     let ipv4 = group("IPv4");
@@ -204,7 +216,11 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
         .build();
     let address = entry("IP 位址", address, manual);
     let mask = entry("子網路遮罩", &mask, manual);
-    let router = entry("路由器", &setting(uuid, "ipv4.gateway").unwrap_or_default(), manual);
+    let router = entry(
+        "路由器",
+        &setting(uuid, "ipv4.gateway").unwrap_or_default(),
+        manual,
+    );
     let by_hand = [address.clone(), mask.clone(), router.clone()];
     how.connect_selected_notify(move |how| {
         for row in &by_hand {
@@ -219,30 +235,37 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
 
     // A connection whose IPv6 is set some other way, as shared, keeps it.
     let v6_method = setting(uuid, "ipv6.method").unwrap_or_default();
-    let ipv6 = IPV6_METHODS.iter().position(|(_, method)| *method == v6_method).map(|chosen| {
-        let manual = IPV6_METHODS[chosen].1 == "manual";
-        let first = setting(uuid, "ipv6.addresses").unwrap_or_default();
-        let first = first.split(',').next().unwrap_or_default().trim().to_string();
-        let how = adw::ComboRow::builder()
-            .title("設定 IPv6")
-            .model(&gtk::StringList::new(&IPV6_METHODS.map(|(label, _)| label)))
-            .selected(chosen as u32)
-            .build();
-        let address = entry("IP 位址", &first, manual);
-        let router = entry("路由器", &setting(uuid, "ipv6.gateway").unwrap_or_default(), manual);
-        let by_hand = [address.clone(), router.clone()];
-        how.connect_selected_notify(move |how| {
-            for row in &by_hand {
-                row.set_visible(IPV6_METHODS[how.selected() as usize].1 == "manual");
-            }
+    let ipv6 = IPV6_METHODS
+        .iter()
+        .position(|(_, method)| *method == v6_method)
+        .map(|chosen| {
+            let manual = IPV6_METHODS[chosen].1 == "manual";
+            let first = setting(uuid, "ipv6.addresses").unwrap_or_default();
+            let first = first.split(',').next().unwrap_or_default().trim().to_string();
+            let how = adw::ComboRow::builder()
+                .title("設定 IPv6")
+                .model(&gtk::StringList::new(&IPV6_METHODS.map(|(label, _)| label)))
+                .selected(chosen as u32)
+                .build();
+            let address = entry("IP 位址", &first, manual);
+            let router = entry(
+                "路由器",
+                &setting(uuid, "ipv6.gateway").unwrap_or_default(),
+                manual,
+            );
+            let by_hand = [address.clone(), router.clone()];
+            how.connect_selected_notify(move |how| {
+                for row in &by_hand {
+                    row.set_visible(IPV6_METHODS[how.selected() as usize].1 == "manual");
+                }
+            });
+            let ipv6 = group("IPv6");
+            ipv6.add(&how);
+            ipv6.add(&address);
+            ipv6.add(&router);
+            page.add(&ipv6);
+            (how, address, router)
         });
-        let ipv6 = group("IPv6");
-        ipv6.add(&how);
-        ipv6.add(&address);
-        ipv6.add(&router);
-        page.add(&ipv6);
-        (how, address, router)
-    });
 
     let dns = group("DNS");
     let current: Vec<String> = ["ipv4.dns", "ipv6.dns"]
@@ -256,7 +279,11 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
         .build();
     let search = adw::EntryRow::builder()
         .title("搜尋網域")
-        .text(setting(uuid, "ipv4.dns-search").unwrap_or_default().replace(',', ", "))
+        .text(
+            setting(uuid, "ipv4.dns-search")
+                .unwrap_or_default()
+                .replace(',', ", "),
+        )
         .build();
     dns.add(&servers);
     dns.add(&search);
@@ -273,7 +300,9 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
     let uuid = uuid.to_string();
     apply.connect_clicked(move |button| {
         let settings = || -> Result<Vec<String>, &'static str> {
-            let mut settings: Vec<String> = ["connection", "modify", "uuid", uuid.as_str()].map(String::from).into();
+            let mut settings: Vec<String> = ["connection", "modify", "uuid", uuid.as_str()]
+                .map(String::from)
+                .into();
             let mut set = |key: &str, value: String| settings.extend([key.to_string(), value]);
             if how.selected() == 1 {
                 let (address, router) = manual_addresses(&address.text(), &mask.text(), &router.text())?;
@@ -287,8 +316,19 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
                 set("ipv4.gateway", String::new());
             }
             let (v4_servers, v6_servers) = dns_servers(&servers.text())?;
+            // Without IPv6, or with IPv6 set some other way, an IPv6 server would be dropped.
+            let v6_kept = ipv6
+                .as_ref()
+                .is_some_and(|(how, _, _)| IPV6_METHODS[how.selected() as usize].1 != "disabled");
+            if !v6_servers.is_empty() && !v6_kept {
+                return Err("IPv6 未開啟，無法使用 IPv6 的 DNS 伺服器。");
+            }
             // Servers typed are used instead of DHCP's, as the Mac does.
-            let ignore = if v4_servers.is_empty() && v6_servers.is_empty() { "no" } else { "yes" };
+            let ignore = if v4_servers.is_empty() && v6_servers.is_empty() {
+                "no"
+            } else {
+                "yes"
+            };
             set("ipv4.dns", v4_servers);
             set("ipv4.ignore-auto-dns", ignore.into());
             set("ipv4.dns-search", typed_list(&search.text()));
@@ -304,7 +344,10 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
                     set("ipv6.addresses", String::new());
                     set("ipv6.gateway", String::new());
                 }
-                if method != "disabled" {
+                if method == "disabled" {
+                    // NetworkManager refuses IPv6 DNS servers on a connection without IPv6.
+                    set("ipv6.dns", String::new());
+                } else {
                     set("ipv6.dns", v6_servers);
                     set("ipv6.ignore-auto-dns", ignore.into());
                 }
@@ -342,19 +385,30 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
 #[derive(Default)]
 struct NetworkPage {
     groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// The proxy and the firewall, not NetworkManager's, kept as they are under the rest.
+    kept: Vec<adw::PreferencesGroup>,
 }
 
 pub fn network_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    let shown = Rc::new(NetworkPage::default());
+    let kept = [Some(proxy_group()), firewall_group()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let shown = Rc::new(NetworkPage {
+        groups: RefCell::default(),
+        kept,
+    });
     fill_network_page(&page, &shown);
     follow_network(&page, move |page| fill_network_page(page, &shown));
     page
 }
 
 fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
-    for group in shown.groups.take() {
-        page.remove(&group);
+    for group in shown.groups.take().iter().chain(&shown.kept) {
+        if group.parent().is_some() {
+            page.remove(group);
+        }
     }
     let mut groups = Vec::new();
     let (weak, again) = (page.downgrade(), shown.clone());
@@ -368,7 +422,12 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         "nmcli",
         &["-t", "-f", "DEVICE,TYPE,STATE,CON-UUID", "device", "status"],
     ) else {
-        // NetworkManager stopped while the page was open.
+        let missing = group("");
+        missing.add(&adw::ActionRow::builder().title("未安裝 NetworkManager").build());
+        for group in std::iter::once(&missing).chain(&shown.kept) {
+            page.add(group);
+        }
+        shown.groups.replace(vec![missing]);
         return;
     };
 
@@ -406,10 +465,195 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
     }
     groups.push(vpn);
 
-    for group in &groups {
+    for group in groups.iter().chain(&shown.kept) {
         page.add(group);
     }
     shown.groups.replace(groups);
+}
+
+/// GNOME's proxy settings, which GIO's programs and the browsers follow.
+const PROXY: &str = "org.gnome.system.proxy";
+const PROXY_MODES: [(&str, &str); 3] = [("無", "none"), ("手動", "manual"), ("自動設定", "auto")];
+
+/// One of the proxy's settings, without the quotes gsettings prints a string in.
+fn proxy_setting(schema: &str, key: &str) -> String {
+    output("gsettings", &["get", schema, key])
+        .map(|value| value.trim().trim_matches('\'').to_string())
+        .unwrap_or_default()
+}
+
+/// A proxy typed as host:port, [IPv6]:port taken too; None when nothing is typed.
+fn host_port(typed: &str) -> Result<Option<(String, u16)>, &'static str> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    let wrong = "請以「主機:連接埠」的格式輸入代理伺服器。";
+    let (host, port) = typed.rsplit_once(':').ok_or(wrong)?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port: u16 = port.parse().ok().filter(|port| *port > 0).ok_or(wrong)?;
+    if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c == '\'' || c == '\\') {
+        return Err(wrong);
+    }
+    Ok(Some((host.to_string(), port)))
+}
+
+/// Hosts typed apart by commas or spaces, as gsettings takes a list of strings.
+fn host_list(typed: &str) -> Result<String, &'static str> {
+    let hosts: Vec<&str> = typed.split([',', ' ']).filter(|host| !host.is_empty()).collect();
+    if hosts.iter().any(|host| host.contains(['\'', '\\'])) {
+        return Err("略過的主機的格式不正確。");
+    }
+    Ok(format!(
+        "[{}]",
+        hosts
+            .iter()
+            .map(|host| format!("'{host}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// The proxy: none, by hand for each protocol, or from a configuration's URL; each field
+/// takes effect as it is applied.
+fn proxy_group() -> adw::PreferencesGroup {
+    let proxy = group("代理伺服器");
+    let mode = proxy_setting(PROXY, "mode");
+    let chosen = PROXY_MODES
+        .iter()
+        .position(|(_, value)| *value == mode)
+        .unwrap_or(0);
+    let how = adw::ComboRow::builder()
+        .title("設定")
+        .model(&gtk::StringList::new(&PROXY_MODES.map(|(label, _)| label)))
+        .selected(chosen as u32)
+        .build();
+    proxy.add(&how);
+
+    let field = |title: &str, text: &str| {
+        adw::EntryRow::builder()
+            .title(title)
+            .text(text)
+            .show_apply_button(true)
+            .build()
+    };
+    let mut manual = Vec::new();
+    for (title, protocol) in [("HTTP", "http"), ("HTTPS", "https"), ("SOCKS", "socks")] {
+        let schema = format!("{PROXY}.{protocol}");
+        let host = proxy_setting(&schema, "host");
+        let port = proxy_setting(&schema, "port");
+        let shown = if host.is_empty() {
+            String::new()
+        } else {
+            format!("{host}:{port}")
+        };
+        let row = field(title, &shown);
+        row.connect_apply(move |row| match host_port(&row.text()) {
+            Ok(typed) => {
+                let (host, port) = typed.unwrap_or_default();
+                crate::run("gsettings", &["set", &schema, "host", &format!("'{host}'")]);
+                crate::run("gsettings", &["set", &schema, "port", &port.to_string()]);
+            }
+            Err(why) => alert::notice(row, "無法設定代理伺服器", Some(why)),
+        });
+        manual.push(row);
+    }
+    let ignored = proxy_setting(PROXY, "ignore-hosts");
+    let ignored = ignored.trim_matches(['[', ']']).replace('\'', "");
+    let skip = field("略過的主機", &ignored);
+    skip.connect_apply(|row| match host_list(&row.text()) {
+        Ok(hosts) => crate::run("gsettings", &["set", PROXY, "ignore-hosts", &hosts]),
+        Err(why) => alert::notice(row, "無法設定代理伺服器", Some(why)),
+    });
+    manual.push(skip);
+    let url = field("設定檔 URL", &proxy_setting(PROXY, "autoconfig-url"));
+    url.connect_apply(|row| {
+        let typed = row.text().trim().replace(['\'', '\\'], "");
+        crate::run(
+            "gsettings",
+            &["set", PROXY, "autoconfig-url", &format!("'{typed}'")],
+        );
+    });
+
+    let show = {
+        let (manual, url) = (manual.clone(), url.clone());
+        move |chosen: u32| {
+            for row in &manual {
+                row.set_visible(chosen == 1);
+            }
+            url.set_visible(chosen == 2);
+        }
+    };
+    show(chosen as u32);
+    for row in &manual {
+        proxy.add(row);
+    }
+    proxy.add(&url);
+    how.connect_selected_notify(move |how| {
+        crate::run(
+            "gsettings",
+            &["set", PROXY, "mode", PROXY_MODES[how.selected() as usize].1],
+        );
+        show(how.selected());
+    });
+    proxy
+}
+
+/// Where ufw keeps whether it is on, which anyone may read.
+const UFW_CONF: &str = "/etc/ufw/ufw.conf";
+
+fn firewall_on() -> bool {
+    std::fs::read_to_string(UFW_CONF).is_ok_and(|conf| conf.lines().any(|line| line.trim() == "ENABLED=yes"))
+}
+
+/// ufw, turned on and off as root; none without ufw.
+fn firewall_group() -> Option<adw::PreferencesGroup> {
+    if !std::path::Path::new(UFW_CONF).exists() {
+        return None;
+    }
+    let firewall = group("");
+    let switch = adw::SwitchRow::builder()
+        .title("防火牆")
+        .subtitle("阻擋其他電腦連入")
+        .active(firewall_on())
+        .build();
+    // Set from what ufw says after a change, which is not a change of its own.
+    let showing = Rc::new(std::cell::Cell::new(false));
+    switch.connect_active_notify(move |row| {
+        if showing.get() {
+            return;
+        }
+        let (verb, reason) = if row.is_active() {
+            ("enable", "開啟防火牆")
+        } else {
+            ("disable", "關閉防火牆")
+        };
+        row.set_sensitive(false);
+        let shown = {
+            let (row, showing) = (row.clone(), showing.clone());
+            move || {
+                showing.set(true);
+                row.set_active(firewall_on());
+                showing.set(false);
+                row.set_sensitive(true);
+            }
+        };
+        match crate::sudo(reason, &["ufw", "--force", verb]) {
+            // Turned down or failed, the switch goes back to what ufw is.
+            Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
+                if let Err(err) = result {
+                    eprintln!("ufw {verb}: {err}");
+                }
+                shown();
+            }),
+            Err(err) => {
+                eprintln!("sudo: {err}");
+                shown();
+            }
+        }
+    });
+    firewall.add(&switch);
+    Some(firewall)
 }
 
 /// A port, joined and left with its switch, with its details while a connection is up on it.
@@ -437,6 +681,8 @@ fn port_row(port: &Port, named: bool, done: &Rc<dyn Fn()>) -> adw::ActionRow {
         .sensitive(port.usable())
         .valign(gtk::Align::Center)
         .build();
+    // Named for screen readers by the row it turns on and off.
+    switch.update_property(&[gtk::accessible::Property::Label(&title)]);
     let (device, again) = (port.device.clone(), done.clone());
     switch.connect_active_notify(move |switch| {
         let (verb, failure) = if switch.is_active() {
@@ -545,30 +791,26 @@ fn port_dialog(parent: &gtk::Button, port: &Port, uuid: &str, title: &str, done:
 /// A VPN, turned on and off with its switch.
 fn vpn_row(vpn: &Vpn, done: &Rc<dyn Fn()>) -> adw::ActionRow {
     let kind = vpn_kind(vpn);
-    let subtitle = if vpn.up {
-        format!("{kind} · 已連線")
-    } else {
-        kind.clone()
+    let subtitle = match vpn.state.as_str() {
+        "activated" => format!("{kind} · 已連線"),
+        "activating" => format!("{kind} · 正在連線…"),
+        _ => kind.clone(),
     };
     let row = adw::ActionRow::builder()
         .title(&vpn.name)
         .subtitle(&subtitle)
         .build();
     let switch = gtk::Switch::builder()
-        .active(vpn.up)
+        .active(matches!(vpn.state.as_str(), "activated" | "activating"))
         .valign(gtk::Align::Center)
         .build();
+    switch.update_property(&[gtk::accessible::Property::Label(&vpn.name)]);
     let (uuid, name, again) = (vpn.uuid.clone(), vpn.name.clone(), done.clone());
     switch.connect_active_notify(move |switch| {
         let on = switch.is_active();
         let (switch, again, name, uuid) = (switch.clone(), again.clone(), name.clone(), uuid.clone());
         let id = uuid.clone();
-        let args = [
-            "connection",
-            if on { "up" } else { "down" },
-            "uuid",
-            id.as_str(),
-        ];
+        let args = ["connection", if on { "up" } else { "down" }, "uuid", id.as_str()];
         nmcli(&args, move |result| match result {
             // Nekoland runs no secret agent, so a password NetworkManager does not keep is
             // asked for here and given as the VPN comes up.
@@ -691,6 +933,17 @@ fn import_vpn(button: &gtk::Button, done: Rc<dyn Fn()>) {
             Some("ovpn") => "openvpn",
             _ => "wireguard",
         };
+        // NetworkManager names it after the file, and fails an assertion and restarts when
+        // a second one of that name is imported.
+        let name = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let names = output("nmcli", &["-t", "-f", "NAME", "connection", "show"]).unwrap_or_default();
+        if names.lines().any(|line| nmcli_fields(line).join(":") == name) {
+            let why = format!("已經有名為「{name}」的連線。");
+            return alert::notice(&button, "無法加入 VPN", Some(&why));
+        }
         let file = path.to_string_lossy().into_owned();
         nmcli(
             &["connection", "import", "type", kind, "file", &file],
@@ -730,13 +983,13 @@ mod tests {
                     uuid: "a1".into(),
                     name: "wg:home".into(),
                     kind: "wireguard".into(),
-                    up: true
+                    state: "activated".into()
                 },
                 Vpn {
                     uuid: "b2".into(),
                     name: "Office".into(),
                     kind: "vpn".into(),
-                    up: false
+                    state: String::new()
                 },
             ]
         );
@@ -766,9 +1019,29 @@ mod tests {
             Ok(("1.1.1.1,8.8.8.8".into(), "2606:4700::1111".into()))
         );
         assert_eq!(dns_servers(""), Ok((String::new(), String::new())));
-        assert_eq!(manual_v6("2001:db8::2", ""), Ok(("2001:db8::2/64".into(), String::new())));
+        assert_eq!(
+            manual_v6("2001:db8::2", ""),
+            Ok(("2001:db8::2/64".into(), String::new()))
+        );
         assert!(manual_v6("2001:db8::2/129", "").is_err());
         assert!(manual_v6("2001:db8::2/48", "fe80::1::1").is_err());
         assert!(dns_servers("dns.example").is_err());
+    }
+
+    #[test]
+    fn proxies_are_host_and_port() {
+        assert_eq!(
+            host_port(" proxy.lan:3128 "),
+            Ok(Some(("proxy.lan".into(), 3128)))
+        );
+        assert_eq!(host_port("[::1]:8080"), Ok(Some(("::1".into(), 8080))));
+        assert_eq!(host_port(""), Ok(None));
+        assert!(host_port("proxy.lan").is_err());
+        assert!(host_port("proxy.lan:0").is_err());
+        assert_eq!(
+            host_list("localhost, 127.0.0.0/8"),
+            Ok("['localhost', '127.0.0.0/8']".into())
+        );
+        assert_eq!(host_list(""), Ok("[]".into()));
     }
 }
