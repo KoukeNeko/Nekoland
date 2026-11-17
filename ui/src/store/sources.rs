@@ -1,4 +1,4 @@
-//! Where software comes from, as the App Store reads it: AppStream for Ubuntu's archive
+//! Where software comes from, as Market reads it: AppStream for Ubuntu's archive
 //! and Flathub, snapd's socket for the Snap Store, `brew` for Homebrew, and the Packages
 //! lists apt keeps for each other repository. Each is asked through its own program or
 //! files, with no library of its own; what they say is turned into offers, and offers of
@@ -1252,7 +1252,7 @@ fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|w| w.to_string()).collect()
 }
 
-/// apt-get as the App Store runs it, with nothing to answer: a configuration file changed
+/// apt-get as Market runs it, with nothing to answer: a configuration file changed
 /// both here and in the new version keeps the one here, as dpkg would otherwise ask on a
 /// closed input and leave the package half set up.
 pub const APT_GET: [&str; 8] = [

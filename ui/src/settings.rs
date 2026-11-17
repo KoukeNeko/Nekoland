@@ -4,6 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod focus;
+mod themes;
 
 use std::{
     cell::{Cell, RefCell},
@@ -2057,39 +2058,10 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
     page
 }
 
-/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
-/// `opacity_changed` is told each new opacity once Nekoland has it.
-/// The icon themes, or with `cursors` the cursor themes, installed, by folder name.
-fn installed_themes(cursors: bool) -> Vec<String> {
-    let mut dirs = vec![home().join(".icons"), home().join(".local/share/icons")];
-    dirs.extend(glib::system_data_dirs().into_iter().map(|dir| dir.join("icons")));
-    let mut names: Vec<String> = dirs
-        .iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flatten()
-        .flatten()
-        .filter(|theme| {
-            let path = theme.path();
-            if cursors {
-                path.join("cursors").is_dir()
-            } else {
-                std::fs::read_to_string(path.join("index.theme"))
-                    .is_ok_and(|index| index.contains("Directories="))
-            }
-        })
-        .filter_map(|theme| theme.file_name().into_string().ok())
-        // The base every theme falls back to, not one of its own.
-        .filter(|name| !["hicolor", "locolor", "default"].contains(&name.as_str()))
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
 /// A row choosing a theme for Nekoland's `key` and GNOME's `gsetting` together; 預設 leaves
 /// both to their own choice.
 fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static str, cursors: bool) -> adw::ComboRow {
-    let themes = installed_themes(cursors);
+    let themes: Vec<String> = themes::installed(cursors).into_iter().map(|theme| theme.name).collect();
     let labels: Vec<&str> = std::iter::once("預設").chain(themes.iter().map(String::as_str)).collect();
     let current = config.word(key);
     let row = adw::ComboRow::builder()
@@ -2112,6 +2084,8 @@ fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static
     row
 }
 
+/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
+/// `opacity_changed` is told each new opacity once Nekoland has it.
 fn glass_group(
     config: &Config,
     title: &str,
@@ -5135,7 +5109,7 @@ fn design_page() -> gtk::ScrolledWindow {
         alert(
             Some("system-lock-screen-symbolic"),
             "需要管理員密碼",
-            Some("App Store 要安裝 GIMP。"),
+            Some("Market 要安裝 GIMP。"),
             Some(
                 gtk::PasswordEntry::builder()
                     .show_peek_icon(true)

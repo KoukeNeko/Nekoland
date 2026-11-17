@@ -393,7 +393,7 @@ with no styling of its own: a month, the chosen day's events, kept in
 there to try the look on an application that knows nothing of it;
 `shell/io.github.koukeneko.Nekoland.Calendar.desktop` puts it among the applications.
 
-`nekoland-store`, from `ui/`, is an App Store over apt, Snap, Flathub and Homebrew, and
+`nekoland-store`, from `ui/`, is Market: an app store over apt, Snap, Flathub and Homebrew, and
 over the vendors' own apt repositories. An app found in several shows once, with a row per
 source giving its version, size, how it updates and how it is confined; the picked row is
 the one 安裝 uses, and an installed one can be switched for another. It reads AppStream,
@@ -403,8 +403,14 @@ need an administrator, which it asks for through `nekoland-askpass` and `sudo -A
 for all a change runs, so the user must be in the `sudo` group. Adding a vendor's
 repository (Ookla, Microsoft, Google) asks first and writes its key to `/etc/apt/keyrings`
 and a `.sources` file to `/etc/apt/sources.list.d`; it is then listed under 其他套件庫,
-where it can be removed. `shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among
-the applications.
+where it can be removed. Under 外觀 it lists icon and cursor themes, those installed and
+the most downloaded on Pling (gnome-look.org), through Pling's OCS API. Installing one
+unpacks its archive with `tar` (or Python's `zipfile`) into `~/.local/share/icons` and runs
+nothing in it; what Market installed is kept in `~/.local/share/nekoland/market.json`, so
+that it can be removed whole. A cursor theme's page fetches the pack to try its cursors on
+before it is installed; an icon theme's page draws the Dock's applications in it. 套用 sets
+`icon_theme` or `cursor_theme`, and GNOME's matching setting, as Settings does.
+`shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications.
 
 `nekoland-filechooser`, from `ui/`, is the window programs open and save files in when they
 ask `xdg-desktop-portal`: browsers, Flatpak and Snap applications, GTK 4's file dialog and
