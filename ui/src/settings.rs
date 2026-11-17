@@ -1044,8 +1044,6 @@ fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
     label.set_attributes(Some(&attrs));
 }
 
-/// The hover panel: when it shows, where, how it looks and which fields, a group each, as
-/// FinderHover's settings have them.
 /// How nekoland-lock looks, and when the screen locks by itself.
 fn lock_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
@@ -1140,7 +1138,10 @@ fn windows_page(config: &Config) -> adw::PreferencesPage {
     page
 }
 
-fn hover_page(config: &Config) -> adw::PreferencesPage {    let page = adw::PreferencesPage::new();
+/// The hover panel: when it shows, where, how it looks and which fields, a group each, as
+/// FinderHover's settings have them.
+fn hover_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
 
     let general = group("");
     let shown = switch_row(config, "顯示", "hover_info");
