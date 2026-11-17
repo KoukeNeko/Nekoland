@@ -47,10 +47,10 @@ const EMOJI_MOST: usize = 640;
 // Where items go, in logical pixels: the list's inset, and each kind's height.
 const WIDTH: f32 = 640.0;
 const LIST_WITH_DETAIL: f32 = 340.0;
-const INSET: f32 = 6.0;
+const INSET: f32 = 8.0;
 const ROW: f32 = 36.0;
 const ANSWER: f32 = 60.0;
-const HEADER: f32 = 30.0;
+const HEADER: f32 = 32.0;
 const COLUMNS: usize = 8;
 const CELL: f32 = 72.0;
 

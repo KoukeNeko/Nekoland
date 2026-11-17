@@ -66,14 +66,14 @@ component Keycap inherits Rectangle {
     in property <string> text;
     height: 20px;
     min-width: 20px;
-    border-radius: 5px;
+    border-radius: Theme.radius-s;
     background: Theme.ink.with-alpha(0.08);
     HorizontalLayout {
-        padding-left: 5px;
-        padding-right: 5px;
+        padding-left: 4px;
+        padding-right: 4px;
         Text {
             text: root.text;
-            font-size: 11px;
+            font-size: Theme.text-small;
             color: Theme.ink-2;
             vertical-alignment: center;
             horizontal-alignment: center;
@@ -97,22 +97,22 @@ component FormField {
     }
 
     VerticalLayout {
-        spacing: 6px;
+        spacing: 8px;
         Text {
             text: root.label;
             font-size: Theme.text-small;
             color: Theme.ink-2;
         }
         Rectangle {
-            height: root.multiline ? 140px : 34px;
-            border-radius: 8px;
+            height: root.multiline ? 140px : 36px;
+            border-radius: Theme.radius-m;
             background: Theme.ink.with-alpha(0.06);
             border-width: input.has-focus ? 1.5px : 0px;
             border-color: Theme.ink.with-alpha(0.5);
             input := TextInput {
-                x: 10px;
+                x: 12px;
                 y: root.multiline ? 8px : 0px;
-                width: parent.width - 20px;
+                width: parent.width - 24px;
                 height: root.multiline ? parent.height - 16px : parent.height;
                 text <=> root.text;
                 single-line: !root.multiline;
@@ -178,11 +178,12 @@ export component Launcher inherits Window {
     focus-field => { field.focus(); }
 
     property <length> field-height: 56px;
-    // Where everything inside starts and ends: rows are inset by `row-inset` and pad the
-    // rest, so their content lines up with the field's, the footer's and the form's.
-    property <length> edge: 18px;
+    // Where everything inside starts and ends, on the design language's steps of 4: rows
+    // are inset by `row-inset` and pad the rest, so their content lines up with the
+    // field's, the footer's and the form's.
+    property <length> edge: 16px;
     // INSET and ROW in launcher.rs, which lays the rows out.
-    property <length> row-inset: 6px;
+    property <length> row-inset: 8px;
     property <length> row-height: 36px;
     property <length> row-padding: edge - row-inset;
     // The column icons stand in, the search field's included.
@@ -283,9 +284,9 @@ export component Launcher inherits Window {
         }
         let item = root.items[root.current];
         if item.y < -list.content-y {
-            list.content-y = -item.y + 6px;
+            list.content-y = -item.y + root.row-inset;
         } else if item.y + item.height > -list.content-y + list.height {
-            list.content-y = -(item.y + item.height - list.height + 6px);
+            list.content-y = -(item.y + item.height - list.height + root.row-inset);
         }
         list.content-y = Math.min(0px, list.content-y);
     }
@@ -319,23 +320,23 @@ export component Launcher inherits Window {
                 }
             }
             if root.view-title != "": Rectangle {
-                width: crumb.preferred-width + 30px;
+                width: crumb.x + crumb.preferred-width + 8px;
                 height: 28px;
                 y: (parent.height - self.height) / 2;
-                border-radius: 8px;
+                border-radius: Theme.radius-m;
                 background: Theme.ink.with-alpha(0.08);
                 accessible-role: button;
                 accessible-label: "返回";
                 accessible-action-default => { root.back(); }
                 Icon {
-                    x: 6px;
+                    x: 8px;
                     name: "back";
                     width: 14px;
                     height: 14px;
                     y: (parent.height - self.height) / 2;
                 }
                 crumb := Text {
-                    x: 24px;
+                    x: 8px + 14px + 4px;
                     text: root.view-title;
                     font-weight: 500;
                     color: Theme.ink;
@@ -388,7 +389,7 @@ export component Launcher inherits Window {
             y: root.field-height + 1px;
             height: 400px - root.footer-height;
             padding: root.edge;
-            spacing: 14px;
+            spacing: 16px;
             alignment: start;
             if root.name-label != "": FormField {
                 label: root.name-label;
@@ -439,7 +440,7 @@ export component Launcher inherits Window {
                 y: root.items[root.current].y;
                 width: root.items[root.current].width;
                 height: root.items[root.current].height;
-                border-radius: 10px;
+                border-radius: root.items[root.current].kind == "answer" ? Theme.radius-l : Theme.radius-m;
                 background: Theme.ink;
                 animate x, y, width, height { duration: 120ms; easing: Theme.ease; }
             }
@@ -456,7 +457,7 @@ export component Launcher inherits Window {
                 accessible-action-default => { root.activate(index); }
 
                 if item.kind != "header" && touch.has-hover && !chosen: Rectangle {
-                    border-radius: 10px;
+                    border-radius: item.kind == "answer" ? Theme.radius-l : Theme.radius-m;
                     background: Theme.ink.with-alpha(0.08);
                 }
 
@@ -467,12 +468,12 @@ export component Launcher inherits Window {
                     font-weight: 500;
                     color: Theme.ink-3;
                     vertical-alignment: bottom;
-                    height: parent.height - 6px;
+                    height: parent.height - 4px;
                 }
 
                 if item.kind == "cell": VerticalLayout {
-                    padding: 6px;
-                    spacing: 2px;
+                    padding: 8px;
+                    spacing: 4px;
                     alignment: center;
                     Text {
                         text: item.glyph;
@@ -491,7 +492,7 @@ export component Launcher inherits Window {
                 if item.kind == "answer": HorizontalLayout {
                     padding-left: root.row-padding;
                     padding-right: root.row-padding;
-                    spacing: 14px;
+                    spacing: 16px;
                     if item.glyph == "" && !item.framed: Image {
                         source: item.icon;
                         width: 40px;
@@ -691,7 +692,7 @@ export component Launcher inherits Window {
             HorizontalLayout {
                 padding-left: root.edge;
                 padding-right: root.edge - 8px;
-                spacing: 6px;
+                spacing: 8px;
                 Text {
                     text: root.status;
                     color: Theme.ink-2;
@@ -703,12 +704,12 @@ export component Launcher inherits Window {
                     width: save.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
-                    border-radius: 7px;
+                    border-radius: Theme.radius-m;
                     background: save-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
                     save := HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
-                        spacing: 6px;
+                        spacing: 4px;
                         Text { text: "儲存"; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
                         Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
                         Keycap { text: "↵"; y: (parent.height - self.height) / 2; }
@@ -719,12 +720,12 @@ export component Launcher inherits Window {
                     width: run.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
-                    border-radius: 7px;
+                    border-radius: Theme.radius-m;
                     background: run-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
                     run := HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
-                        spacing: 6px;
+                        spacing: 4px;
                         Text { text: root.primary; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
                         Keycap { text: "↵"; y: (parent.height - self.height) / 2; }
                     }
@@ -740,12 +741,12 @@ export component Launcher inherits Window {
                     width: more.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
-                    border-radius: 7px;
+                    border-radius: Theme.radius-m;
                     background: more-touch.has-hover || root.actions-open ? Theme.ink.with-alpha(0.08) : transparent;
                     more := HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
-                        spacing: 6px;
+                        spacing: 4px;
                         Text { text: "動作"; color: Theme.ink-2; vertical-alignment: center; }
                         Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
                         Keycap { text: "K"; y: (parent.height - self.height) / 2; }
@@ -765,9 +766,9 @@ export component Launcher inherits Window {
         if root.actions-open: Rectangle {
             width: 280px;
             height: actions-list.preferred-height;
-            x: parent.width - self.width - 10px;
-            y: root.shown-height - root.footer-height - self.height - 6px;
-            border-radius: 12px;
+            x: parent.width - self.width - 8px;
+            y: root.shown-height - root.footer-height - self.height - 8px;
+            border-radius: Theme.radius-l;
             background: Theme.dark ? #2c2c31 : #fbfaf8;
             border-width: 1px;
             border-color: Theme.ink.with-alpha(0.1);
@@ -775,7 +776,7 @@ export component Launcher inherits Window {
             drop-shadow-offset-y: 8px;
             drop-shadow-color: #00000040;
             actions-list := VerticalLayout {
-                padding: 5px;
+                padding: 4px;
                 for action[index] in root.actions: MenuItem {
                     text: action.title;
                     shortcut: action.keys;
