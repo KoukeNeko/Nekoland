@@ -915,19 +915,16 @@ fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f
     let _ = cr.stroke();
 }
 
-/// A chevron pointing right, turned down as far as `turn`, from 0 to 1.
+/// The menus' submenu arrow, pointing right, turned down as far as `turn`, from 0 to 1.
 fn draw_chevron(cr: &Context, x: f64, center: f64, turn: f64, color: (f64, f64, f64)) {
+    let Some(arrow) = text::named_icon("nekoland-submenu-symbolic", "", 16, color) else {
+        return;
+    };
     cr.save().ok();
     cr.translate(x, center);
     cr.rotate(turn * std::f64::consts::FRAC_PI_2);
-    cr.move_to(-2.0, -4.5);
-    cr.line_to(2.5, 0.0);
-    cr.line_to(-2.0, 4.5);
-    cr.set_source_rgb(color.0, color.1, color.2);
-    cr.set_line_width(1.5);
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.set_line_join(cairo::LineJoin::Round);
-    let _ = cr.stroke();
+    let _ = cr.set_source_surface(&arrow, -8.0, -8.0);
+    let _ = cr.paint();
     cr.restore().ok();
 }
 

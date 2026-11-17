@@ -942,7 +942,11 @@ impl MenuBar {
             show_text(&cr, &entry.label, &label_font, x + indent, center, color);
             let trailing_color = if lit { colors.on_ink } else { colors.ink_3 };
             if !entry.children.is_empty() {
-                show_text(&cr, "›", &label_font, x + w - 16.0, center, trailing_color);
+                // The same arrow GTK's menus show, from shell/gtk/nekoland.css.
+                if let Some(arrow) = text::named_icon("nekoland-submenu-symbolic", "", 16, trailing_color) {
+                    let _ = cr.set_source_surface(&arrow, x + w - 22.0, center - 8.0);
+                    let _ = cr.paint();
+                }
             } else if !entry.shortcut.is_empty() {
                 let width = text_size(&entry.shortcut, &label_font).0;
                 show_text(

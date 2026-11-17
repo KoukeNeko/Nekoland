@@ -285,6 +285,10 @@ popover.menu modelbutton:selected:focus-visible {
 popover.menu modelbutton:selected:focus:not(:focus-visible):not(:hover) {
   background-color: transparent;
 }
+/* A submenu's arrow is the one Nekoland's own menus draw. */
+popover.menu modelbutton arrow.right {
+  -gtk-icon-source: -gtk-icontheme("nekoland-submenu-symbolic");
+}
 popover > contents {
   border-radius: 12px;
 }
