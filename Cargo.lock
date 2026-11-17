@@ -3215,11 +3215,13 @@ dependencies = [
  "flate2",
  "gtk4",
  "libadwaita",
+ "libc",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
  "toml 0.8.23",
+ "xcursor",
 ]
 
 [[package]]

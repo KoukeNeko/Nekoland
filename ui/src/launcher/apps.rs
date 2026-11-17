@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use gtk::{gio, prelude::*};
 
-pub const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
+pub const ICON_THEMES: [&str; 4] = ["Nekoland", "Yaru", "Adwaita", "hicolor"];
 /// What an application without an icon of its own shows.
 pub const NO_ICON: &str = "application-x-executable";
 

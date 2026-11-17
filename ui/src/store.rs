@@ -1,21 +1,29 @@
-//! `nekoland-store`: the App Store. One list for software from every place it comes
-//! from (Flathub, the Snap Store, Ubuntu's archive and other apt repositories, Homebrew),
-//! each program once however many places have it, and on its page the places side by side
-//! to install it from.
+//! `nekoland-store`: Market. One list for software from every place it comes from
+//! (Flathub, the Snap Store, Ubuntu's archive and other apt repositories, Homebrew), each
+//! program once however many places have it, and on its page the places side by side to
+//! install it from; and icon and cursor themes from Pling, tried on before they are applied.
 
 mod alert;
 mod focus;
+mod ipc;
+#[path = "store/pling.rs"]
+mod pling;
 #[path = "store/sources.rs"]
 mod sources;
+mod themes;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
+use pling::{Look, Theme};
 use sources::{App, Kind, Offer, Repository};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Store";
-/// Opens on a page other than Explore: installed, updates, a sidebar row's index,
+/// Opens on a page other than Explore: installed, updates, icons, cursors, a sidebar row's index,
 /// search:WORDS, or app:WORDS for the first found app's page; for screenshots, as NEKOLAND_SETTINGS_PAGE is for Settings.
 const PAGE_ENV: &str = "NEKOLAND_STORE_PAGE";
 
@@ -122,6 +130,13 @@ row.store-source.picked { background: alpha(currentColor, .08); }
 .store-screenshot { border-radius: 10px; }
 .store-section { font-weight: 600; }
 .store-category { min-height: 0; padding: 4px 12px; border-radius: 999px; font-weight: normal; }
+.store-theme { padding: 0; }
+.store-preview { background: alpha(currentColor, .04); border-bottom: 1px solid alpha(currentColor, .1); }
+.store-zone { min-height: 120px; transition: background 120ms ease-out; }
+.store-zone:hover { background: alpha(currentColor, .06); }
+.store-zone + .store-zone { border-left: 1px solid alpha(currentColor, .1); }
+.store-using { padding: 6px 14px; border-radius: 999px; background: alpha(currentColor, .08); font-weight: 600; }
+.store-dock { padding: 12px 16px; border-radius: 18px; background: alpha(currentColor, .06); }
 ";
 
 struct Store {
@@ -139,6 +154,7 @@ enum Place {
     Explore,
     Installed,
     Updates,
+    Look(Look),
     Source(&'static str),
     Repository(Repository),
 }
@@ -191,20 +207,20 @@ fn build(app: &adw::Application) {
     let split = adw::NavigationSplitView::builder()
         .sidebar(
             &adw::NavigationPage::builder()
-                .title("App Store")
+                .title("Market")
                 .child(&sidebar_view)
                 .build(),
         )
         .content(
             &adw::NavigationPage::builder()
-                .title("App Store")
+                .title("Market")
                 .child(&toasts)
                 .build(),
         )
         .build();
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("App Store")
+        .title("Market")
         .default_width(1120)
         .default_height(760)
         .content(&split)
@@ -244,6 +260,7 @@ fn build(app: &adw::Application) {
                 Place::Explore => explore_page(&store),
                 Place::Installed => installed_page(&store),
                 Place::Updates => updates_page(&store),
+                Place::Look(look) => look_page(&store, look),
                 Place::Source(id) => source_page(&store, id),
                 Place::Repository(repo) => repository_page(&store, repo),
             };
@@ -287,6 +304,8 @@ fn build(app: &adw::Application) {
         let at = match start.as_str() {
             "installed" => 1,
             "updates" => 2,
+            "icons" => 3,
+            "cursors" => 4,
             other => other.parse().unwrap_or(0),
         };
         store.sidebar.select_row(store.sidebar.row_at_index(at).as_ref());
@@ -319,6 +338,11 @@ fn fill_sidebar(store: &Rc<Store>) {
     store.sidebar.append(&row("探索", None));
     store.sidebar.append(&row("已安裝", None));
     store.sidebar.append(&row("更新", Some(&store.updates_label)));
+    let first_look = places.len();
+    for look in [Look::Icons, Look::Cursors] {
+        store.sidebar.append(&row(look.name(), None));
+        places.push(Place::Look(look));
+    }
     let first_source = places.len();
     for (label, id) in STANDARD {
         store.sidebar.append(&row(label, None));
@@ -333,7 +357,9 @@ fn fill_sidebar(store: &Rc<Store>) {
     let has_repos = places.len() > first_repo;
     store.sidebar.set_header_func(move |row, _| {
         let index = row.index() as usize;
-        let title = if index == first_source {
+        let title = if index == first_look {
+            Some("外觀")
+        } else if index == first_source {
             Some("來源")
         } else if index == first_repo && has_repos {
             Some("其他套件庫")
@@ -694,6 +720,775 @@ fn card(store: &Rc<Store>, app: App) -> gtk::Widget {
     button.upcast()
 }
 
+// Looks: icon and cursor themes.
+
+/// Common applications, by the names icon themes draw them under, for a theme's card.
+const SAMPLE_ICONS: [&[&str]; 6] = [
+    &["system-file-manager", "org.gnome.Nautilus", "folder"],
+    &["utilities-terminal", "org.gnome.Terminal", "terminal"],
+    &["web-browser", "firefox", "org.mozilla.firefox"],
+    &["accessories-text-editor", "org.gnome.TextEditor", "text-editor"],
+    &["multimedia-audio-player", "rhythmbox", "audio-x-generic"],
+    &["internet-mail", "thunderbird", "mail-client"],
+];
+
+const FOLDERS: [(&str, &str); 5] = [
+    ("家目錄", "user-home"),
+    ("文件", "folder-documents"),
+    ("下載", "folder-download"),
+    ("圖片", "folder-pictures"),
+    ("音樂", "folder-music"),
+];
+
+/// An icon theme looked up on its own, not the one the window uses.
+fn icon_theme(name: &str) -> gtk::IconTheme {
+    let theme = gtk::IconTheme::new();
+    let dirs = themes::dirs();
+    theme.set_search_path(&dirs.iter().map(|dir| dir.as_path()).collect::<Vec<_>>());
+    theme.set_theme_name(Some(name));
+    theme
+}
+
+/// The first of `names` the theme draws.
+fn themed(theme: &gtk::IconTheme, names: &[&str], size: i32) -> Option<gtk::Image> {
+    let name = names.iter().find(|name| theme.has_icon(name))?;
+    let paintable = theme.lookup_icon(
+        name,
+        &[],
+        size,
+        2,
+        gtk::TextDirection::None,
+        gtk::IconLookupFlags::empty(),
+    );
+    Some(
+        gtk::Image::builder()
+            .paintable(&paintable)
+            .pixel_size(size)
+            .build(),
+    )
+}
+
+fn cursor_image(frame: &pling::Frame, size: i32) -> gtk::Image {
+    gtk::Image::builder()
+        .paintable(&frame.texture())
+        .pixel_size(size)
+        .build()
+}
+
+/// A picture from the web, which goes away if it cannot be fetched.
+fn web_picture(url: &str, height: i32) -> gtk::Picture {
+    let picture = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Cover)
+        .height_request(height)
+        .build();
+    let url = url.to_string();
+    background(
+        move || sources::fetch(&url),
+        glib::clone!(
+            #[weak]
+            picture,
+            move |bytes: Option<Vec<u8>>| match bytes
+                .and_then(|bytes| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok())
+            {
+                Some(texture) => picture.set_paintable(Some(&texture)),
+                None => picture.set_visible(false),
+            }
+        ),
+    );
+    picture
+}
+
+/// The top of a theme's card: its cursors or icons when it is here, else Pling's picture.
+fn theme_preview(theme: &Theme) -> gtk::Widget {
+    let strip = gtk::Box::builder()
+        .spacing(14)
+        .height_request(92)
+        .halign(gtk::Align::Fill)
+        .css_classes(["store-preview"])
+        .build();
+    let inner = gtk::Box::builder()
+        .spacing(if theme.look == Look::Cursors { 14 } else { 8 })
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .build();
+    strip.append(&inner);
+    let here = theme
+        .folders
+        .first()
+        .and_then(|folder| pling::folder_path(folder));
+    match (here, theme.look) {
+        (Some(path), Look::Cursors) => {
+            for frame in pling::shapes(&path, 48).into_iter().flatten() {
+                inner.append(&cursor_image(&frame, 26));
+            }
+        }
+        (Some(_), Look::Icons) => {
+            let icons = icon_theme(&theme.folders[0]);
+            for names in SAMPLE_ICONS {
+                if let Some(image) = themed(&icons, names, 28) {
+                    inner.append(&image);
+                }
+            }
+        }
+        (None, _) => {
+            if let Some(url) = theme.previews.first() {
+                // Over the strip, so that the picture's own width does not widen the card.
+                strip.remove(&inner);
+                let over = gtk::Overlay::builder().child(&inner).hexpand(true).build();
+                over.add_overlay(&web_picture(url, 92));
+                strip.append(&over);
+            }
+        }
+    }
+    strip.set_overflow(gtk::Overflow::Hidden);
+    strip.upcast()
+}
+
+fn theme_card(store: &Rc<Store>, theme: Theme, using: &str) -> gtk::Widget {
+    let button = gtk::Button::builder()
+        .css_classes(["card", "store-theme"])
+        .overflow(gtk::Overflow::Hidden)
+        .build();
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(&theme_preview(&theme));
+    let meta = gtk::Box::builder()
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(12)
+        .margin_start(14)
+        .margin_end(12)
+        .build();
+    // The labels' widths are capped, since the grid makes every card as wide as its widest.
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .build();
+    text.append(
+        &gtk::Label::builder()
+            .label(&theme.name)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(16)
+            .css_classes(["heading"])
+            .build(),
+    );
+    if !theme.author.is_empty() {
+        text.append(
+            &gtk::Label::builder()
+                .label(&theme.author)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(16)
+                .css_classes(["caption", "dim-label"])
+                .build(),
+        );
+    }
+    meta.append(&text);
+    if theme.folders.iter().any(|folder| folder == using) {
+        meta.append(&chip("使用中", true));
+    } else if !theme.folders.is_empty() {
+        meta.append(&chip("已安裝", false));
+    }
+    body.append(&meta);
+    button.set_child(Some(&body));
+    button.connect_clicked(glib::clone!(
+        #[weak]
+        store,
+        move |_| store.nav.push(&theme_page(&store, theme.clone()))
+    ));
+    button.upcast()
+}
+
+fn theme_grid(store: &Rc<Store>, found: Vec<Theme>, using: &str) -> gtk::FlowBox {
+    let grid = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(2)
+        .max_children_per_line(3)
+        .column_spacing(12)
+        .row_spacing(12)
+        .homogeneous(true)
+        .build();
+    for theme in found {
+        grid.append(&theme_card(store, theme, using));
+    }
+    grid
+}
+
+fn look_page(store: &Rc<Store>, look: Look) -> adw::NavigationPage {
+    let content = column();
+    let page = page(look.name(), &content, None);
+    // Filled each time it is shown, so that coming back from a theme shows what changed there.
+    page.connect_shown(glib::clone!(
+        #[weak]
+        store,
+        #[weak]
+        content,
+        move |_| {
+            if content.first_child().is_none() {
+                content.append(&loading());
+            }
+            background(
+                move || (pling::local(look), pling::current(look), pling::popular(look)),
+                glib::clone!(
+                    #[weak]
+                    store,
+                    #[weak]
+                    content,
+                    move |(local, using, popular): (Vec<Theme>, String, Option<Vec<Theme>>)| {
+                        while let Some(child) = content.first_child() {
+                            content.remove(&child);
+                        }
+                        content.append(&section("已安裝", &format!("{} 個", local.len())));
+                        content.append(&theme_grid(&store, local, &using));
+                        content.append(&section("熱門", ""));
+                        match popular {
+                            None => content.append(&empty("無法連線到 Pling")),
+                            Some(found) if found.is_empty() => content.append(&empty("沒有主題")),
+                            Some(found) => content.append(&theme_grid(&store, found, &using)),
+                        }
+                    }
+                ),
+            );
+        }
+    ));
+    page
+}
+
+struct ThemeDetail {
+    theme: RefCell<Theme>,
+    /// The file to install, or once installed the folder to apply, by its index.
+    picked: Cell<usize>,
+    busy: Cell<bool>,
+    using: RefCell<String>,
+    /// Counts the hero's loads, so that a slow one for an earlier pick is dropped.
+    round: Cell<u32>,
+    tile: gtk::Box,
+    actions: gtk::Box,
+    hero: gtk::Box,
+    facts: gtk::Box,
+}
+
+fn theme_page(store: &Rc<Store>, theme: Theme) -> adw::NavigationPage {
+    let content = column();
+    let head = gtk::Box::builder()
+        .spacing(18)
+        .margin_top(8)
+        .margin_bottom(8)
+        .build();
+    let tile = gtk::Box::builder()
+        .width_request(72)
+        .height_request(72)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["store-tile"])
+        .build();
+    head.append(&tile);
+    let names = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .spacing(2)
+        .build();
+    names.append(
+        &gtk::Label::builder()
+            .label(&theme.name)
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["store-name"])
+            .build(),
+    );
+    let byline = [theme.author.as_str(), theme.look.name()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    names.append(
+        &gtk::Label::builder()
+            .label(&byline)
+            .xalign(0.0)
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    head.append(&names);
+    let actions = gtk::Box::builder().spacing(8).valign(gtk::Align::Center).build();
+    head.append(&actions);
+    content.append(&head);
+    let hero = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.append(&hero);
+    let facts = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&facts);
+    if !theme.description.is_empty() {
+        // Pling's descriptions run long, a line each paragraph; the label's own limit counts only wrapped lines.
+        let description: Vec<&str> = theme.description.lines().take(6).collect();
+        content.append(
+            &gtk::Label::builder()
+                .label(description.join("\n"))
+                .xalign(0.0)
+                .halign(gtk::Align::Start)
+                .wrap(true)
+                .max_width_chars(80)
+                .lines(8)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(["dim-label"])
+                .build(),
+        );
+    }
+    let title = theme.name.clone();
+    let look = theme.look;
+    let detail = Rc::new(ThemeDetail {
+        theme: RefCell::new(theme),
+        picked: Cell::new(0),
+        busy: Cell::new(false),
+        using: RefCell::new(String::new()),
+        round: Cell::new(0),
+        tile,
+        actions,
+        hero,
+        facts,
+    });
+    render_theme(store, &detail);
+    show_hero(&detail);
+    let page = page(&title, &content, None);
+    page.connect_destroy(glib::clone!(
+        #[strong]
+        detail,
+        move |_| {
+            let _ = &detail;
+        }
+    ));
+    background(
+        move || pling::current(look),
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            detail,
+            move |using: String| {
+                *detail.using.borrow_mut() = using;
+                render_theme(&store, &detail);
+            }
+        ),
+    );
+    page
+}
+
+fn render_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
+    for holder in [&detail.actions, &detail.facts] {
+        while let Some(child) = holder.first_child() {
+            holder.remove(&child);
+        }
+    }
+    let theme = detail.theme.borrow();
+    let pick = glib::clone!(
+        #[weak]
+        store,
+        #[weak]
+        detail,
+        move |at| {
+            detail.picked.set(at);
+            render_theme(&store, &detail);
+            show_hero(&detail);
+        }
+    );
+    if detail.busy.get() {
+        detail.actions.append(&working());
+    } else if !theme.folders.is_empty() {
+        let at = detail.picked.get().min(theme.folders.len() - 1);
+        let folder = theme.folders[at].clone();
+        let using = detail.using.borrow().clone();
+        if theme.folders.len() > 1 {
+            detail.actions.append(&chooser(&theme.folders, at, pick));
+        }
+        if !theme.system && !theme.folders.contains(&using) {
+            let remove = gtk::Button::builder().label("移除").css_classes(["flat"]).build();
+            remove.connect_clicked(glib::clone!(
+                #[weak]
+                store,
+                #[weak]
+                detail,
+                move |_| remove_theme(&store, &detail)
+            ));
+            detail.actions.append(&remove);
+        }
+        if folder == using {
+            detail.actions.append(
+                &gtk::Label::builder()
+                    .label("使用中")
+                    .css_classes(["store-using"])
+                    .build(),
+            );
+        } else {
+            let apply = gtk::Button::builder()
+                .label("套用")
+                .css_classes(["suggested-action", "pill"])
+                .build();
+            apply.connect_clicked(glib::clone!(
+                #[weak]
+                store,
+                #[weak]
+                detail,
+                move |_| apply_theme(&store, &detail, folder.clone())
+            ));
+            detail.actions.append(&apply);
+        }
+    } else if !theme.files.is_empty() {
+        let at = detail.picked.get().min(theme.files.len() - 1);
+        if theme.files.len() > 1 {
+            let names: Vec<String> = theme.files.iter().map(|file| file.name.clone()).collect();
+            detail.actions.append(&chooser(&names, at, pick));
+        }
+        let install = gtk::Button::builder()
+            .label("安裝")
+            .css_classes(["suggested-action", "pill"])
+            .build();
+        install.connect_clicked(glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            detail,
+            move |_| install_theme(&store, &detail)
+        ));
+        detail.actions.append(&install);
+    }
+
+    let place = theme
+        .path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let size = theme
+        .files
+        .get(detail.picked.get())
+        .map(|file| file.size.clone())
+        .unwrap_or_default();
+    let facts: Vec<(&str, &str)> = if theme.id.is_empty() {
+        vec![("位置", place.as_str())]
+    } else {
+        vec![
+            ("作者", theme.author.as_str()),
+            ("更新", theme.changed.as_str()),
+            ("大小", size.as_str()),
+            ("來源", "Pling"),
+        ]
+    };
+    let facts: Vec<(&str, &str)> = facts.into_iter().filter(|(_, value)| !value.is_empty()).collect();
+    detail.facts.append(&facts_line(&facts));
+}
+
+/// The cursors to try on, or the person's Dock in the icons; before an icon theme is
+/// installed, Pling's picture of it.
+fn show_hero(detail: &Rc<ThemeDetail>) {
+    while let Some(child) = detail.hero.first_child() {
+        detail.hero.remove(&child);
+    }
+    let round = detail.round.get() + 1;
+    detail.round.set(round);
+    let theme = detail.theme.borrow().clone();
+    let at = detail.picked.get();
+    match theme.look {
+        Look::Cursors => {
+            detail.hero.append(&section("試用", ""));
+            let pad = gtk::Box::builder()
+                .homogeneous(true)
+                .css_classes(["card"])
+                .overflow(gtk::Overflow::Hidden)
+                .build();
+            pad.append(&loading());
+            detail.hero.append(&pad);
+            let folder = theme
+                .folders
+                .get(at.min(theme.folders.len().saturating_sub(1)))
+                .cloned();
+            background(
+                move || {
+                    // Not installed, the pack is fetched to the cache to try it on.
+                    let path = match folder {
+                        Some(folder) => {
+                            pling::folder_path(&folder).ok_or_else(|| format!("找不到 {folder}"))?
+                        }
+                        None => {
+                            let file = theme.files.get(at).ok_or_else(String::new)?;
+                            pling::fetch(&theme, file)?.remove(0)
+                        }
+                    };
+                    Ok((pling::shapes(&path, 48), pling::shapes(&path, 24)))
+                },
+                glib::clone!(
+                    #[weak]
+                    detail,
+                    #[weak]
+                    pad,
+                    move |found: Result<(pling::Shapes, pling::Shapes), String>| {
+                        if detail.round.get() != round {
+                            return;
+                        }
+                        while let Some(child) = pad.first_child() {
+                            pad.remove(&child);
+                        }
+                        let (big, small) = match found {
+                            Ok(frames) => frames,
+                            Err(err) => {
+                                pad.append(&empty(&err));
+                                return;
+                            }
+                        };
+                        while let Some(child) = detail.tile.first_child() {
+                            detail.tile.remove(&child);
+                        }
+                        if let Some(arrow) = &big[0] {
+                            let image = cursor_image(arrow, 40);
+                            image.set_hexpand(true);
+                            detail.tile.append(&image);
+                        }
+                        for (((label, _), big), small) in pling::SHAPES.iter().zip(big).zip(small) {
+                            let zone = gtk::Box::builder()
+                                .orientation(gtk::Orientation::Vertical)
+                                .spacing(14)
+                                .css_classes(["store-zone"])
+                                .build();
+                            let inner = gtk::Box::builder()
+                                .orientation(gtk::Orientation::Vertical)
+                                .spacing(14)
+                                .valign(gtk::Align::Center)
+                                .vexpand(true)
+                                .build();
+                            if let Some(big) = &big {
+                                inner.append(&cursor_image(big, 30));
+                            }
+                            inner.append(
+                                &gtk::Label::builder()
+                                    .label(*label)
+                                    .css_classes(["caption", "dim-label"])
+                                    .build(),
+                            );
+                            zone.append(&inner);
+                            if let Some(small) = small {
+                                zone.set_cursor(Some(&gdk::Cursor::from_texture(
+                                    &small.texture(),
+                                    small.xhot as i32,
+                                    small.yhot as i32,
+                                    None,
+                                )));
+                            }
+                            pad.append(&zone);
+                        }
+                    }
+                ),
+            );
+        }
+        Look::Icons => {
+            let Some(folder) = theme
+                .folders
+                .get(at.min(theme.folders.len().saturating_sub(1)))
+                .cloned()
+            else {
+                if let Some(url) = theme.previews.first() {
+                    let picture = web_picture(url, 320);
+                    picture.set_content_fit(gtk::ContentFit::Contain);
+                    picture.add_css_class("store-screenshot");
+                    detail.hero.append(&picture);
+                }
+                return;
+            };
+            let icons = icon_theme(&folder);
+            while let Some(child) = detail.tile.first_child() {
+                detail.tile.remove(&child);
+            }
+            if let Some(image) = themed(&icons, SAMPLE_ICONS[0], 72) {
+                detail.tile.remove_css_class("store-tile");
+                detail.tile.append(&image);
+            }
+            detail.hero.append(&section("你的 Dock", ""));
+            let stage = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(22)
+                .css_classes(["card"])
+                .build();
+            let dock = gtk::Box::builder()
+                .spacing(10)
+                .halign(gtk::Align::Center)
+                .margin_top(28)
+                .css_classes(["store-dock"])
+                .build();
+            stage.append(&dock);
+            let folders = gtk::Box::builder()
+                .spacing(28)
+                .halign(gtk::Align::Center)
+                .margin_bottom(22)
+                .build();
+            for (label, name) in FOLDERS {
+                let figure = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                if let Some(image) = themed(&icons, &[name, "folder"], 44) {
+                    figure.append(&image);
+                }
+                figure.append(
+                    &gtk::Label::builder()
+                        .label(label)
+                        .css_classes(["caption"])
+                        .build(),
+                );
+                folders.append(&figure);
+            }
+            stage.append(&folders);
+            detail.hero.append(&stage);
+            background(pling::dock, move |apps: Vec<String>| {
+                for app in apps {
+                    let info = gio::DesktopAppInfo::new(&format!("{app}.desktop"))
+                        .or_else(|| gio::DesktopAppInfo::new(&app));
+                    let names: Vec<String> = info
+                        .and_then(|info| info.icon())
+                        .and_then(|icon| icon.downcast::<gio::ThemedIcon>().ok())
+                        .map(|icon| icon.names().iter().map(|name| name.to_string()).collect())
+                        .unwrap_or_default();
+                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    if let Some(image) = themed(&icons, &names, 44) {
+                        dock.append(&image);
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// Says a theme's change failed, with a way to try it again.
+fn theme_failed(store: &Rc<Store>, err: &str, retry: impl Fn() + 'static) {
+    let toast = adw::Toast::builder()
+        .title(err)
+        .button_label("重試")
+        .timeout(0)
+        .build();
+    toast.connect_button_clicked(move |_| retry());
+    store.toasts.add_toast(toast);
+}
+
+fn install_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
+    let theme = detail.theme.borrow().clone();
+    let Some(file) = theme.files.get(detail.picked.get()).cloned() else {
+        return;
+    };
+    detail.busy.set(true);
+    render_theme(store, detail);
+    background(
+        move || pling::install(&theme, &file),
+        glib::clone!(
+            #[weak]
+            store,
+            #[strong]
+            detail,
+            move |result: Result<Vec<String>, String>| {
+                detail.busy.set(false);
+                match result {
+                    Ok(folders) => {
+                        detail.theme.borrow_mut().folders = folders;
+                        detail.picked.set(0);
+                        show_hero(&detail);
+                    }
+                    Err(err) => theme_failed(
+                        &store,
+                        &err,
+                        glib::clone!(
+                            #[weak]
+                            store,
+                            #[weak]
+                            detail,
+                            move || install_theme(&store, &detail)
+                        ),
+                    ),
+                }
+                render_theme(&store, &detail);
+            }
+        ),
+    );
+}
+
+fn apply_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>, folder: String) {
+    let look = detail.theme.borrow().look;
+    background(
+        {
+            let folder = folder.clone();
+            move || pling::apply(look, &folder)
+        },
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            detail,
+            move |result: Result<(), String>| {
+                match result {
+                    Ok(()) => *detail.using.borrow_mut() = folder.clone(),
+                    Err(err) => theme_failed(
+                        &store,
+                        &err,
+                        glib::clone!(
+                            #[weak]
+                            store,
+                            #[weak]
+                            detail,
+                            #[strong]
+                            folder,
+                            move || apply_theme(&store, &detail, folder.clone())
+                        ),
+                    ),
+                }
+                render_theme(&store, &detail);
+            }
+        ),
+    );
+}
+
+fn remove_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
+    let name = detail.theme.borrow().name.clone();
+    alert::confirm(
+        &store.window,
+        &format!("移除 {name}？"),
+        None,
+        "移除",
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            detail,
+            move || {
+                let theme = detail.theme.borrow().clone();
+                background(
+                    move || pling::remove(&theme),
+                    glib::clone!(
+                        #[weak]
+                        store,
+                        #[weak]
+                        detail,
+                        move |result: Result<(), String>| match result {
+                            // Known only from this computer, there is nothing left to show.
+                            Ok(()) if detail.theme.borrow().id.is_empty() => {
+                                store.nav.pop();
+                            }
+                            Ok(()) => {
+                                detail.theme.borrow_mut().folders.clear();
+                                detail.picked.set(0);
+                                render_theme(&store, &detail);
+                                show_hero(&detail);
+                            }
+                            Err(err) => theme_failed(
+                                &store,
+                                &err,
+                                glib::clone!(
+                                    #[weak]
+                                    store,
+                                    #[weak]
+                                    detail,
+                                    move || remove_theme(&store, &detail)
+                                ),
+                            ),
+                        }
+                    ),
+                );
+            }
+        ),
+    );
+}
+
 // Search.
 
 fn search_page(store: &Rc<Store>, query: &str) -> adw::NavigationPage {
@@ -702,21 +1497,53 @@ fn search_page(store: &Rc<Store>, query: &str) -> adw::NavigationPage {
     let query = query.to_string();
     let page = page(&format!("「{query}」的結果"), &content, None);
     background(
-        move || sources::search(&query),
+        move || {
+            std::thread::scope(|scope| {
+                let found = scope.spawn(|| pling::search(&query));
+                (sources::search(&query), found.join().unwrap_or_default())
+            })
+        },
         glib::clone!(
             #[weak]
             store,
             #[weak]
             content,
-            move |apps: Vec<App>| {
+            move |(apps, found): (Vec<App>, Vec<Theme>)| {
                 while let Some(child) = content.first_child() {
                     content.remove(&child);
                 }
-                if apps.is_empty() {
+                if apps.is_empty() && found.is_empty() {
                     content.append(&empty("沒有結果"));
                     return;
                 }
-                content.append(&app_list(
+                if !found.is_empty() {
+                    let list = gtk::ListBox::builder()
+                        .css_classes(["boxed-list"])
+                        .selection_mode(gtk::SelectionMode::None)
+                        .build();
+                    let count = found.len();
+                    for theme in found {
+                        let row = adw::ActionRow::builder()
+                            .title(glib::markup_escape_text(&theme.name))
+                            .subtitle(glib::markup_escape_text(&theme.author))
+                            .activatable(true)
+                            .build();
+                        row.add_suffix(&chip(theme.look.name(), false));
+                        row.connect_activated(glib::clone!(
+                            #[weak]
+                            store,
+                            move |_| store.nav.push(&theme_page(&store, theme.clone()))
+                        ));
+                        list.append(&row);
+                    }
+                    // After the apps, which are what a search is mostly for.
+                    content.append(&section("主題", &format!("{count} 個")));
+                    content.append(&list);
+                }
+                if apps.is_empty() {
+                    return;
+                }
+                content.prepend(&app_list(
                     &store,
                     apps,
                     |app| {
@@ -1407,24 +2234,7 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
     let busy = *detail.busy.borrow();
 
     if busy {
-        let bar = gtk::ProgressBar::builder()
-            .width_request(120)
-            .valign(gtk::Align::Center)
-            .build();
-        glib::timeout_add_local(
-            std::time::Duration::from_millis(120),
-            glib::clone!(
-                #[weak]
-                bar,
-                #[upgrade_or]
-                glib::ControlFlow::Break,
-                move || {
-                    bar.pulse();
-                    glib::ControlFlow::Continue
-                }
-            ),
-        );
-        detail.actions.append(&bar);
+        detail.actions.append(&working());
     } else if let Some(installed) = &installed {
         detail.actions.append(
             &gtk::Label::builder()
@@ -1459,32 +2269,21 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
     } else {
         let offer = &app.offers[picked];
         if app.offers.len() > 1 {
-            let menu = gio::Menu::new();
-            for (at, offer) in app.offers.iter().enumerate() {
-                menu.append(Some(&offer.origin), Some(&format!("detail.pick({at})")));
-            }
-            let chooser = gtk::MenuButton::builder()
-                .label(&offer.origin)
-                .menu_model(&menu)
-                .css_classes(["flat"])
-                .build();
-            let group = gio::SimpleActionGroup::new();
-            let pick = gio::SimpleAction::new("pick", Some(glib::VariantTy::INT32));
-            pick.connect_activate(glib::clone!(
-                #[weak]
-                store,
-                #[weak]
-                detail,
-                move |_, at| {
-                    if let Some(at) = at.and_then(|v| v.get::<i32>()) {
-                        *detail.picked.borrow_mut() = at as usize;
+            let origins: Vec<String> = app.offers.iter().map(|o| o.origin.clone()).collect();
+            detail.actions.append(&chooser(
+                &origins,
+                picked,
+                glib::clone!(
+                    #[weak]
+                    store,
+                    #[weak]
+                    detail,
+                    move |at| {
+                        *detail.picked.borrow_mut() = at;
                         render(&store, &detail);
                     }
-                }
+                ),
             ));
-            group.add_action(&pick);
-            chooser.insert_action_group("detail", Some(&group));
-            detail.actions.append(&chooser);
         }
         let install = gtk::Button::builder()
             .css_classes(["suggested-action", "pill"])
@@ -1678,6 +2477,51 @@ fn or_dash(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// What a page's main button becomes while it works.
+fn working() -> gtk::Widget {
+    let bar = gtk::ProgressBar::builder()
+        .width_request(120)
+        .valign(gtk::Align::Center)
+        .build();
+    glib::timeout_add_local(
+        std::time::Duration::from_millis(120),
+        glib::clone!(
+            #[weak]
+            bar,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                bar.pulse();
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
+    bar.upcast()
+}
+
+/// A button showing the one of `labels` at `at`, whose menu picks another.
+fn chooser(labels: &[String], at: usize, pick: impl Fn(usize) + 'static) -> gtk::MenuButton {
+    let menu = gio::Menu::new();
+    for (at, label) in labels.iter().enumerate() {
+        menu.append(Some(label), Some(&format!("detail.pick({at})")));
+    }
+    let button = gtk::MenuButton::builder()
+        .label(&labels[at])
+        .menu_model(&menu)
+        .css_classes(["flat"])
+        .build();
+    let group = gio::SimpleActionGroup::new();
+    let action = gio::SimpleAction::new("pick", Some(glib::VariantTy::INT32));
+    action.connect_activate(move |_, at| {
+        if let Some(at) = at.and_then(|v| v.get::<i32>()) {
+            pick(at as usize);
+        }
+    });
+    group.add_action(&action);
+    button.insert_action_group("detail", Some(&group));
+    button
 }
 
 fn button_content(admin: bool, label: &str) -> gtk::Widget {

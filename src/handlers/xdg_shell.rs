@@ -1,3 +1,8 @@
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
 use smithay::{
     delegate_xdg_shell,
     desktop::{
@@ -19,11 +24,45 @@ use smithay::{
     wayland::{
         compositor::with_states,
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
         },
     },
 };
+
+/// How long a client may leave a ping unanswered before it counts as not responding, as
+/// GNOME and the Mac wait about as long before saying so.
+const PING_PATIENCE: Duration = Duration::from_secs(3);
+
+/// When a client was sent the ping it has not answered yet.
+#[derive(Default)]
+struct PingSent(Mutex<Option<Instant>>);
+
+fn ping_sent(client: &ShellClient) -> Option<Instant> {
+    client
+        .with_data(|data| {
+            data.insert_if_missing_threadsafe(PingSent::default);
+            *data.get::<PingSent>().expect("inserted above").0.lock().unwrap()
+        })
+        .ok()
+        .flatten()
+}
+
+fn set_ping_sent(client: &ShellClient, sent: Option<Instant>) {
+    let _ = client.with_data(|data| {
+        data.insert_if_missing_threadsafe(PingSent::default);
+        *data.get::<PingSent>().expect("inserted above").0.lock().unwrap() = sent;
+    });
+}
+
+/// Whether a client has answered its pings in time; one is sent when none is waiting.
+pub fn answers_pings(client: &ShellClient) -> bool {
+    let sent = ping_sent(client);
+    if sent.is_none() && client.send_ping(SERIAL_COUNTER.next_serial()).is_ok() {
+        set_ping_sent(client, Some(Instant::now()));
+    }
+    sent.is_none_or(|sent| sent.elapsed() < PING_PATIENCE)
+}
 
 use crate::{
     focus::KeyFocus,
@@ -34,6 +73,10 @@ use crate::{
 impl XdgShellHandler for Nekoland {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
+    }
+
+    fn client_pong(&mut self, client: ShellClient) {
+        set_ping_sent(&client, None);
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {

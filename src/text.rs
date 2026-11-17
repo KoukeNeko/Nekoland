@@ -10,6 +10,7 @@ use std::{
 };
 
 use cairo::{Context, Format, ImageSurface};
+use gio::glib;
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::{Logical, Size, Transform},
@@ -19,7 +20,7 @@ use smithay::{
 /// families that fill in what it lacks: CJK first.
 static FAMILY: RwLock<String> = RwLock::new(String::new());
 const FALLBACK: &str = "Noto Sans CJK TC, Sans";
-const ICON_THEMES: [&str; 3] = ["Yaru", "Adwaita", "hicolor"];
+const ICON_THEMES: [&str; 4] = ["Nekoland", "Yaru", "Adwaita", "hicolor"];
 /// The configuration's `icon_theme`, looked in before `ICON_THEMES`.
 static ICON_THEME: RwLock<String> = RwLock::new(String::new());
 
@@ -72,7 +73,6 @@ pub fn set_family(family: &str) {
 
 /// The font `description` names, in pango's words, in Nekoland's family if it names no
 /// family, and at `TEXT_WEIGHT` if it names no weight.
-// shortcut: icons already drawn keep the theme they were found in until drawn again.
 pub fn set_icon_theme(theme: &str) {
     *ICON_THEME.write().unwrap() = theme.to_string();
     FOUND_ICONS.lock().unwrap().clear();
@@ -304,12 +304,37 @@ impl Apps {
     }
 }
 
+/// Calendar's icon name; the shell draws it with today's day of the month on it, where the
+/// installed icon, for everyone else, can only show a month.
+pub const CALENDAR_ICON: &str = "io.github.koukeneko.Nekoland.Calendar";
+const CALENDAR_TODAY: &str = include_str!("calendar-today.svg");
+
+/// The day of the month it is here.
+pub fn today() -> i32 {
+    glib::DateTime::now_local().map_or(1, |now| now.day_of_month())
+}
+
 /// An icon by name from the icon themes, or from `extra_dir` first, `size` pixels square.
 /// Symbolic icons are drawn in `tint` instead of their own grey. It is `size` points
 /// square, with as many pixels as a canvas has.
 pub fn named_icon(name: &str, extra_dir: &str, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
-    let path = find_named_icon(name, extra_dir)?;
     let scale = picture_scale();
+    if name == CALENDAR_ICON {
+        let svg = CALENDAR_TODAY.replace("{day}", &today().to_string());
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(svg.into_bytes()));
+        let pixbuf = gdk_pixbuf::Pixbuf::from_stream_at_scale(
+            &stream,
+            size * scale,
+            size * scale,
+            true,
+            gio::Cancellable::NONE,
+        )
+        .ok()?;
+        let surface = pixbuf_surface(&pixbuf, None)?;
+        surface.set_device_scale(f64::from(scale), f64::from(scale));
+        return Some(surface);
+    }
+    let path = find_named_icon(name, extra_dir)?;
     let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size * scale, size * scale).ok()?;
     let symbolic = name.ends_with("-symbolic") || path.to_string_lossy().contains("symbolic");
     let surface = pixbuf_surface(&pixbuf, symbolic.then_some(tint))?;
@@ -526,6 +551,21 @@ fn desktop_entry(dirs: &[PathBuf], app_id: &str) -> Option<String> {
 mod tests {
     use super::*;
     use pango::prelude::*;
+
+    /// Calendar's icon is drawn from its template with the day written in ink on its page.
+    #[test]
+    fn the_calendar_icon_shows_the_day() {
+        let mut icon = named_icon(CALENDAR_ICON, "", 128, (0.0, 0.0, 0.0)).expect("the template draws");
+        let stride = icon.stride() as usize;
+        let data = icon.data().unwrap();
+        // Where the number sits, on the ruled page under the coils: some of it is
+        // near-black ink, which nothing else on the page is.
+        let inked = (55..100)
+            .flat_map(|y| (40..100).map(move |x| y * stride + x * 4))
+            .filter(|&at| data[at] < 70 && data[at + 1] < 70 && data[at + 2] < 70 && data[at + 3] > 200)
+            .count();
+        assert!(inked > 100, "only {inked} ink pixels where the day goes");
+    }
 
     /// The curves cairo draws a corner with keep to the superellipse the glass is cut to.
     #[test]

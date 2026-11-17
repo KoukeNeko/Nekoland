@@ -1,0 +1,12 @@
+[Icon Theme]
+Name=Nekoland
+Comment=Nekoland's own icons, and other applications' icons restyled to match
+Inherits=Yaru,Adwaita,hicolor
+Directories=scalable/apps
+
+[scalable/apps]
+Size=128
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Applications

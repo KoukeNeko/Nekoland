@@ -518,6 +518,8 @@ pub(crate) struct Drawn {
     focused: Option<Key>,
     /// The folder open over the Dock, whose tile shows the button that closes it.
     opened: Option<PathBuf>,
+    /// The day of the month, which Calendar's icon shows.
+    day: i32,
 }
 
 struct Ids {
@@ -622,7 +624,7 @@ pub struct Dock {
     /// An icon let go off the Dock, fading away where it was let go.
     poof: Option<(Picture, Point<i32, Logical>, Instant)>,
     tag: Option<(bool, Picture)>,
-    icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
+    pub(crate) icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
     badges: Vec<(Option<String>, bool, Option<Picture>)>,
     pub(crate) drawn: Option<Drawn>,
     ids: Option<Ids>,
@@ -1339,11 +1341,17 @@ impl Nekoland {
 
     /// An icon by name, its art trimmed and fitted to `size`, kept for the next frame.
     pub(crate) fn dock_icon(&mut self, name: &str, size: i32, dark: bool) -> Option<ImageSurface> {
+        // Calendar's shows the day, so it is kept once for each day.
+        let key = if name == text::CALENDAR_ICON {
+            format!("{name}@{}", text::today())
+        } else {
+            name.to_string()
+        };
         if let Some((.., icon)) = self
             .dock
             .icons
             .iter()
-            .find(|(cached, at, cached_dark, _)| cached == name && *at == size && *cached_dark == dark)
+            .find(|(cached, at, cached_dark, _)| *cached == key && *at == size && *cached_dark == dark)
         {
             return icon.clone();
         }
@@ -1354,7 +1362,7 @@ impl Nekoland {
         }
         let icon =
             text::named_icon(name, "", (size * 3).max(96), ink(dark)).and_then(|icon| trimmed(icon, size));
-        self.dock.icons.push((name.to_string(), size, dark, icon.clone()));
+        self.dock.icons.push((key, size, dark, icon.clone()));
         icon
     }
 
@@ -1655,6 +1663,7 @@ impl Nekoland {
             target,
             focused: self.dock_keyboard_index().map(|index| self.dock.tiles[index].key()),
             opened: self.dock.stack.as_ref().map(|stack| stack.folder.clone()),
+            day: text::today(),
             dark,
             glass,
             art: s.art,

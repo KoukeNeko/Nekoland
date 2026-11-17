@@ -1,6 +1,6 @@
 //! `nekoland-askpass`: asks for the administrator's password for `sudo -A`, which runs it
 //! as its SUDO_ASKPASS and reads the password from what it prints. Nekoland has no polkit
-//! agent, so the App Store asks this way. NEKOLAND_ASKPASS_REASON says what it is for.
+//! agent, so Market asks this way. NEKOLAND_ASKPASS_REASON says what it is for.
 
 use std::{
     cell::{Cell, RefCell},

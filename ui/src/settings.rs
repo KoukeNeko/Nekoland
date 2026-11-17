@@ -6,6 +6,7 @@
 mod alert;
 mod focus;
 mod network;
+mod themes;
 mod wifi;
 
 use std::{
@@ -2049,6 +2050,8 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
 
     let themes = group("");
     themes.add(&theme_row(config, "圖示主題", "icon_theme", "icon-theme", false));
+    themes.add(&converted_icons_row());
+    themes.add(&own_icons_row());
     themes.add(&theme_row(config, "游標主題", "cursor_theme", "cursor-theme", true));
     page.add(&themes);
 
@@ -2068,39 +2071,10 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
     page
 }
 
-/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
-/// `opacity_changed` is told each new opacity once Nekoland has it.
-/// The icon themes, or with `cursors` the cursor themes, installed, by folder name.
-fn installed_themes(cursors: bool) -> Vec<String> {
-    let mut dirs = vec![home().join(".icons"), home().join(".local/share/icons")];
-    dirs.extend(glib::system_data_dirs().into_iter().map(|dir| dir.join("icons")));
-    let mut names: Vec<String> = dirs
-        .iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flatten()
-        .flatten()
-        .filter(|theme| {
-            let path = theme.path();
-            if cursors {
-                path.join("cursors").is_dir()
-            } else {
-                std::fs::read_to_string(path.join("index.theme"))
-                    .is_ok_and(|index| index.contains("Directories="))
-            }
-        })
-        .filter_map(|theme| theme.file_name().into_string().ok())
-        // The base every theme falls back to, not one of its own.
-        .filter(|name| !["hicolor", "locolor", "default"].contains(&name.as_str()))
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
 /// A row choosing a theme for Nekoland's `key` and GNOME's `gsetting` together; 預設 leaves
 /// both to their own choice.
 fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static str, cursors: bool) -> adw::ComboRow {
-    let themes = installed_themes(cursors);
+    let themes: Vec<String> = themes::installed(cursors).into_iter().map(|theme| theme.name).collect();
     let labels: Vec<&str> = std::iter::once("預設").chain(themes.iter().map(String::as_str)).collect();
     let current = config.word(key);
     let row = adw::ComboRow::builder()
@@ -2123,6 +2097,120 @@ fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static
     row
 }
 
+/// The hand-drawn icons of Nekoland's own icon theme, as install.sh puts them.
+const DRAWN_ICONS: &str = "/usr/local/share/icons/Nekoland/scalable/apps";
+/// What nekoland-conform-icons marks the icons it makes with.
+const CONVERTED_MARK: &[u8] = b"<!-- conform-icons -->";
+
+/// The SVG icons in `dir`, by name.
+fn icons_in(dir: &Path) -> Vec<PathBuf> {
+    let mut icons: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "svg"))
+        .collect();
+    icons.sort();
+    icons
+}
+
+/// The icons made from other applications' own, in the person's half of Nekoland's theme.
+fn converted_icons() -> Vec<PathBuf> {
+    use std::io::Read;
+    icons_in(&themes::user_dir().join("Nekoland/scalable/apps"))
+        .into_iter()
+        .filter(|path| {
+            let mut head = [0; 64];
+            std::fs::File::open(path)
+                .and_then(|mut file| file.read(&mut head))
+                .is_ok_and(|read| head[..read].starts_with(CONVERTED_MARK))
+        })
+        .collect()
+}
+
+/// Whether other applications' icons are redrawn on Nekoland's tile; turning it on makes
+/// them, off removes them, and either way the compositor looks its icons up again.
+fn converted_icons_row() -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title("轉換其他應用程式的圖示")
+        .active(!converted_icons().is_empty())
+        .build();
+    row.connect_active_notify(|row| {
+        let remove = !row.is_active();
+        row.set_sensitive(false);
+        let row = row.clone();
+        glib::spawn_future_local(async move {
+            // Several seconds for a few hundred icons, so not on the main loop.
+            let _ = gio::spawn_blocking(move || {
+                run("nekoland-conform-icons", if remove { &["--remove"] } else { &[] });
+                run("nekoland", &["msg", "reload"]);
+            })
+            .await;
+            row.set_sensitive(true);
+        });
+    });
+    row
+}
+
+/// Opens the list of Nekoland's icons: which are drawn by hand, which are converted.
+fn own_icons_row() -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title("Nekoland 圖示").activatable(true).build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    row.connect_activated(own_icons_dialog);
+    row
+}
+
+fn own_icons_dialog(parent: &adw::ActionRow) {
+    let page = adw::PreferencesPage::new();
+    for (title, icons) in [
+        ("手繪", icons_in(Path::new(DRAWN_ICONS))),
+        ("自動演算", converted_icons()),
+    ] {
+        let icons_group = adw::PreferencesGroup::builder()
+            .title(title)
+            .description(icons.len().to_string())
+            .build();
+        let flow = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .max_children_per_line(12)
+            .min_children_per_line(6)
+            .column_spacing(6)
+            .row_spacing(6)
+            .homogeneous(true)
+            .build();
+        icons_group.add(&flow);
+        page.add(&icons_group);
+        // A few at a time: each is an SVG with filters, and there may be hundreds.
+        let mut icons = icons.into_iter();
+        glib::idle_add_local(move || {
+            for path in icons.by_ref().take(8) {
+                let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned());
+                let image = gtk::Image::builder().file(path.to_string_lossy()).pixel_size(48).build();
+                image.set_tooltip_text(name.as_deref());
+                flow.append(&image);
+            }
+            if icons.len() == 0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&page));
+    adw::Dialog::builder()
+        .title("Nekoland 圖示")
+        .content_width(760)
+        .content_height(640)
+        .child(&view)
+        .build()
+        .present(Some(parent));
+}
+
+/// The opacity and blur of one kind of glass, Nekoland's `<key>_opacity` and `<key>_blur`;
+/// `opacity_changed` is told each new opacity once Nekoland has it.
 fn glass_group(
     config: &Config,
     title: &str,
@@ -5155,7 +5243,7 @@ fn design_page() -> gtk::ScrolledWindow {
         alert(
             Some("system-lock-screen-symbolic"),
             "需要管理員密碼",
-            Some("App Store 要安裝 GIMP。"),
+            Some("Market 要安裝 GIMP。"),
             Some(
                 gtk::PasswordEntry::builder()
                     .show_peek_icon(true)

@@ -418,6 +418,8 @@ impl Nekoland {
         // What the bar and the Dock show may have changed with it.
         self.dock.drawn = None;
         self.menu_bar.drawn = None;
+        // Icons already drawn are kept by name; the theme, or the files in it, may be new.
+        self.dock.icons.clear();
         crate::text::set_icon_theme(&self.config.icon_theme);
         if self.config.font != old_font {
             // shortcut: other text than the bar's and the Dock's keeps the old font until it is

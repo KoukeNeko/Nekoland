@@ -5,7 +5,12 @@
 // Each of those programs uses part of this.
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -18,6 +23,11 @@ pub const GAP: i32 = 8;
 /// Set for nekoland-fileop, it writes `<done> <total>` bytes on stdout as it works, for the
 /// sidebar of Files that started it.
 pub const REPORT_PROGRESS: &str = "NEKOLAND_FILEOP_REPORT";
+
+/// How many folders stay read and watched: every folder row a list shows is read ahead.
+const KEPT_FOLDERS: usize = 32;
+/// How long the folder before stays in view while the next one is read.
+pub const READ_WAIT: Duration = Duration::from_millis(100);
 
 pub fn home() -> PathBuf {
     glib::home_dir()
@@ -185,6 +195,53 @@ pub fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(child)
         .build()
+}
+
+thread_local! {
+    /// Folders read lately, still watched, oldest first, each with when it last changed.
+    static KEPT: RefCell<VecDeque<(gtk::DirectoryList, Option<SystemTime>)>> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+/// A folder's files, read with the program's `attributes`, as kept from a moment ago when
+/// the folder has not changed since, so that opening it again, going back to it or
+/// unfolding it shows them at once. Folders elsewhere than this computer are read anew
+/// each time.
+pub fn listing(folder: &gio::File, attributes: &str) -> gtk::DirectoryList {
+    // A watch misses what another computer changes on a shared drive; its time does not.
+    let changed = folder
+        .path()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok());
+    let kept = KEPT.with_borrow_mut(|kept| {
+        let at = kept
+            .iter()
+            .position(|(list, _)| list.file().is_some_and(|f| f.equal(folder)))?;
+        let (list, when) = kept.remove(at)?;
+        (when == changed && list.error().is_none()).then(|| {
+            kept.push_back((list.clone(), when));
+            list
+        })
+    });
+    if let Some(list) = kept {
+        return list;
+    }
+    let list = gtk::DirectoryList::new(Some(attributes), Some(folder));
+    list.set_monitored(true);
+    if folder.is_native() {
+        KEPT.with_borrow_mut(|kept| {
+            kept.push_back((list.clone(), changed));
+            if kept.len() > KEPT_FOLDERS {
+                kept.pop_front();
+            }
+        });
+    }
+    list
+}
+
+/// Reads a folder anew the next time it is listed.
+pub fn forget(folder: &gio::File) {
+    KEPT.with_borrow_mut(|kept| kept.retain(|(list, _)| !list.file().is_some_and(|f| f.equal(folder))));
 }
 
 #[cfg(test)]

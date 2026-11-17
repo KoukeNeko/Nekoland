@@ -3,7 +3,7 @@ mod compositor;
 pub mod foreign_toplevel;
 mod layer_shell;
 pub mod protocols;
-mod xdg_shell;
+pub mod xdg_shell;
 
 use crate::{focus::KeyFocus, Nekoland};
 
