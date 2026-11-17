@@ -447,12 +447,26 @@ fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
         return found;
     }
     let mut subdirs: Vec<&PathBuf> = entries.iter().filter(|path| path.is_dir()).collect();
+    // Then the largest bitmaps: a theme with no scalable icon of this name has it at many
+    // sizes, and the first folder read may hold the 16-pixel one.
     subdirs.sort_by_key(|path| {
-        !path.to_string_lossy().contains("scalable") && !path.to_string_lossy().contains("symbolic")
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        (
+            !name.contains("scalable") && !name.contains("symbolic"),
+            std::cmp::Reverse(bitmap_size(&name)),
+        )
     });
     subdirs
         .into_iter()
         .find_map(|sub| find_file(sub, stem, depth - 1))
+}
+
+/// The pixels across of the icons in a theme's folder named like `48x48` or `256x256@2x`;
+/// 0 for any other name.
+fn bitmap_size(folder: &str) -> u32 {
+    let (size, scale) = folder.split_once('@').unwrap_or((folder, "1x"));
+    let size: u32 = size.split_once('x').and_then(|(width, _)| width.parse().ok()).unwrap_or(0);
+    size * scale.trim_end_matches('x').parse().unwrap_or(1)
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -553,6 +567,13 @@ mod tests {
     use pango::prelude::*;
 
     /// Calendar's icon is drawn from its template with the day written in ink on its page.
+    #[test]
+    fn bitmap_folders_are_sized_by_their_names() {
+        assert_eq!(bitmap_size("256x256@2x"), 512);
+        assert_eq!(bitmap_size("48x48"), 48);
+        assert_eq!(bitmap_size("scalable"), 0);
+    }
+
     #[test]
     fn the_calendar_icon_shows_the_day() {
         let mut icon = named_icon(CALENDAR_ICON, "", 128, (0.0, 0.0, 0.0)).expect("the template draws");
