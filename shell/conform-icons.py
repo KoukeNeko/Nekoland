@@ -281,10 +281,11 @@ def render(name, source, override):
         k = side / max(w, h)
         iw, ih = w * k, h * k
         inner = f'<g filter="url(#cast)"><image x="{64 - iw / 2:.2f}" y="{64 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/></g>'
-    # Every tile is lit from above: lighter at the top, darker at the foot, whatever its colour.
+    # Every tile is lit from above, faintly: as much lighter at the top and darker at the foot
+    # as the tiles of macOS are, measured on its own icons.
     top, fill = top or tile, "url(#bg)"
-    gradient = (f'\n    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{mix(top, "#ffffff", .05)}"/>'
-                f'<stop offset="1" stop-color="{mix(tile, "#000000", .05)}"/></linearGradient>')
+    gradient = (f'\n    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{mix(top, "#ffffff", 0.16)}"/>'
+                f'<stop offset="1" stop-color="{mix(tile, "#000000", 0.09)}"/></linearGradient>')
     svg = f'''{MARK}
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>{DEFS}{gradient}
