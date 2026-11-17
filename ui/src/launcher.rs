@@ -21,11 +21,12 @@ mod emoji;
 mod files;
 #[path = "launcher/store.rs"]
 mod store;
+mod ipc;
 
 use std::{
     cell::RefCell,
     collections::HashMap,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -34,6 +35,7 @@ use gtk::{gio, glib, prelude::*};
 use slint::{Image, ModelRc, VecModel};
 
 use commands::{Command, Does, View, COMMANDS};
+use ipc::msg;
 
 slint::include_modules!();
 
@@ -178,19 +180,6 @@ struct State {
     form: Option<Form>,
     /// The deletion the action panel asks about.
     confirming: bool,
-}
-
-/// Sends the compositor a message, as `nekoland msg` does, and returns its answer.
-fn msg(message: &str) -> Option<String> {
-    let path = std::env::var_os("NEKOLAND_SOCKET")?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&path)
-        .inspect_err(|err| eprintln!("{}: {err}", Path::new(&path).display()))
-        .ok()?;
-    stream.write_all(message.as_bytes()).ok()?;
-    stream.shutdown(std::net::Shutdown::Write).ok()?;
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply).ok()?;
-    Some(reply)
 }
 
 fn spawn(program: &str, arguments: &[&str]) {
