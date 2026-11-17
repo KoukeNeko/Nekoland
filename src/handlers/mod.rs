@@ -93,11 +93,13 @@ impl DataDeviceHandler for Nekoland {
 }
 
 impl ClientDndGrabHandler for Nekoland {
-    fn started(&mut self, source: Option<WlDataSource>, _icon: Option<WlSurface>, _seat: Seat<Self>) {
+    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.dnd_icon = icon.map(|icon| (icon, Default::default()));
         self.dock_drag_started(source.as_ref());
     }
 
     fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        self.dnd_icon = None;
         self.dock_dropped(validated);
     }
 }

@@ -57,7 +57,7 @@ use crate::{
     config::Config,
     cursor::Cursors,
     glass::Glass,
-    render::{scene_elements, SceneElement, CLEAR_COLOR},
+    render::{dnd_icon_elements, scene_elements, SceneElement, CLEAR_COLOR},
     CalloopData, Nekoland,
 };
 
@@ -518,6 +518,7 @@ fn draw(
 
     // Front to back: the cursor is above everything else.
     let mut elements = cursor_elements(state, renderer, cursors, pointer, scale);
+    elements.extend(dnd_icon_elements(state, renderer, output));
     let cursor = elements.len();
     elements.extend(scene_elements(state, renderer, output, glass)?);
 

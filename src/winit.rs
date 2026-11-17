@@ -22,7 +22,7 @@ use smithay::{
 
 use crate::{
     glass::Glass,
-    render::{scene_elements, CLEAR_COLOR},
+    render::{dnd_icon_elements, scene_elements, CLEAR_COLOR},
     CalloopData, Nekoland,
 };
 
@@ -159,7 +159,8 @@ pub fn init_winit(
                     shown_cursor = wanted;
                 }
 
-                let elements = scene_elements(state, backend.renderer(), &output, glass.as_mut()).unwrap();
+                let mut elements = dnd_icon_elements(state, backend.renderer(), &output);
+                elements.extend(scene_elements(state, backend.renderer(), &output, glass.as_mut()).unwrap());
                 let changed = changes
                     .damage_output(1, &elements)
                     .ok()

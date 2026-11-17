@@ -15,7 +15,7 @@ use smithay::{
     },
     desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
     output::Output,
-    utils::{Logical, Physical, Point, Rectangle, Scale, Size},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
         shell::{wlr_layer::Layer, xdg::XdgPopupSurfaceData},
@@ -51,6 +51,25 @@ render_elements! {
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     Solid=SolidColorRenderElement,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
+/// What a client drags, under the pointer and over everything else.
+pub fn dnd_icon_elements(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+) -> Vec<SceneElement> {
+    let Some((icon, offset)) = state.dnd_icon.as_ref().filter(|(icon, _)| icon.alive()) else {
+        return Vec::new();
+    };
+    let (Some(pointer), Some(geometry)) = (state.seat.get_pointer(), state.space.output_geometry(output))
+    else {
+        return Vec::new();
+    };
+    let scale = output.current_scale().fractional_scale();
+    let location = (pointer.current_location() - geometry.loc.to_f64() + offset.to_f64())
+        .to_physical_precise_round(scale);
+    render_elements_from_surface_tree(renderer, icon, location, scale, 1.0, Kind::Unspecified)
 }
 
 /// Everything on an output but the cursor, front to back.

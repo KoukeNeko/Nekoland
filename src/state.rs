@@ -127,6 +127,8 @@ pub struct Nekoland {
     pub xwm: Option<X11Wm>,
     /// The cursor the client under the pointer asked for.
     pub cursor_status: CursorImageStatus,
+    /// What a client drags, drawn under the pointer, and where from the pointer it is.
+    pub dnd_icon: Option<(WlSurface, Point<i32, Logical>)>,
 
     pub seat: Seat<Self>,
 }
@@ -236,6 +238,7 @@ impl Nekoland {
             xwayland_shell_state,
             xwm: None,
             cursor_status: CursorImageStatus::default_named(),
+            dnd_icon: None,
             seat,
         }
     }
@@ -356,6 +359,9 @@ impl Nekoland {
         drop(layers);
         if let Some(surface) = self.lock_surface(output) {
             send_frames_surface_tree(surface.wl_surface(), output, time, throttle, |_, _| Some(output.clone()));
+        }
+        if let Some((icon, _)) = &self.dnd_icon {
+            send_frames_surface_tree(icon, output, time, throttle, |_, _| Some(output.clone()));
         }
 
         self.space.refresh();

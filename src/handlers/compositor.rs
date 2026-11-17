@@ -9,7 +9,8 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState,
+            get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler,
+            CompositorState, SurfaceAttributes,
         },
         shm::{ShmHandler, ShmState},
     },
@@ -36,6 +37,19 @@ impl CompositorHandler for Nekoland {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // A drag icon moves its picture by the offset it commits, as GTK does to put its
+        // hotspot under the pointer.
+        if let Some((_, offset)) = self.dnd_icon.as_mut().filter(|(icon, _)| icon == surface) {
+            *offset += with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer_delta
+                    .take()
+                    .unwrap_or_default()
+            });
+        }
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
