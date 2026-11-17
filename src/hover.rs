@@ -1,8 +1,8 @@
 //! The hover panel, after FinderHover on the Mac: resting the pointer on a file on the
-//! desktop, in a folder opened from the Dock or in a Nautilus window, shows beside it, on glass, what the file
-//! is and holds, without opening it. Moving off the file puts the panel away. Holding Alt
-//! keeps it where it is, to move into it and copy any value with a click. A note typed in
-//! it is kept with the file.
+//! desktop, in a folder opened from the Dock or in a Files or Nautilus window, shows beside
+//! it, on glass, what the file is and holds, without opening it. Moving off the file puts
+//! the panel away. Holding Alt keeps it where it is, to move into it and copy any value
+//! with a click. A note typed in it is kept with the file.
 
 use std::{
     collections::HashMap,
@@ -248,8 +248,8 @@ impl Nekoland {
             })
     }
 
-    /// What to ask of Nautilus about `pos`, when a Nautilus window is the topmost there,
-    /// and where that window is.
+    /// What to ask about `pos`, when a Nautilus or Files window is the topmost there, and
+    /// where that window is.
     fn nautilus_question(
         &self,
         pos: Point<f64, Logical>,
@@ -261,13 +261,14 @@ impl Nekoland {
         // GTK gives places from the window's visible corner, inside its shadow.
         let location = self.space.element_location(window)?;
         let (title, app_id) = crate::windows::window_names(window);
-        if app_id != nautilus::APP_ID {
+        if app_id != nautilus::APP_ID && app_id != nautilus::FILES_APP_ID {
             return None;
         }
         let surface = window.toplevel()?.wl_surface();
         let pid = surface.client()?.get_credentials(&self.display_handle).ok()?.pid;
         let local = pos - location.to_f64();
         let question = nautilus::Question {
+            app_id,
             pid: u32::try_from(pid).ok()?,
             title,
             window: self.hover.gtk_windows.get(surface).cloned(),

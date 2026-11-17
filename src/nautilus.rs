@@ -1,7 +1,8 @@
 //! The file pointed at in a Nautilus window, for the hover panel, found as FinderHover finds
 //! Finder's: through the accessibility tree, here AT-SPI's, where Nautilus names each file's
 //! cell. Which folder the window shows comes from Nautilus's FileManager1 interface. Both
-//! take round trips over D-Bus, so a thread of its own asks.
+//! take round trips over D-Bus, so a thread of its own asks. Nekoland's own Files says
+//! which file is at a point itself.
 
 use std::{
     collections::HashMap,
@@ -19,6 +20,7 @@ use crate::{
 };
 
 pub const APP_ID: &str = "org.gnome.Nautilus";
+pub const FILES_APP_ID: &str = "io.github.koukeneko.Nekoland.Files";
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 const ROOT: &str = "/org/a11y/atspi/accessible/root";
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
@@ -31,10 +33,11 @@ const COORDS_WINDOW: u32 = 1;
 /// How far into a window's tree its file view is looked for, at most.
 const MOST_NODES: usize = 4000;
 
-/// A point in a Nautilus window: its process, its title and GTK's name for it on the bus,
-/// and the point from the window's top left corner.
+/// A point in a Nautilus or Files window: its program, its process, its title and GTK's
+/// name for it on the bus, and the point from the window's top left corner.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Question {
+    pub app_id: String,
     pub pid: u32,
     pub title: String,
     pub window: Option<String>,
@@ -80,6 +83,9 @@ impl Asking {
             self.session = Connection::session()
                 .inspect_err(|err| tracing::warn!("session bus: {err}"))
                 .ok();
+        }
+        if question.app_id == FILES_APP_ID {
+            return files_item(self.session.as_ref()?, question);
         }
         if self.a11y.is_none() {
             self.a11y = self.session.as_ref().and_then(a11y_bus);
@@ -248,6 +254,27 @@ fn folder(session: &Connection, window: Option<&str>) -> Option<std::path::PathB
         None => return None,
     };
     gio::File::for_uri(locations.first()?).path()
+}
+
+/// The file Files shows at the point, and its row or tile.
+fn files_item(session: &Connection, question: &Question) -> Option<Answer> {
+    let reply = session
+        .call_method(
+            Some(FILES_APP_ID),
+            "/org/freedesktop/FileManager1",
+            Some("io.github.koukeneko.Nekoland.Files.Hover"),
+            "ItemAt",
+            &(
+                question.window.as_deref().unwrap_or(""),
+                question.point.0,
+                question.point.1,
+            ),
+        )
+        .ok()?;
+    let (path, left, top, width, height) = reply.body().deserialize::<(String, i32, i32, i32, i32)>().ok()?;
+    let path = Path::new(&path);
+    let item = file_named(path.parent()?, path.file_name()?.to_str()?)?;
+    Some((item, (left, top, width, height)))
 }
 
 /// The file in `folder` a cell is for.

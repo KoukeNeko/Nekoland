@@ -4,6 +4,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     rc::{Rc, Weak},
     time::Duration,
 };
@@ -823,6 +824,10 @@ impl Pane {
     /// dragged, and taking what is dropped on a folder.
     fn set_up_item(self: &Rc<Self>, widget: &gtk::Widget, item: &gtk::ListItem) {
         let item = item.downgrade();
+        ITEM_WIDGETS.with_borrow_mut(|all| {
+            all.retain(|(widget, _)| widget.upgrade().is_some());
+            all.push((widget.downgrade(), item.clone()));
+        });
         let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
         {
             let (weak, item, widget_weak) = (Rc::downgrade(self), item.clone(), widget.downgrade());
@@ -2161,6 +2166,31 @@ fn selected_of(model: &gtk::MultiSelection) -> Vec<glib::Object> {
     (0..set.size())
         .filter_map(|i| model.item(set.nth(i as u32)))
         .collect()
+}
+
+thread_local! {
+    /// Every view's item widgets, with the list item each shows, for `file_at`.
+    static ITEM_WIDGETS: RefCell<Vec<(glib::WeakRef<gtk::Widget>, glib::WeakRef<gtk::ListItem>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The file shown at a point of a window, and the whole row or tile it is on, both in the
+/// window's coordinates, for the compositor's hover panel.
+pub fn file_at(window: &gtk::Window, x: f64, y: f64) -> Option<(PathBuf, gtk::graphene::Rect)> {
+    let picked = window.pick(x, y, gtk::PickFlags::DEFAULT)?;
+    let (widget, item) =
+        std::iter::successors(Some(picked), |widget| widget.parent()).find_map(|widget| {
+            let item = ITEM_WIDGETS.with_borrow(|all| {
+                all.iter()
+                    .find(|(shown, _)| shown.upgrade().as_ref() == Some(&widget))
+                    .and_then(|(_, item)| item.upgrade())
+            })?;
+            Some((widget, item))
+        })?;
+    let path = info_file(&list_item_info(&item)?)?.path()?;
+    let row = std::iter::successors(Some(widget), |widget| widget.parent())
+        .find(|widget| widget.parent().is_some_and(|parent| parent.is::<gtk::ListBase>()))?;
+    Some((path, row.compute_bounds(window)?))
 }
 
 /// The file a list item shows, whether the list is a tree of them or not.

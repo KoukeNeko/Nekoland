@@ -64,6 +64,11 @@ const MANAGER_XML: &str = r#"<node><interface name="org.freedesktop.FileManager1
 <method name="ShowItems"><arg type="as" name="URIs" direction="in"/><arg type="s" name="StartupId" direction="in"/></method>
 <method name="ShowItemProperties"><arg type="as" name="URIs" direction="in"/><arg type="s" name="StartupId" direction="in"/></method>
 </interface></node>"#;
+const HOVER_NAME: &str = "io.github.koukeneko.Nekoland.Files.Hover";
+const HOVER_XML: &str = r#"<node><interface name="io.github.koukeneko.Nekoland.Files.Hover">
+<method name="ItemAt"><arg type="s" name="Window" direction="in"/><arg type="i" name="X" direction="in"/><arg type="i" name="Y" direction="in"/>
+<arg type="s" name="Path" direction="out"/><arg type="i" name="Left" direction="out"/><arg type="i" name="Top" direction="out"/><arg type="i" name="Width" direction="out"/><arg type="i" name="Height" direction="out"/></method>
+</interface></node>"#;
 /// Typed letters choose the first item whose name starts with them, until a pause.
 const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 
@@ -211,6 +216,7 @@ fn main() -> glib::ExitCode {
         }
         app.set_menubar(Some(&menubar()));
         serve_file_manager(app);
+        serve_hover(app);
     });
     app.connect_activate(|app| match app.active_window() {
         Some(window) => window.present(),
@@ -230,6 +236,49 @@ fn main() -> glib::ExitCode {
         }
     });
     app.run()
+}
+
+/// Tells the compositor which file is at a point of a window, for its hover panel: the
+/// window as GTK names it on the bus, and the point from its top left corner.
+fn serve_hover(app: &adw::Application) {
+    let Some(connection) = app.dbus_connection() else {
+        return;
+    };
+    let node = gio::DBusNodeInfo::for_xml(HOVER_XML).expect("the XML above parses");
+    let interface = node.lookup_interface(HOVER_NAME).expect("the XML above has it");
+    let weak = app.downgrade();
+    let registered = connection
+        .register_object(MANAGER_PATH, &interface)
+        .method_call(move |_, _, _, _, _, params, invocation| {
+            let (Some(app), Some((window, x, y))) = (weak.upgrade(), params.get::<(String, i32, i32)>())
+            else {
+                invocation.return_error(gio::DBusError::InvalidArgs, "expected (sii)");
+                return;
+            };
+            let window = window
+                .rsplit('/')
+                .next()
+                .and_then(|id| id.parse().ok())
+                .and_then(|id| app.window_by_id(id))
+                .or_else(|| (app.windows().len() == 1).then(|| app.windows()[0].clone()));
+            match window.and_then(|window| pane::file_at(&window, f64::from(x), f64::from(y))) {
+                Some((path, area)) => invocation.return_value(Some(
+                    &(
+                        path.to_string_lossy().into_owned(),
+                        area.x().round() as i32,
+                        area.y().round() as i32,
+                        area.width().round() as i32,
+                        area.height().round() as i32,
+                    )
+                        .to_variant(),
+                )),
+                None => invocation.return_error(gio::DBusError::Failed, "no file there"),
+            }
+        })
+        .build();
+    if let Err(err) = registered {
+        eprintln!("nekoland-files: cannot serve {HOVER_NAME}: {err}");
+    }
 }
 
 /// Answers FileManager1 for as long as the application runs: the Dock's 在檔案中顯示 and
