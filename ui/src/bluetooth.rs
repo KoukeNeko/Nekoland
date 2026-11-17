@@ -154,7 +154,7 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<BluetoothPage>) {
             let mine = group("我的裝置");
             for device in &paired {
                 let is_connected = connected.contains(device);
-                let row = adw::ActionRow::builder().title(&device.name).activatable(true).build();
+                let row = adw::ActionRow::builder().title(&device.name).use_markup(false).activatable(true).build();
                 row.add_prefix(&gtk::Image::from_icon_name(&device_icon(&device.address)));
                 row.set_subtitle(match (busy.as_deref() == Some(&device.address), is_connected) {
                     (true, _) => "正在連線…",
@@ -185,7 +185,7 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<BluetoothPage>) {
         });
         nearby.set_header_suffix(Some(&rescan));
         for device in devices(None).iter().filter(|device| !paired.contains(device)) {
-            let row = adw::ActionRow::builder().title(&device.name).activatable(true).build();
+            let row = adw::ActionRow::builder().title(&device.name).use_markup(false).activatable(true).build();
             row.add_prefix(&gtk::Image::from_icon_name(&device_icon(&device.address)));
             if busy.as_deref() == Some(&device.address) {
                 row.set_subtitle("正在配對…");
@@ -391,6 +391,10 @@ fn pair(row: gtk::Widget, device: Device, done: Rc<dyn Fn()>) {
         // ask could be any device in range; a paired device is trusted after, which bluez
         // authorizes on its own.
         AgentEvent::Authorize => say("no"),
+        // shortcut: bluetoothctl's prompts do not say which device asks, so another device's
+        // request during this pairing is shown under this one's name; the person still
+        // compares the code with the device in hand. Use bluez's Agent1 over D-Bus, which
+        // names the device, to refuse the rest.
         AgentEvent::Confirm(passkey) => {
             let alert = adw::AlertDialog::new(
                 Some(&format!("與「{}」配對", device.name)),
