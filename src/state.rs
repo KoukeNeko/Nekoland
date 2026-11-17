@@ -55,6 +55,8 @@ pub struct Nekoland {
     pub config: Config,
     /// The swaybg drawing the configured wallpaper.
     pub wallpaper: Option<std::process::Child>,
+    /// The swaybg of the wallpaper before, until the new one has drawn over it.
+    pub old_wallpaper: Option<std::process::Child>,
     /// The pointing devices libinput gave, to set as the configuration says.
     pub pointer_devices: Vec<smithay::reexports::input::Device>,
     /// Where threads send what they learn; the input method starts when first typed into.
@@ -192,6 +194,7 @@ impl Nekoland {
             start_time,
             config,
             wallpaper: None,
+            old_wallpaper: None,
             pointer_devices: Vec::new(),
             events: None,
             ime: None,
@@ -441,16 +444,26 @@ impl Nekoland {
         // Menus and the like take the glass's new look as they next open.
         self.config.set_glass_look();
         if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
-            if let Some(mut swaybg) = self.wallpaper.take() {
-                if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {
-                    tracing::warn!("swaybg: {err}");
-                }
-            }
+            // The one before stays until the new one has drawn, so that nothing under it
+            // shows in between.
+            self.stop_old_wallpaper();
+            self.old_wallpaper = self.wallpaper.take();
             self.wallpaper = crate::config::start_wallpaper(&self.config);
+            if self.wallpaper.is_none() {
+                self.stop_old_wallpaper();
+            }
         }
         let devices = std::mem::take(&mut self.pointer_devices);
         for device in devices {
             self.add_pointer_device(device);
+        }
+    }
+
+    pub fn stop_old_wallpaper(&mut self) {
+        if let Some(mut swaybg) = self.old_wallpaper.take() {
+            if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {
+                tracing::warn!("swaybg: {err}");
+            }
         }
     }
 

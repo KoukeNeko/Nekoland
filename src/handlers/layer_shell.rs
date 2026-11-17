@@ -97,6 +97,10 @@ impl Nekoland {
 
         if !initial_configure_sent {
             layer.layer_surface().send_configure();
+        } else if self.old_wallpaper.is_some() && self.is_wallpaper(surface) {
+            // shortcut: on the first display the new wallpaper draws; once outputs are
+            // configured one by one, wait for each.
+            self.stop_old_wallpaper();
         }
 
         let wants_keyboard = layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
@@ -104,5 +108,15 @@ impl Nekoland {
         if wants_keyboard && !self.keyboard_is_on(surface) {
             self.set_keyboard_focus(Some(surface.clone().into()));
         }
+    }
+
+    /// Whether a surface is the configured wallpaper's swaybg's, by its process.
+    fn is_wallpaper(&self, surface: &WlSurface) -> bool {
+        use smithay::reexports::wayland_server::Resource;
+        let Some(swaybg) = &self.wallpaper else { return false };
+        surface
+            .client()
+            .and_then(|client| client.get_credentials(&self.display_handle).ok())
+            .is_some_and(|credentials| credentials.pid as u32 == swaybg.id())
     }
 }
