@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs Nekoland on an Ubuntu without a desktop, from its console or over SSH: the
-# packages it is built and runs with, the compositor and its programs in /usr/local, the
+# packages it runs with, the compositor and its programs in /usr/local (CI's build of them
+# where there is one for this Ubuntu and processor, else built here), the
 # portal files, an example configuration, and a login on the first console (tty1) that
 # starts it. Run it again to update. From a checkout:
 #   ./install.sh
@@ -37,7 +38,7 @@ sudo true
 sudo apt-get update -q
 # shellcheck disable=SC2086 # the lists are meant to split into words
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-    $build_packages $run_packages
+    git curl ca-certificates $run_packages
 
 # The source: this checkout, or a clone of its own.
 case $0 in
@@ -55,19 +56,44 @@ if [ -z "$src" ] || ! grep -q '^name = "nekoland"' "$src/Cargo.toml" 2>/dev/null
     fi
 fi
 
-# Cargo.toml's rust-version; rustup's when the system's is older, as on Ubuntu 24.04.
-minimum_rust=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$src/Cargo.toml")
-cargo=cargo
-[ -x "$HOME/.cargo/bin/cargo" ] && cargo=$HOME/.cargo/bin/cargo
-if ! dpkg --compare-versions "$($cargo --version | cut -d' ' -f2)" ge "$minimum_rust"; then
-    say "Installing Rust with rustup, the system's being older than $minimum_rust"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-    cargo=$HOME/.cargo/bin/cargo
-fi
+# What CI built of this very commit for this Ubuntu and processor, as $target, if it published
+# one and the checkout is unchanged; NEKOLAND_BUILD=1 builds here regardless.
+prebuilt() {
+    [ -z "${NEKOLAND_BUILD:-}" ] || return 1
+    [ -z "$(git -C "$src" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 1
+    name=nekoland-ubuntu-$(. /etc/os-release && echo "$VERSION_ID")-$(dpkg --print-architecture).tar.gz
+    url=https://github.com/KoukeNeko/Nekoland/releases/download/continuous/$name
+    download=$(mktemp -d)
+    trap 'rm -rf "$download"' EXIT
+    curl -fsSL -o "$download/$name" "$url" || return 1
+    curl -fsSL -o "$download/$name.sha256" "$url.sha256" || return 1
+    (cd "$download" && sha256sum -c --quiet "$name.sha256") || return 1
+    tar -xzf "$download/$name" -C "$download" || return 1
+    [ "$(cat "$download/COMMIT")" = "$(git -C "$src" rev-parse HEAD 2>/dev/null)" ] || return 1
+    target=$download
+}
 
-say "Building (the first build takes a while)"
-target=${CARGO_TARGET_DIR:-$src/target}
-(cd "$src" && CARGO_TARGET_DIR=$target "$cargo" build --release --locked --workspace)
+if prebuilt; then
+    say "Using the build CI made of $(cut -c1-7 "$target/COMMIT")"
+else
+    say "Installing what it is built with"
+    # shellcheck disable=SC2086
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $build_packages
+
+    # Cargo.toml's rust-version; rustup's when the system's is older, as on Ubuntu 24.04.
+    minimum_rust=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$src/Cargo.toml")
+    cargo=cargo
+    [ -x "$HOME/.cargo/bin/cargo" ] && cargo=$HOME/.cargo/bin/cargo
+    if ! dpkg --compare-versions "$($cargo --version | cut -d' ' -f2)" ge "$minimum_rust"; then
+        say "Installing Rust with rustup, the system's being older than $minimum_rust"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+        cargo=$HOME/.cargo/bin/cargo
+    fi
+
+    say "Building (the first build takes a while)"
+    target=${CARGO_TARGET_DIR:-$src/target}
+    (cd "$src" && CARGO_TARGET_DIR=$target "$cargo" build --release --locked --workspace)
+fi
 
 say "Installing into /usr/local"
 sudo true

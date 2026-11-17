@@ -6,7 +6,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     # The Ubuntu Nekoland is made on and install.sh is tried on.
     container: ubuntu:26.10
     env:
@@ -30,3 +33,48 @@ jobs:
 
       - name: Build as install.sh does
         run: cargo build --release --locked --workspace
+
+      - name: Package
+        # What install.sh installs from target/release, named for this Ubuntu and processor,
+        # with the commit it was built from: install.sh takes it only for that commit.
+        run: |
+          . /etc/os-release
+          name=nekoland-ubuntu-$VERSION_ID-$(dpkg --print-architecture).tar.gz
+          mkdir -p package/release
+          for program in target/release/nekoland target/release/nekoland-*; do
+            case $program in *.d) continue ;; esac
+            cp "$program" package/release/
+          done
+          cp target/release/libnekoland_menus.so package/release/
+          echo "$GITHUB_SHA" > package/COMMIT
+          tar -czf "$name" -C package release COMMIT
+          sha256sum "$name" > "$name.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.runner }}
+          path: nekoland-ubuntu-*.tar.gz*
+          retention-days: 3
+
+  publish:
+    # One release, replaced by each build of main, for install.sh to download from.
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: publish
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        run: |
+          gh release delete continuous --cleanup-tag --yes || true
+          gh release create continuous --target "$GITHUB_SHA" --prerelease \
+            --title "Latest build of main" \
+            --notes "Built by CI from $GITHUB_SHA. install.sh downloads these." \
+            nekoland-ubuntu-*.tar.gz*
