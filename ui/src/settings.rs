@@ -298,6 +298,7 @@ fn build(app: &adw::Application) {
                 "協助工具" => accessibility_page(config).upcast(),
                 "隱私" => privacy_page().upcast(),
                 "桌面" => desktop_page(config, &autostart).upcast(),
+                "懸停資訊" => hover_page(config).upcast(),
                 "顯示" => display_page(config).upcast(),
                 "電源" => power_page(config).upcast(),
                 "聲音" => sound_page().upcast(),
@@ -322,6 +323,7 @@ fn build(app: &adw::Application) {
         ],
         vec![
             ("桌面", "user-desktop-symbolic"),
+            ("懸停資訊", "document-properties-symbolic"),
             ("顯示", "video-display-symbolic"),
             ("電源", "battery-level-100-symbolic"),
         ],
@@ -504,12 +506,13 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 10] = [
+const REBUILT_PAGES: [&str; 11] = [
     "外觀",
     "字型",
     "協助工具",
     "隱私",
     "桌面",
+    "懸停資訊",
     "顯示",
     "電源",
     "鍵盤",
@@ -769,103 +772,6 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     dock.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
     dock.add(&switch_row(config, "最近使用的應用程式", "dock_recents"));
     page.add(&dock);
-
-    let hover = group("懸停資訊");
-    let shown = switch_row(config, "顯示", "hover_info");
-    hover.add(&shown);
-    let mut rows: Vec<gtk::Widget> = vec![
-        scale_row(
-            "延遲",
-            config.number("hover_delay", 0.1),
-            (0.1, 2.0, 0.1),
-            |seconds| format!("{seconds:.1} 秒"),
-            |seconds| set(&format!("hover_delay = {seconds:.1}")),
-        )
-        .upcast(),
-        switch_row(config, "自動隱藏", "hover_auto_hide").upcast(),
-        switch_row(config, "大型檔案保護", "hover_large_file_protection").upcast(),
-        choice_row(
-            config,
-            "樣式",
-            "hover_style",
-            &HOVER_STYLES,
-            &["詳細", "工具提示"],
-        )
-        .upcast(),
-        switch_row(config, "跟隨指標", "hover_follow").upcast(),
-    ];
-    for (title, key) in [("水平偏移", "hover_offset_x"), ("垂直偏移", "hover_offset_y")] {
-        rows.push(
-            scale_row(
-                title,
-                config.number(key, 15.0),
-                (0.0, 50.0, 5.0),
-                |offset| format!("{offset:.0} px"),
-                move |offset| set(&format!("{key} = {offset:.0}")),
-            )
-            .upcast(),
-        );
-    }
-    let glass = switch_row(config, "毛玻璃", "hover_glass");
-    let opacity = scale_row(
-        "不透明度",
-        config.number("hover_opacity", 0.98),
-        (0.7, 1.0, 0.05),
-        percent,
-        |opacity| set(&format!("hover_opacity = {opacity:.2}")),
-    );
-    // As in FinderHover, opacity is for the plain panel; glass has its own.
-    glass
-        .bind_property("active", &opacity, "sensitive")
-        .invert_boolean()
-        .sync_create()
-        .build();
-    rows.extend([
-        glass.upcast(),
-        opacity.upcast(),
-        switch_row(config, "緊湊模式", "hover_compact").upcast(),
-        scale_row(
-            "寬度",
-            config.number("hover_width", 300.0),
-            (300.0, 600.0, 20.0),
-            |width| format!("{width:.0} px"),
-            |width| set(&format!("hover_width = {width:.0}")),
-        )
-        .upcast(),
-        scale_row(
-            "文字大小",
-            config.number("hover_font_size", 11.0),
-            (9.0, 14.0, 1.0),
-            |size| format!("{size:.0} 點"),
-            |size| set(&format!("hover_font_size = {size:.1}")),
-        )
-        .upcast(),
-    ]);
-    let hidden: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(
-        config
-            .0
-            .get("hover_hide")
-            .and_then(toml::Value::as_array)
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(|name| name.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_else(|| HOVER_HIDDEN.map(String::from).to_vec()),
-    ));
-    let fields = adw::ActionRow::builder().title("欄位").activatable(true).build();
-    fields.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-    fields.connect_activated(move |row| hover_fields_dialog(row, hidden.clone()));
-    rows.push(fields.upcast());
-    for row in rows {
-        shown
-            .bind_property("active", &row, "visible")
-            .sync_create()
-            .build();
-        hover.add(&row);
-    }
-    page.add(&hover);
 
     let bar = group("選單列");
     let hours = adw::ComboRow::builder()
@@ -1137,6 +1043,113 @@ fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
     let attrs = gtk::pango::AttrList::new();
     attrs.insert(gtk::pango::AttrFontDesc::new(&font));
     label.set_attributes(Some(&attrs));
+}
+
+/// The hover panel: when it shows, where, how it looks and which fields, a group each, as
+/// FinderHover's settings have them.
+fn hover_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+
+    let general = group("");
+    let shown = switch_row(config, "顯示", "hover_info");
+    general.add(&shown);
+    let mut rows: Vec<gtk::Widget> = vec![
+        scale_row(
+            "延遲",
+            config.number("hover_delay", 0.1),
+            (0.1, 2.0, 0.1),
+            |seconds| format!("{seconds:.1} 秒"),
+            |seconds| set(&format!("hover_delay = {seconds:.1}")),
+        )
+        .upcast(),
+        switch_row(config, "自動隱藏", "hover_auto_hide").upcast(),
+        switch_row(config, "大型檔案保護", "hover_large_file_protection").upcast(),
+    ];
+    let hidden: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(
+        config
+            .0
+            .get("hover_hide")
+            .and_then(toml::Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| name.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| HOVER_HIDDEN.map(String::from).to_vec()),
+    ));
+    let fields = adw::ActionRow::builder().title("欄位").activatable(true).build();
+    fields.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    fields.connect_activated(move |row| hover_fields_dialog(row, hidden.clone()));
+    rows.push(fields.upcast());
+    for row in &rows {
+        general.add(row);
+    }
+    page.add(&general);
+
+    let place = group("位置");
+    place.add(&switch_row(config, "跟隨指標", "hover_follow"));
+    for (title, key) in [("水平偏移", "hover_offset_x"), ("垂直偏移", "hover_offset_y")] {
+        place.add(&scale_row(
+            title,
+            config.number(key, 15.0),
+            (0.0, 50.0, 5.0),
+            |offset| format!("{offset:.0} px"),
+            move |offset| set(&format!("{key} = {offset:.0}")),
+        ));
+    }
+    page.add(&place);
+
+    let look = group("外觀");
+    look.add(&choice_row(
+        config,
+        "樣式",
+        "hover_style",
+        &HOVER_STYLES,
+        &["詳細", "工具提示"],
+    ));
+    let glass = switch_row(config, "毛玻璃", "hover_glass");
+    let opacity = scale_row(
+        "不透明度",
+        config.number("hover_opacity", 0.98),
+        (0.7, 1.0, 0.05),
+        percent,
+        |opacity| set(&format!("hover_opacity = {opacity:.2}")),
+    );
+    // As in FinderHover, opacity is for the plain panel; glass has its own.
+    glass
+        .bind_property("active", &opacity, "sensitive")
+        .invert_boolean()
+        .sync_create()
+        .build();
+    look.add(&glass);
+    look.add(&opacity);
+    look.add(&switch_row(config, "緊湊模式", "hover_compact"));
+    look.add(&scale_row(
+        "寬度",
+        config.number("hover_width", 300.0),
+        (300.0, 600.0, 20.0),
+        |width| format!("{width:.0} px"),
+        |width| set(&format!("hover_width = {width:.0}")),
+    ));
+    look.add(&scale_row(
+        "文字大小",
+        config.number("hover_font_size", 11.0),
+        (9.0, 14.0, 1.0),
+        |size| format!("{size:.0} 點"),
+        |size| set(&format!("hover_font_size = {size:.1}")),
+    ));
+    page.add(&look);
+
+    // With the panel off, only the switch that brings it back is left.
+    rows.extend([place.upcast(), look.upcast()]);
+    for widget in rows {
+        shown
+            .bind_property("active", &widget, "visible")
+            .sync_create()
+            .build();
+    }
+    page
 }
 
 /// The hover panel's parts and every kind's fields, each to show or leave out, beside the
