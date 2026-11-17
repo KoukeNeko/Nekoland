@@ -256,6 +256,13 @@ fn connect_pair(row: &adw::ActionRow, shown: &Rc<BluetoothPage>, done: &Rc<dyn F
     });
 }
 
+/// Whether bluez itself says the device is paired, past what its name could say: the name
+/// comes before bluez's own "Paired:" line.
+fn is_paired(address: &str) -> bool {
+    let info = output("bluetoothctl", &["info", address]).unwrap_or_default();
+    info.lines().rev().find_map(|line| line.trim().strip_prefix("Paired:")).is_some_and(|paired| paired.trim() == "yes")
+}
+
 /// What bluetoothctl's agent asks or tells while pairing.
 #[derive(Debug, PartialEq)]
 enum AgentEvent {
@@ -274,10 +281,13 @@ enum AgentEvent {
 /// bluetoothctl's words for each, without its colours.
 fn agent_event(line: &str) -> Option<AgentEvent> {
     let line = strip_colours(line);
+    // A device's name comes only after "Device", as in "[NEW] Device", and may hold a carriage
+    // return and anything after it: such a line is never an answer.
+    if line.contains("Device ") {
+        return None;
+    }
     // What follows a carriage return is drawn over what came before it, such as the prompt.
     let line = line.rsplit('\r').next().unwrap_or_default().trim();
-    // bluetoothctl's own words start a line; a device's name never does, as it follows
-    // "[NEW] Device" and the like, so a name cannot pose as an answer.
     if line.starts_with("Pairing successful") {
         return Some(AgentEvent::Paired);
     }
@@ -429,7 +439,11 @@ fn pair(row: gtk::Widget, device: Device, done: Rc<dyn Fn()>) {
         }
         AgentEvent::Paired => {
             if end() {
-                run_verbs(row.clone(), device.clone(), vec!["trust", "connect"], done.clone());
+                if is_paired(&device.address) {
+                    run_verbs(row.clone(), device.clone(), vec!["trust", "connect"], done.clone());
+                } else {
+                    failed_to_pair(&row, &device, None, &done);
+                }
             }
         }
         AgentEvent::Failed(why) => {
@@ -451,7 +465,7 @@ fn read_agent(output: gio::InputStream, mut pending: String, handle: Rc<dyn Fn(A
             return;
         }
         pending.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(newline) = pending.find(['\n', '\r']) {
+        while let Some(newline) = pending.find('\n') {
             let line: String = pending.drain(..=newline).collect();
             if let Some(event) = agent_event(&line) {
                 handle(event);
@@ -511,6 +525,7 @@ mod tests {
         assert_eq!(event("[NEW] Device 11:22:33:44:55:66 Pairing successful"), None);
         assert_eq!(event("[NEW] Device 11:22:33:44:55:66 [agent] Confirm passkey 1 (yes/no)"), None);
         assert_eq!(event("\r[bluetooth]# \r[agent] Enter passkey (number in 0-999999): "), Some(AgentEvent::AskCode));
+        assert_eq!(event("[NEW] Device 11:22:33:44:55:66 x\r[agent] Confirm passkey 1 (yes/no)"), None);
     }
 
     #[test]
