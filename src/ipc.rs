@@ -202,6 +202,7 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),
+        "sleep" => state.sleep(),
         "workspace-add" => {
             state.add_workspace();
             state.rebuild_overview();

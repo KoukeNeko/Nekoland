@@ -93,7 +93,7 @@ pub const COMMANDS: &[Command] = &[
         Does::ClearClipboard,
     ),
     command("lock", "鎖定螢幕", "lock screen", "system-lock-screen", Does::Message("lock")),
-    command("sleep", "睡眠", "sleep suspend 休眠", "system-shutdown", Does::Run(&["systemctl", "suspend"])),
+    command("sleep", "睡眠", "sleep suspend 休眠", "system-shutdown", Does::Message("sleep")),
     command(
         "restart",
         "重新開機",

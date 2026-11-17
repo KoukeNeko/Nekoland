@@ -141,7 +141,9 @@ impl Nekoland {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        // Not to sandboxed programs: an overlay that takes the keyboard would read every key
+        // and could pass for the lock screen.
+        let layer_shell_state = WlrLayerShellState::new_with_filter::<Self, _>(&dh, unsandboxed);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();

@@ -92,18 +92,20 @@ if [ ! -e "$config" ]; then
     install -Dm 644 "$src/shell/config.toml" "$config"
 fi
 
-# Logging in on the first console starts Nekoland; quitting it goes back to that shell.
+# Logging in on the first console starts Nekoland in place of the shell, so that quitting it,
+# or its ending while the screen is locked, logs out rather than leaving a shell behind the
+# lock. The last session's log is kept beside the new one. An older block is replaced.
 marker="# Nekoland: started by logging in on the first console"
-if ! grep -qF "$marker" "$HOME/.profile" 2>/dev/null; then
-    say "Starting Nekoland from ~/.profile on tty1"
-    cat >>"$HOME/.profile" <<EOF
-
+say "Starting Nekoland from ~/.profile on tty1"
+touch "$HOME/.profile"
+sed -i "/^$marker\$/,/^fi\$/d" "$HOME/.profile"
+cat >>"$HOME/.profile" <<EOF
 $marker
 if [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ] && [ "\$(tty)" = /dev/tty1 ]; then
     mkdir -p "\$HOME/.local/state"
-    nekoland >"\$HOME/.local/state/nekoland.log" 2>&1
+    mv -f "\$HOME/.local/state/nekoland.log" "\$HOME/.local/state/nekoland.log.old" 2>/dev/null
+    exec nekoland >"\$HOME/.local/state/nekoland.log" 2>&1
 fi
 EOF
-fi
 
 say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there"
