@@ -3,7 +3,10 @@
 //! for and changes through `nekoland msg`, so the compositor alone reads and writes its file
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
+mod alert;
 mod focus;
+mod network;
+mod wifi;
 
 use std::{
     cell::{Cell, RefCell},
@@ -245,7 +248,7 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build);
     let code = app.run();
-    if let Some(monitor) = SOUND_MONITOR.take() {
+    for monitor in SOUND_MONITOR.take().into_iter().chain(wifi::NETWORK_MONITORS.take()) {
         monitor.force_exit();
     }
     if let Some(page) = RESTART.with_borrow(|page| *page) {
@@ -293,6 +296,8 @@ fn build(app: &adw::Application) {
         let (look, autostart) = (look.clone(), autostart.clone());
         Rc::new(move |name: &str, config: &Config| -> gtk::Widget {
             match name {
+                "Wi-Fi" => wifi::wifi_page().upcast(),
+                "網路" => network::network_page().upcast(),
                 "外觀" => appearance_page(config, &look).upcast(),
                 "字型" => fonts_page(&look).upcast(),
                 "協助工具" => accessibility_page(config).upcast(),
@@ -315,6 +320,13 @@ fn build(app: &adw::Application) {
     };
     // The pages in groups with a line between, as the Mac's System Settings has them.
     let groups: Vec<Vec<(&str, &str)>> = vec![
+        [
+            (("Wi-Fi", "network-wireless-symbolic"), wifi::has_wifi()),
+            (("網路", "network-wired-symbolic"), wifi::network_manager_runs()),
+        ]
+        .into_iter()
+        .filter_map(|(page, there)| there.then_some(page))
+        .collect(),
         vec![
             ("外觀", "preferences-desktop-appearance-symbolic"),
             ("字型", "preferences-desktop-font-symbolic"),
@@ -340,6 +352,8 @@ fn build(app: &adw::Application) {
         ],
         vec![("設計語言", "applications-graphics-symbolic")],
     ];
+    // Without NetworkManager there are no network pages, and no empty group for them.
+    let groups: Vec<_> = groups.into_iter().filter(|group| !group.is_empty()).collect();
     let starts: Vec<usize> = groups
         .iter()
         .scan(0, |at, group| {

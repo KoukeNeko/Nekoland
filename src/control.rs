@@ -67,6 +67,7 @@ enum Part {
     Screenshot,
     Wifi(usize),
     WifiPower,
+    WifiSettings,
     Brightness,
     Mute,
     Volume,
@@ -335,12 +336,13 @@ impl ControlCenter {
         if let Some(wifi) = &self.wifi {
             let networks = wifi.networks.len() as i32;
             let rule = if networks > 0 { LIST_RULE } else { 0 };
-            let full = INSET * 2 + LIST_ROW * (networks + 1) + rule;
+            let full = INSET * 2 + LIST_ROW * (networks + 2) + rule;
             list(&mut y, self.expansion(List::Wifi), full, &mut |top| {
                 for index in 0..wifi.networks.len() {
                     parts.push((Part::Wifi(index), row(top + LIST_ROW * index as i32)));
                 }
                 parts.push((Part::WifiPower, row(top + LIST_ROW * networks + rule)));
+                parts.push((Part::WifiSettings, row(top + LIST_ROW * (networks + 1) + rule)));
             });
         }
 
@@ -593,8 +595,13 @@ impl ControlCenter {
                         50..=74 => "network-wireless-signal-good-symbolic",
                         _ => "network-wireless-signal-excellent-symbolic",
                     };
-                    show_line(&cr, &network.ssid, &label, (x + 34.0, center, w - 70.0), color);
-                    draw_icon(&cr, icon, x + w - 10.0 - f64::from(ICON), center, color);
+                    let signal_x = x + w - 10.0 - f64::from(ICON);
+                    let lock = if network.secure { f64::from(ICON) + 4.0 } else { 0.0 };
+                    show_line(&cr, &network.ssid, &label, (x + 34.0, center, w - 70.0 - lock), color);
+                    if network.secure {
+                        draw_icon(&cr, "changes-prevent-symbolic", signal_x - lock, center, color);
+                    }
+                    draw_icon(&cr, icon, signal_x, center, color);
                 }
                 Part::WifiPower => {
                     if shown.wifi.as_ref().is_some_and(|wifi| !wifi.networks.is_empty()) {
@@ -604,6 +611,10 @@ impl ControlCenter {
                     let on = shown.wifi.as_ref().is_some_and(|wifi| wifi.on);
                     let text = if on { "關閉 Wi-Fi" } else { "開啟 Wi-Fi" };
                     show_text(&cr, text, &label, x + 34.0, center, color);
+                }
+                Part::WifiSettings => {
+                    let color = list_row(&cr, *part, *area);
+                    show_text(&cr, "Wi-Fi 設定…", &label, x + 34.0, center, color);
                 }
                 Part::Mute => {
                     let icon = shown.volume.map_or("audio-volume-high-symbolic", sound_icon);
@@ -1175,14 +1186,24 @@ impl Nekoland {
             return;
         };
         match part {
-            Part::Network => control.toggle(List::Wifi),
+            Part::Network => {
+                // The list read when the panel opens is what was last heard; it is heard again.
+                if control.open != Some(List::Wifi) && control.wifi.as_ref().is_some_and(|wifi| wifi.on) {
+                    system::run("nmcli", &["device", "wifi", "rescan"]);
+                }
+                control.toggle(List::Wifi);
+            }
             Part::Wifi(index) => {
                 let Some(network) = control.wifi.as_ref().and_then(|wifi| wifi.networks.get(index)) else {
                     return;
                 };
                 if !network.active {
-                    system::run("nmcli", &["device", "wifi", "connect", &network.ssid]);
+                    system::join_wifi(&network.ssid);
                 }
+                control.toggle(List::Wifi);
+            }
+            Part::WifiSettings => {
+                config::spawn("NEKOLAND_SETTINGS_PAGE=Wi-Fi nekoland-settings");
                 control.toggle(List::Wifi);
             }
             Part::WifiPower => {

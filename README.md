@@ -140,6 +140,12 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   files, what starts at login, and whether other computers may come in over RDP and
   which session they get, show what the computer is and how worn its batteries are, and
   show GTK's own widgets as the system style draws them.
+  Its Wi-Fi and 網路 pages work through NetworkManager's `nmcli`: 網路 joins and leaves
+  each Ethernet port and shows its addresses, sets a connection's IPv4 addresses (from
+  DHCP or by hand), DNS servers and search domains, a Wi-Fi network's among them, and
+  turns VPNs on and off, adds a WireGuard `.conf` or OpenVPN `.ovpn` and removes one. A
+  port netplan gives to systemd-networkd, as on Ubuntu Server, is not NetworkManager's
+  until netplan's `renderer` is `NetworkManager`.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
   others. The sound page picks the output and input, and the sample rate and

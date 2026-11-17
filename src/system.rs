@@ -177,6 +177,8 @@ pub struct WifiNetwork {
     pub ssid: String,
     pub signal: u32,
     pub active: bool,
+    /// Whether joining it takes a password.
+    pub secure: bool,
 }
 
 /// How many networks the control center lists, the strongest.
@@ -195,7 +197,7 @@ pub fn read_wifi() -> Option<Wifi> {
     let list = nmcli(&[
         "-t",
         "-f",
-        "IN-USE,SIGNAL,SSID",
+        "IN-USE,SIGNAL,SECURITY,SSID",
         "device",
         "wifi",
         "list",
@@ -208,13 +210,15 @@ pub fn read_wifi() -> Option<Wifi> {
     })
 }
 
-/// nmcli's terse lines, "*:72:Home", with colons in the name escaped; a network heard
+/// nmcli's terse lines, "*:72:WPA2:Home", with colons in the name escaped; a network heard
 /// through several access points is listed once, by its strongest.
 fn parse_wifi(text: &str) -> Vec<WifiNetwork> {
     let mut networks: Vec<WifiNetwork> = Vec::new();
     for line in text.lines() {
-        let mut fields = line.splitn(3, ':');
-        let (Some(in_use), Some(signal), Some(ssid)) = (fields.next(), fields.next(), fields.next()) else {
+        let mut fields = line.splitn(4, ':');
+        let (Some(in_use), Some(signal), Some(security), Some(ssid)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
             continue;
         };
         let ssid = ssid.replace("\\:", ":").replace("\\\\", "\\");
@@ -228,6 +232,8 @@ fn parse_wifi(text: &str) -> Vec<WifiNetwork> {
             ssid,
             signal,
             active: in_use == "*",
+            // OWE encrypts without a password.
+            secure: !matches!(security, "" | "--" | "OWE"),
         };
         match networks.iter_mut().find(|known| known.ssid == network.ssid) {
             Some(known) => {
@@ -240,6 +246,32 @@ fn parse_wifi(text: &str) -> Vec<WifiNetwork> {
     networks.sort_by_key(|network| (!network.active, std::cmp::Reverse(network.signal)));
     networks.truncate(WIFI_SHOWN);
     networks
+}
+
+/// Joins a network with what NetworkManager has kept for it; when that is not enough, as
+/// for a network with a password not joined before, Settings asks for what it needs.
+pub fn join_wifi(ssid: &str) {
+    let ssid = ssid.to_string();
+    std::thread::spawn(move || {
+        let joined = Command::new("nmcli")
+            .args(["device", "wifi", "connect", &ssid])
+            .output();
+        match joined {
+            Ok(output) if output.status.success() => return,
+            Ok(output) => tracing::warn!("nmcli: {}", String::from_utf8_lossy(&output.stderr).trim()),
+            Err(err) => {
+                tracing::warn!("nmcli: {err}");
+                return;
+            }
+        }
+        if let Err(err) = Command::new("nekoland-settings")
+            .env("NEKOLAND_SETTINGS_PAGE", "Wi-Fi")
+            .env("NEKOLAND_WIFI_JOIN", &ssid)
+            .status()
+        {
+            tracing::warn!("nekoland-settings: {err}");
+        }
+    });
 }
 
 /// Whether the computer has a Bluetooth adapter.
@@ -441,24 +473,27 @@ mod tests {
 
     #[test]
     fn wifi_networks_are_read_from_nmcli() {
-        let list = "*:72:Home\n:40:Home\n:80:Caf\\:e\n:20:\n:55:Office\n";
+        let list = "*:72:WPA2:Home\n:40:WPA2:Home\n:80:--:Caf\\:e\n:20::\n:55:WPA2 802.1X:Office\n";
         assert_eq!(
             parse_wifi(list),
             vec![
                 WifiNetwork {
                     ssid: "Home".into(),
                     signal: 72,
-                    active: true
+                    active: true,
+                    secure: true
                 },
                 WifiNetwork {
                     ssid: "Caf:e".into(),
                     signal: 80,
-                    active: false
+                    active: false,
+                    secure: false
                 },
                 WifiNetwork {
                     ssid: "Office".into(),
                     signal: 55,
-                    active: false
+                    active: false,
+                    secure: true
                 },
             ]
         );
