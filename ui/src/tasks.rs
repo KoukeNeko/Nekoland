@@ -4,7 +4,7 @@
 //! 結束 asks an application to quit, or a process to end; 強制結束 kills it.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
@@ -219,6 +219,16 @@ fn ranks(entries: &[Entry], by: Resource) -> HashMap<String, usize> {
         .collect()
 }
 
+/// 已開機 and how long, to the minute under a day and to the hour beyond.
+fn uptime_text(seconds: u64) -> String {
+    let (days, hours, minutes) = (seconds / 86_400, seconds / 3_600 % 24, seconds / 60 % 60);
+    match (days, hours) {
+        (0, 0) => format!("已開機 {minutes} 分鐘"),
+        (0, _) => format!("已開機 {hours} 小時 {minutes} 分鐘"),
+        _ => format!("已開機 {days} 天 {hours} 小時"),
+    }
+}
+
 fn amount_text(resource: Resource, amount: f64) -> String {
     match resource {
         Resource::Cpu => format!("{amount:.1}%"),
@@ -354,8 +364,18 @@ struct Row {
     name: gtk::Label,
     tag: gtk::Label,
     force: gtk::Button,
-    /// Each resource's bar, its length as a share of the longest, and its amount.
-    cells: Vec<(gtk::DrawingArea, Rc<Cell<f64>>, gtk::Label)>,
+    cells: Vec<Amount>,
+}
+
+/// A resource's cell in a row: its amount over a bar as long as its share of the longest.
+struct Amount {
+    bar: gtk::DrawingArea,
+    label: gtk::Label,
+    /// The share drawn, the one it moves from, and the one it moves to, while the bars move
+    /// to another resource.
+    shown: Rc<Cell<f64>>,
+    from: Cell<f64>,
+    to: Cell<f64>,
 }
 
 /// The pane with the selected row's details.
@@ -363,11 +383,23 @@ struct Info {
     root: gtk::Box,
     icon: gtk::Image,
     name: gtk::Label,
-    /// PID, 程序, 執行緒, 使用者, 開始時間, 路徑: each title and value.
+    /// Each of FACTS: its title and value.
     facts: Vec<(gtk::Label, gtk::Label)>,
 }
 
-const FACTS: [&str; 6] = ["PID", "程序", "執行緒", "使用者", "開始時間", "路徑"];
+const FACTS: [&str; 9] = [
+    "PID",
+    "程序",
+    "執行緒",
+    "使用者",
+    "開始時間",
+    "路徑",
+    "命令列",
+    "連接埠",
+    "開啟的檔案",
+];
+/// The open files listed; the rest are counted.
+const FILES_SHOWN: usize = 20;
 
 impl Info {
     fn new() -> Self {
@@ -437,8 +469,11 @@ struct Tasks {
     meters: Vec<Meter>,
     columns: Vec<gtk::Label>,
     count: gtk::Label,
+    uptime: gtk::Label,
     info: Info,
     sort: Cell<Resource>,
+    /// The bars moving from one resource to another.
+    tween: OnceCell<adw::TimedAnimation>,
     rows: RefCell<HashMap<String, Row>>,
     entries: RefCell<HashMap<String, Entry>>,
     ranks: RefCell<HashMap<String, usize>>,
@@ -556,15 +591,16 @@ impl Tasks {
         header.pack_end(&more);
         header.pack_end(&end);
 
-        let count = gtk::Label::builder()
-            .xalign(0.0)
-            .css_classes(["tm-status"])
-            .build();
+        let count = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+        let uptime = gtk::Label::builder().xalign(1.0).build();
+        let status = gtk::Box::builder().css_classes(["tm-status"]).build();
+        status.append(&count);
+        status.append(&uptime);
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.add_top_bar(&meter_row);
         view.set_content(Some(&split));
-        view.add_bottom_bar(&count);
+        view.add_bottom_bar(&status);
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -575,7 +611,10 @@ impl Tasks {
             .height_request(400)
             .content(&view)
             .build();
-        search.set_key_capture_widget(Some(&window));
+        // Not typed into from anywhere in the window: capturing keys keeps the field's
+        // text input on, and with it on, the window's menus close as soon as they open.
+        app.set_accels_for_action("win.search", &["<Control>f"]);
+        app.set_accels_for_action("win.info", &["<Control>i"]);
 
         let procs = proc::read_procs();
         let tasks = Rc::new(Self {
@@ -586,8 +625,10 @@ impl Tasks {
             meters,
             columns,
             count,
+            uptime,
             info,
             sort: Cell::new(Resource::Cpu),
+            tween: OnceCell::new(),
             rows: RefCell::default(),
             entries: RefCell::default(),
             ranks: RefCell::default(),
@@ -633,10 +674,18 @@ impl Tasks {
             ),
         );
         tasks.window.present();
+        GtkWindowExt::set_focus(&tasks.window, gtk::Widget::NONE);
         tasks
     }
 
     fn connect(self: &Rc<Self>) {
+        let moved = adw::CallbackAnimationTarget::new(glib::clone!(
+            #[weak(rename_to = tasks)]
+            self,
+            move |progress| tasks.move_bars(progress)
+        ));
+        let tween = adw::TimedAnimation::new(&self.list, 0.0, 1.0, 200, moved);
+        let _ = self.tween.set(tween);
         for (resource, meter) in RESOURCES.iter().zip(&self.meters) {
             let Some(toggle) = meter.root.downcast_ref::<gtk::ToggleButton>() else {
                 continue;
@@ -714,7 +763,7 @@ impl Tasks {
         self.search.connect_search_changed(glib::clone!(
             #[weak(rename_to = tasks)]
             self,
-            move |_| tasks.list.invalidate_filter()
+            move |_| tasks.filter()
         ));
         self.split.connect_show_sidebar_notify(glib::clone!(
             #[weak(rename_to = tasks)]
@@ -733,10 +782,23 @@ impl Tasks {
                 click.set_state(gtk::EventSequenceState::Claimed);
                 tasks.list.select_row(Some(&row));
                 let popover = gtk::PopoverMenu::from_model(Some(&menu(true)));
-                popover.set_parent(&tasks.list);
+                // On the box around the list, as a list box gives a popover no place.
+                let Some(content) = tasks.split.content() else {
+                    return;
+                };
+                let point = tasks
+                    .list
+                    .compute_point(&content, &gtk::graphene::Point::new(x as f32, y as f32))
+                    .unwrap_or_else(|| gtk::graphene::Point::new(x as f32, y as f32));
+                popover.set_parent(&content);
                 popover.set_has_arrow(false);
                 popover.set_halign(gtk::Align::Start);
-                popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                popover.set_pointing_to(Some(&gdk::Rectangle::new(
+                    point.x() as i32,
+                    point.y() as i32,
+                    1,
+                    1,
+                )));
                 popover.connect_closed(|popover| {
                     // Unparented once its action has run, as closing comes before it.
                     let popover = popover.clone();
@@ -782,6 +844,15 @@ impl Tasks {
         self.window.add_action(&end);
         self.window.add_action(&force);
         self.window.add_action(&info);
+        let search = gio::SimpleAction::new("search", None);
+        search.connect_activate(glib::clone!(
+            #[weak(rename_to = tasks)]
+            self,
+            move |_, _| {
+                tasks.search.grab_focus();
+            }
+        ));
+        self.window.add_action(&search);
     }
 
     /// Reads /proc and the compositor's windows again, and shows what changed.
@@ -828,6 +899,8 @@ impl Tasks {
             .map(|entry| entry.pids.len())
             .sum();
         self.count.set_label(&format!("{processes} 個程序"));
+        self.uptime
+            .set_label(&proc::uptime().map(uptime_text).unwrap_or_default());
         self.ranks.replace(ranks(&list, self.sort.get()));
         self.before.replace((
             procs.into_iter().map(|proc| (proc.pid, proc)).collect(),
@@ -856,7 +929,7 @@ impl Tasks {
             .replace(list.into_iter().map(|entry| (entry.key.clone(), entry)).collect());
         self.show_amounts();
         self.list.invalidate_sort();
-        self.list.invalidate_filter();
+        self.filter();
         self.list.invalidate_headers();
         self.show_selection();
     }
@@ -897,7 +970,7 @@ impl Tasks {
                 } else {
                     "pan-end-symbolic"
                 });
-                tasks.list.invalidate_filter();
+                tasks.filter();
             }
         ));
         if entry.parent.is_some() {
@@ -944,9 +1017,9 @@ impl Tasks {
         let cells = RESOURCES
             .iter()
             .map(|_| {
-                let length = Rc::new(Cell::new(0.0));
+                let shown = Rc::new(Cell::new(0.0));
                 let bar = gtk::DrawingArea::new();
-                let share = length.clone();
+                let share = shown.clone();
                 bar.set_draw_func(move |bar, cr, width, height| {
                     let length = width as f64 * share.get();
                     if length < 1.0 {
@@ -977,7 +1050,13 @@ impl Tasks {
                     .build();
                 cell.add_overlay(&amount);
                 line.append(&cell);
-                (bar, length, amount)
+                Amount {
+                    bar,
+                    label: amount,
+                    shown,
+                    from: Cell::new(0.0),
+                    to: Cell::new(0.0),
+                }
             })
             .collect();
         let revealer = gtk::Revealer::builder()
@@ -1010,6 +1089,10 @@ impl Tasks {
             .map(|entry| entry.amount(sort))
             .fold(0.0, f64::max);
         let info_shown = self.split.shows_sidebar();
+        let moving = self
+            .tween
+            .get()
+            .is_some_and(|tween| tween.state() == adw::AnimationState::Playing);
         let ended = self.ended.borrow();
         for (key, row) in self.rows.borrow().iter() {
             let Some(entry) = entries.get(key) else { continue };
@@ -1035,16 +1118,29 @@ impl Tasks {
                     .as_ref()
                     .is_some_and(|parent| ended.contains_key(parent));
             row.revealer.set_reveal_child(!hidden);
-            for (resource, (bar, length, amount)) in RESOURCES.iter().zip(&row.cells) {
-                amount.set_label(&amount_text(*resource, entry.amount(*resource)));
+            for (resource, cell) in RESOURCES.iter().zip(&row.cells) {
+                cell.label
+                    .set_label(&amount_text(*resource, entry.amount(*resource)));
                 let share = if *resource == sort && longest > 0.0 {
                     entry.amount(*resource) / longest
                 } else {
                     0.0
                 };
-                if length.replace(share) != share {
-                    bar.queue_draw();
+                cell.to.set(share);
+                if !moving && cell.shown.replace(share) != share {
+                    cell.bar.queue_draw();
                 }
+            }
+        }
+    }
+
+    /// The bars `progress` of the way from the resource they showed to the one they show.
+    fn move_bars(&self, progress: f64) {
+        for row in self.rows.borrow().values() {
+            for cell in &row.cells {
+                let (from, to) = (cell.from.get(), cell.to.get());
+                cell.shown.set(from + (to - from) * progress);
+                cell.bar.queue_draw();
             }
         }
     }
@@ -1064,7 +1160,19 @@ impl Tasks {
         }
         let list: Vec<Entry> = self.entries.borrow().values().cloned().collect();
         self.ranks.replace(ranks(&list, sort));
+        for row in self.rows.borrow().values() {
+            for cell in &row.cells {
+                cell.from.set(cell.shown.get());
+            }
+        }
+        let tween = self.tween.get();
+        if let Some(tween) = tween {
+            tween.reset();
+        }
         self.show_amounts();
+        if let Some(tween) = tween {
+            tween.play();
+        }
         self.list.invalidate_sort();
         self.list.invalidate_headers();
     }
@@ -1089,6 +1197,15 @@ impl Tasks {
                 && entries
                     .values()
                     .any(|child| child.parent.as_deref() == Some(key) && matches(child)))
+    }
+
+    /// Shows only the rows `shows` keeps, and lets go of a selected row that is now
+    /// hidden, so that 結束 never ends what cannot be seen.
+    fn filter(&self) {
+        self.list.invalidate_filter();
+        if self.selected().is_some_and(|key| !self.shows(&key)) {
+            self.list.unselect_all();
+        }
     }
 
     fn selected(&self) -> Option<String> {
@@ -1144,6 +1261,26 @@ impl Tasks {
                 .format("%-m月%-d日 %H:%M")
                 .ok()
         });
+        let (mut files, sockets): (Vec<String>, Vec<u64>) =
+            entry.pids.iter().map(|pid| proc::open_files(*pid)).fold(
+                (Vec::new(), Vec::new()),
+                |(mut files, mut sockets), (more, others)| {
+                    files.extend(more);
+                    sockets.extend(others);
+                    (files, sockets)
+                },
+            );
+        files.sort();
+        files.dedup();
+        let listening = if sockets.is_empty() {
+            HashMap::new()
+        } else {
+            proc::listening_ports()
+        };
+        let mut ports: Vec<&String> = sockets.iter().filter_map(|inode| listening.get(inode)).collect();
+        ports.sort();
+        ports.dedup();
+        let ports: Vec<&str> = ports.into_iter().map(String::as_str).collect();
         let path = std::fs::read_link(format!("/proc/{}/exe", entry.main))
             .ok()
             .map(|path| path.display().to_string());
@@ -1154,6 +1291,15 @@ impl Tasks {
             main.and_then(|main| proc::user_name(main.uid)),
             started.map(|started| started.to_string()),
             path,
+            proc::command_line(entry.main),
+            (!ports.is_empty()).then(|| ports.join("、")),
+            (!files.is_empty()).then(|| {
+                let mut shown = files[..files.len().min(FILES_SHOWN)].join("\n");
+                if files.len() > FILES_SHOWN {
+                    shown.push_str(&format!("\n另 {} 個", files.len() - FILES_SHOWN));
+                }
+                shown
+            }),
         ];
         for ((title, label), value) in self.info.facts.iter().zip(values) {
             title.set_visible(value.is_some());
@@ -1226,6 +1372,9 @@ impl Tasks {
     fn collapse(&self, entry: &Entry) {
         self.ended.borrow_mut().insert(entry.key.clone(), Instant::now());
         self.list.unselect_all();
+        // Left on the list, the focus would select the next row it lands on, which Delete
+        // would then end.
+        GtkWindowExt::set_focus(&self.window, gtk::Widget::NONE);
         let memory_total = self.before.borrow().1.memory_total.max(1) as f64;
         self.meters[0].drop_by(entry.cpu);
         self.meters[1].drop_by(entry.memory as f64 / memory_total * 100.0);
@@ -1352,6 +1501,13 @@ mod tests {
             memory,
             io: Some(ticks * 10),
         }
+    }
+
+    #[test]
+    fn uptime_is_told_in_days_hours_or_minutes() {
+        assert_eq!(uptime_text(59), "已開機 0 分鐘");
+        assert_eq!(uptime_text(3 * 3_600 + 12 * 60), "已開機 3 小時 12 分鐘");
+        assert_eq!(uptime_text(4 * 86_400 + 3 * 3_600 + 59), "已開機 4 天 3 小時");
     }
 
     #[test]

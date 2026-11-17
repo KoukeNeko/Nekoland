@@ -209,6 +209,91 @@ pub fn owners<'a>(procs: &[Proc], windows: &'a HashMap<i32, String>) -> HashMap<
         .collect()
 }
 
+/// The command a process was started with, its arguments between spaces.
+pub fn command_line(pid: i32) -> Option<String> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let words: Vec<String> = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|word| !word.is_empty())
+        .map(|word| String::from_utf8_lossy(word).into_owned())
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// What a process has open: the files, by path, and the inodes of its sockets. Empty for
+/// another user's process, whose descriptors cannot be read.
+pub fn open_files(pid: i32) -> (Vec<String>, Vec<u64>) {
+    let mut files = Vec::new();
+    let mut sockets = Vec::new();
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return (files, sockets);
+    };
+    for fd in fds.flatten() {
+        let Ok(target) = std::fs::read_link(fd.path()) else {
+            continue;
+        };
+        let target = target.to_string_lossy();
+        if let Some(inode) = target
+            .strip_prefix("socket:[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            sockets.extend(inode.parse::<u64>().ok());
+        } else if is_named_file(&target) {
+            files.push(target.into_owned());
+        }
+    }
+    files.sort();
+    files.dedup();
+    (files, sockets)
+}
+
+/// Whether a descriptor's target is a file with a name: not a device, a deleted file, or
+/// memory with a name such as `/memfd:…` or `/dmabuf:`.
+fn is_named_file(target: &str) -> bool {
+    let first = target.split('/').nth(1).unwrap_or_default();
+    target.starts_with('/') && first != "dev" && !first.contains(':') && !target.ends_with(" (deleted)")
+}
+
+/// The ports sockets listen on, by the socket's inode: `TCP 631`, `UDP 5353`.
+pub fn listening_ports() -> HashMap<u64, String> {
+    let mut ports = HashMap::new();
+    for (file, protocol) in [("tcp", "TCP"), ("tcp6", "TCP"), ("udp", "UDP"), ("udp6", "UDP")] {
+        let table = std::fs::read_to_string(format!("/proc/net/{file}")).unwrap_or_default();
+        ports.extend(parse_listening(&table, protocol));
+    }
+    ports
+}
+
+/// The sockets of a /proc/net table that listen: TCP ones in the LISTEN state (0A), and
+/// UDP ones bound with no peer (07).
+fn parse_listening(table: &str, protocol: &str) -> Vec<(u64, String)> {
+    let listening = if protocol == "TCP" { "0A" } else { "07" };
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.get(3) != Some(&listening) {
+                return None;
+            }
+            let port = u16::from_str_radix(fields.get(1)?.rsplit(':').next()?, 16).ok()?;
+            let inode = fields.get(9)?.parse::<u64>().ok().filter(|inode| *inode != 0)?;
+            Some((inode, format!("{protocol} {port}")))
+        })
+        .collect()
+}
+
+/// How long the machine has been running, in seconds.
+pub fn uptime() -> Option<u64> {
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    uptime
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()
+        .map(|seconds| seconds as u64)
+}
+
 /// A user's login name, from /etc/passwd.
 pub fn user_name(uid: u32) -> Option<String> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
@@ -258,6 +343,30 @@ mod tests {
         let disks = "   8       0 sda 10 0 4 0 5 0 6 0 0 0 0\n   8       1 sda1 10 0 4 0 5 0 6 0 0 0 0\n";
         assert_eq!(parse_diskstats(disks, |name| name == "sda"), 10 * 512);
         assert_eq!(parse_io("rchar: 9\nread_bytes: 4096\nwrite_bytes: 8192\n"), 12288);
+    }
+
+    #[test]
+    fn only_files_with_names_count_as_open_files() {
+        assert!(is_named_file("/home/neko/notes.txt"));
+        assert!(!is_named_file("/dev/null"));
+        assert!(!is_named_file("/dmabuf:"));
+        assert!(!is_named_file("/memfd:allocation fd (deleted)"));
+        assert!(!is_named_file("/home/neko/.local/share/x.log (deleted)"));
+        assert!(!is_named_file("anon_inode:[eventfd]"));
+    }
+
+    #[test]
+    fn listening_sockets_are_read_with_their_ports() {
+        let tcp =
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:0277 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2345 1
+   1: 0100007F:9C40 0100007F:0277 01 00000000:00000000 00:00000000 00000000  1000        0 6789 1
+";
+        assert_eq!(parse_listening(tcp, "TCP"), [(2345, "TCP 631".to_string())]);
+        let udp = "  sl  local_address rem_address   st
+ 10: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 4242 2
+";
+        assert_eq!(parse_listening(udp, "UDP"), [(4242, "UDP 5353".to_string())]);
     }
 
     #[test]
