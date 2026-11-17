@@ -26,7 +26,7 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
-    network-manager wpasupplicant network-manager-openvpn
+    network-manager wpasupplicant network-manager-openvpn bluez
     pipewire pipewire-pulse wireplumber brightnessctl
     grub-common python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator

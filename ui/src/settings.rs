@@ -4,6 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod alert;
+mod bluetooth;
 mod focus;
 mod network;
 mod themes;
@@ -299,6 +300,7 @@ fn build(app: &adw::Application) {
         Rc::new(move |name: &str, config: &Config| -> gtk::Widget {
             match name {
                 "Wi-Fi" => wifi::wifi_page().upcast(),
+                "藍牙" => bluetooth::bluetooth_page().upcast(),
                 "網路" => network::network_page().upcast(),
                 "外觀" => appearance_page(config, &look).upcast(),
                 "字型" => fonts_page(&look).upcast(),
@@ -313,6 +315,7 @@ fn build(app: &adw::Application) {
                 "聲音" => sound_page().upcast(),
                 "鍵盤" => keyboard_page(config).upcast(),
                 "滑鼠與觸控板" => mouse_page(config).upcast(),
+                "日期與時間" => date_time_page().upcast(),
                 "預設應用程式" => default_apps_page(config).upcast(),
                 "啟動項目" => startup_page(&autostart).upcast(),
                 "遠端桌面" => remote_page().upcast(),
@@ -328,6 +331,7 @@ fn build(app: &adw::Application) {
         wifi::has_wifi()
             .then_some(("Wi-Fi", "network-wireless-symbolic"))
             .into_iter()
+            .chain(bluetooth::has_bluetooth().then_some(("藍牙", "bluetooth-symbolic")))
             .chain([("網路", "network-wired-symbolic")])
             .collect(),
         vec![
@@ -350,6 +354,7 @@ fn build(app: &adw::Application) {
             ("滑鼠與觸控板", "input-mouse-symbolic"),
         ],
         vec![
+            ("日期與時間", "preferences-system-time-symbolic"),
             ("預設應用程式", "preferences-desktop-apps-symbolic"),
             ("啟動項目", "system-run-symbolic"),
             ("遠端桌面", "preferences-desktop-remote-desktop-symbolic"),
@@ -3965,6 +3970,17 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
     });
     display.add(&scale);
 
+    // brightnessctl says "device,class,current,percent%,max"; a display without a backlight has none.
+    let brightness = output("brightnessctl", &["--class=backlight", "--machine-readable", "info"])
+        .and_then(|info| info.lines().next()?.split(',').nth(3)?.strip_suffix('%')?.parse::<f64>().ok());
+    if let Some(brightness) = brightness {
+        // Not down to 0, which leaves the screen black with no way to see it back up.
+        display.add(&scale_row("亮度", brightness / 100.0, (0.05, 1.0, 0.05), percent, |level| {
+            run("brightnessctl", &["--class=backlight", "set", &format!("{:.0}%", level * 100.0)]);
+        }));
+    }
+
+
     let night = adw::PreferencesGroup::new();
     let shift = choice_row(config, "夜覽", "night_shift", &NIGHT_SHIFT, &["關閉", "開啟", "排程"]);
     let from = time_row(config, "開始", "night_shift_from");
@@ -4148,6 +4164,115 @@ fn remote_page() -> adw::PreferencesPage {
         }
     });
     page
+}
+
+/// What `timedatectl show` says: the time zone, and whether the clock is set over the network
+/// and can be.
+fn time_settings() -> (String, bool, bool) {
+    let shown = output("timedatectl", &["show"]).unwrap_or_default();
+    let get = |key: &str| field(&shown, key, '=').unwrap_or_default();
+    (get("Timezone"), get("NTP") == "yes", get("CanNTP") == "yes")
+}
+
+/// The time zone and whether the clock sets itself, both systemd's, changed as root.
+fn date_time_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let rows = group("");
+    page.add(&rows);
+    let automatic = adw::SwitchRow::builder().title("自動設定日期與時間").build();
+    let zones: Vec<String> = output("timedatectl", &["list-timezones"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let labels: Vec<&str> = zones.iter().map(String::as_str).collect();
+    let zone = adw::ComboRow::builder()
+        .title("時區")
+        .model(&gtk::StringList::new(&labels))
+        .enable_search(true)
+        .build();
+    zone.set_expression(Some(gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        gtk::Expression::NONE,
+        "string",
+    )));
+    rows.add(&automatic);
+    rows.add(&zone);
+    let zones = Rc::new(zones);
+
+    // Set while the rows are made to show what systemd says, which is not a change to make.
+    let showing = Rc::new(Cell::new(false));
+    let show = Rc::new(glib::clone!(
+        #[strong]
+        zones,
+        #[strong]
+        showing,
+        #[weak]
+        automatic,
+        #[weak]
+        zone,
+        move || {
+            let (current, ntp, can_ntp) = time_settings();
+            showing.set(true);
+            automatic.set_active(ntp);
+            automatic.set_visible(can_ntp);
+            if let Some(index) = zones.iter().position(|known| *known == current) {
+                zone.set_selected(index as u32);
+            }
+            automatic.set_sensitive(true);
+            zone.set_sensitive(true);
+            showing.set(false);
+        }
+    ));
+    show();
+    // Turned down or failed, the rows go back to what systemd says.
+    let change = {
+        let show = show.clone();
+        move |reason: &str, args: &[&str]| {
+            let show = show.clone();
+            let what = args.join(" ");
+            match sudo(reason, args, gio::SubprocessFlags::NONE) {
+                Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
+                    if let Err(err) = result {
+                        eprintln!("{what}: {err}");
+                    }
+                    show();
+                }),
+                Err(err) => {
+                    eprintln!("sudo: {err}");
+                    show();
+                }
+            }
+        }
+    };
+    let change = Rc::new(change);
+    automatic.connect_active_notify(glib::clone!(
+        #[strong]
+        showing,
+        #[strong]
+        change,
+        move |row| {
+            if showing.get() {
+                return;
+            }
+            row.set_sensitive(false);
+            let on = if row.is_active() { "true" } else { "false" };
+            change("變更日期與時間的設定方式", &["timedatectl", "set-ntp", on]);
+        }
+    ));
+    zone.connect_selected_notify(move |row| {
+        if showing.get() {
+            return;
+        }
+        let Some(name) = zones.get(row.selected() as usize) else {
+            return;
+        };
+        row.set_sensitive(false);
+        change("變更時區", &["timedatectl", "set-timezone", name]);
+    });
+    page
+}
+
 /// The disks that hold the system and people's files, with how full each is; the boot and
 /// EFI partitions are left out.
 fn storage_group() -> Option<adw::PreferencesGroup> {
