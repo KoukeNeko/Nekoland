@@ -142,20 +142,31 @@ checkbutton > radio:not(:checked) {
   box-shadow: inset 0 0 0 1.5px var(--nekoland-ink-3);
 }
 
-/* One of a few: the chosen one solid ink. */
+/* One of a few: the chosen one solid ink. The group's whole shape is here, as Ubuntu's
+ * libadwaita leaves the group out of the stylesheets it loads under Yaru. */
 toggle-group {
   ---group-padding: 2px;
+  padding: 2px;
   border-radius: 8px;
   background: var(--nekoland-fill);
   box-shadow: none;
 }
 toggle-group > toggle {
+  min-width: 28px;
   min-height: 28px;
   border-radius: 6px;
   color: var(--nekoland-ink-2);
   font-weight: 400;
 }
+toggle-group > toggle.text-button {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+toggle-group > separator {
+  margin: 4px 1px;
+}
 toggle-group > toggle:checked {
+  background-color: var(--nekoland-ink);
   color: var(--nekoland-on-ink);
   font-weight: 500;
   box-shadow: none;
