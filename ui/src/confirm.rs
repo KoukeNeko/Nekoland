@@ -44,15 +44,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = slint::quit_event_loop();
     });
     let command: Vec<String> = command.iter().map(|part| part.to_string()).collect();
+    let refused = format!("無法{action}");
+    let weak = dialog.as_weak();
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     dialog.on_confirmed(move || {
-        if let Err(err) = std::process::Command::new(&command[0])
-            .args(&command[1..])
-            .spawn()
-        {
-            eprintln!("{}: {err}", command.join(" "));
+        if running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
         }
-        let _ = slint::quit_event_loop();
+        let (command, refused, weak, running) = (command.clone(), refused.clone(), weak.clone(), running.clone());
+        // Waited for away from the dialog, so that emptying a large trash leaves it drawn.
+        std::thread::spawn(move || {
+            let failure = match std::process::Command::new(&command[0]).args(&command[1..]).output() {
+                Ok(output) if output.status.success() => None,
+                Ok(output) => Some(reason(&String::from_utf8_lossy(&output.stderr))),
+                Err(err) => Some(err.to_string()),
+            };
+            let _ = slint::invoke_from_event_loop(move || match failure {
+                None => {
+                    let _ = slint::quit_event_loop();
+                }
+                // Said where it was asked, as systemd refuses while updates are installed.
+                Some(failure) => {
+                    eprintln!("{}: {failure}", command.join(" "));
+                    if let Some(dialog) = weak.upgrade() {
+                        dialog.set_question(refused.into());
+                        dialog.set_consequence(failure.into());
+                    }
+                    running.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        });
     });
     dialog.run()?;
     Ok(())
+}
+
+/// Why a command failed, from what it printed: in words for what is only waited out.
+fn reason(stderr: &str) -> String {
+    if stderr.contains("inhibitor") {
+        return "有程式正在進行不能中斷的工作，例如安裝更新。請稍後再試。".into();
+    }
+    stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("未知的錯誤").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reason;
+
+    #[test]
+    fn a_blocked_restart_says_to_wait() {
+        let stderr = "Call to Reboot failed: Operation denied due to active block inhibitor\n";
+        assert!(reason(stderr).contains("請稍後再試"));
+        assert_eq!(reason("first\nCall failed: Access denied\n\n"), "Call failed: Access denied");
+    }
 }
