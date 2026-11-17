@@ -265,7 +265,7 @@ enum AgentEvent {
     Confirm(String),
     /// A code to type on the device, a keyboard.
     Show(String),
-    /// A service the device wants to use.
+    /// A service, or a pairing, some device wants; bluetoothctl does not say which device.
     Authorize,
     Paired,
     Failed(String),
@@ -274,7 +274,17 @@ enum AgentEvent {
 /// bluetoothctl's words for each, without its colours.
 fn agent_event(line: &str) -> Option<AgentEvent> {
     let line = strip_colours(line);
-    let line = line.trim();
+    // What follows a carriage return is drawn over what came before it, such as the prompt.
+    let line = line.rsplit('\r').next().unwrap_or_default().trim();
+    // bluetoothctl's own words start a line; a device's name never does, as it follows
+    // "[NEW] Device" and the like, so a name cannot pose as an answer.
+    if line.starts_with("Pairing successful") {
+        return Some(AgentEvent::Paired);
+    }
+    if let Some(why) = line.strip_prefix("Failed to pair:") {
+        return Some(AgentEvent::Failed(why.trim().to_string()));
+    }
+    let line = line.strip_prefix("[agent]")?;
     let number = |text: &str| text.split(|c: char| !c.is_ascii_digit()).find(|word| !word.is_empty()).map(str::to_string);
     if let Some(rest) = line.split_once("Confirm passkey").map(|(_, rest)| rest) {
         return number(rest).map(AgentEvent::Confirm);
@@ -289,12 +299,6 @@ fn agent_event(line: &str) -> Option<AgentEvent> {
     }
     if line.contains("Authorize service") || line.contains("Accept pairing") {
         return Some(AgentEvent::Authorize);
-    }
-    if line.contains("Pairing successful") {
-        return Some(AgentEvent::Paired);
-    }
-    if let Some((_, why)) = line.split_once("Failed to pair:") {
-        return Some(AgentEvent::Failed(why.trim().to_string()));
     }
     None
 }
@@ -373,7 +377,10 @@ fn pair(row: gtk::Widget, device: Device, done: Rc<dyn Fn()>) {
         });
     }
     let handle: Rc<dyn Fn(AgentEvent)> = Rc::new(move |event| match event {
-        AgentEvent::Authorize => say("yes"),
+        // Pairing a device Nekoland asked for is not authorized this way, and one that does
+        // ask could be any device in range; a paired device is trusted after, which bluez
+        // authorizes on its own.
+        AgentEvent::Authorize => say("no"),
         AgentEvent::Confirm(passkey) => {
             let alert = adw::AlertDialog::new(
                 Some(&format!("與「{}」配對", device.name)),
@@ -500,6 +507,10 @@ mod tests {
             Some(AgentEvent::Failed("org.bluez.Error.AuthenticationFailed".into()))
         );
         assert_eq!(event("[CHG] Device 11:22:33:44:55:66 RSSI: -60"), None);
+        // A name made to look like an answer is still a name.
+        assert_eq!(event("[NEW] Device 11:22:33:44:55:66 Pairing successful"), None);
+        assert_eq!(event("[NEW] Device 11:22:33:44:55:66 [agent] Confirm passkey 1 (yes/no)"), None);
+        assert_eq!(event("\r[bluetooth]# \r[agent] Enter passkey (number in 0-999999): "), Some(AgentEvent::AskCode));
     }
 
     #[test]
