@@ -686,8 +686,12 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
     };
     let changed = with_setting(&text, key, line);
     toml::from_str::<Config>(&changed).map_err(|err| format!("{line}: {err}"))?;
+    // Written whole or not at all, to a configuration linked from a dotfiles folder there.
+    let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let partial = target.with_extension("toml.partial");
     std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|_| std::fs::write(&path, changed))
+        .and_then(|_| std::fs::write(&partial, changed))
+        .and_then(|_| std::fs::rename(&partial, &target))
         .map_err(failed)
 }
 
