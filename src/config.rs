@@ -706,11 +706,15 @@ fn with_setting(text: &str, key: &str, line: &str) -> String {
         }
         let (name, value) = current.split_once('=').unwrap_or((current, ""));
         if name.trim() == key && !replaced {
-            // An array that goes on past this line ends at the line closing it.
-            let mut rest = current.to_string();
-            while value.trim_start().starts_with('[') && !rest.trim_end().ends_with(']') {
+            // An array that goes on past this line ends at the line closing it: where what
+            // was taken reads as a whole setting, with a comment after it or not.
+            let mut setting = current.to_string();
+            while value.trim_start().starts_with('[') && setting.parse::<toml::Table>().is_err() {
                 match lines.next() {
-                    Some(next) => rest = next.to_string(),
+                    Some(next) => {
+                        setting.push('\n');
+                        setting.push_str(next);
+                    }
                     None => break,
                 }
             }
@@ -764,6 +768,20 @@ mod tests {
         assert_eq!(
             with_setting("terminal = \"foot\"\n", "dock", "dock = []"),
             "terminal = \"foot\"\ndock = []\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_after_an_array_keeps_the_lines_after_it() {
+        let text = "dock = [\"a\"]  # kept\nlock_after = 300\n";
+        assert_eq!(
+            with_setting(text, "dock", "dock = [\"b\"]"),
+            "dock = [\"b\"]\nlock_after = 300\n"
+        );
+        let text = "autostart = [\n    \"a\",\n    # the input method\n    \"b\",\n]  # login\nscale = 2\n";
+        assert_eq!(
+            with_setting(text, "autostart", "autostart = []"),
+            "autostart = []\nscale = 2\n"
         );
     }
 

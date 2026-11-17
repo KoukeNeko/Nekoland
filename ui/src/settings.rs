@@ -460,6 +460,8 @@ fn build(app: &adw::Application) {
         }
         let config = Config::load();
         remember_look(&config);
+        // The Dock adds and takes login items too; the list kept here is written back whole.
+        autostart.replace(config.autostart());
         let shown = stack.visible_child_name();
         let scrolled = shown
             .as_ref()
@@ -506,7 +508,7 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 11] = [
+const REBUILT_PAGES: [&str; 12] = [
     "外觀",
     "字型",
     "協助工具",
@@ -518,6 +520,7 @@ const REBUILT_PAGES: [&str; 11] = [
     "鍵盤",
     "滑鼠與觸控板",
     "預設應用程式",
+    "啟動項目",
 ];
 
 /// Whether the design language's look was on as Settings started, when GTK read it.
