@@ -304,6 +304,7 @@ fn build(app: &adw::Application) {
                 "協助工具" => accessibility_page(config).upcast(),
                 "隱私" => privacy_page().upcast(),
                 "桌面" => desktop_page(config, &autostart).upcast(),
+                "視窗" => windows_page(config).upcast(),
                 "懸停資訊" => hover_page(config).upcast(),
                 "顯示" => display_page(config).upcast(),
                 "電源" => power_page(config).upcast(),
@@ -335,6 +336,7 @@ fn build(app: &adw::Application) {
         ],
         vec![
             ("桌面", "user-desktop-symbolic"),
+            ("視窗", "preferences-desktop-multitasking-symbolic"),
             ("懸停資訊", "document-properties-symbolic"),
             ("顯示", "video-display-symbolic"),
             ("電源", "battery-level-100-symbolic"),
@@ -520,12 +522,13 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 12] = [
+const REBUILT_PAGES: [&str; 13] = [
     "外觀",
     "字型",
     "協助工具",
     "隱私",
     "桌面",
+    "視窗",
     "懸停資訊",
     "顯示",
     "電源",
@@ -824,37 +827,6 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     notices.add(&switch_row(config, "顯示預覽", "notification_previews"));
     page.add(&notices);
 
-    let windows = group("視窗");
-    for (title, key) in [
-        ("按兩下標題列", "action-double-click-titlebar"),
-        ("按中鍵標題列", "action-middle-click-titlebar"),
-        ("按右鍵標題列", "action-right-click-titlebar"),
-    ] {
-        let current = output("gsettings", &["get", WM_PREFERENCES, key]).unwrap_or_default();
-        let titlebar = adw::ComboRow::builder()
-            .title(title)
-            .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
-            // What Nekoland cannot do, GNOME's window menu or lowering, does nothing here.
-            .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(2) as u32)
-            .build();
-        titlebar.connect_selected_notify(move |row| {
-            if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
-                run("gsettings", &["set", WM_PREFERENCES, key, action]);
-            }
-        });
-        windows.add(&titlebar);
-    }
-    windows.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
-    windows.add(&switch_row(config, "拖到螢幕邊緣時並排", "edge_tiling"));
-    windows.add(&scale_row(
-        "並排間距",
-        config.number("window_gap", 0.0),
-        (0.0, 32.0, 2.0),
-        |gap| format!("{gap:.0} px"),
-        |gap| set(&format!("window_gap = {gap:.0}")),
-    ));
-    page.add(&windows);
-
     let corners = group("熱點");
     for (title, key) in [
         ("左上角", "hot_corner_top_left"),
@@ -1069,8 +1041,71 @@ fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
 
 /// The hover panel: when it shows, where, how it looks and which fields, a group each, as
 /// FinderHover's settings have them.
-fn hover_page(config: &Config) -> adw::PreferencesPage {
+/// The window arrangement shortcuts, as the compositor takes them, by what they do.
+const ARRANGE_SHORTCUTS: [(&str, &str); 10] = [
+    ("左半邊、右半邊", "Super ← →"),
+    ("上半部、下半部", "Super Alt ↑ ↓"),
+    ("四個角", "Super Alt U I J K"),
+    ("三分之一", "Super Alt D F G"),
+    ("三分之二", "Super Alt E T"),
+    ("最大化", "Super ↑"),
+    ("最大化高度", "Super Alt Shift ↑"),
+    ("置中", "Super Alt C"),
+    ("加大、縮小", "Super Alt = -"),
+    ("回到先前的大小", "Super ↓"),
+];
+
+fn windows_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
+
+    let titlebar = group("標題列");
+    for (title, key) in [
+        ("按兩下", "action-double-click-titlebar"),
+        ("按中鍵", "action-middle-click-titlebar"),
+        ("按右鍵", "action-right-click-titlebar"),
+    ] {
+        let current = output("gsettings", &["get", WM_PREFERENCES, key]).unwrap_or_default();
+        let row = adw::ComboRow::builder()
+            .title(title)
+            .model(&gtk::StringList::new(&["縮放", "最小化", "無"]))
+            // What Nekoland cannot do, GNOME's window menu or lowering, does nothing here.
+            .selected(TITLEBAR_ACTIONS.iter().position(|action| current.contains(action)).unwrap_or(2) as u32)
+            .build();
+        row.connect_selected_notify(move |row| {
+            if let Some(action) = TITLEBAR_ACTIONS.get(row.selected() as usize) {
+                run("gsettings", &["set", WM_PREFERENCES, key, action]);
+            }
+        });
+        titlebar.add(&row);
+    }
+    page.add(&titlebar);
+
+    let tiling = group("並排");
+    tiling.add(&switch_row(config, "拖到螢幕邊緣時並排", "edge_tiling"));
+    tiling.add(&scale_row(
+        "間距",
+        config.number("window_gap", 0.0),
+        (0.0, 32.0, 2.0),
+        |gap| format!("{gap:.0} px"),
+        |gap| set(&format!("window_gap = {gap:.0}")),
+    ));
+    page.add(&tiling);
+
+    let focus = group("焦點");
+    focus.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
+    page.add(&focus);
+
+    let shortcuts = group("鍵盤快速鍵");
+    for (title, keys) in ARRANGE_SHORTCUTS {
+        let row = adw::ActionRow::builder().title(title).build();
+        row.add_suffix(&gtk::Label::builder().label(keys).css_classes(["dim-label"]).build());
+        shortcuts.add(&row);
+    }
+    page.add(&shortcuts);
+    page
+}
+
+fn hover_page(config: &Config) -> adw::PreferencesPage {    let page = adw::PreferencesPage::new();
 
     let general = group("");
     let shown = switch_row(config, "顯示", "hover_info");

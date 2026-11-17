@@ -134,8 +134,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 - Settings, `nekoland-settings` from `ui/`, opened from the system menu, is a GTK and
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
-  be shown, the Dock, the menu bar, how long notifications stay, what double-clicking a
-  GTK title bar does, the hot corners and the wallpaper; its other pages set light or dark, the icon and
+  be shown, the Dock, the menu bar, how long notifications stay, the hot corners and the
+  wallpaper; its windows page sets what clicking a GTK title bar does, edge tiling, the gap
+  between tiled windows and focus following the pointer, and lists the shortcuts that arrange
+  windows; its other pages set light or dark, the icon and
   cursor themes, the display's resolution, refresh rate, scale and Night Shift, the
   fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
