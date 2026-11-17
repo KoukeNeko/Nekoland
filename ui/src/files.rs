@@ -29,7 +29,6 @@ macro_rules! on {
 
 mod alert;
 mod browse;
-mod dropdowns;
 mod focus;
 #[path = "files/info.rs"]
 mod info;
@@ -215,7 +214,6 @@ fn main() -> glib::ExitCode {
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
         }
-        dropdowns::drop_tails();
         app.set_menubar(Some(&menubar()));
         serve_file_manager(app);
         serve_hover(app);
