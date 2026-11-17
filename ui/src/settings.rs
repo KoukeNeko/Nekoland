@@ -4618,7 +4618,8 @@ fn rule_card(name: &str, body: &str) -> gtk::Widget {
     rule.upcast()
 }
 
-/// The construction of an icon, drawn as a sheet: the grid, the layer, and the light.
+/// The construction of an icon, drawn as a sheet: the grid, the layers, the light, and
+/// what a surface is and is not made of.
 const ICON_SHEET: &[u8] = include_bytes!("icon-sheet.svg");
 
 /// How Nekoland's icons are built, with the theme's own icons as the examples.
@@ -4626,7 +4627,7 @@ fn icons_section() -> gtk::Box {
     let sheet = gtk::Picture::builder()
         .can_shrink(true)
         .content_fit(gtk::ContentFit::Contain)
-        .height_request(312)
+        .height_request(416)
         .build();
     match gdk::Texture::from_bytes(&glib::Bytes::from_static(ICON_SHEET)) {
         Ok(drawing) => sheet.set_paintable(Some(&drawing)),
