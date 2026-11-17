@@ -211,6 +211,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");
             }
+            // The menu bar's question of dark or light started the portal before it could know
+            // the desktop's name, and it picks its backends once, as it starts: the file chooser
+            // would be GTK's.
+            config::spawn("systemctl --user try-restart xdg-desktop-portal.service");
         }
         if data.state.remote {
             // shortcut: text only, and xrdp's side is looked at twice a second; bridge the
