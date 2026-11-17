@@ -4,6 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod alert;
+mod dropdowns;
 mod focus;
 mod network;
 mod themes;
@@ -247,6 +248,7 @@ thread_local! {
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| dropdowns::drop_tails());
     app.connect_activate(build);
     let code = app.run();
     for monitor in SOUND_MONITOR.take().into_iter().chain(wifi::NETWORK_MONITORS.take()) {

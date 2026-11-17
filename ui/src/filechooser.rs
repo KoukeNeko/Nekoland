@@ -20,6 +20,7 @@ use gtk::{gdk, gio, glib};
 
 mod alert;
 mod browse;
+mod dropdowns;
 #[allow(dead_code)]
 #[path = "files/thumbs.rs"]
 mod thumbs;
@@ -103,6 +104,7 @@ fn main() -> glib::ExitCode {
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
         }
+        dropdowns::drop_tails();
     });
     match std::env::var(TRY_ENV) {
         Ok(kind) => app.connect_activate(move |app| try_one(app, &kind)),
