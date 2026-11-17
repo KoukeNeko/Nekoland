@@ -29,7 +29,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 xwayland swaylock swaybg foot
     fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3
-    libharfbuzz-bin at-spi2-core"
+    libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common"
 
 say "Installing packages"
 sudo true
@@ -86,6 +86,10 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
+
+# Other apps' icons on Nekoland's tile, for this user; run it again after installing apps.
+say "Restyling app icons"
+"$src/shell/conform-icons.py"
 
 config=${XDG_CONFIG_HOME:-$HOME/.config}/nekoland/config.toml
 if [ ! -e "$config" ]; then
