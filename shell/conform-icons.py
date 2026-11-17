@@ -280,7 +280,7 @@ def render(name, source, override):
         side = 78 * override.get("scale", 1.0)
         k = side / max(w, h)
         iw, ih = w * k, h * k
-        inner = f'<g filter="url(#cast)"><image x="{64 - iw / 2:.2f}" y="{62 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/></g>'
+        inner = f'<g filter="url(#cast)"><image x="{64 - iw / 2:.2f}" y="{64 - ih / 2:.2f}" width="{iw:.2f}" height="{ih:.2f}" href="data:image/png;base64,{data}"/></g>'
     # Every tile is lit from above: lighter at the top, darker at the foot, whatever its colour.
     top, fill = top or tile, "url(#bg)"
     gradient = (f'\n    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{mix(top, "#ffffff", .05)}"/>'
