@@ -182,6 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // selections in the compositor once other kinds of content are wanted across.
             config::spawn(include_str!("../shell/xrdp-clipboard.sh"));
         }
+        // The launcher's clipboard history; it ends with the display it watches.
+        config::spawn("wl-paste --type text --watch nekoland-launcher --remember-clipboard");
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         let wallpaper = config::start_wallpaper(config);

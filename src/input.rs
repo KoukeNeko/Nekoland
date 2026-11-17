@@ -16,7 +16,7 @@ use crate::{
     config,
     grabs::MoveSurfaceGrab,
     state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
-    windows::Side,
+    windows::{window_names, Side, LAUNCHER_APP_ID},
 };
 
 impl Nekoland {
@@ -372,6 +372,14 @@ impl Nekoland {
             Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
             Keysym::Return if logo => config::spawn(&self.config.terminal),
             Keysym::a if logo => self.show_apps(""),
+            // As Raycast opens: Alt+Space, which closes it again.
+            Keysym::space if alt && !(ctrl || logo || shift) => {
+                if focused.as_ref().is_some_and(|window| window_names(window).1 == LAUNCHER_APP_ID) {
+                    self.close_launcher_unless(None);
+                } else {
+                    config::spawn(&self.config.launcher);
+                }
+            }
             Keysym::l if logo => self.lock_screen(),
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),

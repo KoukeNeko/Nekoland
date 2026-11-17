@@ -7,14 +7,24 @@ use std::{
     path::PathBuf,
 };
 
-use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction};
+use smithay::reexports::calloop::{
+    generic::Generic,
+    timer::{TimeoutAction, Timer},
+    Interest, LoopHandle, Mode, PostAction,
+};
 
-use crate::CalloopData;
+use crate::{
+    windows::{is_managed, window_names, LAUNCHER_APP_ID},
+    CalloopData,
+};
 
 const SOCKET_ENV: &str = "NEKOLAND_SOCKET";
 // Longer than any command, a list of what the hover panel leaves out among them; a client
 // that sends more is dropped.
 const MAX_MESSAGE: u64 = 16 << 10;
+/// How long what the launcher asks of the window under it waits for the launcher to have
+/// gone and that window to have the keyboard again.
+const AFTER_LAUNCHER: std::time::Duration = std::time::Duration::from_millis(150);
 
 fn socket_path(display: &std::ffi::OsStr) -> Option<PathBuf> {
     let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
@@ -51,6 +61,7 @@ pub fn listen(handle: &LoopHandle<'static, CalloopData>, display: &std::ffi::OsS
 fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) -> std::io::Result<()> {
     stream.set_nonblocking(true)?;
     let mut message = Vec::new();
+    let later = handle.clone();
     handle
         .insert_source(Generic::new(stream, Interest::READ, Mode::Level), move |_, stream, data| {
             let mut chunk = [0; MAX_MESSAGE as usize];
@@ -67,6 +78,10 @@ fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) ->
                 }
             }
             let message = String::from_utf8_lossy(&message);
+            if let Some(command) = message.trim().strip_prefix("after-launcher ") {
+                after_launcher(&later, &mut data.state, command.to_string());
+                return Ok(PostAction::Remove);
+            }
             if let Some(reply) = run(&mut data.state, message.trim()) {
                 // A blocking write: replies are far smaller than the socket's buffer.
                 let _ = stream.set_nonblocking(false);
@@ -78,6 +93,54 @@ fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) ->
         })
         .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(())
+}
+
+/// `after-launcher COMMAND`: what the launcher asks of the window it was opened over, done
+/// once the launcher has closed and that window has the keyboard back.
+fn after_launcher(handle: &LoopHandle<'static, CalloopData>, state: &mut crate::Nekoland, command: String) {
+    state.close_launcher_unless(None);
+    let inserted = handle.insert_source(Timer::from_duration(AFTER_LAUNCHER), move |_, _, data| {
+        let state = &mut data.state;
+        match command.split_once(' ').unwrap_or((&command, "")) {
+            ("paste", _) => state.paste_into_active(),
+            ("menu-search", query) => state.search_menus(query),
+            ("window", action) => {
+                if !state.window_command(action) {
+                    tracing::warn!("unknown window command: {action}");
+                }
+            }
+            // `focus INDEX APP_ID`: one of the windows `windows` listed, if it is still there.
+            ("focus", which) => {
+                let (index, app_id) = which.split_once(' ').unwrap_or((which, ""));
+                let window = index
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| launcher_windows(state).into_iter().nth(index))
+                    .filter(|window| window_names(window).1 == app_id);
+                if let Some(window) = window {
+                    state.unminimize(&window);
+                    state.focus_window(&window);
+                }
+            }
+            _ => tracing::warn!("unknown message: after-launcher {command}"),
+        }
+        TimeoutAction::Drop
+    });
+    if let Err(err) = inserted {
+        tracing::warn!("after-launcher: {err}");
+    }
+}
+
+/// The windows the launcher can switch to, the topmost first and the minimized after.
+fn launcher_windows(state: &crate::Nekoland) -> Vec<smithay::desktop::Window> {
+    state
+        .space
+        .elements()
+        .rev()
+        .chain(state.minimized.iter().map(|(window, _)| window))
+        .filter(|window| is_managed(window) && window_names(window).1 != LAUNCHER_APP_ID)
+        .cloned()
+        .collect()
 }
 
 /// Does what a message asks; a question gets its answer back.
@@ -123,6 +186,19 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         "hover fields" => return Some(crate::fileinfo::catalogue()),
         preview if preview.starts_with("hover preview ") => {
             return state.hover_preview(&preview["hover preview ".len()..]);
+        }
+        // The windows `after-launcher focus` can switch to, one a line: application ID,
+        // a tab, and title.
+        "windows" => {
+            return Some(
+                launcher_windows(state)
+                    .iter()
+                    .map(|window| {
+                        let (title, app_id) = window_names(window);
+                        format!("{app_id}\t{}\n", title.replace(['\t', '\n'], " "))
+                    })
+                    .collect(),
+            );
         }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),

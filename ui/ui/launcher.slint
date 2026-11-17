@@ -1,28 +1,179 @@
-// Finds an application by name and starts it, after Spotlight: a search field on glass that
-// opens down into the applications that match, the first of them the answer. The arrows
-// move, Return starts, Escape closes.
+// Finds things and does them, after Raycast: a search field on glass that opens down into
+// what matches, the first of it the answer, and commands that open views of their own (the
+// clipboard's history, emoji, files, snippets, quicklinks, notes, windows). The arrows move,
+// Return does the first action, Ctrl+K lists the rest, Escape goes back and then closes.
+//
+// Rust lays every item out (where it is, how big, what kind) so this only draws them.
 
-import { Theme, Icon, SmoothRect } from "widgets.slint";
+import { Theme, Icon, SmoothRect, MenuItem } from "widgets.slint";
 
-export struct AppRow {
-    name: string,
-    detail: string,
+export struct Item {
+    // "header", "answer", "row" or "cell".
+    kind: string,
+    title: string,
+    subtitle: string,
+    // Said at the row's right: what kind of thing it is, or when.
+    accessory: string,
     icon: image,
+    // Drawn where there is no icon: an emoji, a character.
+    glyph: string,
+    // Drawn instead, for a window command: a screen with the part a window takes filled.
+    framed: bool,
+    part-x: float,
+    part-y: float,
+    part-w: float,
+    part-h: float,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+export struct Act {
+    title: string,
+    keys: string,
+    danger: bool,
+}
+
+// A screen, as a window command's icon, with the part it puts the window in filled.
+component ScreenPart inherits Rectangle {
+    in property <float> part-x;
+    in property <float> part-y;
+    in property <float> part-w;
+    in property <float> part-h;
+    in property <color> ink;
+    border-radius: 4px;
+    border-width: 1.5px;
+    border-color: ink;
+    Rectangle {
+        x: 3px + (parent.width - 6px) * root.part-x;
+        y: 3px + (parent.height - 6px) * root.part-y;
+        width: (parent.width - 6px) * root.part-w;
+        height: (parent.height - 6px) * root.part-h;
+        border-radius: 1.5px;
+        background: root.ink;
+    }
+}
+
+// A key to press, as a small cap.
+component Keycap inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    min-width: 20px;
+    border-radius: 5px;
+    background: Theme.ink.with-alpha(0.08);
+    HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        Text {
+            text: root.text;
+            font-size: 11px;
+            color: Theme.ink-2;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// A label and a field of the form a command fills in.
+component FormField {
+    in property <string> label;
+    in property <bool> multiline;
+    // Takes the keyboard as the form opens.
+    in property <bool> autofocus;
+    in-out property <string> text;
+    callback key(KeyEvent) -> EventResult;
+    forward-focus: input;
+    init => {
+        if root.autofocus {
+            input.focus();
+        }
+    }
+
+    VerticalLayout {
+        spacing: 6px;
+        Text {
+            text: root.label;
+            font-size: Theme.text-small;
+            color: Theme.ink-2;
+        }
+        Rectangle {
+            height: root.multiline ? 140px : 34px;
+            border-radius: 8px;
+            background: Theme.ink.with-alpha(0.06);
+            border-width: input.has-focus ? 1.5px : 0px;
+            border-color: Theme.ink.with-alpha(0.5);
+            input := TextInput {
+                x: 10px;
+                y: root.multiline ? 8px : 0px;
+                width: parent.width - 20px;
+                height: root.multiline ? parent.height - 16px : parent.height;
+                text <=> root.text;
+                single-line: !root.multiline;
+                wrap: root.multiline ? word-wrap : no-wrap;
+                vertical-alignment: root.multiline ? top : center;
+                color: Theme.ink;
+                selection-background-color: Theme.ink.with-alpha(0.2);
+                accessible-label: root.label;
+                key-pressed(event) => { return root.key(event); }
+            }
+        }
+    }
 }
 
 export component Launcher inherits Window {
     in-out property <string> query;
-    in property <[AppRow]> apps;
+    in property <[Item]> items;
     in-out property <int> current;
+    // The view a command opened, by name; none at the root.
+    in property <string> view-title;
+    in property <string> placeholder: "搜尋";
+    // Views keep their height as their results change; the root opens and closes with them.
+    in property <bool> fixed;
+    in property <length> content-height;
+    // What the item in hand holds, shown beside the list.
+    in property <string> detail;
+    // What Return does to the item in hand, and the rest Ctrl+K lists.
+    in property <string> primary;
+    in property <[Act]> actions;
+    in-out property <bool> actions-open;
+    in-out property <int> action-current;
+    // A form instead of the list, to make or change a snippet, quicklink, note or alias.
+    in property <bool> form;
+    in property <string> form-title;
+    in property <string> name-label;
+    in property <string> text-label;
+    in property <string> key-label;
+    in-out property <string> name-field;
+    in-out property <string> text-field;
+    in-out property <string> key-field;
+    in property <bool> text-multiline;
+    // What is wrong with what the form was given.
+    in property <string> form-error;
+    // Said at the footer's left: the name of the emoji in hand.
+    in property <string> status;
     // The Appearance settings' glass, as solid as the compositor's menus.
     in property <float> glass-opacity: 0.8;
-    callback edited(string);
-    callback chosen(int);
-    callback cancelled();
 
-    // The answer's row, with the gap under it, and every other row.
-    property <length> answer-height: 64px;
-    property <length> row-height: 36px;
+    callback edited(string);
+    // Moves the item in hand by columns and rows.
+    callback move(int, int);
+    callback activate(int);
+    callback act(int);
+    callback back();
+    callback cancelled();
+    callback save-form();
+    // The item in hand changed by a click.
+    callback chose(int);
+    // Something found on another thread arrived.
+    callback refresh();
+    callback focus-field();
+    focus-field => { field.focus(); }
+
+    property <length> field-height: 56px;
+    property <length> footer-height: 40px;
+    property <length> list-height: fixed ? 380px : min(content-height, 520px);
+    property <bool> shows-list: form || fixed || query != "";
 
     title: "搜尋";
     no-frame: true;
@@ -34,8 +185,94 @@ export component Launcher inherits Window {
     forward-focus: field;
 
     // Opens down as results come and closes up as they go.
-    property <length> shown-height: layout.preferred-height;
+    property <length> shown-height: field-height
+        + (shows-list ? 1px + (form ? 400px : list-height + (root.items.length > 0 || fixed ? footer-height : 0px)) : 0px);
     animate shown-height { duration: 160ms; easing: Theme.ease; }
+
+    function keys(event: KeyEvent) -> EventResult {
+        if root.actions-open {
+            if event.text == Key.Escape || (event.modifiers.control && event.text == "k") {
+                root.actions-open = false;
+                return accept;
+            }
+            if event.text == Key.DownArrow {
+                root.action-current = Math.min(root.action-current + 1, root.actions.length - 1);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.action-current = Math.max(root.action-current - 1, 0);
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.act(root.action-current);
+                return accept;
+            }
+            return accept;
+        }
+        if event.text == Key.Escape {
+            if root.view-title != "" || root.form {
+                root.back();
+            } else if root.query != "" {
+                root.query = "";
+                root.edited("");
+            } else {
+                root.cancelled();
+            }
+            return accept;
+        }
+        if root.form {
+            if event.modifiers.control && event.text == Key.Return {
+                root.save-form();
+                return accept;
+            }
+            return reject;
+        }
+        if event.modifiers.control && event.text == "k" {
+            if root.actions.length > 0 {
+                root.action-current = 0;
+                root.actions-open = true;
+            }
+            return accept;
+        }
+        if event.text == Key.DownArrow { root.move(0, 1); return accept; }
+        if event.text == Key.UpArrow { root.move(0, -1); return accept; }
+        if event.text == Key.Tab { root.move(0, event.modifiers.shift ? -1 : 1); return accept; }
+        if event.text == Key.RightArrow && root.items.length > 0 && root.items[root.current].kind == "cell" {
+            root.move(1, 0);
+            return accept;
+        }
+        if event.text == Key.LeftArrow && root.items.length > 0 && root.items[root.current].kind == "cell" {
+            root.move(-1, 0);
+            return accept;
+        }
+        if event.text == Key.Backspace && root.query == "" && root.view-title != "" {
+            root.back();
+            return accept;
+        }
+        if event.text == Key.Return {
+            if event.modifiers.control && root.actions.length > 1 {
+                root.act(1);
+            } else {
+                root.activate(root.current);
+            }
+            return accept;
+        }
+        reject
+    }
+
+    // Keeps the item in hand in sight as the arrows move it.
+    changed current => {
+        if root.items.length == 0 || !root.fixed {
+            return;
+        }
+        let item = root.items[root.current];
+        if item.y < -list.content-y {
+            list.content-y = -item.y + 6px;
+        } else if item.y + item.height > -list.content-y + list.height {
+            list.content-y = -(item.y + item.height - list.height + 6px);
+        }
+        list.content-y = Math.min(0px, list.content-y);
+    }
 
     // The glass under it is the compositor's; this is its tint.
     SmoothRect {
@@ -47,168 +284,444 @@ export component Launcher inherits Window {
 
     Rectangle {
         clip: true;
-        layout := VerticalLayout {
-            alignment: start;
 
-            HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
-                spacing: 12px;
-                height: 56px;
+        // The search field, after the view it searches.
+        HorizontalLayout {
+            y: 0;
+            height: root.field-height;
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 12px;
+            if root.view-title == "": Icon {
+                name: "search";
+                width: 20px;
+                height: 20px;
+                stroke: Theme.ink-2;
+                stroke-width: 2px;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.view-title != "": Rectangle {
+                width: crumb.preferred-width + 30px;
+                height: 28px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 8px;
+                background: Theme.ink.with-alpha(0.08);
+                accessible-role: button;
+                accessible-label: "返回";
+                accessible-action-default => { root.back(); }
                 Icon {
-                    name: "search";
-                    width: 20px;
-                    height: 20px;
-                    stroke: Theme.ink-2;
-                    stroke-width: 2px;
+                    x: 6px;
+                    name: "back";
+                    width: 14px;
+                    height: 14px;
                     y: (parent.height - self.height) / 2;
                 }
-                Rectangle {
-                    field := TextInput {
-                        text <=> root.query;
-                        font-size: 22px;
-                        color: Theme.ink;
-                        single-line: true;
-                        vertical-alignment: center;
-                        selection-background-color: Theme.ink.with-alpha(0.2);
-                        accessible-role: text-input;
-                        accessible-label: "搜尋";
-                        edited => { root.edited(self.text); }
-                        accepted => { root.chosen(root.current); }
-                        key-pressed(event) => {
-                            if event.text == Key.Escape {
-                                root.cancelled();
-                                return accept;
-                            }
-                            if event.text == Key.DownArrow {
-                                root.current = Math.min(root.current + 1, root.apps.length - 1);
-                                return accept;
-                            }
-                            if event.text == Key.UpArrow {
-                                root.current = Math.max(root.current - 1, 0);
-                                return accept;
-                            }
-                            reject
+                crumb := Text {
+                    x: 24px;
+                    text: root.view-title;
+                    font-weight: 500;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.back(); }
+                }
+            }
+            Rectangle {
+                field := TextInput {
+                    text <=> root.query;
+                    font-size: root.view-title == "" ? 22px : 18px;
+                    color: Theme.ink;
+                    single-line: true;
+                    vertical-alignment: center;
+                    read-only: root.form;
+                    selection-background-color: Theme.ink.with-alpha(0.2);
+                    accessible-role: text-input;
+                    accessible-label: root.placeholder;
+                    edited => { root.edited(self.text); }
+                    key-pressed(event) => { return root.keys(event); }
+                }
+                if root.query == "" && !root.form: Text {
+                    x: 0;
+                    text: root.placeholder;
+                    font-size: field.font-size;
+                    color: Theme.ink-3;
+                    vertical-alignment: center;
+                }
+                if root.form: Text {
+                    x: 0;
+                    text: root.form-title;
+                    font-size: field.font-size;
+                    font-weight: 500;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.shows-list: Rectangle {
+            y: root.field-height;
+            height: 1px;
+            background: Theme.ink.with-alpha(0.1);
+        }
+
+        if root.form: VerticalLayout {
+            y: root.field-height + 1px;
+            height: 400px - root.footer-height;
+            padding: 18px;
+            spacing: 14px;
+            alignment: start;
+            if root.name-label != "": FormField {
+                label: root.name-label;
+                autofocus: true;
+                text <=> root.name-field;
+                key(event) => { return root.keys(event); }
+            }
+            if root.text-label != "": FormField {
+                label: root.text-label;
+                multiline: root.text-multiline;
+                autofocus: root.name-label == "";
+                text <=> root.text-field;
+                key(event) => { return root.keys(event); }
+            }
+            if root.key-label != "": FormField {
+                label: root.key-label;
+                text <=> root.key-field;
+                key(event) => { return root.keys(event); }
+            }
+            if root.form-error != "": Text {
+                text: root.form-error;
+                color: Theme.danger;
+            }
+        }
+
+        if !root.form && root.shows-list && root.items.length == 0 && root.query != "": Text {
+            y: root.field-height + 1px;
+            height: 56px;
+            // Under the text typed.
+            x: root.view-title == "" ? 50px : 18px;
+            text: "沒有符合的結果";
+            color: Theme.ink-2;
+            vertical-alignment: center;
+        }
+
+        list := Flickable {
+            visible: !root.form && root.shows-list;
+            x: 0;
+            y: root.field-height + 1px;
+            width: root.detail != "" ? 340px : parent.width;
+            height: root.list-height;
+            content-height: root.content-height;
+            interactive: root.fixed;
+
+            // What is chosen is solid ink, and slides to the item the arrows move to.
+            if root.items.length > 0 && root.items[root.current].kind != "header": Rectangle {
+                x: root.items[root.current].x;
+                y: root.items[root.current].y;
+                width: root.items[root.current].width;
+                height: root.items[root.current].height;
+                border-radius: 10px;
+                background: Theme.ink;
+                animate x, y, width, height { duration: 120ms; easing: Theme.ease; }
+            }
+
+            for item[index] in root.items: Rectangle {
+                property <bool> chosen: index == root.current;
+                x: item.x;
+                y: item.y;
+                width: item.width;
+                height: item.height;
+                accessible-role: list-item;
+                accessible-label: item.title;
+                accessible-item-selected: chosen;
+                accessible-action-default => { root.activate(index); }
+
+                if item.kind != "header" && touch.has-hover && !chosen: Rectangle {
+                    border-radius: 10px;
+                    background: Theme.ink.with-alpha(0.08);
+                }
+
+                if item.kind == "header": Text {
+                    x: 10px;
+                    text: item.title;
+                    font-size: Theme.text-small;
+                    font-weight: 500;
+                    color: Theme.ink-3;
+                    vertical-alignment: bottom;
+                    height: parent.height - 6px;
+                }
+
+                if item.kind == "cell": VerticalLayout {
+                    padding: 6px;
+                    spacing: 2px;
+                    alignment: center;
+                    Text {
+                        text: item.glyph;
+                        font-size: 28px;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: item.title;
+                        font-size: 10px;
+                        color: chosen ? Theme.on-ink.with-alpha(0.8) : Theme.ink-3;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                if item.kind == "answer": HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 14px;
+                    spacing: 14px;
+                    if item.glyph == "" && !item.framed: Image {
+                        source: item.icon;
+                        width: 40px;
+                        height: 40px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if item.framed: Rectangle {
+                        width: 40px;
+                        ScreenPart {
+                            width: 32px;
+                            height: 22px;
+                            part-x: item.part-x;
+                            part-y: item.part-y;
+                            part-w: item.part-w;
+                            part-h: item.part-h;
+                            ink: chosen ? Theme.on-ink : Theme.ink-2;
                         }
                     }
-                    if root.query == "": Text {
-                        x: 0;
-                        text: "搜尋";
-                        font-size: 22px;
-                        color: Theme.ink-3;
+                    if item.glyph != "": Text {
+                        width: 40px;
+                        text: item.glyph;
+                        font-size: 26px;
+                        color: chosen ? Theme.on-ink : Theme.ink;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: item.title;
+                            font-size: 17px;
+                            font-weight: 600;
+                            color: chosen ? Theme.on-ink : Theme.ink;
+                            overflow: elide;
+                        }
+                        if item.subtitle != "": Text {
+                            text: item.subtitle;
+                            font-size: 13px;
+                            color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-2;
+                            overflow: elide;
+                        }
+                    }
+                    if item.accessory != "": Text {
+                        text: item.accessory;
+                        font-size: Theme.text-small;
+                        color: chosen ? Theme.on-ink.with-alpha(0.6) : Theme.ink-3;
                         vertical-alignment: center;
                     }
                 }
-            }
 
-            if root.query != "": Rectangle {
+                if item.kind == "row": HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 14px;
+                    spacing: 12px;
+                    if item.glyph == "" && !item.framed: Image {
+                        source: item.icon;
+                        width: 24px;
+                        height: 24px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if item.framed: Rectangle {
+                        width: 24px;
+                        ScreenPart {
+                            width: 22px;
+                            height: 15px;
+                            part-x: item.part-x;
+                            part-y: item.part-y;
+                            part-w: item.part-w;
+                            part-h: item.part-h;
+                            ink: chosen ? Theme.on-ink : Theme.ink-2;
+                        }
+                    }
+                    if item.glyph != "": Text {
+                        width: 24px;
+                        text: item.glyph;
+                        font-size: 17px;
+                        color: chosen ? Theme.on-ink : Theme.ink-2;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.title;
+                        font-weight: 500;
+                        color: chosen ? Theme.on-ink : Theme.ink;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 0;
+                        max-width: 360px;
+                    }
+                    Text {
+                        text: item.subtitle;
+                        color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-3;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if item.accessory != "": Text {
+                        text: item.accessory;
+                        font-size: Theme.text-small;
+                        color: chosen ? Theme.on-ink.with-alpha(0.6) : Theme.ink-3;
+                        vertical-alignment: center;
+                    }
+                }
+
+                touch := TouchArea {
+                    enabled: item.kind != "header";
+                    mouse-cursor: pointer;
+                    clicked => {
+                        if root.current == index {
+                            root.activate(index);
+                        } else {
+                            root.current = index;
+                            root.chose(index);
+                        }
+                    }
+                    double-clicked => { root.activate(index); }
+                }
+            }
+        }
+
+        // What the item in hand holds.
+        if !root.form && root.detail != "": Rectangle {
+            x: 340px;
+            y: root.field-height + 1px;
+            width: parent.width - 340px;
+            height: root.list-height;
+            Rectangle {
+                x: 0;
+                width: 1px;
+                background: Theme.ink.with-alpha(0.1);
+            }
+            Flickable {
+                x: 1px;
+                width: parent.width - 1px;
+                content-height: detail-text.preferred-height + 32px;
+                detail-text := Text {
+                    x: 16px;
+                    y: 16px;
+                    width: parent.width - 32px;
+                    height: self.preferred-height;
+                    text: root.detail;
+                    wrap: word-wrap;
+                    color: Theme.ink;
+                }
+            }
+        }
+
+        // What Return and Ctrl+K do.
+        if root.shows-list && (root.items.length > 0 || root.fixed || root.form): Rectangle {
+            y: root.shown-height - root.footer-height;
+            height: root.footer-height;
+            Rectangle {
+                y: 0;
                 height: 1px;
                 background: Theme.ink.with-alpha(0.1);
             }
-
-            if root.query != "" && root.apps.length == 0: Text {
-                height: 56px;
-                // Under the text typed.
-                x: 50px;
-                text: "沒有符合的應用程式";
-                color: Theme.ink-2;
-                vertical-alignment: center;
-            }
-
-            if root.apps.length > 0: Rectangle {
-                height: rows.preferred-height;
-
-                // What is chosen is solid ink, and slides to the row the arrows move to.
-                Rectangle {
-                    x: 6px;
-                    width: parent.width - 12px;
-                    y: 6px + (root.current == 0 ? 0px : root.answer-height + (root.current - 1) * root.row-height);
-                    height: root.current == 0 ? root.answer-height - 4px : root.row-height;
-                    border-radius: 10px;
-                    background: Theme.ink;
-                    animate y, height { duration: 120ms; easing: Theme.ease; }
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 12px;
+                spacing: 6px;
+                Text {
+                    text: root.status;
+                    color: Theme.ink-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
                 }
-
-                rows := VerticalLayout {
-                    padding: 6px;
-
-                    for app[index] in root.apps: Rectangle {
-                        property <bool> chosen: index == root.current;
-                        property <bool> answer: index == 0;
-                        height: answer ? root.answer-height : root.row-height;
-                        accessible-role: list-item;
-                        accessible-label: app.name;
-                        accessible-item-selected: chosen;
-                        accessible-action-default => { root.chosen(index); }
-
-                        if row-touch.has-hover && !chosen: Rectangle {
-                            height: answer ? root.answer-height - 4px : root.row-height;
-                            y: 0;
-                            border-radius: 10px;
-                            background: Theme.ink.with-alpha(0.08);
-                        }
-
-                        if answer: HorizontalLayout {
-                            height: root.answer-height - 4px;
-                            y: 0;
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 14px;
-                            Image {
-                                source: app.icon;
-                                width: 40px;
-                                height: 40px;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                Text {
-                                    text: app.name;
-                                    font-size: 17px;
-                                    font-weight: 600;
-                                    color: chosen ? Theme.on-ink : Theme.ink;
-                                    overflow: elide;
-                                }
-                                if app.detail != "": Text {
-                                    text: app.detail;
-                                    font-size: 13px;
-                                    color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-2;
-                                    overflow: elide;
-                                }
-                            }
-                        }
-
-                        if !answer: HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 12px;
-                            Image {
-                                source: app.icon;
-                                width: 24px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: app.name;
-                                font-weight: 500;
-                                color: chosen ? Theme.on-ink : Theme.ink;
-                                vertical-alignment: center;
-                                horizontal-stretch: 0;
-                            }
-                            Text {
-                                text: app.detail;
-                                color: chosen ? Theme.on-ink.with-alpha(0.7) : Theme.ink-3;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                            }
-                        }
-
-                        row-touch := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.chosen(index); }
+                if root.form: Rectangle {
+                    width: save.preferred-width + 16px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 7px;
+                    background: save-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
+                    save := HorizontalLayout {
+                        x: 8px;
+                        spacing: 6px;
+                        Text { text: "儲存"; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
+                        Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
+                        Keycap { text: "↵"; y: (parent.height - self.height) / 2; }
+                    }
+                    save-touch := TouchArea { clicked => { root.save-form(); } }
+                }
+                if !root.form && root.primary != "": Rectangle {
+                    width: run.preferred-width + 16px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 7px;
+                    background: run-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
+                    run := HorizontalLayout {
+                        x: 8px;
+                        spacing: 6px;
+                        Text { text: root.primary; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
+                        Keycap { text: "↵"; y: (parent.height - self.height) / 2; }
+                    }
+                    run-touch := TouchArea { clicked => { root.activate(root.current); } }
+                }
+                if !root.form && root.actions.length > 1: Rectangle {
+                    width: 1px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    background: Theme.ink.with-alpha(0.12);
+                }
+                if !root.form && root.actions.length > 1: Rectangle {
+                    width: more.preferred-width + 16px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 7px;
+                    background: more-touch.has-hover || root.actions-open ? Theme.ink.with-alpha(0.08) : transparent;
+                    more := HorizontalLayout {
+                        x: 8px;
+                        spacing: 6px;
+                        Text { text: "動作"; color: Theme.ink-2; vertical-alignment: center; }
+                        Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
+                        Keycap { text: "K"; y: (parent.height - self.height) / 2; }
+                    }
+                    more-touch := TouchArea {
+                        clicked => {
+                            root.action-current = 0;
+                            root.actions-open = !root.actions-open;
+                            field.focus();
                         }
                     }
+                }
+            }
+        }
+
+        // Everything that can be done to the item in hand.
+        if root.actions-open: Rectangle {
+            width: 280px;
+            height: actions-list.preferred-height;
+            x: parent.width - self.width - 10px;
+            y: root.shown-height - root.footer-height - self.height - 6px;
+            border-radius: 12px;
+            background: Theme.dark ? #2c2c31 : #fbfaf8;
+            border-width: 1px;
+            border-color: Theme.ink.with-alpha(0.1);
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #00000040;
+            actions-list := VerticalLayout {
+                padding: 5px;
+                for action[index] in root.actions: MenuItem {
+                    text: action.title;
+                    shortcut: action.keys;
+                    danger: action.danger;
+                    highlighted: index == root.action-current;
+                    clicked => { root.act(index); }
                 }
             }
         }

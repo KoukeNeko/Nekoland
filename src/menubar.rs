@@ -1384,8 +1384,17 @@ impl Nekoland {
             self.toggle_control_center(self.menu_bar.titles[title].rect);
             return;
         }
+        let help = match &source {
+            Source::Help => true,
+            Source::AppMenu(index) => self
+                .active_menus()
+                .get(*index)
+                .is_some_and(|menu| is_help(&menu.label)),
+            _ => false,
+        };
         let mut entries = self.menu_entries(&source);
-        if entries.is_empty() {
+        // Help holds the search of every menu, so it opens even with nothing else in it.
+        if entries.is_empty() && !help {
             self.menu_bar.open = None;
             if let (Source::Status(item), Some(bus)) = (&source, &self.menu_bar.bus) {
                 let rect = self.menu_bar.titles[title].rect;
@@ -1403,14 +1412,6 @@ impl Nekoland {
                 bus.send(Request::AppMenus(address));
             }
         }
-        let help = match &source {
-            Source::Help => true,
-            Source::AppMenu(index) => self
-                .active_menus()
-                .get(*index)
-                .is_some_and(|menu| is_help(&menu.label)),
-            _ => false,
-        };
         let search = help.then(|| {
             let base = entries.clone();
             entries.insert(0, Entry::search_field(""));
@@ -2079,6 +2080,42 @@ impl Nekoland {
                 );
             }
         }
+    }
+
+    /// Pastes into the active window what the launcher put on the clipboard: Ctrl+V, and
+    /// Ctrl+Shift+V for a terminal, where Ctrl+V is a key of its own.
+    pub(crate) fn paste_into_active(&mut self) {
+        let app_id = self.focused_window().map(|window| window_names(&window).1).unwrap_or_default();
+        // shortcut: terminals known by name; read their desktop entry's TerminalEmulator
+        // category once one is missed.
+        let terminal = ["terminal", "foot", "kitty", "alacritty", "ptyxis", "konsole", "wezterm", "xterm"]
+            .iter()
+            .any(|name| app_id.to_lowercase().contains(name));
+        if terminal {
+            self.press_keys(&[KEY_CTRL, KEY_SHIFT, KEY_V]);
+        } else {
+            self.press_keys(&[KEY_CTRL, KEY_V]);
+        }
+    }
+
+    /// Opens the Help menu's search over the active application's menus, with `query`
+    /// typed in it.
+    pub(crate) fn search_menus(&mut self, query: &str) {
+        self.refresh_menu_bar();
+        let menus = self.active_menus();
+        let help = self.menu_bar.titles.iter().rposition(|title| match title.source {
+            Source::Help => true,
+            Source::AppMenu(index) => menus.get(index).is_some_and(|menu| is_help(&menu.label)),
+            _ => false,
+        });
+        let Some(help) = help else {
+            return;
+        };
+        self.open_menu(help, false);
+        if let Some((typed, _)) = self.menu_bar.open.as_mut().and_then(|open| open.search.as_mut()) {
+            *typed = query.to_string();
+        }
+        self.update_search();
     }
 
     /// Ends an application: through its quit action if it exports one, else by closing

@@ -355,6 +355,79 @@ impl Nekoland {
         );
     }
 
+    /// Puts a window over a part of the usable area, given as the fractions of it its
+    /// left, top, right and bottom edges are at.
+    pub fn place_in(&mut self, window: &Window, [left, top, right, bottom]: [f64; 4]) {
+        let Some(area) = self.usable_area() else {
+            return;
+        };
+        self.remember_place(window);
+        let at = |fraction: f64, length: i32| (fraction * f64::from(length)).round() as i32;
+        let (x, y) = (area.loc.x + at(left, area.size.w), area.loc.y + at(top, area.size.h));
+        let size = (at(right, area.size.w) - at(left, area.size.w), at(bottom, area.size.h) - at(top, area.size.h));
+        self.put_window(window, Rectangle::new(Point::from((x, y)), size.into()), &[]);
+    }
+
+    /// Does to the active window what the launcher's window commands name. Returns whether
+    /// `command` is one.
+    pub fn window_command(&mut self, command: &str) -> bool {
+        let Some(window) = self.focused_window().filter(is_managed) else {
+            return true;
+        };
+        let part = match command {
+            "left" => [0.0, 0.0, 0.5, 1.0],
+            "right" => [0.5, 0.0, 1.0, 1.0],
+            "top" => [0.0, 0.0, 1.0, 0.5],
+            "bottom" => [0.0, 0.5, 1.0, 1.0],
+            "top-left" => [0.0, 0.0, 0.5, 0.5],
+            "top-right" => [0.5, 0.0, 1.0, 0.5],
+            "bottom-left" => [0.0, 0.5, 0.5, 1.0],
+            "bottom-right" => [0.5, 0.5, 1.0, 1.0],
+            "first-third" => [0.0, 0.0, 1.0 / 3.0, 1.0],
+            "center-third" => [1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0],
+            "last-third" => [2.0 / 3.0, 0.0, 1.0, 1.0],
+            "first-two-thirds" => [0.0, 0.0, 2.0 / 3.0, 1.0],
+            "last-two-thirds" => [1.0 / 3.0, 0.0, 1.0, 1.0],
+            "almost-maximize" => [0.05, 0.05, 0.95, 0.95],
+            "center" => {
+                let (Some(area), size) = (self.usable_area(), window.geometry().size) else {
+                    return true;
+                };
+                let (width, height) = (f64::from(area.size.w), f64::from(area.size.h));
+                let left = ((width - f64::from(size.w)) / 2.0).max(0.0) / width;
+                let top = ((height - f64::from(size.h)) / 2.0).max(0.0) / height;
+                [left, top, 1.0 - left, 1.0 - top]
+            }
+            "maximize" => {
+                self.maximize(&window);
+                return true;
+            }
+            "restore" => {
+                self.restore(&window);
+                return true;
+            }
+            "minimize" => {
+                self.minimize(&window);
+                return true;
+            }
+            "fullscreen" => {
+                if self.is_fullscreen(&window) {
+                    self.restore(&window);
+                } else {
+                    self.fullscreen(&window);
+                }
+                return true;
+            }
+            "close" => {
+                crate::menubar::close(&window);
+                return true;
+            }
+            _ => return false,
+        };
+        self.place_in(&window, part);
+        true
+    }
+
     pub fn is_fullscreen(&self, window: &Window) -> bool {
         match window.underlying_surface() {
             WindowSurface::Wayland(toplevel) => toplevel

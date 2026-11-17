@@ -151,10 +151,24 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   the sample rate of what plays, from 44.1 to 192 kHz, instead of always at 48. Its
   裝置模式 group sets each card's profile, as stereo, surround, Pro Audio or off. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
-- The launcher, `nekoland-launcher` from `ui/`, finds applications by name, in the
-  user's language too, and takes an input method. Clicking the search field of the
-  overview's applications opens it with what was typed there. It closes when anything
-  else is clicked.
+- The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
+  again or when anything else is clicked. It finds applications by name, in the user's
+  language too, its own commands, and files in the home folder, and takes an input
+  method; clicking the search field of the overview's applications opens it with what
+  was typed there. It also answers sums, percentages and unit conversions (`5 km to mi`,
+  `3 坪 換成 m2`) and offers web, file and menu-item searches for what was typed. Its
+  commands lock, sleep, restart and shut down, toggle dark mode, put the window under it
+  in a half, a quarter or a third of the screen, and open views of their own: clipboard
+  history, emoji, files, open windows, snippets, quicklinks and notes. Ctrl+K lists what
+  can be done with the chosen item, Ctrl+Return does the second of them, and an item
+  can be given an alias to find it by. Snippets paste text with `{date}`, `{time}` and
+  `{clipboard}` filled in; a quicklink opens its address with what follows its keyword
+  (`g nekoland`) in place of `{query}`. They and the notes are kept in
+  `$XDG_DATA_HOME/nekoland/launcher.json`, and the clipboard's history, the last 300
+  texts copied and none a password manager marks secret, in `clipboard.json` beside it,
+  which `wl-paste --watch` adds to while Nekoland runs. `nekoland-launcher --open=VIEW`
+  opens a view directly: `clipboard`, `emoji`, `files`, `windows`, `snippets`,
+  `quicklinks` or `notes`.
 
 Programs learn whether to be dark from `xdg-desktop-portal`. With
 `xdg-desktop-portal-gtk` installed, copy `shell/nekoland-portals.conf` to
@@ -436,6 +450,7 @@ application draws itself.
 | Ctrl+Alt+T, Super+Return | Terminal |
 | Alt+Tab, Super+Tab | Next window |
 | Ctrl+F2 | Menu bar |
+| Alt+Space | Launcher |
 | Super+Up / Down | Maximize / restore |
 | Super+Left / Right | Tile to a half |
 | Super+H | Minimize |
@@ -478,7 +493,7 @@ it in effect, or says why not; `'unset KEY'` puts one back at its default.
   when idle.
 - X11 windows have no title bars.
 - Notifications keep no history and show no buttons for
-  their actions; the launcher finds applications only.
+  their actions.
 
 ## Origin
 

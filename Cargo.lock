@@ -3212,8 +3212,10 @@ version = "0.1.0"
 name = "nekoland-ui"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "gtk4",
  "libadwaita",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",
