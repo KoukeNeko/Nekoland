@@ -28,7 +28,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland 
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     network-manager network-manager-openvpn
     pipewire pipewire-pulse wireplumber brightnessctl
-    fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
+    grub-common fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common"
@@ -118,6 +118,13 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
+
+# The boot menu in Nekoland's look, where GRUB is what boots the computer; a board that boots
+# some other way has no /etc/default/grub and is left as it is.
+if [ -f /etc/default/grub ]; then
+    say "Installing the GRUB theme"
+    sh "$src/shell/grub/install-theme.sh"
+fi
 
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
