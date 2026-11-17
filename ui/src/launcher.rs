@@ -255,6 +255,30 @@ fn ago(at: i64) -> String {
     }
 }
 
+/// What was copied is a link, a file's path or text, by its name and theme icons.
+fn copied_kind(text: &str) -> (&'static str, String) {
+    let text = text.trim();
+    if text.lines().count() == 1 {
+        if text.starts_with("https://") || text.starts_with("http://") {
+            return ("連結", "web-browser".into());
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let path = text.strip_prefix("~/").map_or_else(|| PathBuf::from(text), |rest| home.join(rest));
+        if path.is_absolute() && path.exists() {
+            return ("檔案", file_icon(&path, path.is_dir()).join("\n"));
+        }
+    }
+    ("文字", "text-x-generic".into())
+}
+
+/// Seconds since the epoch as a date and time.
+fn date_time(at: i64) -> String {
+    glib::DateTime::from_unix_local(at)
+        .and_then(|time| time.format("%Y/%m/%d %H:%M"))
+        .map(|text| text.to_string())
+        .unwrap_or_default()
+}
+
 fn first_line(text: &str) -> String {
     text.trim().lines().next().unwrap_or_default().trim().to_string()
 }
@@ -491,8 +515,7 @@ impl State {
                 .take(VIEW_MOST)
                 .map(|(index, copied)| {
                     Found::new(first_line(&copied.text), Target::Copied(index))
-                        .icon(Some("text-x-generic".into()))
-                        .accessory(ago(copied.at))
+                        .icon(Some(copied_kind(&copied.text).1))
                 })
                 .collect(),
             View::Emoji => {
@@ -623,7 +646,7 @@ impl State {
         }
         let query = ui.get_query().to_string();
         self.found = self.view_items(&query);
-        let detail = matches!(self.view, View::Clipboard | View::Snippets | View::Notes);
+        let detail = self.lists_beside_detail();
         let width = if detail { LIST_WITH_DETAIL } else { WIDTH } - 2.0 * INSET;
         let cell = width / COLUMNS as f32;
 
@@ -740,10 +763,30 @@ impl State {
     }
 
     /// The item in hand changed: shows what it holds and what can be done to it.
+    /// Whether the list leaves room for what its items hold: not when it holds only a row
+    /// to make the first of them.
+    fn lists_beside_detail(&self) -> bool {
+        self.found
+            .iter()
+            .any(|found| matches!(found.target, Target::Copied(_) | Target::Snippet(_) | Target::Note(_)))
+    }
+
     fn chose(&mut self, index: usize) {
         let ui = self.ui();
         self.confirming = false;
         ui.set_actions_open(false);
+        let facts = match self.found.get(index).map(|found| &found.target) {
+            Some(Target::Copied(copied)) => self.clipboard.get(*copied).map_or_else(Vec::new, |copied| {
+                let fact = |label: &str, value: String| Fact { label: label.into(), value: value.into() };
+                vec![
+                    fact("類型", copied_kind(&copied.text).0.into()),
+                    fact("字元", calc::format(copied.text.chars().count() as f64)),
+                    fact("複製時間", date_time(copied.at)),
+                ]
+            }),
+            _ => Vec::new(),
+        };
+        ui.set_facts(ModelRc::from(Rc::new(VecModel::from(facts))));
         let detail = match self.found.get(index).map(|found| &found.target) {
             Some(Target::Copied(copied)) => self.clipboard.get(*copied).map(|copied| copied.text.clone()),
             Some(Target::Snippet(snippet)) => {
@@ -760,9 +803,7 @@ impl State {
         } else {
             ui.set_status("".into());
             ui.set_detail(detail.unwrap_or_default().into());
-            if matches!(self.view, View::Clipboard | View::Snippets | View::Notes)
-                && ui.get_detail().is_empty()
-            {
+            if self.lists_beside_detail() && ui.get_detail().is_empty() {
                 // Keeps the list as narrow as it was laid out.
                 ui.set_detail(" ".into());
             }

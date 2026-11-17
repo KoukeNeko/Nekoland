@@ -29,6 +29,12 @@ export struct Item {
     height: length,
 }
 
+// A line of what is known about the item in hand, under its contents.
+export struct Fact {
+    label: string,
+    value: string,
+}
+
 export struct Act {
     title: string,
     keys: string,
@@ -133,6 +139,7 @@ export component Launcher inherits Window {
     in property <length> content-height;
     // What the item in hand holds, shown beside the list.
     in property <string> detail;
+    in property <[Fact]> facts;
     // What Return does to the item in hand, and the rest Ctrl+K lists.
     in property <string> primary;
     in property <[Act]> actions;
@@ -171,6 +178,15 @@ export component Launcher inherits Window {
     focus-field => { field.focus(); }
 
     property <length> field-height: 56px;
+    // Where everything inside starts and ends: rows are inset by `row-inset` and pad the
+    // rest, so their content lines up with the field's, the footer's and the form's.
+    property <length> edge: 18px;
+    // INSET and ROW in launcher.rs, which lays the rows out.
+    property <length> row-inset: 6px;
+    property <length> row-height: 36px;
+    property <length> row-padding: edge - row-inset;
+    // The column icons stand in, the search field's included.
+    property <length> icon-column: 24px;
     property <length> footer-height: 40px;
     property <length> list-height: fixed ? 380px : min(content-height, 520px);
     property <bool> shows-list: form || fixed || query != "";
@@ -289,16 +305,18 @@ export component Launcher inherits Window {
         HorizontalLayout {
             y: 0;
             height: root.field-height;
-            padding-left: 18px;
-            padding-right: 18px;
+            padding-left: root.edge;
+            padding-right: root.edge;
             spacing: 12px;
-            if root.view-title == "": Icon {
-                name: "search";
-                width: 20px;
-                height: 20px;
-                stroke: Theme.ink-2;
-                stroke-width: 2px;
-                y: (parent.height - self.height) / 2;
+            if root.view-title == "": Rectangle {
+                width: root.icon-column;
+                Icon {
+                    name: "search";
+                    width: 20px;
+                    height: 20px;
+                    stroke: Theme.ink-2;
+                    stroke-width: 2px;
+                }
             }
             if root.view-title != "": Rectangle {
                 width: crumb.preferred-width + 30px;
@@ -369,7 +387,7 @@ export component Launcher inherits Window {
         if root.form: VerticalLayout {
             y: root.field-height + 1px;
             height: 400px - root.footer-height;
-            padding: 18px;
+            padding: root.edge;
             spacing: 14px;
             alignment: start;
             if root.name-label != "": FormField {
@@ -400,7 +418,7 @@ export component Launcher inherits Window {
             y: root.field-height + 1px;
             height: 56px;
             // Under the text typed.
-            x: root.view-title == "" ? 50px : 18px;
+            x: root.view-title == "" ? root.edge + root.icon-column + 12px : root.edge;
             text: "沒有符合的結果";
             color: Theme.ink-2;
             vertical-alignment: center;
@@ -443,7 +461,7 @@ export component Launcher inherits Window {
                 }
 
                 if item.kind == "header": Text {
-                    x: 10px;
+                    x: root.row-padding;
                     text: item.title;
                     font-size: Theme.text-small;
                     font-weight: 500;
@@ -471,8 +489,8 @@ export component Launcher inherits Window {
                 }
 
                 if item.kind == "answer": HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 14px;
+                    padding-left: root.row-padding;
+                    padding-right: root.row-padding;
                     spacing: 14px;
                     if item.glyph == "" && !item.framed: Image {
                         source: item.icon;
@@ -526,17 +544,17 @@ export component Launcher inherits Window {
                 }
 
                 if item.kind == "row": HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 14px;
+                    padding-left: root.row-padding;
+                    padding-right: root.row-padding;
                     spacing: 12px;
                     if item.glyph == "" && !item.framed: Image {
                         source: item.icon;
-                        width: 24px;
-                        height: 24px;
+                        width: root.icon-column;
+                        height: root.icon-column;
                         y: (parent.height - self.height) / 2;
                     }
                     if item.framed: Rectangle {
-                        width: 24px;
+                        width: root.icon-column;
                         ScreenPart {
                             width: 22px;
                             height: 15px;
@@ -548,7 +566,7 @@ export component Launcher inherits Window {
                         }
                     }
                     if item.glyph != "": Text {
-                        width: 24px;
+                        width: root.icon-column;
                         text: item.glyph;
                         font-size: 17px;
                         color: chosen ? Theme.on-ink : Theme.ink-2;
@@ -596,7 +614,7 @@ export component Launcher inherits Window {
         }
 
         // What the item in hand holds.
-        if !root.form && root.detail != "": Rectangle {
+        if !root.form && root.detail != "": pane := Rectangle {
             x: 340px;
             y: root.field-height + 1px;
             width: parent.width - 340px;
@@ -606,18 +624,57 @@ export component Launcher inherits Window {
                 width: 1px;
                 background: Theme.ink.with-alpha(0.1);
             }
+            property <length> fact-height: 28px;
+            property <length> facts-height: root.facts.length > 0 ? 2 * root.row-inset + 1px + root.facts.length * fact-height : 0;
             Flickable {
                 x: 1px;
+                y: 0;
                 width: parent.width - 1px;
-                content-height: detail-text.preferred-height + 32px;
+                height: parent.height - parent.facts-height;
+                content-height: detail-text.preferred-height + 2 * detail-text.y;
                 detail-text := Text {
-                    x: 16px;
-                    y: 16px;
-                    width: parent.width - 32px;
+                    x: root.edge;
+                    // Its first line level with the first row's title.
+                    y: root.row-inset + (root.row-height - 20px) / 2;
+                    width: parent.width - 2 * root.edge;
                     height: self.preferred-height;
                     text: root.detail;
                     wrap: word-wrap;
                     color: Theme.ink;
+                }
+            }
+            if root.facts.length > 0: Rectangle {
+                x: 1px;
+                y: parent.height - parent.facts-height;
+                width: parent.width - 1px;
+                height: parent.facts-height;
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: Theme.ink.with-alpha(0.1);
+                }
+                for fact[index] in root.facts: Rectangle {
+                    x: root.edge;
+                    y: 1px + root.row-inset + index * pane.fact-height;
+                    width: parent.width - 2 * root.edge;
+                    height: pane.fact-height;
+                    Text {
+                        x: 0;
+                        text: fact.label;
+                        font-size: Theme.text-small;
+                        color: Theme.ink-2;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        x: parent.width - self.width;
+                        width: min(self.preferred-width, parent.width - 72px);
+                        text: fact.value;
+                        font-size: Theme.text-small;
+                        color: Theme.ink;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
         }
@@ -632,8 +689,8 @@ export component Launcher inherits Window {
                 background: Theme.ink.with-alpha(0.1);
             }
             HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 12px;
+                padding-left: root.edge;
+                padding-right: root.edge - 8px;
                 spacing: 6px;
                 Text {
                     text: root.status;
@@ -643,13 +700,14 @@ export component Launcher inherits Window {
                     horizontal-stretch: 1;
                 }
                 if root.form: Rectangle {
-                    width: save.preferred-width + 16px;
+                    width: save.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 7px;
                     background: save-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
                     save := HorizontalLayout {
-                        x: 8px;
+                        padding-left: 8px;
+                        padding-right: 8px;
                         spacing: 6px;
                         Text { text: "儲存"; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
                         Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
@@ -658,13 +716,14 @@ export component Launcher inherits Window {
                     save-touch := TouchArea { clicked => { root.save-form(); } }
                 }
                 if !root.form && root.primary != "": Rectangle {
-                    width: run.preferred-width + 16px;
+                    width: run.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 7px;
                     background: run-touch.has-hover ? Theme.ink.with-alpha(0.08) : transparent;
                     run := HorizontalLayout {
-                        x: 8px;
+                        padding-left: 8px;
+                        padding-right: 8px;
                         spacing: 6px;
                         Text { text: root.primary; font-weight: 500; color: Theme.ink; vertical-alignment: center; }
                         Keycap { text: "↵"; y: (parent.height - self.height) / 2; }
@@ -678,13 +737,14 @@ export component Launcher inherits Window {
                     background: Theme.ink.with-alpha(0.12);
                 }
                 if !root.form && root.actions.length > 1: Rectangle {
-                    width: more.preferred-width + 16px;
+                    width: more.preferred-width;
                     height: 28px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 7px;
                     background: more-touch.has-hover || root.actions-open ? Theme.ink.with-alpha(0.08) : transparent;
                     more := HorizontalLayout {
-                        x: 8px;
+                        padding-left: 8px;
+                        padding-right: 8px;
                         spacing: 6px;
                         Text { text: "動作"; color: Theme.ink-2; vertical-alignment: center; }
                         Keycap { text: "Ctrl"; y: (parent.height - self.height) / 2; }
