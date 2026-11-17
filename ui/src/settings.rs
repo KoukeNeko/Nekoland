@@ -4328,8 +4328,9 @@ const DESIGN_CSS: &str = r#"
 .nk-window.inactive .nk-titlebar .title, .nk-design .nk-window.inactive .nk-titlebar button { color: var(--nekoland-ink-3); }
 .nk-window-body { min-height: 120px; border-top: 1px solid var(--nekoland-line); border-radius: 0 0 14px 14px; background-color: var(--nekoland-sheet); }
 .nk-scrim { padding: 32px; border-radius: 12px; background-color: rgb(0 0 0 / 40%); }
-.nk-dialog { padding: 24px; border-radius: 14px; background-color: var(--nekoland-sheet); box-shadow: 0 0 0 1px var(--nekoland-line), 0 30px 60px -20px rgb(0 0 0 / 50%); }
+.nk-dialog { padding: 15px 24px 20px; border-radius: 14px; background-color: var(--nekoland-sheet); box-shadow: inset 0 0 0 1px var(--nekoland-line), 0 30px 60px -20px rgb(0 0 0 / 50%); }
 .nk-dialog-title { font-size: 16px; font-weight: 600; }
+.nk-dialog .nk-lead { font-size: 14px; line-height: 21px; }
 "#;
 
 fn classes(names: &[&str]) -> Vec<String> {
@@ -5028,18 +5029,20 @@ fn design_page() -> gtk::ScrolledWindow {
         });
         window.upcast::<gtk::Widget>()
     };
+    // Spaced as an alert is: 20px from each row's letters or edges to the next.
     let body = text("上面的 3 個視窗會移到桌面 1。", &["nk-lead"]);
+    body.set_margin_top(13);
     let actions = line(
-        8,
+        12,
         &[
             gtk::Button::with_label("取消").upcast_ref(),
             button("刪除", &["destructive-action"]).upcast_ref(),
         ],
     );
     actions.set_halign(gtk::Align::End);
-    actions.set_margin_top(14);
+    actions.set_margin_top(17);
     let dialog = column(
-        6,
+        0,
         &[
             text("刪除桌面 2？", &["nk-dialog-title"]).upcast_ref(),
             body.upcast_ref(),

@@ -1112,24 +1112,30 @@ export component Dialog inherits Rectangle {
     accessible-role: groupbox;
     accessible-label: title;
 
+    // 20px from each row's letters or edges to the next, and to the dialog's edges, as an alert's
+    // in GTK; a line is taller than its letters, 2.5px above the title's, 3.5px between the
+    // title's and the body's, 1px under the body's, so those are taken off.
     VerticalLayout {
-        padding: 24px;
-        spacing: 6px;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 17.5px;
+        padding-bottom: 20px;
         Text {
             text: title;
             font-size: 16px;
             font-weight: 600;
             color: Theme.ink;
         }
+        Rectangle { height: 16.5px; }
         Text {
             text: body;
             color: Theme.ink-2;
             wrap: word-wrap;
         }
-        Rectangle { height: 14px; }
+        Rectangle { height: 19px; }
         HorizontalLayout {
             alignment: end;
-            spacing: 8px;
+            spacing: 12px;
             @children
         }
     }

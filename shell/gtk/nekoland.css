@@ -331,19 +331,17 @@ dialog-host > dialog.alert sheet .body-scrolled-window scrollbar.vertical > rang
   margin-top: 0;
   margin-bottom: 0;
 }
-/* The consequence's lines are 21.5px, 6px taller than its letters, split evenly so that
- * two lines come out whole; one line is laid out 22px, its half pixel left under it. */
+/* The consequence is in the design language's 14px, on 21px lines that stand 4px above its
+ * letters and 3px below, as the question's do. */
 dialog.alert .message-area.has-heading.has-body,
 dialog.alert.short .message-area.has-heading.has-body {
-  padding-bottom: 16px;
   border-spacing: 6px;
 }
 dialog.alert .message-area.has-heading.has-body > .body {
-  margin-top: 6px;
+  margin-top: 7px;
 }
 dialog.alert .message-area.has-heading.has-body > .child {
-  margin-top: 12px;
-  margin-bottom: 4px;
+  margin-top: 11px;
 }
 dialog.alert .message-area > .heading-bin,
 dialog.alert .message-area > .body,
@@ -369,7 +367,8 @@ dialog.alert .message-area label.title-4 {
   font-weight: 600;
 }
 dialog.alert .message-area label.body {
-  line-height: 21.5px;
+  font-size: 14px;
+  line-height: 21px;
   color: var(--nekoland-ink-2);
 }
 dialog.alert .response-area,
