@@ -323,6 +323,10 @@ GTK's in Nekoland's look, is Ubuntu Sans, or the family `font` names, at Medium 
 names no weight; Noto Sans CJK, a CFF font, is thickened by 0.4px by FreeType, through
 `FREETYPE_PROPERTIES` in what Nekoland starts, unless that is set already.
 
+On a computer whose GPUs have no render node, such as a Hyper-V VM, GTK 4 programs that
+Nekoland or D-Bus starts draw with Cairo, through `GSK_RENDERER=cairo`, unless that is set
+already: GTK's OpenGL on llvmpipe costs each of them some 150 MB more.
+
 ## Screen lock and capture
 
 The menu, Super+L and `nekoland msg lock` lock the screen, and so does sleeping and,

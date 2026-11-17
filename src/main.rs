@@ -48,6 +48,29 @@ pub use state::Nekoland;
 /// `shell/xrdp-clipboard.sh` reads it.
 const HOST_DISPLAY: &str = "NEKOLAND_HOST_DISPLAY";
 
+/// Where the kernel lists the GPUs; one that can draw has a render node, `renderD128` and on.
+const DRI_DIRECTORY: &str = "/dev/dri";
+const RENDER_NODE_PREFIX: &str = "renderD";
+const GTK_RENDERER: &str = "GSK_RENDERER";
+const GTK_RENDERER_WITHOUT_GL: &str = "cairo";
+
+/// Without a GPU, GTK 4 draws with OpenGL on llvmpipe, whose buffers and compiled shaders
+/// cost each program of it some 150 MB more than Cairo does (243 MB against 89 MB for the
+/// task manager on a Hyper-V VM). A choice already made is kept.
+fn draw_gtk_without_gl_when_gpuless() {
+    if std::env::var_os(GTK_RENDERER).is_none() && !has_render_node() {
+        std::env::set_var(GTK_RENDERER, GTK_RENDERER_WITHOUT_GL);
+    }
+}
+
+fn has_render_node() -> bool {
+    std::fs::read_dir(DRI_DIRECTORY).is_ok_and(|nodes| {
+        nodes
+            .flatten()
+            .any(|node| node.file_name().to_string_lossy().starts_with(RENDER_NODE_PREFIX))
+    })
+}
+
 pub struct CalloopData {
     state: Nekoland,
     display_handle: DisplayHandle,
@@ -78,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "cff:no-stem-darkening=0 cff:darkening-parameters=500,400,1000,400,3000,400,8000,400",
         );
     }
+    draw_gtk_without_gl_when_gpuless();
 
     let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
 
@@ -163,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Services D-Bus starts, such as the portal that tells programs whether to be dark,
         // have to find this display; a nested compositor leaves the outer session's alone.
         if owns_session {
+            let renderer = std::env::var_os(GTK_RENDERER).map(|_| GTK_RENDERER);
             let updated = std::process::Command::new("dbus-update-activation-environment")
                 .args([
                     "--systemd",
@@ -172,6 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "LD_PRELOAD",
                     "FREETYPE_PROPERTIES",
                 ])
+                .args(renderer)
                 .status();
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");
