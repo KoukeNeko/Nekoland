@@ -4032,7 +4032,7 @@ fn remote_page() -> adw::PreferencesPage {
         };
         row.set_sensitive(false);
         let show = show.clone();
-        match sudo(reason, &["systemctl", verb, "--now", "xrdp"]) {
+        match sudo(reason, &["systemctl", verb, "--now", "xrdp"], gio::SubprocessFlags::NONE) {
             // Turned down or failed, the switch goes back to what xrdp is.
             Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
                 if let Err(err) = result {
@@ -4055,20 +4055,29 @@ fn remote_page() -> adw::PreferencesPage {
 }
 
 /// Runs `args` as root through `sudo -A`, whose password Nekoland's askpass asks for,
-/// saying `reason`.
-fn sudo(reason: &str, args: &[&str]) -> Result<gio::Subprocess, glib::Error> {
-    let askpass = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
-        .filter(|path| path.exists())
-        // sudo takes only an absolute path.
-        .or_else(|| glib::find_program_in_path("nekoland-askpass"))
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/nekoland-askpass"));
-    let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+/// saying `reason`; `flags` as STDERR_PIPE keep what sudo and `args` say to show it.
+fn sudo(reason: &str, args: &[&str], flags: gio::SubprocessFlags) -> Result<gio::Subprocess, glib::Error> {
+    let askpass = nekoland_program("nekoland-askpass");
+    let launcher = gio::SubprocessLauncher::new(flags);
+    if flags.contains(gio::SubprocessFlags::STDERR_PIPE) {
+        // What is said is read for why it failed, so it is said in the words looked for.
+        launcher.setenv("LC_MESSAGES", "C", true);
+    }
     launcher.setenv("SUDO_ASKPASS", askpass, true);
     launcher.setenv("NEKOLAND_ASKPASS_REASON", reason, true);
     let argv: Vec<&std::ffi::OsStr> = ["sudo", "-A", "--"].iter().chain(args).map(std::ffi::OsStr::new).collect();
     launcher.spawn(&argv)
+}
+
+/// The absolute path of one of Nekoland's programs, installed beside Settings; sudo takes
+/// only an absolute path.
+fn nekoland_program(name: &str) -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.exists())
+        .or_else(|| glib::find_program_in_path(name))
+        .unwrap_or_else(|| PathBuf::from("/usr/local/bin").join(name))
 }
 
 /// Whether xrdp is running, or None when it is not installed.

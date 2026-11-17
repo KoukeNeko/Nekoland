@@ -9,7 +9,14 @@ use std::{
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::{alert, fact_row, group, output};
+use crate::{alert, group, network, output};
+
+/// How long the copy button shows that the password was copied.
+const COPIED_SHOWN: std::time::Duration = std::time::Duration::from_secs(2);
+const COPY_ICON: &str = "edit-copy-symbolic";
+const COPIED_ICON: &str = "object-select-symbolic";
+/// A connection's STATE once it is up, as `nmcli connection show` prints it.
+const ACTIVATED: &str = "activated";
 
 /// The network Settings is opened to join, by the control center when joining it took more
 /// than NetworkManager kept.
@@ -106,7 +113,6 @@ struct Heard {
 struct Kept {
     ssid: String,
     uuid: String,
-    autoconnect: bool,
     /// The device it is up on, when it is.
     device: Option<String>,
 }
@@ -167,15 +173,15 @@ fn heard_networks() -> Vec<Heard> {
 fn kept_networks() -> Vec<Kept> {
     let list = output(
         "nmcli",
-        &["-t", "-f", "UUID,TYPE,AUTOCONNECT,DEVICE", "connection", "show"],
+        &["-t", "-f", "UUID,TYPE,DEVICE,STATE", "connection", "show"],
     )
     .unwrap_or_default();
     list.lines()
         .filter_map(|line| {
-            let [uuid, kind, autoconnect, device] = &nmcli_fields(line)[..] else {
+            let [uuid, kind, device, state] = &nmcli_fields(line)[..] else {
                 return None;
             };
-            if kind != "802-11-wireless" {
+            if kind != network::WIFI_TYPE {
                 return None;
             }
             // Its name may not be the network's: the network's is asked for.
@@ -183,8 +189,8 @@ fn kept_networks() -> Vec<Kept> {
             Some(Kept {
                 ssid,
                 uuid: uuid.clone(),
-                autoconnect: autoconnect == "yes",
-                device: (!device.is_empty()).then(|| device.clone()),
+                // Still joining, as while the password is tried, it is not up yet.
+                device: (state == ACTIVATED).then(|| device.clone()),
             })
         })
         .collect()
@@ -251,10 +257,23 @@ fn nmcli_with(args: &[&str], input: Option<&str>, then: impl FnOnce(Result<Strin
     });
 }
 
-/// Brings a kept network up with `secrets`, given to nmcli through a pipe, so that the
-/// password is never in a command line others can see, nor in a file.
-pub(crate) fn up_with(uuid: &str, secrets: &str, then: impl FnOnce(Result<String, String>) + 'static) {
-    nmcli_with(&["connection", "up", "uuid", uuid, "passwd-file", "/dev/stdin"], Some(secrets), then);
+/// Brings a kept network up with `secret` as its `setting`, given to nmcli through a pipe, so
+/// that the password is never in a command line others can see, nor in a file.
+pub(crate) fn up_with(uuid: &str, setting: &str, secret: &str, then: impl FnOnce(Result<String, String>) + 'static) {
+    let line = format!("{setting}:{}\n", passwd_file_value(secret));
+    nmcli_with(&["connection", "up", "uuid", uuid, "passwd-file", "/dev/stdin"], Some(&line), then);
+}
+
+/// A secret as a `passwd-file` line holds it: nmcli takes a backslash there as an escape and
+/// trims the spaces at the value's ends, which a password may have.
+fn passwd_file_value(secret: &str) -> String {
+    secret.chars().fold(String::with_capacity(secret.len()), |mut escaped, character| {
+        if character == '\\' || character.is_whitespace() {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+        escaped
+    })
 }
 
 fn failed(parent: &gtk::Widget, ssid: &str, why: &str) {
@@ -298,12 +317,11 @@ fn join(parent: &gtk::Widget, target: Target, ask: bool, done: Rc<dyn Fn()>) {
 /// Joins with a password typed, and for an enterprise network the account it is for.
 fn join_with(parent: &gtk::Widget, target: Target, identity: Option<String>, password: String, done: Rc<dyn Fn()>) {
     let secret = target.lock.secret().expect("a locked network");
-    let secrets = format!("{secret}:{password}\n");
     let parent = parent.clone();
     if let Some(uuid) = target.kept.clone() {
         let kept = uuid.clone();
         let up = move || {
-            up_with(&uuid, &secrets, move |result| {
+            up_with(&uuid, secret, &password, move |result| {
                 if let Err(err) = result {
                     failed(&parent, &target.ssid, &err);
                 }
@@ -357,7 +375,7 @@ fn join_with(parent: &gtk::Widget, target: Target, identity: Option<String>, pas
             return done();
         }
         let uuid = added;
-        up_with(&uuid.clone(), &secrets, move |result| match result {
+        up_with(&uuid.clone(), secret, &password, move |result| match result {
             Ok(_) => nmcli(&["connection", "modify", "uuid", &uuid, "connection.autoconnect", "yes"], move |_| done()),
             Err(err) => {
                 // Not kept with a password that did not work.
@@ -475,39 +493,17 @@ fn join_hidden(parent: &gtk::Widget, done: Rc<dyn Fn()>) {
 /// forgetting it.
 fn details_dialog(parent: &gtk::Widget, kept: &Kept, done: Rc<dyn Fn()>) {
     let page = adw::PreferencesPage::new();
-    if kept.device.is_some() {
-        let addresses = group("");
-        let address = setting(&kept.uuid, "IP4.ADDRESS").unwrap_or_default();
-        let facts = [
-            ("IP 位址", address.split('/').next().unwrap_or_default().to_string()),
-            ("路由器", setting(&kept.uuid, "IP4.GATEWAY").unwrap_or_default()),
-            ("DNS", setting(&kept.uuid, "IP4.DNS").unwrap_or_default().replace(" | ", "\n")),
-        ];
-        for (title, value) in facts.iter().filter(|(_, value)| !value.is_empty()) {
-            addresses.add(&fact_row(title, value));
-        }
-        if let Some(device) = &kept.device {
-            let hardware = output("nmcli", &["-t", "-g", "GENERAL.HWADDR", "device", "show", device]);
-            let hardware = hardware.map(|text| nmcli_fields(text.trim()).join(":")).unwrap_or_default();
-            if !hardware.is_empty() {
-                addresses.add(&fact_row("硬體位址", &hardware));
-            }
-        }
-        page.add(&addresses);
+    if let Some(device) = &kept.device {
+        page.add(&network::device_facts(device));
     }
     let joining = group("");
-    let automatic = adw::SwitchRow::builder()
-        .title("自動加入")
-        .active(kept.autoconnect)
-        .build();
-    let uuid = kept.uuid.clone();
-    automatic.connect_active_notify(move |row| {
-        let value = if row.is_active() { "yes" } else { "no" };
-        nmcli(&["connection", "modify", "uuid", &uuid, "connection.autoconnect", value], |_| {});
-    });
-    joining.add(&automatic);
+    joining.add(&network::autoconnect_row(&kept.uuid, "自動加入"));
+    joining.add(&network::low_data_row(&kept.uuid));
+    if let Some(password) = password_row(&kept.uuid) {
+        joining.add(&password);
+    }
     page.add(&joining);
-    crate::network::address_settings(&page, &kept.uuid);
+    network::address_settings(&page, &kept.uuid);
 
     let forget = gtk::Button::builder()
         .label("忘記此網路")
@@ -541,6 +537,43 @@ fn details_dialog(parent: &gtk::Widget, kept: &Kept, done: Rc<dyn Fn()>) {
         }
     ));
     dialog.present(Some(parent));
+}
+
+/// The Mac's 拷貝密碼, for a kept network locked with a password.
+fn password_row(uuid: &str) -> Option<adw::ActionRow> {
+    let key_mgmt = setting(uuid, "802-11-wireless-security.key-mgmt").unwrap_or_default();
+    let secret = Lock::kept(&key_mgmt).secret()?;
+    let row = adw::ActionRow::builder().title("密碼").build();
+    let copy = gtk::Button::builder()
+        .icon_name(COPY_ICON)
+        .tooltip_text("拷貝密碼")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let uuid = uuid.to_string();
+    copy.connect_clicked(move |button| copy_password(button, &uuid, secret));
+    row.add_suffix(&copy);
+    Some(row)
+}
+
+/// Asks NetworkManager for a kept network's password and puts it on the clipboard; the button
+/// says it did, as nothing else shows it.
+fn copy_password(button: &gtk::Button, uuid: &str, secret: &str) {
+    let button = button.clone();
+    let args = ["--show-secrets", "-t", "-g", secret, "connection", "show", "uuid", uuid];
+    nmcli(&args, move |result| {
+        // Terse output escapes colons, as in a password.
+        let password = result.map(|text| nmcli_fields(text.trim_end_matches('\n')).join(":"));
+        match password {
+            Ok(password) if !password.is_empty() => {
+                button.clipboard().set_text(&password);
+                button.set_icon_name(COPIED_ICON);
+                glib::timeout_add_local_once(COPIED_SHOWN, move || button.set_icon_name(COPY_ICON));
+            }
+            Ok(_) => alert::notice(&button, "無法拷貝密碼", Some("這個網路沒有儲存密碼。")),
+            Err(err) => alert::notice(&button, "無法拷貝密碼", Some(&err)),
+        }
+    });
 }
 
 /// What the page shows, which is put there again as NetworkManager changes.
@@ -810,5 +843,11 @@ mod tests {
         assert_eq!(Lock::kept(""), Lock::Open);
         assert_eq!(Lock::heard("WPA1 WPA2"), Lock::Psk);
         assert_eq!(Lock::heard("OWE"), Lock::Open);
+    }
+
+    #[test]
+    fn passwd_file_values_keep_backslashes_and_spaces() {
+        assert_eq!(passwd_file_value(r"neko:pa\ss1"), r"neko:pa\\ss1");
+        assert_eq!(passwd_file_value(" a b "), r"\ a\ b\ ");
     }
 }

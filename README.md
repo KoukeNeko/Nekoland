@@ -35,7 +35,10 @@ and builds it where there is none (or with `NEKOLAND_BUILD=1`), puts its program
 GTK and `xdg-desktop-portal` find them, a GRUB theme (`shell/grub`) for the boot menu where GRUB boots the computer, drawn at the screen's own size, `shell/config.toml` as the configuration unless
 there is one, and a few lines at the end of `~/.profile` that start Nekoland on logging in
 on the first console, tty1, in place of its shell, so that quitting it logs out; its log is
-`~/.local/state/nekoland.log`, the one before `nekoland.log.old`. Run it again to update. Without a checkout it clones into
+`~/.local/state/nekoland.log`, the one before `nekoland.log.old`. Where netplan leaves the
+network to systemd-networkd, as on Ubuntu Server, it hands it to NetworkManager, whose
+connections Settings' 網路 page sets; run over SSH, that waits for the next boot, as applying
+it at once could cut the connection. Run it again to update. Without a checkout it clones into
 `~/.local/src/nekoland`, or `$NEKOLAND_SRC`; with a Rust older than Cargo.toml's
 `rust-version`, as on Ubuntu 24.04, it installs a newer one with rustup.
 
@@ -142,11 +145,13 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   which session they get, show what the computer is and how worn its batteries are, and
   show GTK's own widgets as the system style draws them.
   Its Wi-Fi and 網路 pages work through NetworkManager's `nmcli`: 網路 joins and leaves
-  each Ethernet port and shows its addresses, sets a connection's IPv4 addresses (from
-  DHCP or by hand), DNS servers and search domains, a Wi-Fi network's among them, and
-  turns VPNs on and off, adds a WireGuard `.conf` or OpenVPN `.ovpn` and removes one. A
-  port netplan gives to systemd-networkd, as on Ubuntu Server, is not NetworkManager's
-  until netplan's `renderer` is `NetworkManager`.
+  each Ethernet port and shows its IPv4 and IPv6 addresses; a connection's details, a
+  Wi-Fi network's among them, set whether it comes up on its own, 低數據模式 (marked
+  metered), IPv4 (from DHCP, by hand, or off, with DHCP's lease renewed), IPv6, DNS servers
+  and search domains, the MTU, and for Wi-Fi the private address, and copy a kept
+  network's password. It turns VPNs on and off, adds a WireGuard `.conf` or OpenVPN
+  `.ovpn` and removes one. A port netplan gives to systemd-networkd, as on Ubuntu Server,
+  has 改用 NetworkManager, which runs `nekoland-hand-over-network` as the installer does.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
   others. The sound page picks the output and input, and the sample rate and

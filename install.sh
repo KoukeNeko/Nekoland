@@ -26,7 +26,7 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
-    network-manager network-manager-openvpn
+    network-manager wpasupplicant network-manager-openvpn
     pipewire pipewire-pulse wireplumber brightnessctl
     grub-common python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
@@ -112,6 +112,7 @@ sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/apps "$src"/shel
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland "$src/shell/icons/Nekoland/index.theme"
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
+sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
     "$src/shell/org.freedesktop.FileManager1.service"
@@ -152,4 +153,19 @@ if [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ] && [ "\$(tty)" = /de
 fi
 EOF
 
-say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there"
+# Settings' 網路 page is NetworkManager's, but Ubuntu Server's netplan leaves the Ethernet
+# ports to systemd-networkd. Over SSH, applying it at once could cut the connection this runs
+# over, and NetworkManager may be given another address, so then it waits for the next boot.
+# Settings' 改用 NetworkManager runs the same.
+network_note=
+if command -v netplan >/dev/null && [ "$(sudo netplan get renderer)" != NetworkManager ]; then
+    say "Handing the network to NetworkManager"
+    if [ -n "${SSH_CONNECTION:-}" ]; then
+        sudo nekoland-hand-over-network --at-next-boot
+        network_note=" NetworkManager takes over the network as the computer starts next."
+    else
+        sudo nekoland-hand-over-network
+    fi
+fi
+
+say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there.$network_note"

@@ -140,6 +140,21 @@ fn manual_addresses(address: &str, mask: &str, router: &str) -> Result<(String, 
     Ok((format!("{address}/{prefix}"), router.to_string()))
 }
 
+/// How IPv4 can be set, as people read it and as NetworkManager's ipv4.method has it.
+const IPV4_METHODS: [(&str, &str); 3] = [("使用 DHCP", "auto"), ("手動", "manual"), ("關閉", "disabled")];
+
+/// MTUs as the Mac offers them, before one typed; NetworkManager's 0 leaves it to the port.
+const MTUS: [(&str, u32); 3] = [("自動", 0), ("標準（1500）", 1500), ("巨型訊框（9000）", 9000)];
+const CUSTOM_MTU: &str = "自訂";
+/// What an MTU typed may be: the least IPv4 takes, and what a jumbo frame carries.
+const MTU_LEAST: f64 = 576.0;
+const MTU_MOST: f64 = 9000.0;
+const STANDARD_MTU: u32 = 1500;
+
+/// The Mac's 私密 Wi-Fi 位址, as NetworkManager's cloned-mac-address has it: the hardware's
+/// own, one kept for each network, and a new one each time it is joined.
+const PRIVATE_ADDRESSES: [(&str, &str); 3] = [("關閉", "permanent"), ("固定", "stable"), ("輪替", "random")];
+
 /// How IPv6 can be set, as people read it and as NetworkManager's ipv6.method has it.
 const IPV6_METHODS: [(&str, &str); 4] = [
     ("自動", "auto"),
@@ -184,110 +199,108 @@ fn typed_list(typed: &str) -> String {
         .join(",")
 }
 
-/// How a connection's IPv4 and IPv6 addresses and DNS servers are set, with what applies
-/// them, for a connection that takes its IPv4 addresses from DHCP or has them set by hand.
+/// The connection types that have hardware of their own to set, as nmcli names them.
+pub(crate) const ETHERNET_TYPE: &str = "802-3-ethernet";
+pub(crate) const WIFI_TYPE: &str = "802-11-wireless";
+const VPN_PASSWORD: &str = "vpn.secrets.password";
+
+/// The rows a connection's IPv4 is set with: how, and what is set by hand.
+struct Ipv4Rows {
+    how: adw::ComboRow,
+    address: adw::EntryRow,
+    mask: adw::EntryRow,
+    router: adw::EntryRow,
+}
+
+/// The rows a connection's IPv6 is set with, when it is set one of IPV6_METHODS's ways.
+struct Ipv6Rows {
+    how: adw::ComboRow,
+    address: adw::EntryRow,
+    router: adw::EntryRow,
+}
+
+/// A connection's MTU and, for Wi-Fi, its private address, as the Mac's 硬體 has them.
+struct HardwareRows {
+    kind: String,
+    mtu: adw::ComboRow,
+    custom: adw::SpinRow,
+    private: Option<adw::ComboRow>,
+}
+
+/// A connection's MTU; nmcli says "auto" for 0, which leaves it to the port.
+fn current_mtu(uuid: &str, kind: &str) -> u32 {
+    setting(uuid, &format!("{kind}.mtu"))
+        .and_then(|mtu| mtu.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Which of PRIVATE_ADDRESSES a Wi-Fi connection has; its default, the hardware's own
+/// address, reads as 關閉.
+fn current_private(uuid: &str) -> u32 {
+    let current = setting(uuid, &format!("{WIFI_TYPE}.cloned-mac-address")).unwrap_or_default();
+    PRIVATE_ADDRESSES
+        .iter()
+        .position(|(_, value)| *value == current)
+        .unwrap_or(0) as u32
+}
+
+/// What address_settings shows, read again as it is applied.
+struct AddressRows {
+    uuid: String,
+    ipv4: Ipv4Rows,
+    ipv6: Option<Ipv6Rows>,
+    servers: adw::EntryRow,
+    search: adw::EntryRow,
+    hardware: Option<HardwareRows>,
+}
+
+fn entry_row(title: &str, text: &str, visible: bool) -> adw::EntryRow {
+    adw::EntryRow::builder()
+        .title(title)
+        .text(text)
+        .visible(visible)
+        .build()
+}
+
+fn choice_row(title: &str, labels: &[&str], selected: u32) -> adw::ComboRow {
+    adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(labels))
+        .selected(selected)
+        .build()
+}
+
+/// The first of what nmcli lists apart by commas.
+fn first_listed(list: &str) -> String {
+    list.split(',').next().unwrap_or_default().trim().to_string()
+}
+
+/// The mask a prefix length as nmcli prints it stands for, or nothing for none.
+fn mask_text(prefix: &str) -> String {
+    prefix
+        .parse()
+        .map(|prefix| prefix_mask(prefix).to_string())
+        .unwrap_or_default()
+}
+
+/// Whether a connection is up, on whatever device.
+fn is_up(uuid: &str) -> bool {
+    setting(uuid, "GENERAL.STATE").is_some_and(|state| !state.is_empty())
+}
+
+/// How a connection's addresses, DNS servers and hardware are set, with what applies them,
+/// for a connection whose IPv4 is DHCP's, set by hand, or off.
 pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
     let method = setting(uuid, "ipv4.method").unwrap_or_default();
-    if method != "auto" && method != "manual" {
+    let Some(chosen) = IPV4_METHODS.iter().position(|(_, known)| *known == method) else {
         return;
-    }
-    let manual = method == "manual";
-    let first = setting(uuid, "ipv4.addresses").unwrap_or_default();
-    let first = first.split(',').next().unwrap_or_default().trim().to_string();
-    let (address, prefix) = first.split_once('/').unwrap_or((first.as_str(), ""));
-    let mask = prefix
-        .parse()
-        .map(prefix_mask)
-        .map(|mask| mask.to_string())
-        .unwrap_or_default();
-    let entry = |title: &str, text: &str, visible: bool| {
-        adw::EntryRow::builder()
-            .title(title)
-            .text(text)
-            .visible(visible)
-            .build()
     };
-
-    let ipv4 = group("IPv4");
-    let how = adw::ComboRow::builder()
-        .title("設定 IPv4")
-        .model(&gtk::StringList::new(&["使用 DHCP", "手動"]))
-        .selected(u32::from(manual))
-        .build();
-    let address = entry("IP 位址", address, manual);
-    let mask = entry("子網路遮罩", &mask, manual);
-    let router = entry(
-        "路由器",
-        &setting(uuid, "ipv4.gateway").unwrap_or_default(),
-        manual,
-    );
-    let by_hand = [address.clone(), mask.clone(), router.clone()];
-    how.connect_selected_notify(move |how| {
-        for row in &by_hand {
-            row.set_visible(how.selected() == 1);
-        }
-    });
-    ipv4.add(&how);
-    for row in [&address, &mask, &router] {
-        ipv4.add(row);
-    }
-    page.add(&ipv4);
-
-    // A connection whose IPv6 is set some other way, as shared, keeps it.
-    let v6_method = setting(uuid, "ipv6.method").unwrap_or_default();
-    let ipv6 = IPV6_METHODS
-        .iter()
-        .position(|(_, method)| *method == v6_method)
-        .map(|chosen| {
-            let manual = IPV6_METHODS[chosen].1 == "manual";
-            let first = setting(uuid, "ipv6.addresses").unwrap_or_default();
-            let first = first.split(',').next().unwrap_or_default().trim().to_string();
-            let how = adw::ComboRow::builder()
-                .title("設定 IPv6")
-                .model(&gtk::StringList::new(&IPV6_METHODS.map(|(label, _)| label)))
-                .selected(chosen as u32)
-                .build();
-            let address = entry("IP 位址", &first, manual);
-            let router = entry(
-                "路由器",
-                &setting(uuid, "ipv6.gateway").unwrap_or_default(),
-                manual,
-            );
-            let by_hand = [address.clone(), router.clone()];
-            how.connect_selected_notify(move |how| {
-                for row in &by_hand {
-                    row.set_visible(IPV6_METHODS[how.selected() as usize].1 == "manual");
-                }
-            });
-            let ipv6 = group("IPv6");
-            ipv6.add(&how);
-            ipv6.add(&address);
-            ipv6.add(&router);
-            page.add(&ipv6);
-            (how, address, router)
-        });
-
-    let dns = group("DNS");
-    let current: Vec<String> = ["ipv4.dns", "ipv6.dns"]
-        .iter()
-        .filter_map(|key| setting(uuid, key))
-        .filter(|servers| !servers.is_empty())
-        .collect();
-    let servers = adw::EntryRow::builder()
-        .title("DNS 伺服器")
-        .text(current.join(",").replace(',', ", "))
-        .build();
-    let search = adw::EntryRow::builder()
-        .title("搜尋網域")
-        .text(
-            setting(uuid, "ipv4.dns-search")
-                .unwrap_or_default()
-                .replace(',', ", "),
-        )
-        .build();
-    dns.add(&servers);
-    dns.add(&search);
-    page.add(&dns);
+    // Each adds its group, in the Mac's order.
+    let ipv4 = ipv4_rows(page, uuid, chosen);
+    let ipv6 = ipv6_rows(page, uuid);
+    let (servers, search) = dns_rows(page, uuid);
+    let hardware = hardware_rows(page, uuid);
+    let rows = AddressRows { uuid: uuid.to_string(), ipv4, ipv6, servers, search, hardware };
 
     let apply = gtk::Button::builder()
         .label("套用")
@@ -297,87 +310,227 @@ pub fn address_settings(page: &adw::PreferencesPage, uuid: &str) {
     let end = group("");
     end.add(&apply);
     page.add(&end);
+    apply.connect_clicked(move |button| match rows.modify_args() {
+        Ok(args) => apply_settings(button, &rows.uuid, &args),
+        Err(why) => alert::notice(button, "無法套用設定", Some(why)),
+    });
+}
+
+fn ipv4_rows(page: &adw::PreferencesPage, uuid: &str, chosen: usize) -> Ipv4Rows {
+    let manual = IPV4_METHODS[chosen].1 == "manual";
+    let first = first_listed(&setting(uuid, "ipv4.addresses").unwrap_or_default());
+    let (address, prefix) = first.split_once('/').unwrap_or((first.as_str(), ""));
+    let how = choice_row("設定 IPv4", &IPV4_METHODS.map(|(label, _)| label), chosen as u32);
+    let address = entry_row("IP 位址", address, manual);
+    let mask = entry_row("子網路遮罩", &mask_text(prefix), manual);
+    let router = entry_row("路由器", &setting(uuid, "ipv4.gateway").unwrap_or_default(), manual);
+    let by_hand = [address.clone(), mask.clone(), router.clone()];
+    how.connect_selected_notify(move |how| {
+        for row in &by_hand {
+            row.set_visible(IPV4_METHODS[how.selected() as usize].1 == "manual");
+        }
+    });
+    let ipv4 = group("IPv4");
+    if IPV4_METHODS[chosen].1 == "auto" && is_up(uuid) {
+        ipv4.set_header_suffix(Some(&renew_button(uuid)));
+    }
+    for row in [how.upcast_ref::<gtk::Widget>(), address.upcast_ref(), mask.upcast_ref(), router.upcast_ref()] {
+        ipv4.add(row);
+    }
+    page.add(&ipv4);
+    Ipv4Rows { how, address, mask, router }
+}
+
+/// The Mac's 更新 DHCP 租約: the connection comes up again and asks DHCP anew.
+fn renew_button(uuid: &str) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .label("更新 DHCP 租約")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
     let uuid = uuid.to_string();
-    apply.connect_clicked(move |button| {
-        let settings = || -> Result<Vec<String>, &'static str> {
-            let mut settings: Vec<String> = ["connection", "modify", "uuid", uuid.as_str()]
-                .map(String::from)
-                .into();
-            let mut set = |key: &str, value: String| settings.extend([key.to_string(), value]);
-            if how.selected() == 1 {
-                let (address, router) = manual_addresses(&address.text(), &mask.text(), &router.text())?;
-                set("ipv4.method", "manual".into());
-                set("ipv4.addresses", address);
-                set("ipv4.gateway", router);
-            } else {
-                // What was set by hand goes, or DHCP's addresses come with it.
-                set("ipv4.method", "auto".into());
-                set("ipv4.addresses", String::new());
-                set("ipv4.gateway", String::new());
-            }
-            let (v4_servers, v6_servers) = dns_servers(&servers.text())?;
-            // Without IPv6, or with IPv6 set some other way, an IPv6 server would be dropped.
-            let v6_kept = ipv6
-                .as_ref()
-                .is_some_and(|(how, _, _)| IPV6_METHODS[how.selected() as usize].1 != "disabled");
-            if !v6_servers.is_empty() && !v6_kept {
-                return Err("IPv6 未開啟，無法使用 IPv6 的 DNS 伺服器。");
-            }
-            // Servers typed are used instead of DHCP's, as the Mac does.
-            let ignore = if v4_servers.is_empty() && v6_servers.is_empty() {
-                "no"
-            } else {
-                "yes"
-            };
-            set("ipv4.dns", v4_servers);
-            set("ipv4.ignore-auto-dns", ignore.into());
-            set("ipv4.dns-search", typed_list(&search.text()));
-            if let Some((how, address, router)) = &ipv6 {
-                let method = IPV6_METHODS[how.selected() as usize].1;
-                if method == "manual" {
-                    let (address, router) = manual_v6(&address.text(), &router.text())?;
-                    set("ipv6.method", method.into());
-                    set("ipv6.addresses", address);
-                    set("ipv6.gateway", router);
-                } else {
-                    set("ipv6.method", method.into());
-                    set("ipv6.addresses", String::new());
-                    set("ipv6.gateway", String::new());
-                }
-                if method == "disabled" {
-                    // NetworkManager refuses IPv6 DNS servers on a connection without IPv6.
-                    set("ipv6.dns", String::new());
-                } else {
-                    set("ipv6.dns", v6_servers);
-                    set("ipv6.ignore-auto-dns", ignore.into());
-                }
-            }
-            Ok(settings)
-        };
-        let args = match settings() {
-            Ok(args) => args,
-            Err(why) => return alert::notice(button, "無法套用設定", Some(why)),
-        };
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let (button, uuid) = (button.clone(), uuid.clone());
+    button.connect_clicked(move |button| {
         button.set_sensitive(false);
-        nmcli(&args, move |result| {
-            let failed = |button: &gtk::Button, err: &str| {
-                button.set_sensitive(true);
-                alert::notice(button, "無法套用設定", Some(err));
-            };
-            match result {
-                Err(err) => failed(&button, &err),
-                // A connection that is up takes them as it comes up again.
-                Ok(_) if setting(&uuid, "GENERAL.STATE").is_some_and(|state| !state.is_empty()) => {
-                    nmcli(&["connection", "up", "uuid", &uuid], move |result| match result {
-                        Ok(_) => button.set_sensitive(true),
-                        Err(err) => failed(&button, &err),
-                    });
-                }
-                Ok(_) => button.set_sensitive(true),
+        let button = button.clone();
+        nmcli(&["connection", "up", "uuid", &uuid], move |result| {
+            button.set_sensitive(true);
+            if let Err(err) = result {
+                alert::notice(&button, "無法更新 DHCP 租約", Some(&err));
             }
         });
+    });
+    button
+}
+
+/// IPv6's rows, but for a connection whose IPv6 is set some other way, as shared, which
+/// keeps it.
+fn ipv6_rows(page: &adw::PreferencesPage, uuid: &str) -> Option<Ipv6Rows> {
+    let method = setting(uuid, "ipv6.method").unwrap_or_default();
+    let chosen = IPV6_METHODS.iter().position(|(_, known)| *known == method)?;
+    let manual = IPV6_METHODS[chosen].1 == "manual";
+    let first = first_listed(&setting(uuid, "ipv6.addresses").unwrap_or_default());
+    let how = choice_row("設定 IPv6", &IPV6_METHODS.map(|(label, _)| label), chosen as u32);
+    let address = entry_row("IP 位址", &first, manual);
+    let router = entry_row("路由器", &setting(uuid, "ipv6.gateway").unwrap_or_default(), manual);
+    let by_hand = [address.clone(), router.clone()];
+    how.connect_selected_notify(move |how| {
+        for row in &by_hand {
+            row.set_visible(IPV6_METHODS[how.selected() as usize].1 == "manual");
+        }
+    });
+    let ipv6 = group("IPv6");
+    ipv6.add(&how);
+    ipv6.add(&address);
+    ipv6.add(&router);
+    page.add(&ipv6);
+    Some(Ipv6Rows { how, address, router })
+}
+
+/// The DNS servers and search domains, as they are typed.
+fn dns_rows(page: &adw::PreferencesPage, uuid: &str) -> (adw::EntryRow, adw::EntryRow) {
+    let current: Vec<String> = ["ipv4.dns", "ipv6.dns"]
+        .iter()
+        .filter_map(|key| setting(uuid, key))
+        .filter(|servers| !servers.is_empty())
+        .collect();
+    let servers = entry_row("DNS 伺服器", &current.join(",").replace(',', ", "), true);
+    let domains = setting(uuid, "ipv4.dns-search").unwrap_or_default();
+    let search = entry_row("搜尋網域", &domains.replace(',', ", "), true);
+    let dns = group("DNS");
+    dns.add(&servers);
+    dns.add(&search);
+    page.add(&dns);
+    (servers, search)
+}
+
+/// The MTU, and for Wi-Fi the private address, for an Ethernet or Wi-Fi connection.
+fn hardware_rows(page: &adw::PreferencesPage, uuid: &str) -> Option<HardwareRows> {
+    let kind = setting(uuid, "connection.type")?;
+    if kind != ETHERNET_TYPE && kind != WIFI_TYPE {
+        return None;
+    }
+    let shown_mtu = current_mtu(uuid, &kind);
+    let custom_choice = MTUS.len() as u32;
+    let chosen = MTUS
+        .iter()
+        .position(|(_, mtu)| *mtu == shown_mtu)
+        .map_or(custom_choice, |index| index as u32);
+    let labels: Vec<&str> = MTUS.iter().map(|(label, _)| *label).chain([CUSTOM_MTU]).collect();
+    let mtu = choice_row("MTU", &labels, chosen);
+    let custom = adw::SpinRow::with_range(MTU_LEAST, MTU_MOST, 1.0);
+    custom.set_title("自訂 MTU");
+    custom.set_value(f64::from(if chosen == custom_choice { shown_mtu } else { STANDARD_MTU }));
+    custom.set_visible(chosen == custom_choice);
+    let typed = custom.clone();
+    mtu.connect_selected_notify(move |row| typed.set_visible(row.selected() == custom_choice));
+    let hardware = group("硬體");
+    hardware.add(&mtu);
+    hardware.add(&custom);
+    let private = (kind == WIFI_TYPE).then(|| {
+        let labels = PRIVATE_ADDRESSES.map(|(label, _)| label);
+        let row = choice_row("私密 Wi-Fi 位址", &labels, current_private(uuid));
+        hardware.add(&row);
+        row
+    });
+    page.add(&hardware);
+    Some(HardwareRows { kind, mtu, custom, private })
+}
+
+impl HardwareRows {
+    /// What differs from what the connection has, as nmcli's settings and their values; what
+    /// is the same is not written, as a private address left at its default.
+    fn changes(&self, uuid: &str) -> Vec<(String, String)> {
+        let mut changes = Vec::new();
+        let mtu = MTUS
+            .get(self.mtu.selected() as usize)
+            .map_or(self.custom.value() as u32, |(_, mtu)| *mtu);
+        if mtu != current_mtu(uuid, &self.kind) {
+            changes.push((format!("{}.mtu", self.kind), mtu.to_string()));
+        }
+        if let Some(row) = &self.private {
+            if row.selected() != current_private(uuid) {
+                let value = PRIVATE_ADDRESSES[row.selected() as usize].1;
+                changes.push((format!("{WIFI_TYPE}.cloned-mac-address"), value.to_string()));
+            }
+        }
+        changes
+    }
+}
+
+impl AddressRows {
+    /// What `nmcli` is given to set what is shown, or why it cannot be.
+    fn modify_args(&self) -> Result<Vec<String>, &'static str> {
+        let mut args: Vec<String> = ["connection", "modify", "uuid", self.uuid.as_str()]
+            .map(String::from)
+            .into();
+        let mut set = |key: &str, value: String| args.extend([key.to_string(), value]);
+        let v4_method = IPV4_METHODS[self.ipv4.how.selected() as usize].1;
+        let ipv4 = &self.ipv4;
+        // What was set by hand goes otherwise, or DHCP's addresses come with it.
+        let (address, router) = if v4_method == "manual" {
+            manual_addresses(&ipv4.address.text(), &ipv4.mask.text(), &ipv4.router.text())?
+        } else {
+            Default::default()
+        };
+        set("ipv4.method", v4_method.into());
+        set("ipv4.addresses", address);
+        set("ipv4.gateway", router);
+        let (v4_servers, v6_servers) = dns_servers(&self.servers.text())?;
+        let v6_method = self.ipv6.as_ref().map(|rows| IPV6_METHODS[rows.how.selected() as usize].1);
+        // NetworkManager refuses servers for an IP version that is off, and drops IPv6's on a
+        // connection whose IPv6 is set some other way.
+        if !v4_servers.is_empty() && v4_method == "disabled" {
+            return Err("IPv4 未開啟，無法使用 IPv4 的 DNS 伺服器。");
+        }
+        if !v6_servers.is_empty() && v6_method.is_none_or(|method| method == "disabled") {
+            return Err("IPv6 未開啟，無法使用 IPv6 的 DNS 伺服器。");
+        }
+        // Servers typed are used instead of DHCP's, as the Mac does.
+        let ignore = if v4_servers.is_empty() && v6_servers.is_empty() { "no" } else { "yes" };
+        set("ipv4.dns", v4_servers);
+        set("ipv4.ignore-auto-dns", ignore.into());
+        set("ipv4.dns-search", typed_list(&self.search.text()));
+        if let (Some(rows), Some(method)) = (&self.ipv6, v6_method) {
+            let (address, router) = if method == "manual" {
+                manual_v6(&rows.address.text(), &rows.router.text())?
+            } else {
+                Default::default()
+            };
+            set("ipv6.method", method.into());
+            set("ipv6.addresses", address);
+            set("ipv6.gateway", router);
+            set("ipv6.dns", v6_servers);
+            if method != "disabled" {
+                set("ipv6.ignore-auto-dns", ignore.into());
+            }
+        }
+        for (key, value) in self.hardware.iter().flat_map(|hardware| hardware.changes(&self.uuid)) {
+            set(&key, value);
+        }
+        Ok(args)
+    }
+}
+
+/// Sets a connection with `args`, and brings it up again when it is up, so that it takes them.
+fn apply_settings(button: &gtk::Button, uuid: &str, args: &[String]) {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (button, uuid) = (button.clone(), uuid.to_string());
+    button.set_sensitive(false);
+    nmcli(&args, move |result| {
+        let failed = |button: &gtk::Button, err: &str| {
+            button.set_sensitive(true);
+            alert::notice(button, "無法套用設定", Some(err));
+        };
+        match result {
+            Err(err) => failed(&button, &err),
+            Ok(_) if is_up(&uuid) => {
+                nmcli(&["connection", "up", "uuid", &uuid], move |result| match result {
+                    Ok(_) => button.set_sensitive(true),
+                    Err(err) => failed(&button, &err),
+                });
+            }
+            Ok(_) => button.set_sensitive(true),
+        }
     });
 }
 
@@ -638,7 +791,7 @@ fn firewall_group() -> Option<adw::PreferencesGroup> {
                 row.set_sensitive(true);
             }
         };
-        match crate::sudo(reason, &["ufw", "--force", verb]) {
+        match crate::sudo(reason, &["ufw", "--force", verb], gio::SubprocessFlags::NONE) {
             // Turned down or failed, the switch goes back to what ufw is.
             Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
                 if let Err(err) = result {
@@ -664,7 +817,8 @@ fn port_row(port: &Port, named: bool, done: &Rc<dyn Fn()>) -> adw::ActionRow {
         "乙太網路".into()
     };
     let mut status = port.status().to_string();
-    if port.state.starts_with("connected") {
+    // A port left to systemd-networkd has its address all the same.
+    if port.state.starts_with("connected") || port.state == "unmanaged" {
         let address = device_field(&port.device, "IP4.ADDRESS");
         if let Some(address) = address
             .split(" | ")
@@ -676,6 +830,10 @@ fn port_row(port: &Port, named: bool, done: &Rc<dyn Fn()>) -> adw::ActionRow {
         }
     }
     let row = adw::ActionRow::builder().title(&title).subtitle(&status).build();
+    if port.state == "unmanaged" && std::path::Path::new(NETPLAN).exists() {
+        row.add_suffix(&hand_over_button(done));
+        return row;
+    }
     let switch = gtk::Switch::builder()
         .active(port.up())
         .sensitive(port.usable())
@@ -708,6 +866,79 @@ fn port_row(port: &Port, named: bool, done: &Rc<dyn Fn()>) -> adw::ActionRow {
     row
 }
 
+/// netplan, through which Ubuntu Server leaves its Ethernet ports to systemd-networkd.
+const NETPLAN: &str = "/usr/sbin/netplan";
+
+/// Gives the ports netplan sets up to NetworkManager, as the installer does.
+const HAND_OVER: &str = "nekoland-hand-over-network";
+
+/// Lets NetworkManager take over the ports systemd-networkd keeps, so they can be set here.
+fn hand_over_button(done: &Rc<dyn Fn()>) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .label("改用 NetworkManager")
+        .valign(gtk::Align::Center)
+        .build();
+    let done = done.clone();
+    button.connect_clicked(move |button| {
+        let (target, done) = (button.clone(), done.clone());
+        alert::confirm(
+            button,
+            "改由 NetworkManager 管理乙太網路？",
+            Some("網路會中斷幾秒。"),
+            "改用",
+            move || hand_over(&target, done),
+        );
+    });
+    button
+}
+
+fn hand_over(button: &gtk::Button, done: Rc<dyn Fn()>) {
+    button.set_sensitive(false);
+    let failed = {
+        let button = button.clone();
+        move |why: Option<String>| {
+            button.set_sensitive(true);
+            if let Some(why) = why {
+                alert::notice(&button, "無法改用 NetworkManager", Some(&why));
+            }
+        }
+    };
+    let program = crate::nekoland_program(HAND_OVER);
+    let program = program.to_string_lossy();
+    let sudo = match crate::sudo("改由 NetworkManager 管理網路", &[&program], gio::SubprocessFlags::STDERR_PIPE) {
+        Ok(sudo) => sudo,
+        Err(err) => return failed(Some(err.message().to_string())),
+    };
+    sudo.communicate_utf8_async(None, gio::Cancellable::NONE, glib::clone!(
+        #[strong]
+        sudo,
+        move |result| {
+            match result {
+                Ok(_) if sudo.is_successful() => {}
+                Ok((_, said)) => failed(hand_over_failure(said.as_deref().unwrap_or_default())),
+                Err(err) => failed(Some(err.message().to_string())),
+            }
+            done();
+        }
+    ));
+}
+
+/// What sudo says when askpass was turned down: sudo-rs's, then the original sudo's.
+const NOT_GIVEN: [&str; 2] = ["not attempted", "no password was provided"];
+
+/// Why handing over failed, from what sudo and netplan said; None when the password was not
+/// given, which is turning it down.
+fn hand_over_failure(said: &str) -> Option<String> {
+    if NOT_GIVEN.iter().any(|words| said.contains(words)) {
+        return None;
+    }
+    if said.contains("incorrect") {
+        return Some("密碼不正確。".into());
+    }
+    let last = said.lines().map(str::trim).filter(|line| !line.is_empty()).last();
+    Some(last.unwrap_or("netplan 無法套用設定。").to_string())
+}
+
 fn details_button() -> gtk::Button {
     gtk::Button::builder()
         .icon_name("view-more-symbolic")
@@ -731,57 +962,82 @@ fn present_dialog(parent: &impl IsA<gtk::Widget>, title: &str, page: &adw::Prefe
     dialog
 }
 
-/// What a connection does on its own: come up whenever it can.
-fn autoconnect_row(uuid: &str) -> adw::SwitchRow {
+/// A switch for one of a connection's settings, set as it is turned; `on` and `off` are the
+/// setting's values.
+fn setting_switch(uuid: &str, title: &str, key: &'static str, (on, off): (&'static str, &'static str)) -> adw::SwitchRow {
     let row = adw::SwitchRow::builder()
-        .title("自動連線")
-        .active(setting(uuid, "connection.autoconnect").as_deref() == Some("yes"))
+        .title(title)
+        .active(setting(uuid, key).as_deref() == Some(on))
         .build();
-    let uuid = uuid.to_string();
+    let (uuid, failure) = (uuid.to_string(), format!("無法變更「{title}」"));
     row.connect_active_notify(move |row| {
-        let value = if row.is_active() { "yes" } else { "no" };
-        nmcli(
-            &[
-                "connection",
-                "modify",
-                "uuid",
-                &uuid,
-                "connection.autoconnect",
-                value,
-            ],
-            |_| {},
-        );
+        let value = if row.is_active() { on } else { off };
+        let (row, failure) = (row.clone(), failure.clone());
+        nmcli(&["connection", "modify", "uuid", &uuid, key, value], move |result| {
+            if let Err(err) = result {
+                alert::notice(&row, &failure, Some(&err));
+            }
+        });
     });
     row
 }
 
-/// A port's addresses, its hardware, and how its addresses are set.
-fn port_dialog(parent: &gtk::Button, port: &Port, uuid: &str, title: &str, done: Rc<dyn Fn()>) {
-    let page = adw::PreferencesPage::new();
+/// What a connection does on its own: come up whenever it can; Wi-Fi calls it joining.
+pub(crate) fn autoconnect_row(uuid: &str, title: &str) -> adw::SwitchRow {
+    setting_switch(uuid, title, "connection.autoconnect", ("yes", "no"))
+}
+
+/// The Mac's 低數據模式: the connection marked metered, which what downloads in the
+/// background heeds; off leaves it to NetworkManager's guess, as for a phone's hotspot.
+pub(crate) fn low_data_row(uuid: &str) -> adw::SwitchRow {
+    setting_switch(uuid, "低數據模式", "connection.metered", ("yes", "unknown"))
+}
+
+/// The IPv6 addresses of a device's list as nmcli prints it, without their prefixes, and but
+/// for the link's own, which are of no use elsewhere.
+fn global_v6(list: &str) -> String {
+    list.split(" | ")
+        .filter(|address| !address.is_empty() && !address.starts_with("fe80:"))
+        .filter_map(|address| address.split('/').next())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What a device has while it is up, as the Mac's details show it.
+pub(crate) fn device_facts(device: &str) -> adw::PreferencesGroup {
     let facts = group("");
-    let first = device_field(&port.device, "IP4.ADDRESS");
+    let first = device_field(device, "IP4.ADDRESS");
     let first = first.split(" | ").next().unwrap_or_default();
     let (address, prefix) = first.split_once('/').unwrap_or((first, ""));
-    let mask = prefix
-        .parse()
-        .map(prefix_mask)
-        .map(|mask| mask.to_string())
-        .unwrap_or_default();
+    let servers: Vec<String> = ["IP4.DNS", "IP6.DNS"]
+        .iter()
+        .map(|field| device_field(device, field))
+        .filter(|servers| !servers.is_empty())
+        .collect();
     for (name, value) in [
         ("IP 位址", address.to_string()),
-        ("子網路遮罩", mask),
-        ("路由器", device_field(&port.device, "IP4.GATEWAY")),
-        ("DNS", device_field(&port.device, "IP4.DNS").replace(" | ", "\n")),
-        ("硬體位址", device_field(&port.device, "GENERAL.HWADDR")),
-        ("速度", device_field(&port.device, "CAPABILITIES.SPEED")),
+        ("子網路遮罩", mask_text(prefix)),
+        ("路由器", device_field(device, "IP4.GATEWAY")),
+        ("IPv6 位址", global_v6(&device_field(device, "IP6.ADDRESS"))),
+        ("IPv6 路由器", device_field(device, "IP6.GATEWAY")),
+        ("DNS", servers.join(" | ").replace(" | ", "\n")),
+        ("硬體位址", device_field(device, "GENERAL.HWADDR")),
+        ("速度", device_field(device, "CAPABILITIES.SPEED")),
     ] {
         if !value.is_empty() && value != "unknown" {
             facts.add(&fact_row(name, &value));
         }
     }
-    page.add(&facts);
+    facts
+}
+
+/// A port's addresses, its hardware, and how its addresses are set.
+fn port_dialog(parent: &gtk::Button, port: &Port, uuid: &str, title: &str, done: Rc<dyn Fn()>) {
+    let page = adw::PreferencesPage::new();
+    page.add(&device_facts(&port.device));
     let joining = group("");
-    joining.add(&autoconnect_row(uuid));
+    joining.add(&autoconnect_row(uuid, "自動連線"));
+    joining.add(&low_data_row(uuid));
     page.add(&joining);
     address_settings(&page, uuid);
     let dialog = present_dialog(parent, title, &page);
@@ -862,7 +1118,7 @@ fn ask_vpn_password(parent: &gtk::Switch, uuid: String, name: String, done: Rc<d
         if response != "connect" || typed.is_empty() {
             return done();
         }
-        up_with(&uuid, &format!("vpn.secrets.password:{typed}\n"), move |result| {
+        up_with(&uuid, VPN_PASSWORD, &typed, move |result| {
             if let Err(err) = result {
                 alert::notice(&parent, &format!("無法連線到「{name}」"), Some(&err));
             }
@@ -876,7 +1132,7 @@ fn vpn_dialog(parent: &gtk::Button, vpn: &Vpn, kind: &str, done: Rc<dyn Fn()>) {
     let page = adw::PreferencesPage::new();
     let facts = group("");
     facts.add(&fact_row("類型", kind));
-    facts.add(&autoconnect_row(&vpn.uuid));
+    facts.add(&autoconnect_row(&vpn.uuid, "自動連線"));
     page.add(&facts);
     let remove = gtk::Button::builder()
         .label("移除 VPN")
@@ -1026,6 +1282,33 @@ mod tests {
         assert!(manual_v6("2001:db8::2/129", "").is_err());
         assert!(manual_v6("2001:db8::2/48", "fe80::1::1").is_err());
         assert!(dns_servers("dns.example").is_err());
+    }
+
+    #[test]
+    fn facts_leave_out_what_is_of_no_use() {
+        assert_eq!(
+            global_v6("2001:db8::5/64 | fe80::215:5dff:fe00:903/64 | 2001:db8::6/128"),
+            "2001:db8::5\n2001:db8::6"
+        );
+        assert_eq!(global_v6("fe80::1/64"), "");
+        assert_eq!(mask_text("20"), "255.255.240.0");
+        assert_eq!(mask_text(""), "");
+        assert_eq!(first_listed("10.0.0.2/24, 10.0.0.3/24"), "10.0.0.2/24");
+    }
+
+    #[test]
+    fn hand_over_failures_say_why() {
+        assert_eq!(hand_over_failure("sudo: no password was provided\nsudo: a password is required\n"), None);
+        assert_eq!(hand_over_failure("sudo: Authentication required but not attempted\n"), None);
+        assert_eq!(
+            hand_over_failure("sudo: maximum 3 incorrect authentication attempts\n"),
+            Some("密碼不正確。".into())
+        );
+        assert_eq!(
+            hand_over_failure("Error in network definition: unknown key\n\n"),
+            Some("Error in network definition: unknown key".into())
+        );
+        assert_eq!(hand_over_failure(""), Some("netplan 無法套用設定。".into()));
     }
 
     #[test]
