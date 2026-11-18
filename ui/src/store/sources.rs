@@ -695,7 +695,7 @@ pub fn repository_packages(repo: &Repository) -> Vec<App> {
     apps
 }
 
-fn installed_versions<'a>(names: impl Iterator<Item = &'a str>) -> HashMap<String, String> {
+pub fn installed_versions<'a>(names: impl Iterator<Item = &'a str>) -> HashMap<String, String> {
     let names: Vec<&str> = names.collect();
     if names.is_empty() {
         return HashMap::new();
@@ -1615,17 +1615,69 @@ fn run_one(command: &mut Command, words: &[String], watch: &Watch) -> Result<(),
     if said.contains("no password was provided") || said.contains("a password is required") {
         return Err(String::new());
     }
-    // The last thing a failing program says is usually why.
-    let line = said
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("W:"))
-        .unwrap_or("失敗")
-        .trim_start_matches("E: ")
-        .trim_start_matches("error: ")
-        .to_string();
-    Err(line)
+    Err(explain_failure(&said))
+}
+
+/// Why a program failed, from what it said: in plain words where apt or dpkg said something
+/// known, else the last thing it said, which is usually why.
+pub fn explain_failure(said: &str) -> String {
+    plain_apt_error(said).unwrap_or_else(|| {
+        said.lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("W:"))
+            .unwrap_or("失敗")
+            .trim_start_matches("E: ")
+            .trim_start_matches("error: ")
+            .to_string()
+    })
+}
+
+/// Failures of apt and dpkg, by what they say of them in English, in plain words.
+const PLAIN_APT_ERRORS: [(&str, &str); 11] = [
+    ("not a Debian format archive", "檔案損毀或不是 .deb 套件"),
+    ("not a debian format archive", "檔案損毀或不是 .deb 套件"),
+    ("Invalid archive signature", "檔案損毀或不是 .deb 套件"),
+    ("unexpected end of file", "檔案不完整"),
+    ("does not match system", "套件的架構與這部電腦不符"),
+    ("No space left on device", "磁碟空間不足"),
+    ("dpkg was interrupted", "先前的安裝沒有完成，請在終端機執行 sudo dpkg --configure -a 後重試"),
+    ("Could not get lock", "另一個程式正在安裝軟體"),
+    ("Unable to acquire the dpkg frontend lock", "另一個程式正在安裝軟體"),
+    ("unmet dependencies", "相依套件無法安裝"),
+    ("Unable to satisfy dependencies", "相依套件無法安裝"),
+];
+
+/// What apt or dpkg said of a failure a person can act on, in plain words; None for the rest.
+pub fn plain_apt_error(said: &str) -> Option<String> {
+    if let Some(dependency) = unmet_dependency(said) {
+        return Some(format!("無法安裝相依套件 {dependency}"));
+    }
+    if let Some(owner) = overwritten_package(said) {
+        return Some(format!("與已安裝的 {owner} 有檔案衝突"));
+    }
+    PLAIN_APT_ERRORS
+        .iter()
+        .find(|(english, _)| said.contains(english))
+        .map(|(_, plain)| plain.to_string())
+}
+
+/// The first dependency apt could not satisfy, from ` package : Depends: name (>= 2) but …`.
+fn unmet_dependency(said: &str) -> Option<&str> {
+    said.lines()
+        .filter(|line| line.contains(" : ") || line.starts_with("  "))
+        .find_map(|line| line.split_once("Depends: "))
+        .and_then(|(_, rest)| rest.split([' ', ',']).next())
+        .filter(|name| !name.is_empty())
+}
+
+/// The installed package whose file dpkg would not overwrite, from `trying to overwrite
+/// '/usr/bin/x', which is also in package name 1.0`.
+fn overwritten_package(said: &str) -> Option<&str> {
+    said.lines()
+        .filter(|line| line.contains("trying to overwrite"))
+        .find_map(|line| line.split_once("which is also in package "))
+        .and_then(|(_, rest)| rest.split(' ').next())
 }
 
 /// The commands an installed command-line program put on the PATH.
@@ -1831,6 +1883,21 @@ mod tests {
     fn shell_quoting_keeps_words_whole() {
         assert_eq!(shell_quote("apt-get"), "apt-get");
         assert_eq!(shell_quote("it's here"), r"'it'\''s here'");
+    }
+
+    #[test]
+    fn apt_failures_are_said_plainly() {
+        let unmet = "The following packages have unmet dependencies:\n neko-missing : Depends: nonexistent-pkg-xyz (>= 2) but it is not installable\nE: Unable to satisfy dependencies. Reached two conflicting assignments:\n   1. neko-missing:amd64=1.0 is selected for install\n      [no choices]\n";
+        assert_eq!(explain_failure(unmet), "無法安裝相依套件 nonexistent-pkg-xyz");
+        let overwrite = "dpkg: error processing archive /tmp/x.deb (--unpack):\n trying to overwrite '/usr/bin/hello', which is also in package hello-traditional 2.10-5\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n";
+        assert_eq!(explain_failure(overwrite), "與已安裝的 hello-traditional 有檔案衝突");
+        assert_eq!(
+            explain_failure("dpkg-deb: error: 'bad.deb' is not a Debian format archive\n"),
+            "檔案損毀或不是 .deb 套件"
+        );
+        // Anything else is shown as the program said it.
+        assert_eq!(explain_failure("W: a warning\nE: Something odd\nW: later\n"), "Something odd");
+        assert_eq!(explain_failure(""), "失敗");
     }
 
     #[test]

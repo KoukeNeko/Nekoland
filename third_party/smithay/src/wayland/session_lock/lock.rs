@@ -179,9 +179,11 @@ where
                 lock_surface.send_configure();
             }
             Request::UnlockAndDestroy => {
-                // Ensure session is locked.
+                // Only the lock that was granted may unlock: a refused one would otherwise
+                // end the lock the compositor holds.
                 if !data.lock_status.load(Ordering::Relaxed) {
                     lock.post_error(Error::InvalidUnlock, "Session is not locked.");
+                    return;
                 }
 
                 state.lock_state().locked_outputs.clear();

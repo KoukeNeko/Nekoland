@@ -114,7 +114,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let display: Display<Nekoland> = Display::new()?;
     let display_handle = display.handle();
-    let state = Nekoland::new(&mut event_loop, display);
+    let mut state = Nekoland::new(&mut event_loop, display);
+    // For the lock's preview in Settings as much as for the lock.
+    state.draw_lock_shortcuts();
 
     let mut data = CalloopData {
         state,

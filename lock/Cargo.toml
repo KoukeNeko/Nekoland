@@ -7,6 +7,8 @@ description = "Nekoland's screen lock: the wallpaper under ink, the time, and a 
 [dependencies]
 cairo-rs = { version = "0.20", features = ["png"] }
 gdk-pixbuf = "0.20"
+# For time zones by name, as the second clock has.
+glib = { version = "0.20", features = ["v2_68"] }
 libc = "0.2"
 pango = "0.20"
 pangocairo = "0.20"

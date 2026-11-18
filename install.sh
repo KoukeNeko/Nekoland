@@ -30,7 +30,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland 
     pipewire pipewire-pulse wireplumber brightnessctl power-profiles-daemon orca
     grub-common python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
-    file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3
+    file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common"
 
 say "Installing packages"
@@ -104,6 +104,8 @@ for program in "$target/release/nekoland" "$target/release/nekoland-"*; do
 done
 sudo install -m 644 "$target/release/libnekoland_menus.so" /usr/local/bin/
 sudo install -Dm 644 -t /usr/local/share/applications "$src"/shell/*.desktop
+# GIO finds which program opens a kind of file from the folder's cache, not the files themselves.
+sudo update-desktop-database -q /usr/local/share/applications
 # Icons Files uses that Adwaita lacks; a theme that has its own still draws its own.
 sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/actions "$src"/shell/icons/*.svg
 # Nekoland's applications keep their icons under any theme; the other applications' icons it

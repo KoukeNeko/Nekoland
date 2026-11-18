@@ -105,9 +105,17 @@ pub fn scene_elements(
     mut glass: Option<&mut Glass>,
 ) -> Result<Vec<SceneElement>, Box<dyn std::error::Error>> {
     let scale = output.current_scale().fractional_scale();
-    // Locked, the locker's surface is all there is; until it has one, the clear colour.
+    // Locked, the locker's surface is all there is, under a shortcut opened over it; until
+    // it has one, the clear colour.
     if state.lock.is_some() {
-        return Ok(state
+        let output_loc = state.space.output_geometry(output).ok_or("output is not mapped")?.loc;
+        let mut elements: Vec<SceneElement> = state
+            .lock_guests()
+            .iter()
+            .rev()
+            .flat_map(|window| window_elements(state, renderer, window, output_loc, scale))
+            .collect();
+        elements.extend(state
             .lock_surface(output)
             .map(|surface| {
                 render_elements_from_surface_tree(
@@ -120,9 +128,10 @@ pub fn scene_elements(
                 )
                 .into_iter()
                 .map(SceneElement::Surface)
-                .collect()
+                .collect::<Vec<_>>()
             })
             .unwrap_or_default());
+        return Ok(elements);
     }
     let Some(overview) = &state.overview else {
         // A fullscreen window is all there is to see, under the overlay layer, once it has

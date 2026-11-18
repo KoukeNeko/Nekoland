@@ -95,10 +95,32 @@ wallpaper and an input method. Every key is optional:
 | `key_repeat`, `repeat_delay`, `repeat_rate` | Whether a held key repeats, how many milliseconds it waits before it does, and how many times a second it then repeats; on, 200 and 25 unless set |
 | `lock_wallpaper`, `lock_blur` | Whether the lock shows the wallpaper rather than dark paper, and blurs it; both on unless set |
 | `lock_style` | The lock's layout: `quiet` (the time in the middle, a row of widgets under it), `poster` (the hours over the minutes, bold, on the left) or `dial` (a clock with hands, its widgets on its face); `quiet` unless set |
-| `lock_clock_color`, `lock_clock_weight` | The lock's clock as `#rrggbb`, else a colour of the wallpaper's where the style has one; and `light`, `regular` or `bold`, else the style's |
-| `lock_widgets` | What the lock shows beside the time, of `battery` and `playing` (an MPRIS player's title); both unless set |
+| `lock_clock_color`, `lock_clock_weight` | The lock's clock as `#rrggbb` or `rainbow` (through the colours), else a colour of the wallpaper's where the style has one; and `light`, `regular` or `bold`, else the style's |
+| `lock_clock_text`, `lock_clock_image` | Words and a small picture laid under the lock's clock, as Good Lock's ClockFace has them |
+| `lock_dial_numerals`, `lock_dial_hands` | The `dial` style's figures, `none`, `arabic` or `roman`, `none` unless set; and its hands, `classic`, `thin` or `bold`, `classic` unless set |
+| `lock_clock_at`, `lock_notices_at`, `lock_message_at` | Where the lock's clock, notifications and message stand instead of where the style puts them: their middle as `[x, y]` shares of the screen |
+| `lock_clock_font`, `lock_clock_size`, `lock_clock_align` | The lock's clock's family, `font`'s unless set; `small`, `medium` or `large`, `medium` unless set; and `left`, `center` or `right`, `center` unless set, but the poster's always left |
+| `lock_clock_seconds`, `lock_show_date` | Whether the lock's clock shows seconds, off unless set, and the date, on unless set |
+| `lock_widgets` | What the lock shows beside the time, of `battery`, `playing` (an MPRIS player's title, with buttons to go back, play or pause and go on), `calendar` (today's next event from the Calendar), `world_clock` and `weather`; `battery` and `playing` unless set |
+| `lock_world_clock`, `lock_world_clock_name` | The `world_clock` widget's zone, as `Asia/Tokyo`, and the city it is shown as, else the zone's last part |
+| `lock_wallpaper_subject` | A picture of the wallpaper's subject on transparency, framed as the wallpaper is, drawn over the time above the password field, as One UI's depth effect does; best with `lock_blur = false`. Settings › 鎖定畫面 › 前景主體 › 去背 has one cut out of the lock's wallpaper by the services AI 生成桌布 uses: Stability AI takes the background away; the others are asked for a mask of the subject. The picture goes to that service |
+| `lock_weather_at`, `lock_weather_name` | The `weather` widget's place, as `[latitude, longitude]`, and the city it is shown as. The place is sent to MET Norway (api.met.no) every half hour while locked |
 | `lock_notices` | The notifications that came in while locked: `hidden`, `count` (how many from each program) or `full`; `count` unless set |
 | `lock_message`, `lock_show_name` | Words the lock shows, such as whom to call; and whether it shows the user's name and picture (`~/.face`), on unless set |
+| `lock_message_size`, `lock_message_color`, `lock_message_opacity` | The message's size in points, 10 to 40, 13 unless set; its colour as `#rrggbb`; and how opaque it is, 10 to 100 percent, 100 unless set |
+| `lock_lock_icon`, `lock_lock_icon_file`, `lock_lock_icon_color` | The sign at the top of the lock: `none`, `padlock`, `shield`, `key`, `heart`, `paw` or `picture` (the file's), `none` unless set, or `padlock` where the older `lock_show_lock_icon` is on; and its colour as `#rrggbb` |
+| `lock_power_buttons` | Whether the lock has sleep, restart and power off buttons at its foot; on unless set |
+| `lock_shortcuts`, `lock_shortcuts_layout`, `lock_shortcuts_unlocked` | Apps the lock opens, by desktop entry ID: two in the corners at its foot (`corners`) or six in a row (`row`), or six up the right edge (`column`), `corners` unless set; and whether they open over the lock without the password, off unless set |
+| `lock_wallpaper_folder` | A folder whose pictures take turns as the lock's, in order of their names, the next each time the screen locks, as One UI's Dynamic Lock Screen; `lock_wallpaper_file` comes first, and `lock_wallpaper_subject` is not drawn over them |
+| `lock_wallpaper_file`, `lock_dim` | A picture of the lock's own, the desktop's unless set; and how much darker the lock makes it, 0 to 80 percent, 0 unless set. Settings › 鎖定畫面 › AI 生成桌布 has one made from a description by OpenAI, Google Gemini or Stability AI with the person's API key, or by ChatGPT through the Codex CLI signed in with ChatGPT; the description goes to that service, and the keys are kept in `~/.config/nekoland/image-services`, readable by its owner alone |
+| `lock_stickers` | Pictures placed on the lock, as `[{ file = "…", at = [x, y], size = 160 }]`: each one's centre as shares of the screen, `[0.78, 0.3]` unless set, and its longer side in points, 160 unless set. The older `lock_sticker`, `lock_sticker_at` and `lock_sticker_size` give one more |
+| `lock_unlock_effect`, `lock_unlock_duration` | How the lock goes once the password is given: `lift`, `fade`, `slide`, `expand`, `spread`, `wave`, `warp`, `ripple`, `mosaic`, `wiper`, `paint`, `glitch` or `swirl`, `lift` unless set; and in how many milliseconds, 560 unless set |
+| `lock_unlock_direction`, `lock_unlock_easing`, `lock_unlock_color` | The way `slide`, `wave`, `wiper` (`left` and `up` turn it the other way round), `paint` and `glitch` go: `left`, `right`, `up` or `down`, `right` unless set but `left` for `slide`; the pace, `out`, `inout` or `linear`, `out` unless set; and the colour of `spread`'s edge, `ripple`'s rings, `paint`'s brush and `glitch`'s bands as `#rrggbb`, the wallpaper's unless set |
+| `lock_screen_off_after` | Seconds without input while locked after which the displays turn off, counted from locking at the soonest; as `screen_off_after` unless set |
+| `lock_always_on` | Whether the locked displays dim to the time on black instead of turning off, after `lock_screen_off_after` (30 seconds unless set) |
+| `lock_always_on_widgets`, `lock_always_on_stickers`, `lock_always_on_brightness` | Whether the always-on display also shows the widgets and the stickers, both off unless set; and how bright it is, 20 to 100 percent, 100 unless set |
+| `lock_fingerprint` | Whether a finger enrolled with fprintd unlocks, as the password does (on unless set). Settings › 鎖定畫面 › 指紋 enrolls and removes fingers |
+| `lock_fingerprint_effect` | What a finger on the reader shows around the fingerprint: `ripple`, `glow` or `none`, `ripple` unless set; in the wallpaper's colour when the reader knew it, red when not |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
@@ -507,7 +529,14 @@ nothing in it; what Market installed is kept in `~/.local/share/nekoland/market.
 that it can be removed whole. A cursor theme's page fetches the pack to try its cursors on
 before it is installed; an icon theme's page draws the Dock's applications in it. 套用 sets
 `icon_theme` or `cursor_theme`, and GNOME's matching setting, as Settings does.
-`shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications.
+`shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications, as the
+program that opens `.deb` files, which it is also given on its command line
+(`nekoland-store app.deb`). A package file's page (`ui/src/store/deb.rs`) shows what
+`dpkg-deb -f` reads from it, what `apt-get --simulate` would install or remove with it, and
+whether the installed version is older, the same or newer; 安裝, 更新, 重新安裝 or 降級 runs
+`apt-get install` on the file under the same `sudo -A`, so that its dependencies come from
+the repositories. A package for another processor, or one whose dependencies apt cannot
+find, says so in place of the button.
 
 Nekoland comes with no web browser. Market's 瀏覽器 page lists the ones it can install on
 this computer (`ui/src/store/browsers.rs`): each from Flathub, the Snap Store, Ubuntu or its

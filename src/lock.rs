@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use smithay::{
     delegate_idle_inhibit, delegate_session_lock,
+    desktop::{Window, WindowSurfaceType},
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState},
         pointer::MotionEvent,
@@ -31,7 +32,13 @@ use smithay::{
     },
 };
 
-use crate::{config, focus::KeyFocus, CalloopData, Nekoland};
+use crate::{
+    config,
+    focus::KeyFocus,
+    text::named_icon,
+    windows::{key_focus_of, window_names},
+    CalloopData, Nekoland,
+};
 
 /// How often the time without input is looked at.
 const IDLE_CHECK: Duration = Duration::from_secs(5);
@@ -43,6 +50,17 @@ pub struct Lock {
     lock: ExtSessionLockV1,
     /// The locker's surfaces, each with the output it covers.
     pub surfaces: Vec<(Output, LockSurface)>,
+    /// The lock's shortcut opened without the password: its windows, and only they, stand
+    /// above the lock until they close.
+    guest: Option<String>,
+    /// When, since boot, the shortcut was asked for. Only windows of a process started since
+    /// are its: one running before, as a program kept open with no windows or another naming
+    /// itself as the shortcut's app, would show what the lock hides.
+    guest_since: Duration,
+    /// Whether it has shown a window yet: once its last one closes, it is let go.
+    guest_shown: bool,
+    /// When it locked, which the displays' going dark while locked counts from.
+    since: Instant,
 }
 
 impl Lock {
@@ -58,6 +76,21 @@ impl Lock {
 /// shared one such as /tmp would let others read them or plant a link in their place.
 fn locker_notices() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-notices"))
+}
+
+/// The time since boot, as /proc/uptime has it.
+fn since_boot() -> Option<Duration> {
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    Duration::try_from_secs_f64(uptime.split_whitespace().next()?.parse().ok()?).ok()
+}
+
+/// When, since boot, a process started: the 22nd field of its stat, in clock ticks.
+fn process_started(pid: i32) -> Option<Duration> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The program's name, in parentheses, may hold spaces; what follows it is field 3 on.
+    let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()?;
+    let per_second = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|&hz| hz > 0)?;
+    Some(Duration::from_millis(ticks * 1000 / per_second))
 }
 
 pub fn tell_locker(app: &str, said: &str) {
@@ -85,6 +118,7 @@ impl Nekoland {
             return;
         }
         self.locker_started = Some(Instant::now());
+        self.draw_lock_shortcuts();
         if let Some(path) = locker_notices() {
             if let Err(err) = std::fs::remove_file(&path) {
                 if err.kind() != std::io::ErrorKind::NotFound {
@@ -111,21 +145,115 @@ impl Nekoland {
             .map(|(_, surface)| surface)
     }
 
-    /// While locked, what is under the pointer: the locker's surface on that output, if any.
+    /// The windows of the shortcut opened over the lock, back to front.
+    pub fn lock_guests(&self) -> Vec<Window> {
+        let Some(lock) = self.lock.as_ref() else {
+            return Vec::new();
+        };
+        let Some(guest) = lock.guest.as_deref() else {
+            return Vec::new();
+        };
+        // X11 windows all come through XWayland, which started before: none is a guest.
+        let started_since = |window: &Window| {
+            window
+                .toplevel()
+                .and_then(|toplevel| toplevel.wl_surface().client())
+                .and_then(|client| client.get_credentials(&self.display_handle).ok())
+                .and_then(|credentials| process_started(credentials.pid))
+                .is_some_and(|started| started >= lock.guest_since)
+        };
+        self.space
+            .elements()
+            .filter(|window| window_names(window).1.eq_ignore_ascii_case(guest))
+            .filter(|window| started_since(window))
+            .cloned()
+            .collect()
+    }
+
+    /// `nekoland msg lock-open APP`, from the lock's shortcuts: only an app set as one opens.
+    /// Locked, it opens over the lock if the shortcuts need no password; unlocked, as the
+    /// lock let go with the password given, it simply opens.
+    pub fn open_from_lock(&mut self, app_id: &str) {
+        if !self.config.lock_shortcuts.iter().any(|shortcut| shortcut == app_id) {
+            return tracing::warn!("lock-open: {app_id} is not a lock shortcut");
+        }
+        if let Some(lock) = self.lock.as_mut() {
+            if !self.config.lock_shortcuts_unlocked {
+                return;
+            }
+            lock.guest = Some(app_id.to_string());
+            lock.guest_shown = false;
+            let Some(now) = since_boot() else {
+                return tracing::warn!("lock-open: no uptime to tell the shortcut's windows by");
+            };
+            lock.guest_since = now;
+        }
+        self.launch_app(app_id);
+    }
+
+    /// The shortcuts' icons, for nekoland-lock, which has no icon themes of its own to find
+    /// them in: `nekoland-lock-shortcut-0.png` and `-1.png` in the runtime directory.
+    pub fn draw_lock_shortcuts(&mut self) {
+        let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from) else {
+            return;
+        };
+        // As many as nekoland-lock shows in a row.
+        for at in 0..6 {
+            let file = runtime.join(format!("nekoland-lock-shortcut-{at}.png"));
+            let icon = self
+                .config
+                .lock_shortcuts
+                .get(at)
+                .cloned()
+                .and_then(|app_id| self.apps.info(&app_id).icon_name.clone())
+                .and_then(|name| named_icon(&name, "", 64, (1.0, 1.0, 1.0)));
+            let written = match icon {
+                Some(icon) => std::fs::File::create(&file)
+                    .map_err(|err| err.to_string())
+                    .and_then(|mut out| icon.write_to_png(&mut out).map_err(|err| err.to_string())),
+                None => match std::fs::remove_file(&file) {
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.to_string()),
+                    _ => Ok(()),
+                },
+            };
+            if let Err(err) = written {
+                tracing::warn!("{}: {err}", file.display());
+            }
+        }
+    }
+
+    /// While locked, what is under the pointer: the shortcut opened over the lock, else the
+    /// locker's surface on that output, if any.
     pub fn lock_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        for window in self.lock_guests().iter().rev() {
+            // Where its surfaces are, as Space::element_under has it: its shadow is outside it.
+            let location = self.space.element_location(window)? - window.geometry().loc;
+            if let Some((surface, at)) = window.surface_under(pos - location.to_f64(), WindowSurfaceType::ALL) {
+                return Some((surface, (at + location).to_f64()));
+            }
+        }
         let output = self.space.output_under(pos).next()?;
         let origin = self.space.output_geometry(output)?.loc.to_f64();
         Some((self.lock_surface(output)?.wl_surface().clone(), origin))
     }
 
-    /// Keeps the keyboard on the locker.
+    /// Keeps the keyboard on the locker, or on the shortcut opened over it.
     pub fn focus_lock(&mut self) {
-        let focus = self.lock.as_ref().and_then(|lock| {
+        let guests = self.lock_guests();
+        if let Some(lock) = self.lock.as_mut() {
+            if !guests.is_empty() {
+                lock.guest_shown = true;
+            } else if lock.guest_shown {
+                lock.guest = None;
+            }
+        }
+        let guest = guests.last().map(key_focus_of);
+        let focus = guest.or_else(|| self.lock.as_ref().and_then(|lock| {
             lock.surfaces
                 .iter()
                 .find(|(_, surface)| surface.alive())
                 .map(|(_, surface)| KeyFocus::Wayland(surface.wl_surface().clone()))
-        });
+        }));
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -151,6 +279,14 @@ impl Nekoland {
                 self.loop_signal.stop();
                 return FilterResult::Intercept(());
             }
+            // The Super key puts a shortcut opened over the lock back behind it, open, for
+            // after the lock.
+            if matches!(sym, Keysym::Super_L | Keysym::Super_R)
+                && self.lock.as_mut().and_then(|lock| lock.guest.take()).is_some()
+            {
+                self.focus_lock();
+                return FilterResult::Intercept(());
+            }
             self.lock_screen();
         }
         self.focus_lock();
@@ -170,7 +306,7 @@ impl SessionLockHandler for Nekoland {
         }
         let lock = confirmation.ext_session_lock().clone();
         let surfaces = self.lock.take().map(|lock| lock.surfaces).unwrap_or_default();
-        self.lock = Some(Lock { lock, surfaces });
+        self.lock = Some(Lock { lock, surfaces, guest: None, guest_since: Duration::MAX, guest_shown: false, since: Instant::now() });
         self.focus_lock();
         // The pointer leaves what it was over as well, so that a click or scroll without
         // moving it first reaches nothing behind the lock.
@@ -211,6 +347,12 @@ impl SessionLockHandler for Nekoland {
         let Some(lock) = self.lock.as_mut() else {
             return;
         };
+        // A refused locker's surface would take the held lock's place, and the password typed
+        // into it.
+        let owner = |resource: Option<smithay::reexports::wayland_server::Client>| resource.map(|client| client.id());
+        if owner(lock.lock.client()) != owner(surface.wl_surface().client()) {
+            return;
+        }
         surface.with_pending_state(|state| {
             state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into());
         });
@@ -252,7 +394,14 @@ pub fn watch_idle(handle: &LoopHandle<'static, CalloopData>) {
             locked_after = Some(state.last_input);
             state.lock_screen();
         }
-        if past(state.config.screen_off_after) {
+        // While locked, after as long again since it locked or was last touched, as a phone's
+        // lock screen goes dark sooner than the phone does.
+        let locked_idle = state.lock.as_ref().map(|lock| idle.min(lock.since.elapsed()));
+        let off_while_locked = state.config.lock_screen_off_after != 0
+            && locked_idle.is_some_and(|idle| idle >= Duration::from_secs(state.config.lock_screen_off_after));
+        // The locker shows the time dimly instead, as an always-on display.
+        let always_on = state.lock.is_some() && state.config.lock_always_on;
+        if (past(state.config.screen_off_after) || off_while_locked) && !always_on {
             state.screens_off = true;
         }
         if past(state.config.sleep_after) && slept_after != Some(state.last_input) {
@@ -263,5 +412,18 @@ pub fn watch_idle(handle: &LoopHandle<'static, CalloopData>) {
     });
     if let Err(err) = inserted {
         tracing::warn!("idle: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_process_started_before_now_and_not_after() {
+        let now = since_boot().expect("uptime");
+        let started = process_started(std::process::id() as i32).expect("own stat");
+        assert!(started <= now, "{started:?} after {now:?}");
+        assert!(process_started(-1).is_none());
     }
 }
