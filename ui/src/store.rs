@@ -1,13 +1,16 @@
 //! `nekoland-store`: Market. One list for software from every place it comes from
 //! (Flathub, the Snap Store, Ubuntu's archive and other apt repositories, Homebrew), each
 //! program once however many places have it, and on its page the places side by side to
-//! install it from; and icon and cursor themes from Pling, tried on before they are applied.
+//! install it from; icon and cursor themes from Pling, tried on before they are applied; and
+//! `.deb` package files it is given to open.
 
 mod alert;
 #[path = "store/browsers.rs"]
 mod browsers;
 #[path = "store/choice.rs"]
 mod choice;
+#[path = "store/deb.rs"]
+mod deb;
 mod focus;
 mod ipc;
 #[path = "store/pling.rs"]
@@ -19,7 +22,8 @@ mod web;
 
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    path::PathBuf,
+    rc::{Rc, Weak},
 };
 
 use adw::prelude::*;
@@ -183,9 +187,46 @@ fn main() -> glib::ExitCode {
     if std::env::args().any(|arg| arg == choice::FLAG) {
         return choice::run();
     }
-    let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build);
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
+    let shown: Rc<RefCell<Weak<Store>>> = Rc::default();
+    app.connect_activate(glib::clone!(
+        #[strong]
+        shown,
+        move |app| {
+            show(app, &shown);
+        }
+    ));
+    // Package files, from the command line, Files, or another program asking it to open them.
+    app.connect_open(move |app, files, _| {
+        let store = show(app, &shown);
+        open_files(&store, files);
+    });
     app.run()
+}
+
+/// The window, built the first time; the application holds the store while it runs.
+fn show(app: &adw::Application, shown: &RefCell<Weak<Store>>) -> Rc<Store> {
+    if let Some(store) = shown.borrow().upgrade() {
+        store.window.present();
+        return store;
+    }
+    let store = build(app);
+    *shown.borrow_mut() = Rc::downgrade(&store);
+    store
+}
+
+fn open_files(store: &Rc<Store>, files: &[gio::File]) {
+    for file in files {
+        match file.path() {
+            Some(path) => store.nav.push(&deb_page(store, path)),
+            None => store
+                .toasts
+                .add_toast(adw::Toast::new(&format!("無法讀取 {}", file.uri()))),
+        }
+    }
 }
 
 fn load_css() {
@@ -196,11 +237,7 @@ fn load_css() {
     }
 }
 
-fn build(app: &adw::Application) {
-    if let Some(window) = app.active_window() {
-        window.present();
-        return;
-    }
+fn build(app: &adw::Application) -> Rc<Store> {
     load_css();
 
     let search = gtk::SearchEntry::builder()
@@ -342,6 +379,7 @@ fn build(app: &adw::Application) {
     count_updates(&store);
     store.window.present();
     focus::let_fields_go(&store.window);
+    store
 }
 
 fn fill_sidebar(store: &Rc<Store>) {
@@ -1514,8 +1552,8 @@ fn show_hero(detail: &Rc<ThemeDetail>) {
     }
 }
 
-/// Says a theme's change failed, with a way to try it again.
-fn theme_failed(store: &Rc<Store>, err: &str, retry: impl Fn() + 'static) {
+/// Says a change failed, with a way to try it again.
+fn say_failed(store: &Rc<Store>, err: &str, retry: impl Fn() + 'static) {
     let toast = adw::Toast::builder()
         .title(err)
         .button_label("重試")
@@ -1547,7 +1585,7 @@ fn install_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
                         detail.picked.set(0);
                         show_hero(&detail);
                     }
-                    Err(err) => theme_failed(
+                    Err(err) => say_failed(
                         &store,
                         &err,
                         glib::clone!(
@@ -1580,7 +1618,7 @@ fn apply_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>, folder: String) {
             move |result: Result<(), String>| {
                 match result {
                     Ok(()) => *detail.using.borrow_mut() = folder.clone(),
-                    Err(err) => theme_failed(
+                    Err(err) => say_failed(
                         &store,
                         &err,
                         glib::clone!(
@@ -1632,7 +1670,7 @@ fn remove_theme(store: &Rc<Store>, detail: &Rc<ThemeDetail>) {
                                 render_theme(&store, &detail);
                                 show_hero(&detail);
                             }
-                            Err(err) => theme_failed(
+                            Err(err) => say_failed(
                                 &store,
                                 &err,
                                 glib::clone!(
@@ -2032,26 +2070,7 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
                         return;
                     }
                     content.append(&section(title, &end));
-                    let list = gtk::ListBox::builder()
-                        .css_classes(["boxed-list"])
-                        .selection_mode(gtk::SelectionMode::None)
-                        .build();
-                    for (name, from, versions) in items {
-                        let row = adw::ActionRow::builder()
-                            .title(glib::markup_escape_text(name))
-                            .subtitle(from.as_str())
-                            .build();
-                        if !versions.is_empty() {
-                            row.add_suffix(
-                                &gtk::Label::builder()
-                                    .label(versions)
-                                    .css_classes(["dim-label", "numeric"])
-                                    .build(),
-                            );
-                        }
-                        list.append(&row);
-                    }
-                    content.append(&list);
+                    content.append(&package_list(items));
                 };
                 band("需要管理員", format!("{} 項", found.admin.len()), &found.admin);
                 band("使用者層級", format!("{} 項", found.user.len()), &found.user);
@@ -2100,6 +2119,30 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
         ),
     );
     page
+}
+
+/// Packages, each its name over where it comes from, and at its end its versions.
+fn package_list(items: &[(String, String, String)]) -> gtk::ListBox {
+    let list = gtk::ListBox::builder()
+        .css_classes(["boxed-list"])
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+    for (name, from, versions) in items {
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(name))
+            .subtitle(from.as_str())
+            .build();
+        if !versions.is_empty() {
+            row.add_suffix(
+                &gtk::Label::builder()
+                    .label(versions)
+                    .css_classes(["dim-label", "numeric"])
+                    .build(),
+            );
+        }
+        list.append(&row);
+    }
+    list
 }
 
 fn update_plan(found: &Updates) -> sources::Plan {
@@ -2156,14 +2199,15 @@ struct Detail {
     command: gtk::Box,
 }
 
-fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
-    let content = column();
+/// The top of an app's page: its icon, name and summary, and a box for its buttons, which is
+/// returned with it.
+fn app_head(app: &App) -> (gtk::Box, gtk::Box) {
     let head = gtk::Box::builder()
         .spacing(18)
         .margin_top(8)
         .margin_bottom(8)
         .build();
-    head.append(&icon(&app, 72));
+    head.append(&icon(app, 72));
     let names = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .valign(gtk::Align::Center)
@@ -2196,6 +2240,25 @@ fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
     head.append(&names);
     let actions = gtk::Box::builder().spacing(8).valign(gtk::Align::Center).build();
     head.append(&actions);
+    (head, actions)
+}
+
+fn description_label(text: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .max_width_chars(80)
+        .lines(8)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["dim-label"])
+        .build()
+}
+
+fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
+    let content = column();
+    let (head, actions) = app_head(&app);
     content.append(&head);
 
     let command = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -2228,18 +2291,7 @@ fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
         }
     }
     if !app.description.is_empty() {
-        content.append(
-            &gtk::Label::builder()
-                .label(&app.description)
-                .xalign(0.0)
-                .halign(gtk::Align::Start)
-                .wrap(true)
-                .max_width_chars(80)
-                .lines(8)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .css_classes(["dim-label"])
-                .build(),
-        );
+        content.append(&description_label(&app.description));
     }
     let table = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content.append(&table);
@@ -2337,15 +2389,21 @@ fn cli_facts(app: &App) -> Option<gtk::Widget> {
         facts.push(("授權", app.license.clone()));
     }
     if !app.homepage.is_empty() {
-        facts.push((
-            "首頁",
-            app.homepage
-                .trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .trim_end_matches('/')
-                .to_string(),
-        ));
+        facts.push(("首頁", bare_address(&app.homepage)));
     }
+    fact_grid(facts)
+}
+
+/// A web address as the facts show it, without its scheme or a trailing slash.
+fn bare_address(url: &str) -> String {
+    url.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Facts side by side on a card, each its name over its value; None for no facts.
+fn fact_grid(facts: Vec<(&str, String)>) -> Option<gtk::Widget> {
     if facts.is_empty() {
         return None;
     }
@@ -2419,16 +2477,7 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
         detail.actions.append(&remove);
         if !app.cli {
             if let Some(info) = launcher(&app, installed) {
-                let open = gtk::Button::builder()
-                    .label("打開")
-                    .css_classes(["suggested-action", "pill"])
-                    .build();
-                open.connect_clicked(move |_| {
-                    if let Err(err) = info.launch(&[], gio::AppLaunchContext::NONE) {
-                        eprintln!("open: {err}");
-                    }
-                });
-                detail.actions.append(&open);
+                detail.actions.append(&open_button(info));
             }
         }
     } else {
@@ -2634,6 +2683,19 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
         }
     ));
     detail.table.append(&list);
+}
+
+fn open_button(info: gio::AppInfo) -> gtk::Button {
+    let open = gtk::Button::builder()
+        .label("打開")
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    open.connect_clicked(move |_| {
+        if let Err(err) = info.launch(&[], gio::AppLaunchContext::NONE) {
+            eprintln!("open: {err}");
+        }
+    });
+    open
 }
 
 fn or_dash(value: &str) -> String {
@@ -2971,13 +3033,10 @@ fn change(
                     }
                     // Asked for the password and cancelled: back as it was, with nothing to say.
                     Err(err) if err.is_empty() => {}
-                    Err(err) => {
-                        let toast = adw::Toast::builder()
-                            .title(&err)
-                            .button_label("重試")
-                            .timeout(0)
-                            .build();
-                        toast.connect_button_clicked(glib::clone!(
+                    Err(err) => say_failed(
+                        &store,
+                        &err,
+                        glib::clone!(
                             #[weak]
                             store,
                             #[strong]
@@ -2988,15 +3047,309 @@ fn change(
                             reason,
                             #[strong]
                             done,
-                            move |_| {
+                            move || {
                                 let plan = sources::Plan::clone(&plan);
                                 change(&store, &detail, plan, reason.clone(), done.clone());
                             }
-                        ));
-                        store.toasts.add_toast(toast);
-                    }
+                        ),
+                    ),
                 }
                 render(&store, &detail);
+            }
+        ),
+    );
+}
+
+// A package file.
+
+struct DebPage {
+    path: PathBuf,
+    busy: Cell<bool>,
+    /// How far the install running, if one is, has got.
+    watch: RefCell<Option<sources::Watch>>,
+    /// What the file is once read, or why it could not be read.
+    found: RefCell<Option<Result<deb::Inspection, String>>>,
+    content: gtk::Box,
+    page: glib::WeakRef<adw::NavigationPage>,
+}
+
+fn deb_page(store: &Rc<Store>, path: PathBuf) -> adw::NavigationPage {
+    let content = column();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let page = page(&file_name, &content, None);
+    let deb = Rc::new(DebPage {
+        path,
+        busy: Cell::new(false),
+        watch: RefCell::default(),
+        found: RefCell::default(),
+        content,
+        page: page.downgrade(),
+    });
+    // As an app's page does, the page holds what it shows until it is popped and disposed.
+    page.connect_destroy(glib::clone!(
+        #[strong]
+        deb,
+        move |_| {
+            let _ = &deb;
+        }
+    ));
+    render_deb(store, &deb);
+    read_deb(store, &deb);
+    page
+}
+
+/// Reads the file and asks about it, as again once it is installed, and shows what it is.
+fn read_deb(store: &Rc<Store>, deb: &Rc<DebPage>) {
+    let path = deb.path.clone();
+    background(
+        move || deb::inspect(&path),
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            deb,
+            move |found: Result<deb::Inspection, String>| {
+                deb.busy.set(false);
+                *deb.found.borrow_mut() = Some(found);
+                render_deb(&store, &deb);
+            }
+        ),
+    );
+}
+
+fn render_deb(store: &Rc<Store>, deb: &Rc<DebPage>) {
+    while let Some(child) = deb.content.first_child() {
+        deb.content.remove(&child);
+    }
+    let found = deb.found.borrow();
+    let found = match found.as_ref() {
+        None => {
+            deb.content.append(&loading());
+            return;
+        }
+        Some(Err(err)) => {
+            deb.content.append(&empty(err));
+            return;
+        }
+        Some(Ok(found)) => found,
+    };
+    let package = &found.package;
+    if let Some(page) = deb.page.upgrade() {
+        page.set_title(&package.name);
+    }
+    let launcher = deb_launcher(&found.entries);
+    let app = App {
+        name: package.name.clone(),
+        summary: package.summary.clone(),
+        developer: package.maintainer.clone(),
+        icon_name: launcher.as_ref().map(themed_icon_name).unwrap_or_default(),
+        ..Default::default()
+    };
+    let (head, actions) = app_head(&app);
+    deb.content.append(&head);
+    deb_actions(store, deb, found, launcher, &actions);
+    let facts: Vec<(&str, String)> = [
+        ("版本", package.version.clone()),
+        ("大小", package.size(found.file_bytes)),
+        ("架構", package.architecture.clone()),
+        ("首頁", bare_address(&package.homepage)),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .collect();
+    if let Some(grid) = fact_grid(facts) {
+        deb.content.append(&grid);
+    }
+    if !package.description.is_empty() {
+        deb.content.append(&description_label(&package.description));
+    }
+    match &found.changes {
+        Ok(changes) => {
+            let installs: Vec<(String, String, String)> = changes
+                .installs
+                .iter()
+                .map(|change| {
+                    let versions = match &change.from {
+                        Some(from) => format!("{from} → {}", change.version),
+                        None => change.version.clone(),
+                    };
+                    (change.name.clone(), String::new(), versions)
+                })
+                .collect();
+            let removes: Vec<(String, String, String)> = changes
+                .removes
+                .iter()
+                .map(|name| (name.clone(), String::new(), String::new()))
+                .collect();
+            for (title, items) in [("一併安裝", installs), ("一併移除", removes)] {
+                if items.is_empty() {
+                    continue;
+                }
+                deb.content.append(&section(title, &format!("{} 個", items.len())));
+                deb.content.append(&package_list(&items));
+            }
+        }
+        Err(err) => {
+            deb.content.append(&section("相依套件", ""));
+            deb.content.append(
+                &gtk::Label::builder()
+                    .label(err)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .css_classes(["dim-label"])
+                    .build(),
+            );
+        }
+    }
+}
+
+/// The first program the installed package lists, to open it with.
+fn deb_launcher(entries: &[PathBuf]) -> Option<gio::AppInfo> {
+    entries
+        .iter()
+        .find_map(|path| gio::DesktopAppInfo::from_filename(path).filter(|info| info.should_show()))
+        .map(|info| info.upcast())
+}
+
+fn themed_icon_name(info: &gio::AppInfo) -> String {
+    info.icon()
+        .and_then(|icon| icon.downcast::<gio::ThemedIcon>().ok())
+        .and_then(|icon| icon.names().first().map(|name| name.to_string()))
+        .unwrap_or_default()
+}
+
+/// The header's buttons: how the file stands to what is installed, and the install, which
+/// is withheld where apt says it cannot be done.
+fn deb_actions(
+    store: &Rc<Store>,
+    deb: &Rc<DebPage>,
+    found: &deb::Inspection,
+    launcher: Option<gio::AppInfo>,
+    actions: &gtk::Box,
+) {
+    let state = |text: &str| {
+        gtk::Label::builder()
+            .label(text)
+            .css_classes(["dim-label"])
+            .build()
+    };
+    if deb.busy.get() {
+        actions.append(&working(deb.watch.borrow().clone()));
+        return;
+    }
+    if !found.fits {
+        actions.append(&state(&format!("不支援 {} 架構", found.package.architecture)));
+        return;
+    }
+    let standing = found.standing();
+    let (said, verb) = match &standing {
+        deb::Standing::New => (None, "安裝"),
+        deb::Standing::Upgrade(from) => (Some(format!("已安裝較舊的 {from}")), "更新"),
+        deb::Standing::Same => (Some("已安裝此版本".to_string()), "重新安裝"),
+        deb::Standing::Downgrade(from) => (Some(format!("已安裝較新的 {from}")), "降級"),
+    };
+    if let Some(said) = said {
+        actions.append(&state(&said));
+    }
+    let launcher = launcher.filter(|_| standing == deb::Standing::Same);
+    let install = gtk::Button::builder().sensitive(found.changes.is_ok()).build();
+    install.set_child(Some(&button_content(true, verb)));
+    // Installed as it is, opening it is what is mostly wanted.
+    let classes: &[&str] = if launcher.is_some() {
+        &["flat"]
+    } else {
+        &["suggested-action", "pill"]
+    };
+    for class in classes {
+        install.add_css_class(class);
+    }
+    install.connect_clicked(glib::clone!(
+        #[weak]
+        store,
+        #[weak]
+        deb,
+        move |_| start_deb_install(&store, &deb)
+    ));
+    actions.append(&install);
+    if let Some(info) = launcher {
+        actions.append(&open_button(info));
+    }
+}
+
+/// Installs the file, asking first when it would put an older version in place of a newer.
+fn start_deb_install(store: &Rc<Store>, deb: &Rc<DebPage>) {
+    let (name, version, standing) = match deb.found.borrow().as_ref() {
+        Some(Ok(found)) => (
+            found.package.name.clone(),
+            found.package.version.clone(),
+            found.standing(),
+        ),
+        _ => return,
+    };
+    if !matches!(standing, deb::Standing::Downgrade(_)) {
+        install_deb(store, deb, &name, &standing);
+        return;
+    }
+    alert::confirm(
+        &store.window,
+        &format!("將 {name} 降級到 {version}？"),
+        None,
+        "降級",
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            deb,
+            move || install_deb(&store, &deb, &name, &standing)
+        ),
+    );
+}
+
+fn install_deb(store: &Rc<Store>, deb: &Rc<DebPage>, name: &str, standing: &deb::Standing) {
+    let plan = deb::install_plan(&deb.path, standing);
+    let reason = format!("安裝 {name}");
+    let watch = sources::Watch::default();
+    deb.busy.set(true);
+    *deb.watch.borrow_mut() = Some(watch.clone());
+    render_deb(store, deb);
+    background(
+        move || sources::run_watched(&plan, &reason, &watch),
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            deb,
+            move |result: Result<(), String>| {
+                *deb.watch.borrow_mut() = None;
+                match result {
+                    // Read again, so that the page says what is now installed; it keeps
+                    // working until then.
+                    Ok(()) => {
+                        count_updates(&store);
+                        read_deb(&store, &deb);
+                    }
+                    Err(err) => {
+                        // Empty when the password was not given: back as it was.
+                        if !err.is_empty() {
+                            say_failed(
+                                &store,
+                                &err,
+                                glib::clone!(
+                                    #[weak]
+                                    store,
+                                    #[weak]
+                                    deb,
+                                    move || start_deb_install(&store, &deb)
+                                ),
+                            );
+                        }
+                        deb.busy.set(false);
+                        render_deb(&store, &deb);
+                    }
+                }
             }
         ),
     );

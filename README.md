@@ -498,7 +498,14 @@ nothing in it; what Market installed is kept in `~/.local/share/nekoland/market.
 that it can be removed whole. A cursor theme's page fetches the pack to try its cursors on
 before it is installed; an icon theme's page draws the Dock's applications in it. 套用 sets
 `icon_theme` or `cursor_theme`, and GNOME's matching setting, as Settings does.
-`shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications.
+`shell/io.github.koukeneko.Nekoland.Store.desktop` puts it among the applications, as the
+program that opens `.deb` files, which it is also given on its command line
+(`nekoland-store app.deb`). A package file's page (`ui/src/store/deb.rs`) shows what
+`dpkg-deb -f` reads from it, what `apt-get --simulate` would install or remove with it, and
+whether the installed version is older, the same or newer; 安裝, 更新, 重新安裝 or 降級 runs
+`apt-get install` on the file under the same `sudo -A`, so that its dependencies come from
+the repositories. A package for another processor, or one whose dependencies apt cannot
+find, says so in place of the button.
 
 Nekoland comes with no web browser. Market's 瀏覽器 page lists the ones it can install on
 this computer (`ui/src/store/browsers.rs`): each from Flathub, the Snap Store, Ubuntu or its
