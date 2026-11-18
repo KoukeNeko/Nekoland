@@ -43,6 +43,13 @@ const ICON: i32 = 66;
 const ICON_TOP: i32 = 12;
 /// How much the icon under the pointer grows, as on the iPad, its name staying as it is.
 const HOVER_LIFT: f64 = 1.08;
+/// How many seconds an icon takes to grow most of the way under the pointer, or to settle
+/// back: each moment it goes a share of what is left, so it starts quick and lands softly.
+const LIFT_TIME: f64 = 0.1;
+/// Nearer its own size than this, an icon the pointer left is drawn at it.
+const LIFT_AT_REST: f64 = 0.002;
+/// How finely a lift is told apart from the one drawn before it.
+const LIFT_STEPS: f64 = 1000.0;
 const SEARCH_WIDTH: i32 = 360;
 /// Room under the grid for the dots that tell the pages.
 const DOTS: i32 = 40;
@@ -213,6 +220,41 @@ enum Target {
     InFolder(usize),
 }
 
+/// How far each icon lately under the pointer has grown, from 0 to 1, by its place.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Lifts(Vec<(usize, f64)>);
+
+impl Lifts {
+    /// Moves every icon on, `seconds` later: the one at `hovered` toward its larger size,
+    /// the others back, all at once where nothing is `animated`.
+    fn step(&mut self, hovered: Option<usize>, seconds: f64, animated: bool) {
+        if let Some(index) = hovered.filter(|index| self.0.iter().all(|(at, _)| at != index)) {
+            self.0.push((index, 0.0));
+        }
+        let share = if animated { 1.0 - (-seconds / LIFT_TIME).exp() } else { 1.0 };
+        for (index, lifted) in &mut self.0 {
+            let goal = if Some(*index) == hovered { 1.0 } else { 0.0 };
+            *lifted += (goal - *lifted) * share;
+        }
+        self.0
+            .retain(|(index, lifted)| Some(*index) == hovered || *lifted > LIFT_AT_REST);
+    }
+
+    /// How many times its size the icon at a place is drawn.
+    fn of(&self, index: usize) -> f64 {
+        let lifted = self.0.iter().find(|(at, _)| *at == index).map_or(0.0, |(_, lifted)| *lifted);
+        1.0 + (HOVER_LIFT - 1.0) * lifted
+    }
+
+    /// What tells one drawing of the lifts from the next.
+    fn drawn(&self) -> Vec<(usize, u16)> {
+        self.0
+            .iter()
+            .map(|(index, lifted)| (*index, (lifted * LIFT_STEPS).round() as u16))
+            .collect()
+    }
+}
+
 /// What a press went down on.
 #[derive(Clone, Copy, PartialEq)]
 enum Pressed {
@@ -223,12 +265,12 @@ enum Pressed {
 }
 
 /// What a folder was drawn with: its name, its applications, where room was kept,
-/// whether it was being renamed, and which was pointed at.
-type FolderDrawn = (String, Vec<usize>, Option<usize>, bool, Option<usize>, Option<u128>);
-/// What the grid was drawn with: what was typed, how far the pages had turned, what was
-/// pointed at, the places, where a dragged icon was aimed, whether a folder was open, and
-/// how far the icons had shaken.
-type GridDrawn = (String, i64, Option<usize>, Vec<Cell>, Target, bool, Option<u128>);
+/// whether it was being renamed, and how far the icons pointed at had grown.
+type FolderDrawn = (String, Vec<usize>, Option<usize>, bool, Vec<(usize, u16)>, Option<u128>);
+/// What the grid was drawn with: what was typed, how far the pages had turned, how far the
+/// icons pointed at had grown, the places, where a dragged icon was aimed, whether a folder
+/// was open, and how far the icons had shaken.
+type GridDrawn = (String, i64, Vec<(usize, u16)>, Vec<Cell>, Target, bool, Option<u128>);
 
 /// Where an open folder is: its pane, its grid, and the grid's columns and rows.
 struct FolderPlace {
@@ -243,6 +285,7 @@ struct OpenFolder {
     renaming: bool,
     opened: Instant,
     hovered: Option<usize>,
+    lifts: Lifts,
     picture: Option<Picture>,
     drawn: Option<FolderDrawn>,
 }
@@ -274,6 +317,7 @@ pub struct AppGrid {
     /// The page shown, on its way to `page`.
     shown: f64,
     hovered: Option<usize>,
+    lifts: Lifts,
     press: Option<(Pressed, Point<f64, Logical>)>,
     pressed: Instant,
     /// Since when the grid is being arranged.
@@ -469,6 +513,7 @@ impl AppGrid {
             page: 0,
             shown: 0.0,
             hovered: None,
+            lifts: Lifts::default(),
             press: None,
             pressed: Instant::now(),
             editing: None,
@@ -834,6 +879,7 @@ impl Nekoland {
     /// sliding into place, and what is drawn again when it changed.
     pub fn refresh_apps(&mut self) {
         let layout = self.apps_layout();
+        let animated = self.config.animations;
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
         let output_size = self
             .space
@@ -902,19 +948,20 @@ impl Nekoland {
             .and_then(|pos| layout.cell_at(pos))
             .map(|(cell, _)| first + cell)
             .filter(|&index| index < cells.len());
+        apps.lifts.step(apps.hovered, dt, animated);
 
         let dimmed = apps.open.is_some();
         let key = (
             apps.query.clone(),
             (apps.shown * 1000.0).round() as i64,
-            apps.hovered,
+            apps.lifts.drawn(),
             cells.clone(),
             apps.target,
             dimmed,
             apps.shake(),
         );
         let held = apps.held.as_ref().map(|held| held.entry);
-        let open_key = self.refresh_folder(&layout, pointer);
+        let open_key = self.refresh_folder(&layout, pointer, dt);
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -923,7 +970,7 @@ impl Nekoland {
         if grid_stale {
             apps.drawn = Some(key);
             let shown = apps.shown;
-            let hovered = apps.hovered;
+            let lifts = apps.lifts.clone();
             let aimed = match apps.target {
                 // Among the places shown, the room kept before it counts too.
                 Target::Onto(at) => Some(match apps.gap {
@@ -952,7 +999,7 @@ impl Nekoland {
             };
             let pages = pages.max(cells.len().div_ceil(per_page));
             let shake = apps.shake();
-            apps.picture = draw_grid(&layout, shown, &places, &tiles, hovered, aimed, pages, shake);
+            apps.picture = draw_grid(&layout, shown, &places, &tiles, &lifts, aimed, pages, shake);
         }
         if held_stale {
             let tile = held.and_then(|entry| self.grid_tile(entry, HELD_SIZE));
@@ -965,7 +1012,8 @@ impl Nekoland {
     }
 
     /// Draws the open folder again when what it shows changed.
-    fn refresh_folder(&mut self, layout: &Layout, pointer: Option<Point<f64, Logical>>) -> Option<()> {
+    fn refresh_folder(&mut self, layout: &Layout, pointer: Option<Point<f64, Logical>>, dt: f64) -> Option<()> {
+        let animated = self.config.animations;
         let apps = self.overview.as_ref()?.apps.as_ref()?;
         let FolderPlace {
             panel,
@@ -992,18 +1040,21 @@ impl Nekoland {
             .map(|(cell, _)| cell)
             .filter(|&cell| cell < shown.len());
         let shake = apps.shake();
-        let key = (folder.name.clone(), shown.clone(), gap, open.renaming, hovered, shake);
+        let name = folder.name.clone();
+        let renaming = open.renaming;
+        let open = self.overview.as_mut()?.apps.as_mut()?.open.as_mut()?;
+        open.hovered = hovered;
+        open.lifts.step(hovered, dt, animated);
+        let lifts = open.lifts.clone();
+        let key = (name.clone(), shown.clone(), gap, renaming, lifts.drawn(), shake);
         if open.drawn.as_ref() == Some(&key) && open.picture.is_some() {
             return Some(());
         }
-        let name = folder.name.clone();
-        let renaming = open.renaming;
         let tiles: Vec<Option<Tile>> = shown
             .iter()
             .map(|&app| self.grid_tile(Entry::App(app), ICON))
             .collect();
         let open = self.overview.as_mut()?.apps.as_mut()?.open.as_mut()?;
-        open.hovered = hovered;
         open.drawn = Some(key);
         open.picture = draw_folder(
             panel.size,
@@ -1013,7 +1064,7 @@ impl Nekoland {
             renaming,
             &tiles,
             gap,
-            hovered,
+            &lifts,
             shake,
         );
         Some(())
@@ -1415,6 +1466,7 @@ impl Nekoland {
                                 renaming: false,
                                 opened: Instant::now(),
                                 hovered: None,
+                                lifts: Lifts::default(),
                                 picture: None,
                                 drawn: None,
                             });
@@ -1739,17 +1791,16 @@ fn paint_folder(cr: &Context, x: f64, y: f64, size: f64, minis: &[Option<ImageSu
 }
 
 /// An application's icon or a folder's square at the top of a place, its name under it; the
-/// icon a little bigger while the pointer is on it.
-fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile, hovered: bool) -> Option<()> {
-    let lift = if hovered { HOVER_LIFT } else { 1.0 };
+/// icon `lift` times its size, a little bigger while the pointer is on it.
+fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile, lift: f64) -> Option<()> {
     paint_tile_in(cr, x, y, tile, CELL_WIDTH, ICON, lift)
 }
 
 /// The same, turned about its icon's middle as far as the place at `index` has shaken:
 /// each place a little out of step with the next, so that they do not sway as one.
-fn paint_shaken(cr: &Context, x: f64, y: f64, tile: &Tile, index: usize, hovered: bool, shake: Option<u128>) -> Option<()> {
+fn paint_shaken(cr: &Context, x: f64, y: f64, tile: &Tile, index: usize, lift: f64, shake: Option<u128>) -> Option<()> {
     let Some(step) = shake else {
-        return paint_tile(cr, x, y, tile, hovered);
+        return paint_tile(cr, x, y, tile, lift);
     };
     let seconds = step as f64 * 0.008;
     let angle = SHAKE * (seconds * SHAKE_RATE * std::f64::consts::TAU + index as f64 * 2.4).sin();
@@ -1758,7 +1809,7 @@ fn paint_shaken(cr: &Context, x: f64, y: f64, tile: &Tile, index: usize, hovered
     cr.translate(middle_x, middle_y);
     cr.rotate(angle);
     cr.translate(-middle_x, -middle_y);
-    let painted = paint_tile(cr, x, y, tile, hovered);
+    let painted = paint_tile(cr, x, y, tile, lift);
     cr.restore().ok()?;
     painted
 }
@@ -1809,7 +1860,7 @@ fn draw_grid(
     shown: f64,
     places: &[(usize, usize, Cell)],
     tiles: &[Option<Tile>],
-    hovered: Option<usize>,
+    lifts: &Lifts,
     aimed: Option<usize>,
     pages: usize,
     shake: Option<u128>,
@@ -1839,7 +1890,7 @@ fn draw_grid(
                 cr.fill().ok()?;
             }
             if let Some(tile) = tile {
-                paint_shaken(&cr, x, y, tile, index, hovered == Some(index), shake)?;
+                paint_shaken(&cr, x, y, tile, index, lifts.of(index), shake)?;
             }
         }
         cr.reset_clip();
@@ -1874,7 +1925,7 @@ fn draw_folder(
     renaming: bool,
     tiles: &[Option<Tile>],
     gap: Option<usize>,
-    hovered: Option<usize>,
+    lifts: &Lifts,
     shake: Option<u128>,
 ) -> Option<Picture> {
     let surface = text::canvas(size.w, size.h).ok()?;
@@ -1919,7 +1970,7 @@ fn draw_folder(
                 f64::from(grid.y + row as i32 * CELL_HEIGHT),
             );
             if let Some(tile) = tile {
-                paint_shaken(&cr, x, y, tile, index, hovered == Some(index), shake)?;
+                paint_shaken(&cr, x, y, tile, index, lifts.of(index), shake)?;
             }
             place += 1;
         }
@@ -1943,6 +1994,37 @@ fn draw_held(tile: &Tile) -> Option<Picture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_icon_grows_under_the_pointer_and_settles_back_when_it_leaves() {
+        let frame = 1.0 / 60.0;
+        let mut lifts = Lifts::default();
+        lifts.step(Some(3), frame, true);
+        let first = lifts.of(3);
+        assert!(first > 1.0 && first < HOVER_LIFT, "one frame is part of the way: {first}");
+        for _ in 0..60 {
+            lifts.step(Some(3), frame, true);
+        }
+        assert!((lifts.of(3) - HOVER_LIFT).abs() < 0.001);
+        // On to the next: the one left comes down as the other goes up.
+        lifts.step(Some(4), frame, true);
+        assert!(lifts.of(3) < HOVER_LIFT && lifts.of(3) > 1.0);
+        assert!(lifts.of(4) > 1.0);
+        for _ in 0..120 {
+            lifts.step(None, frame, true);
+        }
+        assert_eq!(lifts, Lifts::default());
+        assert_eq!(lifts.of(3), 1.0);
+    }
+
+    #[test]
+    fn with_nothing_animated_an_icon_is_at_its_size_at_once() {
+        let mut lifts = Lifts::default();
+        lifts.step(Some(1), 1.0 / 60.0, false);
+        assert_eq!(lifts.of(1), HOVER_LIFT);
+        lifts.step(None, 1.0 / 60.0, false);
+        assert_eq!(lifts, Lifts::default());
+    }
 
     #[test]
     fn a_grid_finds_the_cell_and_how_near_its_icon() {
