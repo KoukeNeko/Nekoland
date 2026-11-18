@@ -273,6 +273,9 @@ impl Nekoland {
         {
             return;
         }
+        if button == BUTTON_RIGHT && self.apps_menu(pos) {
+            return;
+        }
         if self.overview.is_some() && self.overview_covers(pos) {
             self.overview_click(pos);
         } else if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {

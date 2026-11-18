@@ -286,7 +286,10 @@ pub fn scene_elements(
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
     // The applications in front of the desktops' bar, on glass behind everything else.
-    let (mut overlays, backdrop) = state.apps_overlays();
+    let (apps, backdrop) = state.apps_overlays();
+    // A menu a right click opened here, over it all.
+    let mut overlays = state.menu_bar_overlays();
+    overlays.extend(apps);
     overlays.extend(state.overview_overlays());
     overlays.extend(state.dock_overlays());
     overlays.extend(backdrop);

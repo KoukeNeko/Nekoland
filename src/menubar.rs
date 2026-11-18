@@ -116,6 +116,8 @@ pub enum Command {
     Focus(Window),
     /// What the desktop's menus offer.
     Desktop(crate::desktop::DesktopCommand),
+    /// What the applications' grid offers.
+    Apps(crate::appgrid::AppsCommand),
     VolumeUp,
     VolumeDown,
     Mute,
@@ -1072,13 +1074,15 @@ impl Nekoland {
         self.overview.is_none() && self.fullscreen_window().is_none()
     }
 
-    /// Whether the bar or an open menu is at a position, so that it is not a window's.
+    /// Whether the bar or an open menu is at a position, so that it is not a window's. A
+    /// menu opened by a right click is there in the overview too, where the bar is not.
     pub fn menu_bar_covers(&self, pos: Point<f64, Logical>) -> bool {
         let Some(output) = self.output_area() else {
             return false;
         };
-        self.menu_bar_shown()
-            && (self.menu_bar.open.is_some() || self.menu_bar.control.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT))
+        self.menu_bar.open.is_some()
+            || (self.menu_bar_shown()
+                && (self.menu_bar.control.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
     }
 
     /// The titles of the bar's left side for the active application.
@@ -1233,9 +1237,6 @@ impl Nekoland {
         let Some(output) = self.output_area() else {
             return Vec::new();
         };
-        if !self.menu_bar_shown() {
-            return Vec::new();
-        }
         let bar = &self.menu_bar;
         let mut overlays = Vec::new();
         if let Some(open) = &bar.open {
@@ -1251,6 +1252,9 @@ impl Nekoland {
                     });
                 }
             }
+        }
+        if !self.menu_bar_shown() {
+            return overlays;
         }
         overlays.extend(self.control_center_overlay());
         if let Some(picture) = &bar.picture {
@@ -1384,6 +1388,9 @@ impl Nekoland {
     }
 
     fn title_at(&self, local: Point<i32, Logical>) -> Option<usize> {
+        if !self.menu_bar_shown() {
+            return None;
+        }
         self.menu_bar
             .titles
             .iter()
@@ -1907,7 +1914,7 @@ impl Nekoland {
             }
             return;
         }
-        if self.menu_bar.open.is_none() || !self.menu_bar_shown() {
+        if self.menu_bar.open.is_none() {
             return;
         }
         let Some(local) = self.local(pos) else {
@@ -2330,6 +2337,7 @@ impl Nekoland {
             Command::Focus(window) => self.restore_from_dock(&window),
             Command::Dock(command) => self.run_dock_command(command),
             Command::Desktop(command) => self.run_desktop_command(command),
+            Command::Apps(command) => self.run_apps_command(command),
             Command::VolumeUp => config::spawn(&self.config.volume_up),
             Command::VolumeDown => config::spawn(&self.config.volume_down),
             Command::Mute => config::spawn(&self.config.volume_mute),
