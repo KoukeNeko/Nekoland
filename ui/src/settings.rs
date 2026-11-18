@@ -300,6 +300,20 @@ fn main() -> glib::ExitCode {
     code
 }
 
+/// The title of each setting on a page, with the row that shows it.
+fn setting_rows(widget: &gtk::Widget, found: &mut Vec<(String, gtk::Widget)>) {
+    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
+        if widget.is_visible() && !row.title().is_empty() {
+            found.push((row.title().to_string(), widget.clone()));
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(next) = child {
+        setting_rows(&next, found);
+        child = next.next_sibling();
+    }
+}
+
 fn build(app: &adw::Application) {
     // Opened again, it shows the window it has.
     if let Some(window) = app.active_window() {
@@ -366,49 +380,59 @@ fn build(app: &adw::Application) {
             }
         })
     };
-    // The pages in groups with a line between, as the Mac's System Settings has them.
+    // The pages in groups, each under its name; 網路 has the proxy and the firewall too,
+    // which are not NetworkManager's.
     let groups: Vec<Vec<(&str, &str)>> = vec![
-        // 網路 has the proxy and the firewall too, which are not NetworkManager's.
         wifi::has_wifi()
             .then_some(("Wi-Fi", "network-wireless-symbolic"))
             .into_iter()
             .chain(bluetooth::has_bluetooth().then_some(("藍牙", "bluetooth-symbolic")))
-            .chain([("網路", "network-wired-symbolic")])
+            .chain([
+                ("網路", "network-wired-symbolic"),
+                ("共享", "preferences-desktop-remote-desktop-symbolic"),
+            ])
             .collect(),
         vec![
             ("外觀", "preferences-desktop-appearance-symbolic"),
-            ("字型", "preferences-desktop-font-symbolic"),
-            ("協助工具", "preferences-desktop-accessibility-symbolic"),
-            ("隱私", "preferences-system-privacy-symbolic"),
-        ],
-        vec![
             ("桌面", "user-desktop-symbolic"),
-            ("視窗", "preferences-desktop-multitasking-symbolic"),
+            ("字型", "preferences-desktop-font-symbolic"),
             ("鎖定畫面", "system-lock-screen-symbolic"),
+            ("視窗", "preferences-desktop-multitasking-symbolic"),
             ("懸停資訊", "document-properties-symbolic"),
-            ("通知", "preferences-system-notifications-symbolic"),
-            ("顯示", "video-display-symbolic"),
-            ("電源", "battery-level-100-symbolic"),
         ],
         vec![
+            ("顯示", "video-display-symbolic"),
             ("聲音", "audio-speakers-symbolic"),
             ("鍵盤", "input-keyboard-symbolic"),
             ("滑鼠與觸控板", "input-mouse-symbolic"),
             ("印表機", "printer-symbolic"),
+            ("電源", "battery-level-100-symbolic"),
+        ],
+        vec![
+            ("通知", "preferences-system-notifications-symbolic"),
+            ("預設應用程式", "preferences-desktop-apps-symbolic"),
+            ("啟動項目", "system-run-symbolic"),
+            ("語言與地區", "preferences-desktop-locale-symbolic"),
+            ("日期與時間", "preferences-system-time-symbolic"),
+            ("軟體更新", "software-update-available-symbolic"),
+            ("備份", "document-save-symbolic"),
         ],
         vec![
             ("使用者", "system-users-symbolic"),
-            ("語言與地區", "preferences-desktop-locale-symbolic"),
-            ("日期與時間", "preferences-system-time-symbolic"),
-            ("預設應用程式", "preferences-desktop-apps-symbolic"),
-            ("啟動項目", "system-run-symbolic"),
-            ("共享", "preferences-desktop-remote-desktop-symbolic"),
-            ("軟體更新", "software-update-available-symbolic"),
-            ("備份", "document-save-symbolic"),
-            ("關於", "help-about-symbolic"),
+            ("隱私", "preferences-system-privacy-symbolic"),
+            ("協助工具", "preferences-desktop-accessibility-symbolic"),
         ],
-        vec![("設計語言", "applications-graphics-symbolic")],
+        vec![
+            ("關於", "help-about-symbolic"),
+            ("設計語言", "applications-graphics-symbolic"),
+        ],
     ];
+    const GROUP_NAMES: [&str; 6] = ["連線", "個人化", "裝置", "系統", "帳號與安全", "關於"];
+    let crumbs: Vec<String> = groups
+        .iter()
+        .zip(GROUP_NAMES)
+        .flat_map(|(group, name)| group.iter().map(move |(page, _)| format!("{name} › {page}")))
+        .collect();
     let starts: Vec<usize> = groups
         .iter()
         .scan(0, |at, group| {
@@ -443,15 +467,17 @@ fn build(app: &adw::Application) {
         .build();
     sidebar.set_header_func(move |row, _| {
         let index = row.index() as usize;
-        let line = (index > 0 && starts.contains(&index)).then(|| {
-            gtk::Separator::builder()
-                .margin_top(8)
-                .margin_bottom(8)
-                .margin_start(8)
-                .margin_end(8)
+        let title = starts.iter().position(|start| *start == index).map(|group| {
+            gtk::Label::builder()
+                .label(GROUP_NAMES[group])
+                .xalign(0.0)
+                .margin_top(if group == 0 { 4 } else { 14 })
+                .margin_bottom(4)
+                .margin_start(10)
+                .css_classes(["dim-label", "caption-heading"])
                 .build()
         });
-        row.set_header(line.as_ref());
+        row.set_header(title.as_ref());
     });
     for (name, icon, page) in &pages {
         stack.add_named(page, Some(name));
@@ -472,12 +498,26 @@ fn build(app: &adw::Application) {
 
     let sidebar_view = adw::ToolbarView::new();
     sidebar_view.add_top_bar(&adw::HeaderBar::new());
-    sidebar_view.set_content(Some(
-        &gtk::ScrolledWindow::builder()
+    let scrolled = |child: &gtk::ListBox| {
+        gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&sidebar)
-            .build(),
-    ));
+            .child(child)
+            .build()
+    };
+    let results = gtk::ListBox::builder()
+        .css_classes(["navigation-sidebar"])
+        .build();
+    let side = gtk::Stack::new();
+    side.add_named(&scrolled(&sidebar), Some("pages"));
+    side.add_named(&scrolled(&results), Some("results"));
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("搜尋設定")
+        .margin_start(8)
+        .margin_end(8)
+        .margin_bottom(6)
+        .build();
+    sidebar_view.add_top_bar(&search);
+    sidebar_view.set_content(Some(&side));
     let split = adw::NavigationSplitView::builder()
         .sidebar(
             &adw::NavigationPage::builder()
@@ -486,9 +526,13 @@ fn build(app: &adw::Application) {
                 .build(),
         )
         .content(&content)
+        .min_sidebar_width(280.0)
+        .max_sidebar_width(340.0)
+        .sidebar_width_fraction(0.3)
         .build();
 
     let names: Vec<&str> = pages.iter().map(|(name, ..)| *name).collect();
+    let page_names = names.clone();
     let first = std::env::var(PAGE_ENV)
         .ok()
         .and_then(|page| names.iter().position(|name| *name == page))
@@ -507,6 +551,89 @@ fn build(app: &adw::Application) {
         }
     ));
     sidebar.select_row(sidebar.row_at_index(first as i32).as_ref());
+
+    // Search: the pages' names and every setting's title, over the pages as they are now.
+    let hits: Rc<RefCell<Vec<(usize, Option<gtk::Widget>)>>> = Rc::default();
+    search.connect_search_changed(glib::clone!(
+        #[weak]
+        results,
+        #[weak]
+        stack,
+        #[weak]
+        side,
+        #[strong]
+        hits,
+        move |entry| {
+            while let Some(old) = results.first_child() {
+                results.remove(&old);
+            }
+            hits.borrow_mut().clear();
+            let query = entry.text().to_lowercase();
+            if query.is_empty() {
+                side.set_visible_child_name("pages");
+                return;
+            }
+            let mut found = Vec::new();
+            for (at, name) in page_names.iter().enumerate() {
+                if name.to_lowercase().contains(&query) {
+                    found.push((name.to_string(), at, None));
+                }
+                let Some(page) = stack.child_by_name(name) else { continue };
+                let mut rows = Vec::new();
+                setting_rows(&page, &mut rows);
+                for (title, row) in rows {
+                    if title.to_lowercase().contains(&query) {
+                        found.push((title, at, Some(row)));
+                    }
+                }
+            }
+            for (title, at, target) in found {
+                let label = gtk::Label::builder().label(&title).xalign(0.0).build();
+                let place = gtk::Label::builder()
+                    .label(&crumbs[at])
+                    .xalign(0.0)
+                    .css_classes(["dim-label", "caption"])
+                    .build();
+                results.append(&column(2, &[label.upcast_ref(), place.upcast_ref()]));
+                hits.borrow_mut().push((at, target));
+            }
+            side.set_visible_child_name("results");
+        }
+    ));
+    search.connect_activate(glib::clone!(
+        #[weak]
+        results,
+        move |_| {
+            if let Some(first) = results.row_at_index(0) {
+                first.activate();
+            }
+        }
+    ));
+    results.connect_row_activated(glib::clone!(
+        #[weak]
+        sidebar,
+        #[weak]
+        split,
+        #[weak]
+        search,
+        #[strong]
+        hits,
+        move |_, row| {
+            let Some((at, target)) = hits.borrow().get(row.index() as usize).cloned() else {
+                return;
+            };
+            search.set_text("");
+            sidebar.select_row(sidebar.row_at_index(at as i32).as_ref());
+            split.set_show_content(true);
+            if let Some(target) = target {
+                glib::idle_add_local_once(move || {
+                    if !target.grab_focus() {
+                        target.child_focus(gtk::DirectionType::TabForward);
+                    }
+                });
+            }
+        }
+    ));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
