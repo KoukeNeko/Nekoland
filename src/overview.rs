@@ -31,6 +31,14 @@ const THUMBNAIL_WIDTH: i32 = 192;
 const THUMBNAIL_GAP: i32 = 32;
 const EXPANDED_PADDING: i32 = 12;
 const LABEL_HEIGHT: i32 = 24;
+/// How fast a desktop glides to its place in the bar, as a spring's rate.
+const BAR_GLIDE_RATE: f64 = 16.0;
+/// The add button: a desktop's picture this much of the size of the others.
+const ADD_SIZE: f64 = 0.62;
+/// How dark the wallpaper is on the add button, under its plus.
+const ADD_DIM: f64 = 0.45;
+/// Around a desktop's picture on its frame, for the ring of the one shown.
+const FRAME_MARGIN: i32 = 6;
 /// How long the bar takes to open up or close.
 const EXPAND_DURATION: Duration = Duration::from_millis(180);
 const CLOSE_SIZE: i32 = 22;
@@ -93,6 +101,11 @@ struct SpacesBar {
     expanded_items: Vec<BarItem>,
     /// Where each desktop's live picture goes when the bar is opened up.
     thumbnails: Vec<Rectangle<i32, Logical>>,
+    /// What goes around each: the ring of the one shown, and its name under it.
+    frames: Vec<Picture>,
+    /// The add button, which shows the wallpaper under its plus, and the plus.
+    add: Rectangle<i32, Logical>,
+    plus: Option<Picture>,
     /// The button that takes a desktop away, shown on the one the pointer is on.
     close: Option<Picture>,
 }
@@ -261,6 +274,9 @@ pub struct Overview {
     last_tick: Instant,
     strip_id: Id,
     expanded_id: Id,
+    /// Where each desktop is along the opened-up bar on its way to its place, how fast,
+    /// and what names its frame from one frame to the next.
+    glides: Vec<(f64, f64, Id)>,
     drag: Option<Drag>,
     /// The desktop in the opened-up bar the pointer is on, which shows its close button.
     hovered_desktop: Option<usize>,
@@ -270,6 +286,9 @@ pub struct Overview {
     pub outline: [Id; 4],
     /// The applications, shown in place of the windows.
     pub apps: Option<AppGrid>,
+    /// Whether the overview came up with the applications, whose own glass covers the
+    /// wallpaper: it is then not dimmed under them, which would blur it anew every frame.
+    pub(crate) under_apps: bool,
     /// Only this application's windows, as the Dock's 顯示所有視窗 asks.
     only: Option<String>,
 }
@@ -434,11 +453,13 @@ impl Nekoland {
             last_tick: Instant::now(),
             strip_id: Id::new(),
             expanded_id: Id::new(),
+            glides: Vec::new(),
             drag: None,
             hovered_desktop: None,
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
             apps: None,
+            under_apps: false,
             only,
         });
         self.rebuild_overview();
@@ -514,6 +535,13 @@ impl Nekoland {
         let bar = self.spaces_bar(output);
         if let Some(overview) = &mut self.overview {
             overview.slots = slots;
+            // A desktop more comes out of the add button; the first ones are in place.
+            let first = overview.glides.is_empty();
+            overview.glides.truncate(bar.thumbnails.len());
+            for place in bar.thumbnails.iter().skip(overview.glides.len()) {
+                let from = if first { place.loc.x } else { bar.add.loc.x };
+                overview.glides.push((f64::from(from), 0.0, Id::new()));
+            }
             overview.bar = bar;
             overview.hovered = None;
             overview.drag = None;
@@ -574,50 +602,69 @@ impl Nekoland {
             });
         });
 
-        // Opened up: the pictures with their names, and the add button a square, each
-        // centered top to bottom.
+        // Opened up: the pictures with their names, each centered top to bottom, and the add
+        // button at the end, a smaller picture of the wallpaper under a plus.
         let row = count as i32 * THUMBNAIL_WIDTH + THUMBNAIL_GAP * (count as i32 - 1).max(0);
         let top = (expanded_height - tile_height - LABEL_HEIGHT) / 2;
         let mut thumbnails = Vec::with_capacity(count);
         let mut expanded_items = Vec::with_capacity(count + 1);
+        let mut frames = Vec::with_capacity(count);
         let expanded = draw(output.size.w, expanded_height, |cr| {
             colors.paint_glass(cr, output.size.w, expanded_height);
-            let mut x = (output.size.w - row) / 2;
-            for (index, name) in names.iter().enumerate() {
-                let tile = Rectangle::new(Point::from((x, top)), Size::from((THUMBNAIL_WIDTH, tile_height)));
-                // Behind the live picture, which is drawn over it.
-                colors.fill_tile(cr, tile);
-                if index == active {
-                    colors.ring(cr, tile);
-                }
-                let label = Rectangle::new(
-                    Point::from((x, top + tile_height + 4)),
-                    Size::from((THUMBNAIL_WIDTH, LABEL_HEIGHT - 4)),
-                );
-                show_centered(cr, name, &font, label, colors.ink);
-                thumbnails.push(Rectangle::new(output.loc + tile.loc, tile.size));
-                expanded_items.push(BarItem {
-                    rect: Rectangle::new(
-                        output.loc + tile.loc,
-                        Size::from((THUMBNAIL_WIDTH, tile_height + LABEL_HEIGHT)),
-                    ),
-                    action: BarAction::Switch(index),
-                });
-                x += THUMBNAIL_WIDTH + THUMBNAIL_GAP;
-            }
-            let add = Rectangle::new(
-                Point::from((
-                    output.size.w - tile_height - 16,
-                    (expanded_height - tile_height) / 2,
-                )),
-                Size::from((tile_height, tile_height)),
-            );
-            colors.fill_tile(cr, add);
-            colors.draw_plus(cr, add, 18.0);
+        });
+        let mut x = (output.size.w - row) / 2;
+        for (index, name) in names.iter().enumerate() {
+            let tile = Rectangle::new(Point::from((x, top)), Size::from((THUMBNAIL_WIDTH, tile_height)));
+            // Behind the live picture, which is drawn over it.
+            let on_frame = Rectangle::new(Point::from((FRAME_MARGIN, FRAME_MARGIN)), tile.size);
+            frames.extend(draw(
+                THUMBNAIL_WIDTH + FRAME_MARGIN * 2,
+                tile_height + LABEL_HEIGHT + FRAME_MARGIN * 2,
+                |cr| {
+                    colors.fill_tile(cr, on_frame);
+                    if index == active {
+                        colors.ring(cr, on_frame);
+                    }
+                    let label = Rectangle::new(
+                        Point::from((FRAME_MARGIN, FRAME_MARGIN + tile_height + 4)),
+                        Size::from((THUMBNAIL_WIDTH, LABEL_HEIGHT - 4)),
+                    );
+                    show_centered(cr, name, &font, label, colors.ink);
+                },
+            ));
+            thumbnails.push(Rectangle::new(output.loc + tile.loc, tile.size));
             expanded_items.push(BarItem {
-                rect: Rectangle::new(output.loc + add.loc, add.size),
-                action: BarAction::Add,
+                rect: Rectangle::new(
+                    output.loc + tile.loc,
+                    Size::from((THUMBNAIL_WIDTH, tile_height + LABEL_HEIGHT)),
+                ),
+                action: BarAction::Switch(index),
             });
+            x += THUMBNAIL_WIDTH + THUMBNAIL_GAP;
+        }
+        let add_size = Size::from((
+            (f64::from(THUMBNAIL_WIDTH) * ADD_SIZE).round() as i32,
+            (f64::from(tile_height) * ADD_SIZE).round() as i32,
+        ));
+        let add = Rectangle::new(
+            output.loc + Point::from((output.size.w - add_size.w - 24, top + (tile_height - add_size.h) / 2)),
+            add_size,
+        );
+        let plus = draw(add.size.w, add.size.h, |cr| {
+            cr.set_source_rgba(0.0, 0.0, 0.0, ADD_DIM);
+            let _ = cr.paint();
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.set_line_width(1.75);
+            let (x, y, arm) = (f64::from(add.size.w) / 2.0, f64::from(add.size.h) / 2.0, 9.0);
+            cr.move_to(x - arm, y);
+            cr.line_to(x + arm, y);
+            cr.move_to(x, y - arm);
+            cr.line_to(x, y + arm);
+            let _ = cr.stroke();
+        });
+        expanded_items.push(BarItem {
+            rect: add,
+            action: BarAction::Add,
         });
 
         // A dark disc with a cross, as the Mac shows on a desktop to take it away.
@@ -642,6 +689,9 @@ impl Nekoland {
             strip_items,
             expanded_items,
             thumbnails,
+            frames,
+            add,
+            plus,
             close,
         }
     }
@@ -653,11 +703,21 @@ impl Nekoland {
             .map_or(0.0, |overview| ease(overview.expansion))
     }
 
-    /// Where each desktop's live picture goes in the opened-up bar.
+    /// Where each desktop's live picture is in the opened-up bar, on its way to its place.
     pub fn overview_thumbnails(&self) -> Vec<(usize, Rectangle<i32, Logical>)> {
         self.overview.as_ref().map_or_else(Vec::new, |overview| {
-            overview.bar.thumbnails.iter().copied().enumerate().collect()
+            (overview.bar.thumbnails.iter().zip(&overview.glides).enumerate())
+                .map(|(index, (place, (x, ..)))| {
+                    (index, Rectangle::new(Point::from((x.round() as i32, place.loc.y)), place.size))
+                })
+                .collect()
         })
+    }
+
+    /// Where the add button shows the wallpaper, and the plus that goes over it.
+    pub fn overview_add_button(&self) -> Option<(Rectangle<i32, Logical>, &Picture)> {
+        let bar = &self.overview.as_ref()?.bar;
+        Some((bar.add, bar.plus.as_ref()?))
     }
 
     /// The close button on the desktop the pointer is on, and where it is.
@@ -704,6 +764,24 @@ impl Nekoland {
         }
         let expansion = ease(overview.expansion);
         let mut overlays = Vec::new();
+        // Each desktop's ring and name, where its picture is, cut off where the bar ends.
+        let shown = panel.loc.y + panel.size.h;
+        for ((_, place), (picture, (.., id))) in
+            (self.overview_thumbnails().into_iter()).zip(overview.bar.frames.iter().zip(&overview.glides))
+        {
+            let loc = place.loc - Point::from((FRAME_MARGIN, FRAME_MARGIN));
+            let height = picture.size.h.min(shown - loc.y);
+            if expansion > 0.0 && height > 0 {
+                overlays.push(Overlay {
+                    fade: 1.0,
+                    id,
+                    rect: Rectangle::new(loc, Size::from((picture.size.w, height))),
+                    glass: None,
+                    alpha: expansion as f32,
+                    picture,
+                });
+            }
+        }
         if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| expansion > 0.0) {
             overlays.push(Overlay {
                 fade: 1.0,
@@ -793,7 +871,7 @@ impl Nekoland {
             overview.drag = None;
             overview.hovered = None;
         }
-        let fade = progress as f32;
+        let fade = if overview.under_apps { 0.0 } else { progress as f32 };
         overview.dim.set_color([0.0, 0.0, 0.0, DIM * fade]);
 
         let settled = !overview.closing && progress >= 1.0;
@@ -822,11 +900,24 @@ impl Nekoland {
             (overview.expansion - step).max(0.0)
         };
 
-        // The windows make room as the bar opens up.
+        let seconds = step * EXPAND_DURATION.as_secs_f64();
+        for ((x, speed, _), place) in overview.glides.iter_mut().zip(&overview.bar.thumbnails) {
+            let goal = f64::from(place.loc.x);
+            if self.config.animations && seconds < 0.1 {
+                crate::motion::settle(x, speed, goal, BAR_GLIDE_RATE, seconds);
+            }
+            if !self.config.animations || seconds >= 0.1 || ((*x - goal).abs() < 0.3 && speed.abs() < 1.0) {
+                (*x, *speed) = (goal, 0.0);
+            }
+        }
+
+        // The windows make room as the bar opens up; under the applications, whose glass
+        // they show through blurred, they stay where they are.
         let open = ease(overview.expansion);
+        let spread = if overview.under_apps { 0.0 } else { progress };
         for slot in &mut overview.slots {
             let target = lerp(slot.to, slot.to_open, open);
-            slot.now = lerp(slot.from, target, progress);
+            slot.now = lerp(slot.from, target, spread);
         }
         // A window being dragged follows the pointer, and shrinks over the bar.
         if let (Some(drag), Some(pos)) = (overview.drag.as_ref().filter(|drag| drag.moving), pointer) {
@@ -885,6 +976,10 @@ impl Nekoland {
         // The close button of a desktop, over the corner of its picture, comes first.
         if let (Some(index), Some((rect, _))) = (overview.hovered_desktop, self.overview_close_button()) {
             if rect.to_f64().contains(pos) {
+                // The others close up over where it was.
+                if let Some(overview) = self.overview.as_mut().filter(|overview| index < overview.glides.len()) {
+                    overview.glides.remove(index);
+                }
                 self.remove_workspace(index);
                 return;
             }
@@ -908,9 +1003,10 @@ impl Nekoland {
             .find(|item| item.rect.to_f64().contains(pos))
             .map(|item| item.action);
         match action {
-            // As on the Mac, picking a desktop goes to it and leaves the overview.
+            // As on the Mac, picking a desktop goes to it and leaves the overview, whose
+            // closing is the way there: the desktops do not slide past each other as well.
             Some(BarAction::Switch(index)) => {
-                self.switch_workspace(index);
+                self.show_workspace(index, false);
                 self.close_overview(None);
             }
             Some(BarAction::Add) => {

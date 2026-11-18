@@ -37,6 +37,7 @@ mod power;
 mod privacy;
 mod render;
 mod screencopy;
+mod sprite;
 mod stacks;
 mod state;
 mod system;

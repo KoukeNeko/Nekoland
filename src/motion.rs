@@ -96,6 +96,17 @@ impl Spring {
     }
 }
 
+/// Moves `value` on by `seconds` toward `goal` on a spring that just does not swing past,
+/// `rate` its radians a second: for what is steered frame by frame, as an icon after the
+/// pointer, where a spring let go once cannot follow a goal that moves.
+pub fn settle(value: &mut f64, speed: &mut f64, goal: f64, rate: f64, seconds: f64) {
+    let away = *value - goal;
+    let pull = *speed + rate * away;
+    let decay = (-rate * seconds).exp();
+    *value = goal + (away + pull * seconds) * decay;
+    *speed = (*speed - pull * rate * seconds) * decay;
+}
+
 fn seconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64()
 }

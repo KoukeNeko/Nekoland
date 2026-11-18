@@ -95,6 +95,8 @@ pub struct Nekoland {
     /// Where the window being dragged goes if it is let go of now.
     pub snap: crate::windows::SnapPreview,
     pub overview: Option<Overview>,
+    /// The applications' icons and names, drawn once and kept from one showing to the next.
+    pub app_stock: crate::appgrid::Stock,
     /// Windows on their way somewhere, and the pictures of those just closed.
     pub motion: crate::motion::Motion,
     /// Takes a window's picture as it closes; set by the backend, which has the renderer.
@@ -222,6 +224,7 @@ impl Nekoland {
             minimized: Vec::new(),
             snap: Default::default(),
             overview: None,
+            app_stock: Default::default(),
             motion: Default::default(),
             snapshooter: None,
             menu_bar: MenuBar::default(),
@@ -434,6 +437,7 @@ impl Nekoland {
         self.menu_bar.drawn = None;
         // Icons already drawn are kept by name; the theme, or the files in it, may be new.
         self.dock.icons.clear();
+        self.app_stock.clear();
         // So are the desktop entries, as of an application installed since it was first seen.
         self.apps = Apps::default();
         crate::text::set_icon_theme(&self.config.icon_theme);

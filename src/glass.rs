@@ -158,8 +158,12 @@ void main() {
     float power = capsule ? 2.0 : CORNER_EXPONENT;
     vec2 q = abs(local - size * 0.5) - (size * 0.5 - vec2(corner));
     vec2 c = max(q, 0.0);
-    float distance = pow(pow(c.x, power) + pow(c.y, power), 1.0 / power) + min(max(q.x, q.y), 0.0) - corner;
-    float inside = clamp(0.5 - distance, 0.0, 1.0);
+    // Square glass, as what covers the screen, has no corners to work out for every pixel.
+    float inside = 1.0;
+    if (radius > 0.0) {
+        float distance = pow(pow(c.x, power) + pow(c.y, power), 1.0 / power) + min(max(q.x, q.y), 0.0) - corner;
+        inside = clamp(0.5 - distance, 0.0, 1.0);
+    }
 
     vec3 color = texture2D(tex, v_coords).rgb;
     float grey = dot(color, vec3(0.2126, 0.7152, 0.0722));
@@ -194,7 +198,8 @@ struct Blur {
     /// Where on the output the textures start: the top left for the scene, a window's
     /// surroundings for its own.
     origin: Point<i32, Physical>,
-    /// Where the panes were when it was last blurred, and how far apart its samples were.
+    /// Where the blur is known to be right, the panes it was last made for, and how far
+    /// apart its samples were.
     areas: Vec<Rectangle<i32, Physical>>,
     spread: f32,
     commit: CommitCounter,
@@ -388,13 +393,13 @@ impl Blur {
             return Ok(());
         };
 
-        let changed = {
+        let (damaged, changed) = {
             let mut target = renderer.bind(&mut self.levels[0])?;
             // The texture keeps the last frame, so only what changed since is drawn again.
             let result = tracker
                 .render_output(renderer, &mut target, 1, &behind, Color32F::TRANSPARENT)
                 .map_err(|err| format!("{err:?}"))?;
-            result.damage.is_some_and(|damage| {
+            let near = result.damage.is_some_and(|damage| {
                 damage.iter().any(|damage| {
                     areas.iter().any(|area| {
                         let reach = Rectangle::new(
@@ -404,10 +409,20 @@ impl Blur {
                         reach.overlaps(*damage)
                     })
                 })
-            })
+            });
+            (result.damage.is_some(), near)
         };
-        // A pane where there was none shows a part of the blur that may be out of date.
-        if !changed && self.areas == areas {
+        // A pane where there was none shows a part of the blur that may be out of date; one
+        // within where the blur is right, as a bar growing over glass that covers the screen,
+        // shows a part that is not.
+        let covered = areas
+            .iter()
+            .all(|area| self.areas.iter().any(|right| right.contains_rect(*area)));
+        if !changed && covered {
+            // What changed was too far to show in these panes, but may show in the rest.
+            if damaged {
+                self.areas = areas.clone();
+            }
             return Ok(());
         }
         self.areas = areas.clone();
