@@ -1,0 +1,87 @@
+# Nekoland's boot splash; make-theme.py fills in the @NUMBERS@ for the screen it draws for.
+# The cat fades in with its eyes closed, opens them, and blinks now and then; the name
+# follows, and a short bar goes back and forth under it, because a boot has no known length.
+# Time is counted in refreshes, about fifty a second.
+
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+centre = screen_width / 2;
+
+Window.SetBackgroundTopColor(0.09, 0.09, 0.10);
+Window.SetBackgroundBottomColor(0.09, 0.09, 0.10);
+
+background = Sprite(Image("bg.png").Scale(screen_width, screen_height));
+background.SetPosition(0, 0, -10);
+
+cat_image = Image("cat.png");
+cat = Sprite(cat_image);
+cat_x = centre - cat_image.GetWidth() / 2;
+cat_y = screen_height * 0.30;
+cat.SetOpacity(0);
+
+eye_image = Image("eye.png");
+eye_width = eye_image.GetWidth();
+eye_height = eye_image.GetHeight();
+left_eye = Sprite(eye_image);
+right_eye = Sprite(eye_image);
+
+name_image = Image("name.png");
+name = Sprite(name_image);
+name_y = cat_y + cat_image.GetHeight() + @NAME_GAP@;
+name.SetPosition(centre - name_image.GetWidth() / 2, name_y, 5);
+name.SetOpacity(0);
+
+track_image = Image("track.png");
+thumb_image = Image("thumb.png");
+track = Sprite(track_image);
+thumb = Sprite(thumb_image);
+track_x = centre - track_image.GetWidth() / 2;
+track_y = name_y + name_image.GetHeight() + @TRACK_GAP@;
+track.SetPosition(track_x, track_y, 5);
+track.SetOpacity(0);
+thumb.SetOpacity(0);
+
+frame = 0;
+
+fun clamp(value) {
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+}
+
+fun place_eye(sprite, x, open, rise) {
+    height = Math.Max(1, Math.Int(eye_height * open));
+    sprite.SetImage(eye_image.Scale(eye_width, height));
+    sprite.SetPosition(cat_x + x - eye_width / 2, cat_y + rise + @EYE_Y@ - height / 2, 2);
+}
+
+fun refresh() {
+    global.frame++;
+    t = global.frame / 50;
+
+    fade = clamp(t / 0.7);
+    rise = @RISE@ * (1 - fade);
+    cat.SetPosition(cat_x, cat_y + rise, 1);
+    cat.SetOpacity(fade);
+
+    # Closed until 0.85s, open by 1.3s; from 2s a blink every 3.2s, 0.12s long.
+    open = 0.08 + 0.92 * clamp((t - 0.85) / 0.45);
+    if (t > 2.0) {
+        since = t - 2.0;
+        phase = since - 3.2 * Math.Int(since / 3.2);
+        if (phase < 0.12) open = 1 - 0.92 * (1 - Math.Abs(phase - 0.06) / 0.06);
+    }
+    place_eye(left_eye, @LEFT_EYE_X@, open, rise);
+    place_eye(right_eye, @RIGHT_EYE_X@, open, rise);
+    left_eye.SetOpacity(fade);
+    right_eye.SetOpacity(fade);
+
+    later = clamp((t - 1.2) / 0.7);
+    name.SetOpacity(later);
+    track.SetOpacity(later);
+    thumb.SetOpacity(later);
+    sweep = 0.5 - 0.5 * Math.Cos(global.frame / 50 * 3.4907);
+    thumb.SetPosition(track_x + (track_image.GetWidth() - thumb_image.GetWidth()) * sweep, track_y, 6);
+}
+
+Plymouth.SetRefreshFunction(refresh);

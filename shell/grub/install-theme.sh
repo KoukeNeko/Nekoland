@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs Nekoland's GRUB theme drawn for this computer's screen: the pictures at the
 # screen's own pixels and the menu's font at a size to match, in /boot/grub/themes/nekoland;
-# then points /etc/default/grub at it, at that screen size, and rebuilds grub.cfg. Run it
+# then points /etc/default/grub at it, at that screen size, makes the menu show for a few
+# seconds on every boot, installs the boot splash (../plymouth), and rebuilds grub.cfg. Run it
 # again to update, or after changing screens. NEKOLAND_GRUB_MODE=WIDTHxHEIGHT draws it for
 # another size.
 set -eu
@@ -60,4 +61,21 @@ if sudo grep -q '^GRUB_TERMINAL' "$defaults"; then
     sudo sed -i 's|^GRUB_TERMINAL.*|#&|' "$defaults"
 fi
 
+# Ubuntu hides the menu (GRUB_TIMEOUT_STYLE=hidden, timeout 0), and its cloud images fix the
+# terminal to the console, which has no theme. Files in /etc/default/grub.d are read after
+# /etc/default/grub, so this one has the last word; Plymouth needs quiet splash to show.
+sudo install -d /etc/default/grub.d
+sudo tee /etc/default/grub.d/99-nekoland.cfg >/dev/null <<'CFG'
+# Nekoland: the boot menu is shown for 5 seconds, graphically, and the splash is on.
+GRUB_TIMEOUT_STYLE=menu
+GRUB_TIMEOUT=5
+GRUB_RECORDFAIL_TIMEOUT=5
+unset GRUB_TERMINAL GRUB_TERMINAL_OUTPUT
+case " $GRUB_CMDLINE_LINUX_DEFAULT " in
+    *" splash "*) ;;
+    *) GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT quiet splash" ;;
+esac
+CFG
+
+sh "$here/../plymouth/install-splash.sh" "$mode"
 sudo update-grub

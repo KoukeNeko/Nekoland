@@ -29,7 +29,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     network-manager wpasupplicant network-manager-openvpn bluez cups locales rsync
     pipewire pipewire-pulse wireplumber brightnessctl power-profiles-daemon orca
-    grub-common python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
+    grub-common plymouth python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
@@ -133,12 +133,17 @@ sudo install -Dm 644 "$src/shell/nekoland-lock.pam" /etc/pam.d/nekoland-lock
 sudo install -Dm 644 -t /usr/share/glib-2.0/schemas "$src/shell/90_nekoland.gschema.override"
 sudo glib-compile-schemas /usr/share/glib-2.0/schemas
 
-# The boot menu in Nekoland's look, where GRUB is what boots the computer; a board that boots
+# The boot menu and splash in Nekoland's look, where GRUB is what boots the computer; a board that boots
 # some other way has no /etc/default/grub and is left as it is.
 if [ -f /etc/default/grub ]; then
-    say "Installing the GRUB theme"
+    say "Installing the GRUB theme and boot splash"
     sh "$src/shell/grub/install-theme.sh"
 fi
+
+# Waiting for the network to come up holds the boot back by up to two minutes on Ubuntu Server
+# where a port is unplugged or has no address; nothing here needs it done before the desktop.
+say "Not waiting for the network at boot"
+sudo systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service
 
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
