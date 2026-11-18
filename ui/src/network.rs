@@ -13,7 +13,8 @@ use gtk::{gio, glib};
 
 use crate::{
     alert, fact_row, group, output,
-    wifi::{follow_network, nmcli, nmcli_fields, setting, up_with},
+    bluetooth,
+    wifi::{follow_network, nmcli, nmcli_fields, radio_on, setting, up_with},
 };
 
 /// An Ethernet port, as `nmcli device status` has it.
@@ -544,7 +545,7 @@ struct NetworkPage {
 
 pub fn network_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    let kept = [Some(proxy_group()), firewall_group()]
+    let kept = [hotspot_group(), Some(proxy_group()), firewall_group()]
         .into_iter()
         .flatten()
         .collect();
@@ -584,6 +585,10 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         return;
     };
 
+    if radio_on().is_some() {
+        groups.push(airplane_group());
+    }
+
     let ports = parse_ports(&devices);
     if !ports.is_empty() {
         let wired = group("乙太網路");
@@ -622,6 +627,99 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         page.add(group);
     }
     shown.groups.replace(groups);
+}
+
+/// 飛航模式: every radio off at once, the Wi-Fi and mobile radios through NetworkManager and
+/// the Bluetooth adapter through BlueZ.
+fn airplane_group() -> adw::PreferencesGroup {
+    let has_bluetooth = bluetooth::has_bluetooth();
+    let off = radio_on() == Some(false) && (!has_bluetooth || bluetooth::powered() == Some(false));
+    let switch = adw::SwitchRow::builder().title("飛航模式").active(off).build();
+    switch.connect_active_notify(move |row| {
+        let (radios, power) = if row.is_active() { ("off", "off") } else { ("on", "on") };
+        nmcli(&["radio", "all", radios], |_| {});
+        if has_bluetooth {
+            bluetooth::bluetoothctl(&["power", power], |_| {});
+        }
+    });
+    let airplane = group("");
+    airplane.add(&switch);
+    airplane
+}
+
+/// The connection the hotspot is kept as, which nmcli's own `device wifi hotspot` names too.
+const HOTSPOT: &str = "Hotspot";
+/// The shortest password WPA takes.
+const WPA_PASSWORD_MIN: usize = 8;
+
+/// 個人熱點: this computer's Wi-Fi shared as an access point, with the name and password it
+/// is joined by; none without a Wi-Fi device.
+fn hotspot_group() -> Option<adw::PreferencesGroup> {
+    let devices = output("nmcli", &["-t", "-f", "DEVICE,TYPE", "device", "status"])?;
+    let wifi = devices.lines().find_map(|line| line.strip_suffix(":wifi"))?.to_string();
+    let kept = |field: &str| {
+        output("nmcli", &["-s", "-g", field, "connection", "show", HOTSPOT]).map(|value| value.trim().to_string())
+    };
+    let active = output("nmcli", &["-t", "-f", "NAME", "connection", "show", "--active"])
+        .is_some_and(|names| names.lines().any(|name| name == HOTSPOT));
+    let ssid = kept("802-11-wireless.ssid")
+        .filter(|ssid| !ssid.is_empty())
+        .or_else(|| output("hostname", &[]).map(|name| name.trim().to_string()))
+        .unwrap_or_default();
+
+    let name = adw::EntryRow::builder().title("網路名稱").text(ssid).build();
+    let password = adw::PasswordEntryRow::builder().title("密碼").build();
+    if let Some(saved) = kept("802-11-wireless-security.psk").filter(|psk| !psk.is_empty()) {
+        password.set_text(&saved);
+    }
+    let switch = adw::SwitchRow::builder().title("個人熱點").active(active).build();
+    let (name_row, password_row) = (name.clone(), password.clone());
+    switch.connect_active_notify(move |row| {
+        if !row.is_active() {
+            nmcli(&["connection", "down", HOTSPOT], |_| {});
+            return;
+        }
+        let (ssid, secret) = (name_row.text().to_string(), password_row.text().to_string());
+        if ssid.is_empty() || secret.chars().count() < WPA_PASSWORD_MIN {
+            alert::notice(row, "無法開啟個人熱點", Some("名稱不能是空白，密碼至少 8 個字元。"));
+            row.set_active(false);
+            return;
+        }
+        let exists = output("nmcli", &["-t", "-f", "NAME", "connection", "show"])
+            .is_some_and(|names| names.lines().any(|name| name == HOTSPOT));
+        let setup: Vec<&str> = if exists {
+            vec!["connection", "modify", HOTSPOT, "802-11-wireless.ssid", &ssid]
+        } else {
+            vec![
+                "connection", "add", "type", "wifi", "ifname", &wifi, "con-name", HOTSPOT, "autoconnect", "no",
+                "ssid", &ssid, "802-11-wireless.mode", "ap", "ipv4.method", "shared",
+                "802-11-wireless-security.key-mgmt", "wpa-psk",
+            ]
+        };
+        let row = row.clone();
+        let failed = move |row: &adw::SwitchRow, why: &str| {
+            alert::notice(row, "無法開啟個人熱點", Some(why));
+            row.set_active(false);
+        };
+        nmcli(&setup, move |result| {
+            if let Err(why) = result {
+                return failed(&row, &why);
+            }
+            let Some(uuid) = output("nmcli", &["-g", "connection.uuid", "connection", "show", HOTSPOT]) else {
+                return failed(&row, "找不到熱點的連線設定。");
+            };
+            up_with(uuid.trim(), "802-11-wireless-security.psk", &secret, move |result| {
+                if let Err(why) = result {
+                    failed(&row, &why);
+                }
+            });
+        });
+    });
+    let hotspot = group("");
+    hotspot.add(&switch);
+    hotspot.add(&name);
+    hotspot.add(&password);
+    Some(hotspot)
 }
 
 /// GNOME's proxy settings, which GIO's programs and the browsers follow.

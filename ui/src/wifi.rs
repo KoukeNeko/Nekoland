@@ -208,7 +208,7 @@ pub fn has_wifi() -> bool {
     output("nmcli", &["-t", "-f", "TYPE", "device"]).is_some_and(|text| text.lines().any(|kind| kind == "wifi"))
 }
 
-fn radio_on() -> Option<bool> {
+pub(crate) fn radio_on() -> Option<bool> {
     Some(output("nmcli", &["-t", "-f", "WIFI", "radio"])?.trim() == "enabled")
 }
 

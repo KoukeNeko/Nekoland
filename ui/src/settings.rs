@@ -55,6 +55,8 @@ const WALLPAPER_DIRS: [&str; 3] = [
 ];
 const WALLPAPERS: usize = 8;
 const SINK: &str = "@DEFAULT_AUDIO_SINK@";
+/// What PipeWire calls the sound a program is playing.
+const PLAYBACK_STREAM: &str = "Stream/Output/Audio";
 const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 
 /// What a program printed, or None when it could not be run or failed.
@@ -248,6 +250,17 @@ const A11Y_APPLICATIONS: &str = "org.gnome.desktop.a11y.applications";
 /// unattended-upgrades, which installs security updates by itself, and apt's switch for it.
 const UNATTENDED: &str = "/usr/bin/unattended-upgrade";
 const AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+/// A drop-in that keeps automatic updates off while a pause lasts.
+const PAUSE_FILE: &str = "/etc/apt/apt.conf.d/99nekoland-pause";
+const APT_HISTORY: &str = "/var/log/apt/history.log";
+/// How many of the latest apt runs 更新記錄 lists.
+const HISTORY_ENTRIES: usize = 20;
+/// The timer that turns automatic updates back on when a pause ends, kept as files so that
+/// it survives a restart.
+const RESUME_TIMER: &str = "/etc/systemd/system/nekoland-resume-updates.timer";
+const RESUME_SERVICE: &str = "/etc/systemd/system/nekoland-resume-updates.service";
+/// The pauses 暫停更新 offers, in weeks; 0 is none.
+const PAUSE_WEEKS: [u32; 4] = [0, 1, 2, 5];
 
 /// The page a restarted Settings opens on.
 const PAGE_ENV: &str = "NEKOLAND_SETTINGS_PAGE";
@@ -4065,6 +4078,7 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     }
     page.add(&repeat);
     let typing = group("");
+    typing.add(&switch_row(config, "黏著鍵", "sticky_keys"));
     let blink = gsettings_switch("文字游標閃爍", INTERFACE, "cursor-blink");
     typing.add(&blink);
     // GNOME's time is one whole blink, on and off.
@@ -4549,7 +4563,7 @@ fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
                 quiet_then.take();
                 let dump = output("pw-dump", &[]).unwrap_or_default();
                 let nodes = parse_audio_nodes(&dump);
-                if device_names(&nodes) != *shown.devices.borrow() {
+                if page_names(&nodes, &app_streams(&dump)) != *shown.devices.borrow() {
                     fill_sound_page(&page, shown);
                 } else {
                     show_status(&shown, &nodes, default_clock(&dump));
@@ -4600,7 +4614,8 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
     };
     let dump = output("pw-dump", &[]).unwrap_or_default();
     let (nodes, cards) = (parse_audio_nodes(&dump), parse_sound_cards(&dump));
-    *shown.devices.borrow_mut() = device_names(&nodes);
+    let streams = app_streams(&dump);
+    *shown.devices.borrow_mut() = page_names(&nodes, &streams);
     let clock_group = group("");
     let clock = adw::ActionRow::builder().title("PipeWire").build();
     clock_group.add(&clock);
@@ -4613,6 +4628,10 @@ fn fill_sound_page(page: &adw::PreferencesPage, shown: Rc<SoundPage>) {
     ] {
         let devices = nodes.iter().filter(|device| device.class == class).cloned().collect();
         let group = device_group(title, default, devices, none, again.clone());
+        page.add(&group);
+        shown.groups.borrow_mut().push(group);
+    }
+    if let Some(group) = app_volume_group(&streams) {
         page.add(&group);
         shown.groups.borrow_mut().push(group);
     }
@@ -4906,6 +4925,50 @@ fn device_group(
         add_format_rows(&group, current);
     }
     group
+}
+
+/// The programs playing sound, as PipeWire's playback streams: the stream's ID and the name
+/// of the program.
+fn app_streams(dump: &str) -> Vec<(u32, String)> {
+    let objects: Vec<serde_json::Value> = serde_json::from_str(dump).unwrap_or_default();
+    objects
+        .iter()
+        .filter(|object| object["info"]["props"]["media.class"] == PLAYBACK_STREAM)
+        .filter_map(|object| {
+            let props = &object["info"]["props"];
+            let name = props["application.name"].as_str().or(props["node.name"].as_str())?;
+            Some((object["id"].as_u64()? as u32, name.to_string()))
+        })
+        .collect()
+}
+
+/// What the page was made for: the devices, and the programs playing, to tell when one
+/// comes or goes.
+fn page_names(nodes: &[AudioDevice], streams: &[(u32, String)]) -> Vec<(String, String)> {
+    let mut names = device_names(nodes);
+    names.extend(streams.iter().map(|(_, name)| (PLAYBACK_STREAM.to_string(), name.clone())));
+    names
+}
+
+/// A volume for each program that is playing sound, as Windows' mixer has; none while
+/// nothing plays. The page is made again as a program starts or stops.
+fn app_volume_group(streams: &[(u32, String)]) -> Option<adw::PreferencesGroup> {
+    if streams.is_empty() {
+        return None;
+    }
+    let apps = group("應用程式");
+    for (id, name) in streams {
+        let id = id.to_string();
+        let (level, _) = volume(&id).unwrap_or_default();
+        apps.add(&scale_row(
+            name,
+            f64::from(level.round()),
+            (0.0, 100.0, 5.0),
+            |level| format!("{level:.0}%"),
+            move |level| run("wpctl", &["set-volume", &id, &format!("{:.2}", level / 100.0)]),
+        ));
+    }
+    Some(apps)
 }
 
 /// Bit depths a sound card may be opened with, as PipeWire names them.
@@ -5202,6 +5265,14 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
     });
     seeing.add(&size);
     seeing.add(&gsettings_switch("高對比", A11Y_INTERFACE, "high-contrast"));
+    seeing.add(&switch_row(config, "反轉顏色", "invert_colors"));
+    seeing.add(&choice_row(
+        config,
+        "色彩濾鏡",
+        "color_filter",
+        &COLOR_FILTERS,
+        &["無", "灰階", "紅色盲", "綠色盲", "藍黃色盲"],
+    ));
     let motion = adw::SwitchRow::builder()
         .title("減少動態效果")
         .active(interface_setting("enable-animations") == "false")
@@ -5225,8 +5296,32 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
         |zoom| set(&format!("zoom = {zoom:.1}")),
     ));
     page.add(&seeing);
+    let typing = group("");
+    typing.add(&integer_choice_row(
+        config,
+        "篩選鍵",
+        "bounce_keys_ms",
+        (&BOUNCE_KEYS, &["關閉", "0.25 秒", "0.5 秒", "1 秒"]),
+        0,
+    ));
+    typing.add(&integer_choice_row(
+        config,
+        "慢速鍵",
+        "slow_keys_ms",
+        (&SLOW_KEYS, &["關閉", "0.3 秒", "0.5 秒", "1 秒"]),
+        0,
+    ));
+    page.add(&typing);
     page
 }
+
+const COLOR_FILTERS: [&str; 5] = ["none", "grayscale", "protanopia", "deuteranopia", "tritanopia"];
+
+/// The times, in milliseconds, a key is held before it counts.
+const SLOW_KEYS: [i64; 4] = [0, 300, 500, 1000];
+
+/// The times, in milliseconds, within which a key pressed again is ignored.
+const BOUNCE_KEYS: [i64; 4] = [0, 250, 500, 1000];
 
 /// A row that switches one of GNOME's settings, which GTK reads through the portal.
 fn gsettings_switch(title: &str, schema: &'static str, key: &'static str) -> adw::SwitchRow {
@@ -6544,10 +6639,14 @@ const PERMISSION_STORE_PATH: &str = "/org/freedesktop/impl/portal/PermissionStor
 
 /// What the portals let each application use, by the table and entry the permission store
 /// keeps it under. Only sandboxed applications, as Flatpak's, are asked and held to it.
-const PERMISSIONS: [(&str, &str, &str); 3] = [
+const PERMISSIONS: [(&str, &str, &str); 7] = [
     ("相機", "devices", "camera"),
     ("麥克風", "devices", "microphone"),
+    ("喇叭", "devices", "speakers"),
     ("定位服務", "location", "location"),
+    ("螢幕擷取", "screenshot", "screenshot"),
+    ("背景執行", "background", "background"),
+    ("通知", "notifications", "notification"),
 ];
 
 /// The applications that asked for each permission, with whether they have it.
@@ -6749,9 +6848,128 @@ fn updates_page() -> adw::PreferencesPage {
             });
         });
         updates.add(&automatic);
+        updates.add(&pause_row());
     }
     page.add(&updates);
+    if let Some(history) = history_group() {
+        page.add(&history);
+    }
     page
+}
+
+/// The shell that takes a pause away: its drop-in, which keeps automatic updates off, and the
+/// timer that ends it.
+fn end_pause() -> String {
+    format!(
+        "systemctl disable --now nekoland-resume-updates.timer 2>/dev/null; rm -f {PAUSE_FILE} {RESUME_TIMER} {RESUME_SERVICE}; systemctl daemon-reload"
+    )
+}
+
+/// The day a pause ends, as the timer it left says.
+fn paused_until() -> Option<String> {
+    let timer = std::fs::read_to_string(RESUME_TIMER).ok()?;
+    timer.lines().find_map(|line| line.strip_prefix("OnCalendar=")).map(str::to_string)
+}
+
+/// 暫停更新: automatic updates kept off for some weeks by a drop-in a timer takes away
+/// again, so that nothing but the system has to remember.
+fn pause_row() -> adw::ComboRow {
+    let row = adw::ComboRow::builder()
+        .title("暫停更新")
+        .model(&gtk::StringList::new(&["不暫停", "1 週", "2 週", "5 週"]))
+        .build();
+    let until = |day: Option<String>| day.map(|day| format!("至 {day}")).unwrap_or_default();
+    row.set_subtitle(&until(paused_until()));
+    row.connect_selected_notify(move |row| {
+        let Some(weeks) = PAUSE_WEEKS.get(row.selected() as usize).copied() else { return };
+        if weeks == 0 && paused_until().is_none() {
+            return;
+        }
+        let script = if weeks == 0 {
+            end_pause()
+        } else {
+            format!(
+                "set -e; day=$(date -d \"+$1 weeks\" +%Y-%m-%d); \
+                 printf 'APT::Periodic::Unattended-Upgrade \"0\";\\n' > {PAUSE_FILE}; \
+                 printf '[Unit]\\nDescription=End the pause of automatic updates\\n[Service]\\nType=oneshot\\nExecStart=/bin/rm -f {PAUSE_FILE}\\nExecStartPost=/usr/bin/systemctl disable nekoland-resume-updates.timer\\nExecStartPost=/bin/rm -f {RESUME_TIMER} {RESUME_SERVICE}\\n' > {RESUME_SERVICE}; \
+                 printf '[Unit]\\nDescription=End the pause of automatic updates\\n[Timer]\\nOnCalendar=%s\\nPersistent=true\\n[Install]\\nWantedBy=timers.target\\n' \"$day\" > {RESUME_TIMER}; \
+                 systemctl daemon-reload; systemctl enable --now nekoland-resume-updates.timer"
+            )
+        };
+        row.set_sensitive(false);
+        let row = row.clone();
+        as_root("暫停更新", &["sh", "-c", &script, "sh", &weeks.to_string()], None, move |worked| {
+            row.set_sensitive(true);
+            if worked {
+                row.set_subtitle(&until(paused_until()));
+            } else {
+                alert::notice(&row, "無法暫停更新", Some("請確認密碼正確後再試一次。"));
+            }
+        });
+    });
+    row
+}
+
+/// One run of apt, as its history lists it.
+#[derive(Debug, PartialEq)]
+struct AptRun {
+    date: String,
+    installed: usize,
+    upgraded: usize,
+    removed: usize,
+    packages: Vec<String>,
+}
+
+/// The runs in apt's history that changed packages, newest first.
+fn parse_apt_history(text: &str) -> Vec<AptRun> {
+    let names = |list: &str| -> Vec<String> {
+        list.split("), ")
+            .filter_map(|package| package.split(" (").next())
+            .map(|name| name.split(':').next().unwrap_or(name).to_string())
+            .collect()
+    };
+    let mut runs: Vec<AptRun> = text
+        .split("\n\n")
+        .filter_map(|block| {
+            let field = |key: &str| block.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix(": "));
+            let date = field("Start-Date")?.split_whitespace().next()?.to_string();
+            let (install, upgrade, remove) = (field("Install"), field("Upgrade"), field("Remove"));
+            let count = |list: Option<&str>| list.map_or(0, |list| names(list).len());
+            let packages = [install, upgrade, remove].into_iter().flatten().flat_map(names).collect();
+            let run = AptRun {
+                date,
+                installed: count(install),
+                upgraded: count(upgrade),
+                removed: count(remove),
+                packages,
+            };
+            (run.installed + run.upgraded + run.removed > 0).then_some(run)
+        })
+        .collect();
+    runs.reverse();
+    runs
+}
+
+/// 更新記錄: what apt installed, upgraded and removed, latest first; none without a history.
+fn history_group() -> Option<adw::PreferencesGroup> {
+    let runs = parse_apt_history(&std::fs::read_to_string(APT_HISTORY).ok()?);
+    if runs.is_empty() {
+        return None;
+    }
+    let history = group("更新記錄");
+    for run in runs.iter().take(HISTORY_ENTRIES) {
+        let counts: Vec<String> = [("升級", run.upgraded), ("安裝", run.installed), ("移除", run.removed)]
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(what, count)| format!("{what} {count} 個"))
+            .collect();
+        let row = adw::ExpanderRow::builder().title(run.date.as_str()).subtitle(counts.join("、")).build();
+        for package in &run.packages {
+            row.add_row(&adw::ActionRow::builder().title(package.as_str()).build());
+        }
+        history.add(&row);
+    }
+    Some(history)
 }
 
 /// How many packages `apt list --upgradable` lists, past its "Listing..." line.
@@ -8023,6 +8241,17 @@ fn save_autostart(autostart: &[String]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apt_history_lists_the_runs_that_changed_packages_newest_first() {
+        let text = "Start-Date: 2026-11-01  10:00:00\nCommandline: apt install foo\nInstall: foo:arm64 (1.0), libfoo:arm64 (1.0, automatic)\nEnd-Date: 2026-11-01  10:00:05\n\n\
+                    Start-Date: 2026-11-02  09:00:00\nCommandline: apt update\nEnd-Date: 2026-11-02  09:00:01\n\n\
+                    Start-Date: 2026-11-03  08:00:00\nUpgrade: bar:arm64 (1, 2)\nRemove: baz:arm64 (3)\nEnd-Date: 2026-11-03  08:00:09\n";
+        let runs = super::parse_apt_history(text);
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].date.as_str(), runs[0].upgraded, runs[0].removed), ("2026-11-03", 1, 1));
+        assert_eq!((runs[1].installed, runs[1].packages.clone()), (2, vec!["foo".to_string(), "libfoo".to_string()]));
+    }
+
     use super::*;
 
     #[test]
@@ -8212,6 +8441,17 @@ mod tests {
         // An unplugged HDMI screen still shows the profile the card is in.
         assert_eq!(cards[1].description, "alsa_card.hdmi");
         assert_eq!(cards[1].profiles, [(0, "Off".into()), (1, "Digital Stereo (HDMI)".into())]);
+    }
+
+    #[test]
+    fn playing_programs_are_named_by_application() {
+        let dump = r#"[
+            {"id": 61, "info": {"props": {"media.class": "Stream/Output/Audio", "node.name": "firefox",
+              "application.name": "Firefox"}}},
+            {"id": 62, "info": {"props": {"media.class": "Stream/Output/Audio", "node.name": "mpv"}}},
+            {"id": 59, "info": {"props": {"media.class": "Audio/Sink", "node.name": "alsa_output.usb"}}}
+        ]"#;
+        assert_eq!(app_streams(dump), [(61, "Firefox".to_string()), (62, "mpv".to_string())]);
     }
 
     #[test]

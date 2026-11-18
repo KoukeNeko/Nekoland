@@ -4,7 +4,7 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::Reverse,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::Path,
     rc::{Rc, Weak},
     time::Duration,
@@ -424,6 +424,121 @@ fn header() -> adw::PreferencesGroup {
     header
 }
 
+/// The displays left to right, as `nekoland msg displays` has them: name and size in points.
+fn parse_displays(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (name, size) = (fields.next()?, Size::parse(fields.next()?)?);
+            Some((name.to_string(), size.label()))
+        })
+        .collect()
+}
+
+/// The displays in the order they are side by side, to be moved left and right; the leftmost
+/// is the main one, with the menu bar and the Dock. None while there is one.
+/// The scales a display may be given on its own, as the Mac's list of looks has them.
+const DISPLAY_SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+
+/// 各顯示器縮放: each display's own scale, or the one all share when it has none; none while
+/// there is one display.
+fn display_scales_group(config: &Config) -> Option<adw::PreferencesGroup> {
+    let displays = parse_displays(&output("nekoland", &["msg", "displays"])?);
+    if displays.len() < 2 {
+        return None;
+    }
+    let chosen: BTreeMap<String, f64> = config
+        .0
+        .get("display_scales")
+        .and_then(toml::Value::as_table)
+        .map(|table| table.iter().filter_map(|(name, scale)| Some((name.clone(), scale.as_float()?))).collect())
+        .unwrap_or_default();
+    let chosen = Rc::new(RefCell::new(chosen));
+    let scales = group("縮放");
+    for (name, _) in displays {
+        let labels: Vec<String> =
+            std::iter::once("預設".to_string()).chain(DISPLAY_SCALES.iter().map(|scale| format!("{scale}×"))).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let current = chosen.borrow().get(&name).and_then(|scale| DISPLAY_SCALES.iter().position(|s| s == scale));
+        let row = adw::ComboRow::builder()
+            .title(name.as_str())
+            .model(&gtk::StringList::new(&labels))
+            .selected(current.map_or(0, |index| index as u32 + 1))
+            .build();
+        let chosen = chosen.clone();
+        row.connect_selected_notify(move |row| {
+            let mut chosen = chosen.borrow_mut();
+            match (row.selected() as usize).checked_sub(1).and_then(|index| DISPLAY_SCALES.get(index)) {
+                Some(scale) => chosen.insert(name.clone(), *scale),
+                None => chosen.remove(&name),
+            };
+            if chosen.is_empty() {
+                unset("display_scales");
+            } else {
+                let table: Vec<String> = chosen.iter().map(|(name, scale)| format!("{name:?} = {scale:?}")).collect();
+                set(&format!("display_scales = {{ {} }}", table.join(", ")));
+            }
+        });
+        scales.add(&row);
+    }
+    Some(scales)
+}
+
+fn arrangement_group(config: &Config) -> Option<adw::PreferencesGroup> {
+    let displays = parse_displays(&output("nekoland", &["msg", "displays"])?);
+    if displays.len() < 2 {
+        return None;
+    }
+    let arrangement = group("排列");
+    arrangement.add(&switch_row(config, "鏡像顯示", "mirror_displays"));
+    let order = Rc::new(RefCell::new(displays));
+    let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
+    fill_arrangement(&arrangement, &order, &rows);
+    Some(arrangement)
+}
+
+fn fill_arrangement(
+    arrangement: &adw::PreferencesGroup,
+    order: &Rc<RefCell<Vec<(String, String)>>>,
+    rows: &Rc<RefCell<Vec<adw::ActionRow>>>,
+) {
+    for row in rows.take() {
+        arrangement.remove(&row);
+    }
+    let last = order.borrow().len() - 1;
+    for (position, (name, size)) in order.borrow().iter().enumerate() {
+        let row = adw::ActionRow::builder()
+            .title(name.as_str())
+            .subtitle(if position == 0 { format!("{size} · 主要") } else { size.clone() })
+            .build();
+        let moves = [
+            ("go-previous-symbolic", "左移", position.checked_sub(1)),
+            ("go-next-symbolic", "右移", Some(position + 1).filter(|to| *to <= last)),
+        ];
+        for (icon, tooltip, target) in moves {
+            let button = gtk::Button::builder()
+                .icon_name(icon)
+                .tooltip_text(tooltip)
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .sensitive(target.is_some())
+                .build();
+            if let Some(to) = target {
+                let (arrangement, order, rows) = (arrangement.clone(), order.clone(), rows.clone());
+                button.connect_clicked(move |_| {
+                    order.borrow_mut().swap(position, to);
+                    let names: Vec<String> = order.borrow().iter().map(|(name, _)| format!("{name:?}")).collect();
+                    set(&format!("display_order = [{}]", names.join(", ")));
+                    fill_arrangement(&arrangement, &order, &rows);
+                });
+            }
+            row.add_suffix(&button);
+        }
+        arrangement.add(&row);
+        rows.borrow_mut().push(row);
+    }
+}
+
 /// The backlight's slider, between a small sun and a large one; none without a backlight.
 fn brightness_group() -> Option<adw::PreferencesGroup> {
     let info = output("brightnessctl", &[BACKLIGHT, "-m", "info"])?;
@@ -676,6 +791,12 @@ fn buttons() -> adw::PreferencesGroup {
 pub fn display_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.add(&header());
+    if let Some(arrangement) = arrangement_group(config) {
+        page.add(&arrangement);
+    }
+    if let Some(scales) = display_scales_group(config) {
+        page.add(&scales);
+    }
     let resolution = Resolution::new();
     if let Some(resolution) = &resolution {
         page.add(&resolution.group);
@@ -701,6 +822,15 @@ mod tests {
 
     fn display() -> Display {
         parse_display("current 3840x2160@60\npreferred 3840x2160@60\nscale 1.5\ndensity_scale 2\n").unwrap()
+    }
+
+    #[test]
+    fn displays_are_read_left_to_right() {
+        let text = "eDP-1\t1536x864\t0\nHDMI-A-1\t1920x1080\t1536\nbroken\n";
+        assert_eq!(
+            parse_displays(text),
+            [("eDP-1".to_string(), "1536 × 864".to_string()), ("HDMI-A-1".to_string(), "1920 × 1080".to_string())]
+        );
     }
 
     #[test]

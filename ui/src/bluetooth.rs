@@ -69,7 +69,7 @@ fn devices(filter: Option<&str>) -> Vec<Device> {
     parse_devices(&query(&args).unwrap_or_default())
 }
 
-fn powered() -> Option<bool> {
+pub(crate) fn powered() -> Option<bool> {
     let shown = query(&["show"])?;
     Some(shown.lines().any(|line| line.trim() == "Powered: yes"))
 }
@@ -85,7 +85,7 @@ fn device_icon(address: &str) -> String {
 }
 
 /// Runs bluetoothctl without holding up the window; `then` gets whether it worked.
-fn bluetoothctl(args: &[&str], then: impl FnOnce(bool) + 'static) {
+pub(crate) fn bluetoothctl(args: &[&str], then: impl FnOnce(bool) + 'static) {
     let argv: Vec<&std::ffi::OsStr> = std::iter::once("bluetoothctl")
         .chain(args.iter().copied())
         .map(std::ffi::OsStr::new)

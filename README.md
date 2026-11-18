@@ -52,6 +52,9 @@ wallpaper and an input method. Every key is optional:
 | `mode` | Display mode as `WIDTHxHEIGHT`, at its fastest rate, or `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise |
 | `scale` | How many pixels each point is drawn with: 2 on a display dense enough to be Retina (4K desktop displays, high-resolution laptop panels), 1 otherwise, and the host's own scale when running in a window |
 | `rotation` | How far the picture is turned, clockwise, for a display stood on its side: 0 (the default), 90, 180 or 270 |
+| `display_scales` | The scale of single displays, by name, as `{ "HDMI-A-1" = 1.5 }`, in place of `scale` for those |
+| `mirror_displays` | Whether the displays show the same part of the desktop from its left edge, not side by side; off unless set |
+| `display_order` | The displays' names, left to right; the first is the main display, with the menu bar and the Dock. Displays it leaves out follow in the order they were found |
 | `show_fps` | Whether the frames drawn each second are counted in the top right corner; off unless set |
 | `night_shift`, `night_shift_from`, `night_shift_to`, `night_shift_warmth` | Night Shift, warmer colours through the displays' gamma ramps: `off` (the default), `on`, `sunset` from the sun's setting to its rising where the time zone is, as worked out from its place in `zone1970.tab` (from `night_shift_from` to `night_shift_to` in a zone with none, as UTC), or `scheduled` from `22:00` to `07:00` unless set; and how warm, from 0 to 1, 0.7 unless set |
 | `color_profile` | The path of an ICC profile whose calibration curves (its `vcgt` tag, as colord and DisplayCAL write it) the displays' gamma ramps follow, under Night Shift; none unless set |
@@ -92,6 +95,11 @@ wallpaper and an input method. Every key is optional:
 | `pointer_acceleration`, `left_handed`, `disable_while_typing` | Whether the pointer goes further the faster it moves, the buttons are swapped for the left hand, and a touchpad ignores touches while typing: on, off and on unless set |
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
+| `color_filter` | A filter the displays' colour matrix applies: `grayscale`, or the correction for `protanopia`, `deuteranopia` or `tritanopia`, so that it takes a display that has a colour matrix; `none` unless set |
+| `invert_colors` | Whether the displays' colours are inverted, through their gamma ramps; off unless set |
+| `slow_keys_ms` | Milliseconds a key is held before it counts; a key held that long is sent when it is let go; 0, which counts every press, unless set |
+| `sticky_keys` | Whether a modifier key let go on its own stays on for the next key pressed; off unless set |
+| `bounce_keys_ms` | Milliseconds after a key is let go within which pressing it again is ignored; 0, which ignores none, unless set |
 | `key_repeat`, `repeat_delay`, `repeat_rate` | Whether a held key repeats, how many milliseconds it waits before it does, and how many times a second it then repeats; on, 200 and 25 unless set |
 | `lock_wallpaper`, `lock_blur` | Whether the lock shows the wallpaper rather than dark paper, and blurs it; both on unless set |
 | `lock_style` | The lock's layout: `quiet` (the time in the middle, a row of widgets under it), `poster` (the hours over the minutes, bold, on the left) or `dial` (a clock with hands, its widgets on its face); `quiet` unless set |
@@ -119,6 +127,7 @@ wallpaper and an input method. Every key is optional:
 | `lock_screen_off_after` | Seconds without input while locked after which the displays turn off, counted from locking at the soonest; as `screen_off_after` unless set |
 | `lock_always_on` | Whether the locked displays dim to the time on black instead of turning off, after `lock_screen_off_after` (30 seconds unless set) |
 | `lock_always_on_widgets`, `lock_always_on_stickers`, `lock_always_on_brightness` | Whether the always-on display also shows the widgets and the stickers, both off unless set; and how bright it is, 20 to 100 percent, 100 unless set |
+| PIN | Settings › 使用者 › PIN sets six digits or more that unlock the lock screen as the password does, kept hashed (SHA-512 crypt, a million rounds) in `~/.local/share/nekoland/pin` for the user alone; five wrong ones in a lock leave only the password. Off until set |
 | `lock_fingerprint` | Whether a finger enrolled with fprintd unlocks, as the password does (on unless set). Settings › 鎖定畫面 › 指紋 enrolls and removes fingers |
 | `lock_fingerprint_effect` | What a finger on the reader shows around the fingerprint: `ripple`, `glow` or `none`, `ripple` unless set; in the wallpaper's colour when the reader knew it, red when not |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
@@ -183,9 +192,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   wallpaper; its windows page sets what clicking a GTK title bar does, edge tiling, the gap
   between tiled windows and focus following the pointer, and lists the shortcuts that arrange
   windows; its other pages set light or dark, the icon and
-  cursor themes, the display as the Mac's Displays (its name from its EDID, the sizes it can look like, its brightness, refresh rate, rotation, a frame counter, a colour profile, and Night Shift with its sunset schedule), the
+  cursor themes, the displays as the Mac's Displays (their order side by side, and for the main one its name from its EDID, the sizes it can look like, its brightness, refresh rate, rotation, a frame counter, a colour profile, and Night Shift with its sunset schedule), the
   fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
-  Flatpak's, may use the camera, the microphone and the location, through the portals'
+  Flatpak's, may use the camera, the microphone, the speakers, the location, screenshots, background running and notifications, through the portals'
   permission store, the cursor size, high contrast and reduced motion (GTK's and, as `animations`, Nekoland's), the applications
   that open links and each kind of file, through GIO's defaults, and the terminal,
   whether GTK pastes with the middle button, blinks its text cursor and remembers recent
