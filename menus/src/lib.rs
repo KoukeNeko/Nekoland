@@ -10,11 +10,16 @@
 //! beside it when it gets its menu. A class `notify` also makes GLib announce changes no
 //! program is listening for, which it otherwise leaves out.
 //!
+//! It also gives a row of buttons that chooses one of a few a pill that slides to the
+//! chosen one; see `segments`.
+//!
 //! Nothing is linked: GTK's functions are looked up in the program, and a program without
 //! GTK 4.14 or later is left as it is.
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::OnceLock;
+
+mod segments;
 
 type GType = usize;
 type Notify = unsafe extern "C" fn(*mut c_void, *mut GParamSpec);
@@ -104,6 +109,8 @@ unsafe extern "C" fn notify(popover: *mut c_void, pspec: *mut GParamSpec) {
 }
 
 unsafe extern "C" fn init() {
+    // Before any class is made, the popovers' below among them.
+    segments::init();
     let (
         Some(popover_type),
         Some(menu_type),

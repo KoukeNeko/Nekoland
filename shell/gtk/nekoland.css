@@ -228,6 +228,58 @@ toggle-group > toggle:checked {
   transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* In a program Nekoland's library is loaded into, either kind of row is marked and gets one
+ * pill, drawn by the library, that slides to the chosen one. The row's colour is the
+ * pill's and a button's the one that reads on the pill, which is how the library is told
+ * them; what is in a button has the colour that reads on the track. Nothing of a button's
+ * own is drawn but that, and the track is the row's. */
+.linked.nekoland-segmented:not(.vertical) {
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--nekoland-fill);
+  color: var(--nekoland-ink);
+}
+.linked.nekoland-segmented:not(.vertical) > button.toggle,
+.linked.nekoland-segmented:not(.vertical) > button.toggle:hover,
+.linked.nekoland-segmented:not(.vertical) > button.toggle:active,
+.linked.nekoland-segmented:not(.vertical) > button.toggle:checked {
+  padding: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--nekoland-on-ink);
+}
+.linked.nekoland-segmented:not(.vertical) > button.toggle > *,
+.linked.nekoland-segmented:not(.vertical) > button.toggle:active > *,
+.linked.nekoland-segmented:not(.vertical) > button.toggle:checked > * {
+  background: none;
+  color: var(--nekoland-ink-2);
+  font-weight: 400;
+  transform: none;
+  transition: none;
+}
+.linked.nekoland-segmented:not(.vertical) > button.toggle:hover > * {
+  color: var(--nekoland-ink);
+}
+toggle-group.nekoland-segmented {
+  color: var(--nekoland-ink);
+}
+toggle-group.nekoland-segmented > toggle,
+toggle-group.nekoland-segmented > toggle:hover,
+toggle-group.nekoland-segmented > toggle:active,
+toggle-group.nekoland-segmented > toggle:checked {
+  background: none;
+  color: var(--nekoland-on-ink);
+  font-weight: 400;
+  transform: none;
+  transition: none;
+}
+toggle-group.nekoland-segmented > toggle > * {
+  color: var(--nekoland-ink-2);
+}
+toggle-group.nekoland-segmented > toggle:hover > * {
+  color: var(--nekoland-ink);
+}
+
 /* A slider: a thin line, ink up to a knob ringed in ink. The knob's ring stays within the
  * line, which runs out to its far side at either end, as the Mac's does; the line fills the
  * slider's padding so it ends where a switch beside it does. */

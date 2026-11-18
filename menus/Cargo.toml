@@ -2,7 +2,7 @@
 name = "nekoland-menus"
 version = "0.1.0"
 edition = "2021"
-description = "Loaded into the programs Nekoland starts, so GTK 4's submenus open beside their menus"
+description = "Loaded into the programs Nekoland starts, so GTK 4's submenus open beside their menus and what chooses one of a few slides its pill"
 
 [lib]
 name = "nekoland_menus"
