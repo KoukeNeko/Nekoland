@@ -30,6 +30,7 @@ const MINUTES_IN_HOUR: f64 = 60.0;
 const HOURS_IN_DAY: u32 = 24;
 const BAR_WIDTH: f64 = 3.0;
 const NOW_DOT: f64 = 4.0;
+const CASCADE_STEP: f64 = 16.0;
 
 const TEXT_SMALL: f64 = 9.0;
 const TEXT_BODY: f64 = 10.5;
@@ -44,6 +45,8 @@ const OUTSIDE_SHADE: f64 = 0.04;
 const BRIGHT: f64 = 0.6;
 const HOLIDAY: Rgb = (0.85, 0.25, 0.18);
 const FALLBACK_ACCENT: (f32, f32, f32) = (0.21, 0.52, 0.89);
+const FALLBACK_DARK_PAGE: Rgb = (0.12, 0.12, 0.12);
+const FALLBACK_LIGHT_PAGE: Rgb = (1.0, 1.0, 1.0);
 
 /// One event on one day, as the grids draw it.
 #[derive(Clone, Debug)]
@@ -70,6 +73,8 @@ pub struct Day {
 pub struct Look {
     pub ink: gdk::RGBA,
     pub accent: gdk::RGBA,
+    /// What the grids are drawn on.
+    pub page: Rgb,
     pub dark: bool,
 }
 
@@ -80,7 +85,13 @@ impl Look {
             .style_context()
             .lookup_color("accent_bg_color")
             .unwrap_or_else(|| gdk::RGBA::new(FALLBACK_ACCENT.0, FALLBACK_ACCENT.1, FALLBACK_ACCENT.2, 1.0));
-        Self { ink: widget.color(), accent, dark: adw::StyleManager::default().is_dark() }
+        let dark = adw::StyleManager::default().is_dark();
+        #[allow(deprecated)]
+        let page = widget.style_context().lookup_color("view_bg_color").map_or_else(
+            || if dark { FALLBACK_DARK_PAGE } else { FALLBACK_LIGHT_PAGE },
+            |color| (f64::from(color.red()), f64::from(color.green()), f64::from(color.blue())),
+        );
+        Self { ink: widget.color(), accent, page, dark }
     }
 }
 
@@ -485,11 +496,14 @@ pub fn draw_time(
             let item = timed[at];
             let start = minutes_of(item.start.unwrap_or_default());
             let end = item.end.map_or(start + DEFAULT_MINUTES, minutes_of).max(start + 15);
-            let lane_width = (column_width - INSET * 2.0) / lane_count as f64;
+            // Each event that overlaps one before it starts a step to the right of it and is
+            // drawn over it, so that every title is in view, down to the step that is left of
+            // the column's width when there are many.
+            let step = if lane_count > 1 { CASCADE_STEP.min(column_width / 2.0 / (lane_count - 1) as f64) } else { 0.0 };
             let rect = (
-                x + INSET + lane as f64 * lane_width,
+                x + INSET + lane as f64 * step,
                 f64::from(start) / MINUTES_IN_HOUR * HOUR_HEIGHT + 1.0,
-                lane_width - 2.0,
+                column_width - INSET * 2.0 - lane as f64 * step - 2.0,
                 (f64::from(end - start) / MINUTES_IN_HOUR * HOUR_HEIGHT - 2.0).max(MIN_BLOCK),
             );
             draw_block(cr, layout, rect, item, look);
@@ -513,7 +527,10 @@ pub fn draw_time(
 /// An event that has a time: a pale block of its calendar's colour with a bar down its edge.
 fn draw_block(cr: &cairo::Context, layout: &pango::Layout, rect: (f64, f64, f64, f64), item: &Item, look: &Look) {
     let (x, y, width, height) = rect;
+    // Solid under the tint, so that what a block is drawn over does not show through.
     rounded(cr, rect, CHIP_RADIUS);
+    cr.set_source_rgb(look.page.0, look.page.1, look.page.2);
+    let _ = cr.fill_preserve();
     let alpha = if look.dark { BLOCK_ALPHA + 0.1 } else { BLOCK_ALPHA };
     cr.set_source_rgba(item.color.0, item.color.1, item.color.2, if item.done { alpha * 0.6 } else { alpha });
     let _ = cr.fill();
