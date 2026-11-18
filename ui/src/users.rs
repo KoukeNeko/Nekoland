@@ -176,6 +176,7 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<UsersPage>) {
     ));
     password.add_suffix(&change);
     mine.add(&password);
+    mine.add(&pin_row(&page, refresh.clone()));
 
     let automatic = adw::SwitchRow::builder()
         .title("自動登入")
@@ -307,6 +308,96 @@ fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
         list.append(*row);
     }
     list
+}
+
+/// The PIN that unlocks the lock screen, kept by `nekoland-lock` hashed in the data folder.
+fn pin_is_set() -> bool {
+    glib::user_data_dir().join("nekoland/pin").exists()
+}
+
+/// Runs `nekoland-lock` with a command that sets or takes away the PIN, the PIN on its
+/// standard input; `then` gets whether it worked.
+fn lock_pin(command: &'static str, pin: Option<String>, then: impl FnOnce(bool) + 'static) {
+    let mut flags = gio::SubprocessFlags::STDERR_PIPE;
+    if pin.is_some() {
+        flags |= gio::SubprocessFlags::STDIN_PIPE;
+    }
+    let child = match gio::Subprocess::newv(&["nekoland-lock".as_ref(), std::ffi::OsStr::new(command)], flags) {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("nekoland-lock {command}: {err}");
+            return then(false);
+        }
+    };
+    let waited = child.clone();
+    child.communicate_utf8_async(pin.map(|pin| format!("{pin}\n")), gio::Cancellable::NONE, move |result| {
+        let worked = matches!(&result, Ok(_)) && waited.is_successful();
+        if let Ok((_, Some(said))) = &result {
+            if !said.is_empty() {
+                eprintln!("nekoland-lock {command}: {}", said.trim());
+            }
+        }
+        then(worked);
+    });
+}
+
+/// PIN: digits, six at least, that unlock the lock screen as the password does; five wrong
+/// ones in a lock leave only the password.
+fn pin_row(page: &adw::PreferencesPage, refresh: Rc<dyn Fn()>) -> adw::ActionRow {
+    let set = pin_is_set();
+    let row = adw::ActionRow::builder().title("PIN").subtitle(if set { "已設定" } else { "未設定" }).build();
+    let change = gtk::Button::builder()
+        .label(if set { "變更⋯" } else { "設定⋯" })
+        .valign(gtk::Align::Center)
+        .build();
+    let (parent, done) = (page.clone(), refresh.clone());
+    change.connect_clicked(move |_| {
+        let first = adw::PasswordEntryRow::builder().title("新 PIN").build();
+        let again = adw::PasswordEntryRow::builder().title("確認 PIN").build();
+        let dialog = adw::AlertDialog::new(Some(if set { "變更 PIN" } else { "設定 PIN" }), None);
+        dialog.set_extra_child(Some(&form(&[first.upcast_ref(), again.upcast_ref()])));
+        dialog.add_responses(&[("cancel", "取消"), ("do", if set { "變更" } else { "設定" })]);
+        dialog.set_response_appearance("do", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("do"));
+        dialog.set_close_response("cancel");
+        let (page, done) = (parent.clone(), done.clone());
+        dialog.choose(&parent, gio::Cancellable::NONE, move |response| {
+            if response != "do" {
+                return;
+            }
+            let typed = first.text().to_string();
+            if typed != again.text() {
+                return alert::notice(&page, "PIN 不相符", Some("兩次輸入的 PIN 必須相同。"));
+            }
+            if typed.len() < 6 || !typed.bytes().all(|byte| byte.is_ascii_digit()) {
+                return alert::notice(&page, "無法使用這個 PIN", Some("PIN 至少 6 位數字。"));
+            }
+            lock_pin("--set-pin", Some(typed), move |worked| {
+                if worked {
+                    done();
+                } else {
+                    alert::notice(&page, "無法設定 PIN", None);
+                }
+            });
+        });
+    });
+    row.add_suffix(&change);
+    if set {
+        let remove = gtk::Button::builder().label("移除").valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
+        let (page, done) = (page.clone(), refresh);
+        remove.connect_clicked(move |_| {
+            let (page, done) = (page.clone(), done.clone());
+            lock_pin("--clear-pin", None, move |worked| {
+                if worked {
+                    done();
+                } else {
+                    alert::notice(&page, "無法移除 PIN", None);
+                }
+            });
+        });
+        row.add_suffix(&remove);
+    }
+    row
 }
 
 /// Asks for a new password twice, done with `action`; `then` gets it when both are the same,

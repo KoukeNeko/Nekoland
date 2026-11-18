@@ -33,10 +33,14 @@
 
 mod draw;
 mod pam;
+mod pin;
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -118,6 +122,8 @@ struct Locker {
     playing: Arc<Mutex<Option<Playing>>>,
     user: String,
     password: String,
+    /// The PINs given wrong during this lock.
+    pin_tries: Arc<AtomicU32>,
     caps_lock: bool,
     /// How many characters the password being checked has.
     checking: Option<usize>,
@@ -188,8 +194,30 @@ fn preview(file: &str, width: &str, height: &str, style: Option<&str>) -> ! {
     }
 }
 
+/// The exit code for the result of a command given to the lock in its arguments, with the
+/// reason on standard error.
+fn finish(result: Result<(), String>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(why) => {
+            eprintln!("nekoland-lock: {why}");
+            1
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Settings sets and takes away the PIN, given on standard input, not in a command line.
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["--set-pin"] => {
+            let mut pin = String::new();
+            let result = std::io::stdin().read_line(&mut pin).map_err(|err| err.to_string()).and_then(|_| pin::set(pin.trim()));
+            std::process::exit(finish(result));
+        }
+        ["--clear-pin"] => std::process::exit(finish(pin::clear())),
+        _ => {}
+    }
     if let [flag, file, width, height, style @ ..] = &args[..] {
         if flag == "--preview" && style.len() < 2 {
             preview(file, width, height, style.first().map(String::as_str));
@@ -222,6 +250,7 @@ fn main() {
         look,
         user,
         password: String::new(),
+        pin_tries: Arc::default(),
         caps_lock: false,
         checking: None,
         error: None,
@@ -1188,7 +1217,17 @@ impl Locker {
         let (user, password) = (self.user.clone(), std::mem::take(&mut self.password));
         // Its dots stay, dimmed, while it is checked.
         self.checking = Some(password.chars().count());
+        let tries = self.pin_tries.clone();
         std::thread::spawn(move || {
+            // Digits, with a PIN set and tries left, are tried as the PIN first; then, being
+            // possibly a password of digits, as the password.
+            if pin::is_valid(&password) && tries.load(Ordering::Relaxed) < pin::TRIES && pin::is_set() {
+                if pin::check(&password) {
+                    let _ = sender.send(Ok(()));
+                    return;
+                }
+                tries.fetch_add(1, Ordering::Relaxed);
+            }
             let _ = sender.send(pam::check(&user, &password));
         });
         let watched = self.handle.insert_source(receiver, |event, _, locker| {
