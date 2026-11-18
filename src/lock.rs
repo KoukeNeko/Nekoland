@@ -53,10 +53,10 @@ pub struct Lock {
     /// The lock's shortcut opened without the password: its windows, and only they, stand
     /// above the lock until they close.
     guest: Option<String>,
-    /// The windows open as the shortcut was asked for, which are not its: a window open
-    /// before the lock would show what the lock hides, and a program can name itself as any
-    /// other.
-    before_guest: Vec<Window>,
+    /// When, since boot, the shortcut was asked for. Only windows of a process started since
+    /// are its: one running before, as a program kept open with no windows or another naming
+    /// itself as the shortcut's app, would show what the lock hides.
+    guest_since: Duration,
     /// Whether it has shown a window yet: once its last one closes, it is let go.
     guest_shown: bool,
     /// When it locked, which the displays' going dark while locked counts from.
@@ -76,6 +76,21 @@ impl Lock {
 /// shared one such as /tmp would let others read them or plant a link in their place.
 fn locker_notices() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-notices"))
+}
+
+/// The time since boot, as /proc/uptime has it.
+fn since_boot() -> Option<Duration> {
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    Duration::try_from_secs_f64(uptime.split_whitespace().next()?.parse().ok()?).ok()
+}
+
+/// When, since boot, a process started: the 22nd field of its stat, in clock ticks.
+fn process_started(pid: i32) -> Option<Duration> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The program's name, in parentheses, may hold spaces; what follows it is field 3 on.
+    let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()?;
+    let per_second = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|&hz| hz > 0)?;
+    Some(Duration::from_millis(ticks * 1000 / per_second))
 }
 
 pub fn tell_locker(app: &str, said: &str) {
@@ -138,10 +153,19 @@ impl Nekoland {
         let Some(guest) = lock.guest.as_deref() else {
             return Vec::new();
         };
+        // X11 windows all come through XWayland, which started before: none is a guest.
+        let started_since = |window: &Window| {
+            window
+                .toplevel()
+                .and_then(|toplevel| toplevel.wl_surface().client())
+                .and_then(|client| client.get_credentials(&self.display_handle).ok())
+                .and_then(|credentials| process_started(credentials.pid))
+                .is_some_and(|started| started >= lock.guest_since)
+        };
         self.space
             .elements()
-            .filter(|window| !lock.before_guest.contains(window))
             .filter(|window| window_names(window).1.eq_ignore_ascii_case(guest))
+            .filter(|window| started_since(window))
             .cloned()
             .collect()
     }
@@ -159,7 +183,10 @@ impl Nekoland {
             }
             lock.guest = Some(app_id.to_string());
             lock.guest_shown = false;
-            lock.before_guest = self.space.elements().cloned().collect();
+            let Some(now) = since_boot() else {
+                return tracing::warn!("lock-open: no uptime to tell the shortcut's windows by");
+            };
+            lock.guest_since = now;
         }
         self.launch_app(app_id);
     }
@@ -279,7 +306,7 @@ impl SessionLockHandler for Nekoland {
         }
         let lock = confirmation.ext_session_lock().clone();
         let surfaces = self.lock.take().map(|lock| lock.surfaces).unwrap_or_default();
-        self.lock = Some(Lock { lock, surfaces, guest: None, before_guest: Vec::new(), guest_shown: false, since: Instant::now() });
+        self.lock = Some(Lock { lock, surfaces, guest: None, guest_since: Duration::MAX, guest_shown: false, since: Instant::now() });
         self.focus_lock();
         // The pointer leaves what it was over as well, so that a click or scroll without
         // moving it first reaches nothing behind the lock.
@@ -385,5 +412,18 @@ pub fn watch_idle(handle: &LoopHandle<'static, CalloopData>) {
     });
     if let Err(err) = inserted {
         tracing::warn!("idle: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_process_started_before_now_and_not_after() {
+        let now = since_boot().expect("uptime");
+        let started = process_started(std::process::id() as i32).expect("own stat");
+        assert!(started <= now, "{started:?} after {now:?}");
+        assert!(process_started(-1).is_none());
     }
 }
