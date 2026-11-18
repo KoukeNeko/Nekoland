@@ -47,7 +47,7 @@ const BUTTON: i32 = 28;
 const ICON: i32 = 16;
 /// A slider's knob, its radius.
 const KNOB: i32 = 7;
-const OPEN_TIME: f64 = 0.16;
+pub(crate) const OPEN_TIME: f64 = 0.16;
 const EXPAND_TIME: f64 = 0.2;
 /// How much a tile shrinks while pressed.
 const PRESSED_SCALE: f64 = 0.97;
@@ -185,11 +185,11 @@ impl Layout {
     }
 }
 
-fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+pub(crate) fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
     Rectangle::new((x, y).into(), (w, h).into())
 }
 
-fn ease_out(t: f64) -> f64 {
+pub(crate) fn ease_out(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
@@ -473,33 +473,10 @@ impl ControlCenter {
     fn draw(&mut self, shown: &Shown) {
         let colors = colors(shown.dark);
         let layout = self.layout();
-        let Ok(surface) = text::canvas(WIDTH, layout.height) else {
+        let Some((surface, cr)) = draw_panel(WIDTH, layout.height, shown.dark, &colors) else {
             return;
         };
-        let Ok(cr) = Context::new(&surface) else {
-            return;
-        };
-        text::rounded_rectangle(
-            &cr,
-            0.5,
-            0.5,
-            f64::from(WIDTH) - 1.0,
-            f64::from(layout.height) - 1.0,
-            f64::from(MENU_RADIUS),
-        );
-        let (r, g, b, a) = crate::glass::tint(shown.dark, Tier::Menu);
-        cr.set_source_rgba(r, g, b, a);
-        let _ = cr.fill_preserve();
-        cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
-        cr.set_line_width(1.0);
-        let _ = cr.stroke();
-
-        let well = |cr: &Context, area: Rectangle<i32, Logical>, radius: f64| {
-            let (x, y, w, h) = to_f64(area);
-            text::rounded_rectangle(cr, x, y, w, h, radius);
-            cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.07);
-            let _ = cr.fill();
-        };
+        let well = |cr: &Context, area: Rectangle<i32, Logical>, radius: f64| draw_well(cr, &colors, area, radius);
         let small = font("", 9.0);
         for (group, title) in &layout.groups {
             if group.size.h < 2 {
@@ -519,20 +496,8 @@ impl ControlCenter {
         }
 
         let label = font("", 10.0);
-        // A row of a list, lit in ink under the pointer as a menu's item is.
         let list_row = |cr: &Context, part: Part, area: Rectangle<i32, Logical>| {
-            let lit = shown.hovered == Some(part);
-            if lit {
-                let (x, y, w, h) = to_f64(area);
-                text::rounded_rectangle(cr, x, y, w, h, 6.0);
-                cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
-                let _ = cr.fill();
-            }
-            if lit {
-                colors.on_ink
-            } else {
-                colors.ink
-            }
+            draw_list_row(cr, &colors, area, shown.hovered == Some(part))
         };
         for (part, area) in &layout.parts {
             let (x, y, w, h) = to_f64(*area);
@@ -772,6 +737,52 @@ impl ControlCenter {
     }
 }
 
+/// A panel's glass, its corners and its edge, on a surface of its own size to draw into.
+pub(crate) fn draw_panel(width: i32, height: i32, dark: bool, colors: &Colors) -> Option<(ImageSurface, Context)> {
+    let surface = text::canvas(width, height).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    text::rounded_rectangle(
+        &cr,
+        0.5,
+        0.5,
+        f64::from(width) - 1.0,
+        f64::from(height) - 1.0,
+        f64::from(MENU_RADIUS),
+    );
+    let (r, g, b, a) = crate::glass::tint(dark, Tier::Menu);
+    cr.set_source_rgba(r, g, b, a);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+    Some((surface, cr))
+}
+
+/// The well a panel's parts sit in.
+pub(crate) fn draw_well(cr: &Context, colors: &Colors, area: Rectangle<i32, Logical>, radius: f64) {
+    let (x, y, w, h) = to_f64(area);
+    text::rounded_rectangle(cr, x, y, w, h, radius);
+    cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.07);
+    let _ = cr.fill();
+}
+
+/// A row of a list, lit in ink under the pointer as a menu's item is; the colour its text takes.
+pub(crate) fn draw_list_row(
+    cr: &Context,
+    colors: &Colors,
+    area: Rectangle<i32, Logical>,
+    lit: bool,
+) -> (f64, f64, f64) {
+    if !lit {
+        return colors.ink;
+    }
+    let (x, y, w, h) = to_f64(area);
+    text::rounded_rectangle(cr, x, y, w, h, 6.0);
+    cr.set_source_rgb(colors.ink.0, colors.ink.1, colors.ink.2);
+    let _ = cr.fill();
+    colors.on_ink
+}
+
 /// A tile's look: whether it is on, its icon, its title and what it says under the title.
 fn tile_face(
     tile: Part,
@@ -814,7 +825,7 @@ fn tile_face(
     }
 }
 
-fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
+pub(crate) fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
     (
         f64::from(area.loc.x),
         f64::from(area.loc.y),
@@ -824,7 +835,7 @@ fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
 }
 
 /// One line of text, cut short with an ellipsis where it would pass `width`.
-fn show_line(
+pub(crate) fn show_line(
     cr: &Context,
     line: &str,
     font: &pango::FontDescription,
@@ -843,14 +854,14 @@ fn show_line(
 }
 
 /// The rule between a list's row and the rows under it.
-fn rule(cr: &Context, colors: &Colors, x: f64, y: f64, width: f64) {
+pub(crate) fn rule(cr: &Context, colors: &Colors, x: f64, y: f64, width: f64) {
     cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.12);
     cr.rectangle(x + 4.0, y.floor(), width - 8.0, 1.0);
     let _ = cr.fill();
 }
 
 /// A symbolic icon from the theme, its left edge at `x`, centred on `center`.
-fn draw_icon(cr: &Context, name: &str, x: f64, center: f64, color: (f64, f64, f64)) {
+pub(crate) fn draw_icon(cr: &Context, name: &str, x: f64, center: f64, color: (f64, f64, f64)) {
     if let Some(icon) = text::named_icon(name, "", ICON, color) {
         let _ = cr.set_source_surface(&icon, x, center - f64::from(ICON) / 2.0);
         let _ = cr.paint();
@@ -916,7 +927,7 @@ fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f
 }
 
 /// The menus' submenu arrow, pointing right, turned down as far as `turn`, from 0 to 1.
-fn draw_chevron(cr: &Context, x: f64, center: f64, turn: f64, color: (f64, f64, f64)) {
+pub(crate) fn draw_chevron(cr: &Context, x: f64, center: f64, turn: f64, color: (f64, f64, f64)) {
     let Some(arrow) = text::named_icon("nekoland-submenu-symbolic", "", 16, color) else {
         return;
     };

@@ -142,6 +142,46 @@ pub struct Config {
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
+    /// The clock: Calendar's icon before it, the lunar date after it, its text as a format
+    /// (empty for the one the options above make; `HH:mm | HH:mm@GMT+2 'LT'` also shows
+    /// another zone), and what its place in the bar looks like.
+    pub clock_icon: bool,
+    pub clock_lunar: bool,
+    pub clock_format: String,
+    pub clock_style: ClockStyle,
+    /// The next event beside the clock, with its title, and how it asks for attention when it
+    /// is this many minutes away: by flashing, with a sound, or over the whole screen.
+    pub clock_next_event: bool,
+    pub clock_next_event_title: bool,
+    pub clock_attention: bool,
+    pub clock_attention_sound: bool,
+    pub clock_attention_minutes: i32,
+    pub clock_fullscreen_alert: bool,
+    /// Whether resting the pointer on the clock opens its panel, as a click does.
+    pub clock_open_on_hover: bool,
+    /// The clock's panel: week numbers, the days of the months either side, the lunar date and
+    /// the holidays, what marks a day that has events, how many weeks are shown and which
+    /// weekday they begin on, whether the day picked stays picked once it closes, and whether
+    /// resting the pointer on a day shows what is on it.
+    pub calendar_week_numbers: bool,
+    pub calendar_month_outline: bool,
+    pub calendar_lunar: bool,
+    pub calendar_holidays: bool,
+    pub calendar_event_dots: EventDots,
+    pub calendar_weeks: i32,
+    pub calendar_first_weekday: i32,
+    pub calendar_preserve_date: bool,
+    pub calendar_peek: bool,
+    /// What the list under the month holds: those that are over, those still to come, how
+    /// many there are, a mark on those that repeat, the reminders that are late, and the
+    /// events that take the whole day, with their details.
+    pub calendar_show_finished: bool,
+    pub calendar_show_future: bool,
+    pub calendar_show_summary: bool,
+    pub calendar_show_recurrence: bool,
+    pub calendar_show_overdue: bool,
+    pub calendar_show_all_day: bool,
+    pub calendar_show_all_day_details: bool,
     /// Whether the Dock is drawn on glass, or on its tint alone.
     pub dock_glass: bool,
     /// How big the Dock's icons are, in logical pixels; the rest of the Dock grows with them.
@@ -300,6 +340,33 @@ pub enum HoverStyle {
     #[default]
     Full,
     Tooltip,
+}
+
+/// What the clock's place in the bar looks like.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockStyle {
+    /// As the bar's other items are, lit only when its panel is open.
+    #[default]
+    Plain,
+    /// On a well of its own.
+    Opaque,
+    /// Drawn round with a line.
+    Outline,
+}
+
+/// What marks a day that has events, in the clock's panel.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EventDots {
+    None,
+    /// One dot, in the text's colour.
+    Neutral,
+    /// One dot, in the colour of the calendar of the day's first event.
+    #[default]
+    Highlighted,
+    /// A dot for each calendar that has events that day, up to three.
+    Multiple,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
@@ -596,6 +663,33 @@ impl Default for Config {
             menu_bar_battery_percent: false,
             clock_date: true,
             menu_bar_background: true,
+            clock_icon: false,
+            clock_lunar: false,
+            clock_format: String::new(),
+            clock_style: ClockStyle::Plain,
+            clock_next_event: false,
+            clock_next_event_title: true,
+            clock_attention: true,
+            clock_attention_sound: false,
+            clock_attention_minutes: 5,
+            clock_fullscreen_alert: false,
+            clock_open_on_hover: false,
+            calendar_week_numbers: false,
+            calendar_month_outline: true,
+            calendar_lunar: true,
+            calendar_holidays: true,
+            calendar_event_dots: EventDots::Highlighted,
+            calendar_weeks: 6,
+            calendar_first_weekday: 0,
+            calendar_preserve_date: false,
+            calendar_peek: true,
+            calendar_show_finished: true,
+            calendar_show_future: true,
+            calendar_show_summary: true,
+            calendar_show_recurrence: true,
+            calendar_show_overdue: true,
+            calendar_show_all_day: true,
+            calendar_show_all_day_details: true,
             dock_glass: true,
             dock_size: 40,
             dock_autohide: false,

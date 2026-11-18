@@ -2,6 +2,9 @@
 
 mod appgrid;
 mod arrange;
+mod agenda;
+mod clockbar;
+mod clockmenu;
 mod config;
 mod control;
 mod corners;

@@ -34,6 +34,8 @@ use smithay::{
 use crate::{
     config,
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
+    clockbar::{Face, GLYPH_GAP, GLYPH_WIDTH},
+    clockmenu::ClockPanel,
     control::{self, ControlCenter},
     desktop::DesktopCommand,
     dock::DockCommand,
@@ -47,6 +49,10 @@ use crate::{
 pub const MENU_BAR_HEIGHT: i32 = 30;
 const TITLE_PADDING: i32 = 10;
 const TITLE_HIGHLIGHT_HEIGHT: i32 = 22;
+/// How far the clock's highlight goes past its text, each side.
+const CLOCK_PADDING: i32 = 8;
+const CLOCK_FILL_ALPHA: f64 = 0.12;
+const CLOCK_OUTLINE_ALPHA: f64 = 0.5;
 const STATUS_ICON: i32 = 18;
 const LOGO: f64 = 16.0;
 /// A menu's rows, separators and text are as GTK's popover menus are, so that every menu
@@ -69,7 +75,6 @@ const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
 const NETWORK_POLL: Duration = Duration::from_secs(3);
 
-const WEEKDAYS: [&str; 7] = ["日", "一", "二", "三", "四", "五", "六"];
 /// What Help menus are called, by the programs that bring their own.
 const HELP_TITLES: [&str; 6] = ["help", "說明", "輔助說明", "幫助", "帮助", "ヘルプ"];
 
@@ -246,6 +251,7 @@ enum Source {
     Network,
     Battery,
     Control,
+    Clock,
 }
 
 struct Title {
@@ -282,6 +288,7 @@ pub(crate) struct Drawn {
     menus: u64,
     open: Option<usize>,
     control: bool,
+    clock_panel: bool,
     dark: bool,
     background: bool,
     minute: i64,
@@ -310,6 +317,11 @@ pub struct MenuBar {
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
     pub(crate) control: Option<ControlCenter>,
+    pub(crate) clock_panel: Option<ClockPanel>,
+    /// The day the panel had picked when it was last open, for it to open on again.
+    pub(crate) clock_picked: Option<calendar_data::Date>,
+    pub(crate) agenda: crate::agenda::Agenda,
+    pub(crate) clock_bar: crate::clockbar::ClockBar,
     picture: Option<Picture>,
     pub(crate) drawn: Option<Drawn>,
     /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
@@ -340,6 +352,10 @@ impl Default for MenuBar {
             titles: Vec::new(),
             open: None,
             control: None,
+            clock_panel: None,
+            clock_picked: None,
+            agenda: Default::default(),
+            clock_bar: Default::default(),
             picture: None,
             drawn: None,
             wallpaper_dark: None,
@@ -522,48 +538,6 @@ fn draw_logo(cr: &Context, x: f64, y: f64, color: Rgb) {
     let _ = cr.fill();
 }
 
-/// The minute it is now, or the second when seconds are shown, and the clock as the bar
-/// shows it, as the configuration asks.
-fn clock(config: &config::Config) -> (i64, String) {
-    // SAFETY: localtime_r only writes the tm it is given.
-    let tm = unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&now, &mut tm);
-        tm
-    };
-    let minute = ((i64::from(tm.tm_yday) * 24 + i64::from(tm.tm_hour)) * 60) + i64::from(tm.tm_min);
-    let key = if config.clock_seconds || config.clock_flash {
-        minute * 60 + i64::from(tm.tm_sec)
-    } else {
-        minute
-    };
-    let weekday = if config.clock_weekday {
-        format!("週{} ", WEEKDAYS[tm.tm_wday.rem_euclid(7) as usize])
-    } else {
-        String::new()
-    };
-    // A flashing separator is a punctuation space every other second, about as wide.
-    let colon = if config.clock_flash && tm.tm_sec % 2 == 1 { '\u{2008}' } else { ':' };
-    let time = if config.clock_24h {
-        format!("{:02}{colon}{:02}", tm.tm_hour, tm.tm_min)
-    } else {
-        let half = if tm.tm_hour < 12 { "上午" } else { "下午" };
-        format!("{half} {}{colon}{:02}", (tm.tm_hour + 11) % 12 + 1, tm.tm_min)
-    };
-    let seconds = if config.clock_seconds {
-        format!(":{:02}", tm.tm_sec)
-    } else {
-        String::new()
-    };
-    let date = if config.clock_date {
-        format!("{}月{}日 ", tm.tm_mon + 1, tm.tm_mday)
-    } else {
-        String::new()
-    };
-    (key, format!("{date}{weekday}{time}{seconds}"))
-}
-
 fn is_help(label: &str) -> bool {
     HELP_TITLES.contains(&label.trim().to_lowercase().as_str())
 }
@@ -670,7 +644,7 @@ impl MenuBar {
         &mut self,
         width: i32,
         titles: Vec<(Source, Option<String>)>,
-        clock: &str,
+        clock: &Face,
         (dark, background): (bool, bool),
         config: &config::Config,
     ) {
@@ -737,10 +711,41 @@ impl MenuBar {
 
         // Right, from the edge in: the clock, the system's items, then the programs' items.
         let clock_font = font("Medium", 10.0);
-        let clock_width = text_size(clock, &clock_font).0;
+        let glyph_room = clock.glyph_day.map_or(0, |_| GLYPH_WIDTH + GLYPH_GAP);
+        let clock_width = glyph_room + text_size(&clock.text, &clock_font).0;
         let mut right = width - 12 - clock_width;
-        show_text(&cr, clock, &clock_font, f64::from(right), center, colors.ink);
-        right -= 8;
+        let clock_rect = Rectangle::new(
+            (right - CLOCK_PADDING, 0).into(),
+            (clock_width + CLOCK_PADDING * 2, MENU_BAR_HEIGHT).into(),
+        );
+        // The flash lights the clock as an open menu's title is lit.
+        let clock_lit = open == Some(self.titles.len()) || self.clock_panel.is_some() || clock.flash;
+        if clock_lit {
+            highlight(&cr, clock_rect);
+        } else if config.clock_style != config::ClockStyle::Plain {
+            let y = f64::from((MENU_BAR_HEIGHT - TITLE_HIGHLIGHT_HEIGHT) / 2);
+            let (x, w, h) = (f64::from(clock_rect.loc.x), f64::from(clock_rect.size.w), f64::from(TITLE_HIGHLIGHT_HEIGHT));
+            if config.clock_style == config::ClockStyle::Opaque {
+                text::rounded_rectangle(&cr, x, y, w, h, 6.0);
+                cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, CLOCK_FILL_ALPHA);
+                let _ = cr.fill();
+            } else {
+                text::rounded_rectangle(&cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 5.5);
+                cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, CLOCK_OUTLINE_ALPHA);
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+            }
+        }
+        let clock_ink = if clock_lit { colors.on_ink } else { colors.ink };
+        if let Some(day) = clock.glyph_day {
+            crate::clockbar::draw_glyph(&cr, f64::from(right), center, day, clock_ink);
+        }
+        show_text(&cr, &clock.text, &clock_font, f64::from(right + glyph_room), center, clock_ink);
+        self.titles.push(Title {
+            rect: clock_rect,
+            source: Source::Clock,
+        });
+        right -= CLOCK_PADDING;
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
@@ -1080,9 +1085,40 @@ impl Nekoland {
         let Some(output) = self.output_area() else {
             return false;
         };
-        self.menu_bar.open.is_some()
+        // A pinned panel only takes what is on it, so the windows under it keep working.
+        let panel_takes_all = self.menu_bar.clock_panel.is_some() && !self.clock_panel_pinned();
+        let on_pinned_panel = self.clock_panel_pinned()
+            && self.local(pos).is_some_and(|local| self.clock_panel_holds(local));
+        self.alert_shown()
+            || self.menu_bar.open.is_some()
             || (self.menu_bar_shown()
-                && (self.menu_bar.control.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
+                && (self.menu_bar.control.is_some()
+                    || panel_takes_all
+                    || on_pinned_panel
+                    || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
+    }
+
+    /// Opens the clock's panel when the pointer comes to the clock, if the settings ask for it.
+    fn open_clock_on_hover(&mut self, pos: Point<f64, Logical>) {
+        let idle = self.menu_bar.clock_panel.is_none() && self.menu_bar.control.is_none();
+        if !(self.config.clock_open_on_hover && idle && self.menu_bar_shown()) {
+            return;
+        }
+        let Some(local) = self.local(pos) else {
+            return;
+        };
+        if let Some(clock) = self.clock_title_rect().filter(|clock| clock.contains(local)) {
+            self.toggle_clock_panel(clock);
+        }
+    }
+
+    /// Where the clock is in the bar.
+    pub(crate) fn clock_title_rect(&self) -> Option<Rectangle<i32, Logical>> {
+        self.menu_bar
+            .titles
+            .iter()
+            .find(|title| title.source == Source::Clock)
+            .map(|title| title.rect)
     }
 
     /// The titles of the bar's left side for the active application.
@@ -1183,7 +1219,7 @@ impl Nekoland {
             }
         }
 
-        let (minute, clock) = clock(&self.config);
+        let clock = self.clock_face();
         let background = self.config.menu_bar_background;
         let dark = if background {
             self.menu_bar.dark
@@ -1196,9 +1232,10 @@ impl Nekoland {
             menus: self.menu_bar.menus_revision,
             open: self.menu_bar.open.as_ref().and_then(|open| open.title),
             control: self.menu_bar.control.is_some(),
+            clock_panel: self.menu_bar.clock_panel.is_some(),
             dark,
             background,
-            minute,
+            minute: clock.key,
             items: self.menu_bar.items_revision,
         };
         if self.menu_bar.drawn.as_ref() != Some(&drawn) || self.menu_bar.picture.is_none() {
@@ -1230,6 +1267,9 @@ impl Nekoland {
             }
         }
         self.refresh_control_center();
+        self.menu_bar.agenda.refresh();
+        self.refresh_clock_panel();
+        self.refresh_alert();
     }
 
     /// What the bar and its open menus put on screen, front first.
@@ -1257,6 +1297,11 @@ impl Nekoland {
             return overlays;
         }
         overlays.extend(self.control_center_overlay());
+        overlays.extend(self.clock_panel_overlay());
+        // An alert is over everything, so it is first.
+        if let Some(alert) = self.alert_overlay() {
+            overlays.insert(0, alert);
+        }
         if let Some(picture) = &bar.picture {
             overlays.push(Overlay {
                 fade: 1.0,
@@ -1415,6 +1460,7 @@ impl Nekoland {
     pub fn close_menu(&mut self) {
         self.menu_bar.open = None;
         self.menu_bar.control = None;
+        self.menu_bar.clock_panel = None;
     }
 
     pub(crate) fn output_size(&self) -> Size<i32, Logical> {
@@ -1427,9 +1473,17 @@ impl Nekoland {
             return;
         };
         self.menu_bar.control = None;
-        if source == Source::Control {
-            self.toggle_control_center(self.menu_bar.titles[title].rect);
-            return;
+        self.menu_bar.clock_panel = None;
+        match source {
+            Source::Control => {
+                self.toggle_control_center(self.menu_bar.titles[title].rect);
+                return;
+            }
+            Source::Clock => {
+                self.toggle_clock_panel(self.menu_bar.titles[title].rect);
+                return;
+            }
+            _ => {}
         }
         let help = match &source {
             Source::Help => true,
@@ -1856,7 +1910,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
-            Source::Control => Vec::new(),
+            Source::Control | Source::Clock => Vec::new(),
         }
     }
 
@@ -1865,13 +1919,18 @@ impl Nekoland {
         if !self.menu_bar_covers(pos) {
             return false;
         }
+        if self.alert_shown() {
+            self.dismiss_alert();
+            return true;
+        }
         let Some(local) = self.local(pos) else {
             return false;
         };
         if let Some(title) = self.title_at(local) {
-            let control = self.menu_bar.control.is_some()
-                && self.menu_bar.titles.get(title).is_some_and(|title| title.source == Source::Control);
-            if control
+            let source = self.menu_bar.titles.get(title).map(|title| &title.source);
+            let panel_open = (self.menu_bar.control.is_some() && source == Some(&Source::Control))
+                || (self.menu_bar.clock_panel.is_some() && source == Some(&Source::Clock));
+            if panel_open
                 || self
                     .menu_bar
                     .open
@@ -1890,6 +1949,12 @@ impl Nekoland {
             }
             return true;
         }
+        if self.menu_bar.clock_panel.is_some() {
+            if !self.clock_panel_press(local) && !self.clock_panel_pinned() {
+                self.close_menu();
+            }
+            return true;
+        }
         // A click anywhere else only dismisses the menus; it does not reach a window.
         if self.level_at(local).is_none() {
             self.close_menu();
@@ -1900,21 +1965,24 @@ impl Nekoland {
     /// The pointer moved: open menus follow it across the bar, light the entry under it,
     /// and open the submenu of that entry.
     pub fn menu_bar_motion(&mut self, pos: Point<f64, Logical>) {
-        if self.menu_bar.control.is_some() && self.menu_bar_shown() {
+        if (self.menu_bar.control.is_some() || self.menu_bar.clock_panel.is_some()) && self.menu_bar_shown() {
             let Some(local) = self.local(pos) else {
                 return;
             };
             let dragging = self.menu_bar.control.as_ref().is_some_and(|control| control.dragging());
+            let own = if self.menu_bar.control.is_some() { Source::Control } else { Source::Clock };
             // As from one menu to the next, the pointer goes from the panel to another menu.
             match self.title_at(local) {
-                Some(title) if !dragging && self.menu_bar.titles[title].source != Source::Control => {
+                Some(title) if !dragging && self.menu_bar.titles[title].source != own => {
                     self.open_menu(title, false)
                 }
-                _ => self.control_motion(local),
+                _ if self.menu_bar.control.is_some() => self.control_motion(local),
+                _ => self.clock_panel_motion(local),
             }
             return;
         }
         if self.menu_bar.open.is_none() {
+            self.open_clock_on_hover(pos);
             return;
         }
         let Some(local) = self.local(pos) else {
@@ -1971,6 +2039,12 @@ impl Nekoland {
         if self.menu_bar.control.is_some() {
             if let Some(local) = self.local(pos) {
                 self.control_release(local);
+            }
+            return;
+        }
+        if self.menu_bar.clock_panel.is_some() {
+            if let Some(local) = self.local(pos) {
+                self.clock_panel_release(local);
             }
             return;
         }

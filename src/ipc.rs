@@ -165,6 +165,20 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
     match message {
         // The configuration changed: the settings application wrote it.
         "reload" => state.reload_config(),
+        // `calendar DATE`: the clock's panel opened on a day, given as 2026-12-25 or in words.
+        day if day.starts_with("calendar ") => {
+            let text = day["calendar ".len()..].trim();
+            let today = calendar_data::Date::today();
+            let (_, second_of_day) = calendar_data::date::local_parts(calendar_data::date::now());
+            let hour_minute = (second_of_day / 3600, second_of_day / 60 % 60);
+            // The first word of a sentence is its title, so a dummy one goes before the date.
+            let found = calendar_data::Date::parse_key(text)
+                .or_else(|| calendar_data::natural::parse(&format!("日 {text}"), today, &[], hour_minute).date);
+            match found {
+                Some(day) => state.show_clock_panel_on(day),
+                None => return Some(format!("not a date: {text}\n")),
+            }
+        }
         // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ.
         "modes" => {
             let output = state.space.outputs().next()?;

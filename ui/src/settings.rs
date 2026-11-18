@@ -753,6 +753,113 @@ fn idle_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
     row
 }
 
+/// A row choosing one of `values` for a whole-number setting, each as its label says.
+fn integer_choice_row(
+    config: &Config,
+    title: &str,
+    key: &'static str,
+    (values, labels): (&'static [i64], &[&str]),
+    default: i64,
+) -> adw::ComboRow {
+    let current = config.0.get(key).and_then(toml::Value::as_integer).unwrap_or(default);
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(labels))
+        .selected(values.iter().position(|value| *value == current).unwrap_or(0) as u32)
+        .build();
+    row.connect_selected_notify(move |row| {
+        if let Some(value) = values.get(row.selected() as usize) {
+            set(&format!("{key} = {value}"));
+        }
+    });
+    row
+}
+
+/// A row with a line of text for a setting, kept when the entry is applied.
+fn text_row(config: &Config, title: &str, key: &'static str) -> adw::EntryRow {
+    let row = adw::EntryRow::builder()
+        .title(title)
+        .text(config.word(key))
+        .show_apply_button(true)
+        .build();
+    row.connect_apply(move |row| set(&format!("{key} = {:?}", row.text().as_str())));
+    row
+}
+
+const CLOCK_STYLES: [&str; 3] = ["plain", "opaque", "outline"];
+const EVENT_DOTS: [&str; 4] = ["none", "neutral", "highlighted", "multiple"];
+/// How many minutes before an event the clock calls attention to it.
+const ATTENTION_MINUTES: [i64; 6] = [1, 3, 5, 10, 15, 30];
+const WEEK_COUNTS: [i64; 3] = [4, 5, 6];
+const FIRST_WEEKDAYS: [i64; 7] = [0, 1, 2, 3, 4, 5, 6];
+
+/// What the clock in the menu bar shows and does about the events.
+fn clock_group(config: &Config) -> adw::PreferencesGroup {
+    let clock = group("時鐘");
+    clock.add(&text_row(config, "自訂格式", "clock_format"));
+    clock.add(&switch_row(config, "農曆", "clock_lunar"));
+    clock.add(&switch_row(config, "圖示", "clock_icon"));
+    clock.add(&choice_row(config, "樣式", "clock_style", &CLOCK_STYLES, &["一般", "實底", "外框"]));
+    clock.add(&switch_row(config, "滑過時開啟", "clock_open_on_hover"));
+    clock.add(&switch_row(config, "下一個行程", "clock_next_event"));
+    clock.add(&switch_row(config, "行程標題", "clock_next_event_title"));
+    clock.add(&switch_row(config, "行程將至時閃爍", "clock_attention"));
+    clock.add(&integer_choice_row(
+        config,
+        "提早",
+        "clock_attention_minutes",
+        (&ATTENTION_MINUTES, &["1 分鐘", "3 分鐘", "5 分鐘", "10 分鐘", "15 分鐘", "30 分鐘"]),
+        5,
+    ));
+    clock.add(&switch_row(config, "提示音", "clock_attention_sound"));
+    clock.add(&switch_row(config, "全螢幕提醒", "clock_fullscreen_alert"));
+    clock
+}
+
+/// The month in the clock's panel.
+fn calendar_month_group(config: &Config) -> adw::PreferencesGroup {
+    let month = group("月曆");
+    month.add(&switch_row(config, "週數", "calendar_week_numbers"));
+    month.add(&switch_row(config, "月份外框", "calendar_month_outline"));
+    month.add(&switch_row(config, "農曆", "calendar_lunar"));
+    month.add(&switch_row(config, "節日", "calendar_holidays"));
+    month.add(&choice_row(
+        config,
+        "行程標記",
+        "calendar_event_dots",
+        &EVENT_DOTS,
+        &["無", "單色", "行事曆顏色", "每個行事曆"],
+    ));
+    month.add(&integer_choice_row(config, "顯示週數", "calendar_weeks", (&WEEK_COUNTS, &["4 週", "5 週", "6 週"]), 6));
+    month.add(&integer_choice_row(
+        config,
+        "每週第一天",
+        "calendar_first_weekday",
+        (&FIRST_WEEKDAYS, &["週日", "週一", "週二", "週三", "週四", "週五", "週六"]),
+        0,
+    ));
+    month.add(&switch_row(config, "記住選擇的日期", "calendar_preserve_date"));
+    month.add(&switch_row(config, "Alt 預覽日期", "calendar_peek"));
+    month
+}
+
+/// The day's list in the clock's panel.
+fn calendar_day_group(config: &Config) -> adw::PreferencesGroup {
+    let day = group("當天行程");
+    for (title, key) in [
+        ("已結束的行程", "calendar_show_finished"),
+        ("尚未開始的行程", "calendar_show_future"),
+        ("行程數量", "calendar_show_summary"),
+        ("重複標記", "calendar_show_recurrence"),
+        ("逾期的提醒事項", "calendar_show_overdue"),
+        ("整天行程", "calendar_show_all_day"),
+        ("整天行程的詳細資料", "calendar_show_all_day_details"),
+    ] {
+        day.add(&switch_row(config, title, key));
+    }
+    day
+}
+
 /// A row stating a fact, which can be selected to copy.
 fn fact_row(title: &str, value: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).build();
@@ -847,6 +954,9 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         bar.add(&switch_row(config, "電池百分比", "menu_bar_battery_percent"));
     }
     page.add(&bar);
+    page.add(&clock_group(config));
+    page.add(&calendar_month_group(config));
+    page.add(&calendar_day_group(config));
 
     let corners = group("熱點");
     for (title, key) in [

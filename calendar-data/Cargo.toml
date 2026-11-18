@@ -1,0 +1,11 @@
+[package]
+name = "nekoland-calendar-data"
+version = "0.1.0"
+edition = "2021"
+description = "What the clock's panel and Calendar share: dates, the lunar calendar, holidays, events and how they repeat, and the words an event is entered with"
+
+[lib]
+name = "calendar_data"
+
+[dependencies]
+libc = "0.2"
