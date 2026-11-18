@@ -39,17 +39,115 @@ pub enum Align {
     Right,
 }
 
-/// How the lock goes once the password is given.
+/// How the lock goes once the password is given: LockStar's twelve, and the lift.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Effect {
     /// Taken off upwards, its foot fading.
     Lift,
     Fade,
-    /// Pushed off to the left.
+    /// Pushed off, the way the direction says.
     Slide,
     /// Coming nearer as it fades.
     Expand,
+    /// A hole opening from the middle, its edge in the effect's colour.
+    Spread,
+    /// Strips going off one after another, as a wave.
+    Wave,
+    /// Stretched wide and flat as it fades.
+    Warp,
+    /// A hole opening from the middle, rings of colour in it.
+    Ripple,
+    /// Tiles going one by one.
+    Mosaic,
+    /// Swept off around the middle, as a clock's hand.
+    Wiper,
+    /// Brushed off in bands, the brush in the effect's colour.
+    Paint,
+    /// Strips jumping aside as it fades.
+    Glitch,
+    /// Turned and drawn into the middle.
+    Swirl,
 }
+
+/// The way an unlock effect goes, where it has one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// How an unlock effect's pace changes as it goes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Easing {
+    /// Quick, then slowing.
+    Out,
+    /// Slow, quick, slow.
+    InOut,
+    Linear,
+}
+
+/// The unlock effect as the person set it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Unlock {
+    pub effect: Effect,
+    /// Of the edges and brushes; the wallpaper's accent where none was chosen.
+    pub colour: Option<Rgb>,
+    pub direction: Direction,
+    pub easing: Easing,
+}
+
+/// The sign at the top of the lock, as LockStar's lock icons.
+pub enum Icon {
+    Padlock,
+    Shield,
+    Key,
+    Heart,
+    Paw,
+    Picture(ImageSurface),
+}
+
+/// Where the shortcuts stand.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Shortcuts {
+    /// Two, in the corners at the foot.
+    Corners,
+    /// Up to six, in a row over the power buttons.
+    Row,
+    /// Up to six, one over another at the right edge.
+    Column,
+}
+
+/// The figures on the dial's face.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Numerals {
+    None,
+    Arabic,
+    Roman,
+}
+
+/// How thick the dial's hands are.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Hands {
+    Classic,
+    Thin,
+    Bold,
+}
+
+/// What a finger on the reader shows around the fingerprint.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FingerEffect {
+    None,
+    /// Rings going out from it.
+    Ripple,
+    /// A glow fading from it.
+    Glow,
+}
+
+/// A picture placed on the lock: its centre as shares of the width and the height, and its
+/// longer side in points.
+pub type Sticker = (ImageSurface, (f64, f64), f64);
 
 /// How much of the notifications that came in while locked the lock shows.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -77,6 +175,18 @@ pub struct Look {
     /// How much larger than the style's own the time is.
     pub clock_scale: f64,
     pub clock_align: Align,
+    /// Whether the time goes through the colours, as ClockFace's rainbow.
+    pub clock_rainbow: bool,
+    /// Words and a small picture laid on the clock, as ClockFace's.
+    pub clock_label: String,
+    pub clock_badge: Option<ImageSurface>,
+    pub numerals: Numerals,
+    pub hands: Hands,
+    /// Where the time, the notices and the message stand instead of where the style puts
+    /// them: their middle, as shares of the width and the height.
+    pub clock_at: Option<(f64, f64)>,
+    pub notices_at: Option<(f64, f64)>,
+    pub message_at: Option<(f64, f64)>,
     pub clock_seconds: bool,
     pub show_date: bool,
     pub battery: bool,
@@ -92,25 +202,32 @@ pub struct Look {
     /// Whether the screen, left a while, shows the time dimly on black rather than going
     /// dark, as an always-on display does; and after how long.
     pub always_on: bool,
+    /// What the always-on display shows besides the time, and how bright, from 0 to 1.
+    pub always_on_widgets: bool,
+    pub always_on_stickers: bool,
+    pub always_on_brightness: f64,
     /// Whether a finger may unlock, where fprintd has one enrolled.
     pub fingerprint: bool,
+    pub finger_effect: FingerEffect,
     pub doze_after: std::time::Duration,
     /// How much darker than the style's own ink the wallpaper is, from 0 to 1.
     pub dim: f64,
-    pub lock_icon: bool,
-    pub unlock_effect: Effect,
+    pub lock_icon: Option<Icon>,
+    pub lock_icon_colour: Option<Rgb>,
+    pub unlock: Unlock,
     pub unlock_duration: std::time::Duration,
-    /// A picture placed on the lock: its centre as shares of the width and the height, and
-    /// its longer side in points.
-    pub sticker: Option<(ImageSurface, (f64, f64), f64)>,
+    pub stickers: Vec<Sticker>,
     /// The wallpaper's subject cut out, framed as the wallpaper is, laid over the time as
     /// One UI's depth effect lays it.
     pub subject: Option<ImageSurface>,
-    /// Whether the shortcuts stand in a row over the power buttons rather than in the corners.
-    pub shortcuts_row: bool,
+    pub shortcuts_layout: Shortcuts,
     pub notices: Notices,
-    /// What the person asked to be shown while locked, such as whom to call.
+    /// What the person asked to be shown while locked, such as whom to call; how large, in
+    /// what colour and how opaque.
     pub message: String,
+    pub message_size: f64,
+    pub message_colour: Option<Rgb>,
+    pub message_opacity: f64,
     pub show_name: bool,
     pub picture: Option<Pixbuf>,
     /// The apps at the foot, left then right or in a row, with the icons the compositor drew.
@@ -156,8 +273,11 @@ const LABEL_HEIGHT: f64 = 18.0;
 /// The lowest the password field's top may be: the field and its note clear of the buttons
 /// at the foot by the same gap in every style.
 fn lowest_field(look: &Look, width: f64, height: f64) -> f64 {
+    // A column of shortcuts stands at the edge, beside the field rather than under it.
+    let beside = |button: &Hit| look.shortcuts_layout == Shortcuts::Column && matches!(button.0, Button::Shortcut(_));
     let foot = buttons(look, width, height)
         .into_iter()
+        .filter(|button| !beside(button))
         .map(|(_, _, y, r)| y - r)
         .fold(height - EDGE, f64::min);
     foot - GAP - NOTE_ROOM - FIELD_HEIGHT
@@ -176,20 +296,31 @@ pub fn buttons(look: &Look, width: f64, height: f64) -> Vec<Hit> {
         }
     }
     let shown = |limit: usize| look.shortcuts.iter().enumerate().take(limit).filter(|(_, (app, _))| !app.is_empty());
-    if look.shortcuts_row {
-        const STEP: f64 = 2.0 * SHORTCUT_RADIUS + 20.0;
-        let above = if look.power_buttons { power_y - POWER_RADIUS - 20.0 } else { height - EDGE };
-        let y = above - SHORTCUT_RADIUS;
-        let count = shown(ROW_SHORTCUTS).count() as f64;
-        for (i, (at, _)) in shown(ROW_SHORTCUTS).enumerate() {
-            found.push((Button::Shortcut(at), width / 2.0 + (i as f64 - (count - 1.0) / 2.0) * STEP, y, SHORTCUT_RADIUS));
+    const STEP: f64 = 2.0 * SHORTCUT_RADIUS + 20.0;
+    match look.shortcuts_layout {
+        Shortcuts::Row => {
+            let above = if look.power_buttons { power_y - POWER_RADIUS - 20.0 } else { height - EDGE };
+            let y = above - SHORTCUT_RADIUS;
+            let count = shown(ROW_SHORTCUTS).count() as f64;
+            for (i, (at, _)) in shown(ROW_SHORTCUTS).enumerate() {
+                found.push((Button::Shortcut(at), width / 2.0 + (i as f64 - (count - 1.0) / 2.0) * STEP, y, SHORTCUT_RADIUS));
+            }
         }
-    } else {
-        let foot = height - EDGE - SHORTCUT_RADIUS;
-        // A slot left empty keeps its side: the second shortcut is always on the right.
-        for (at, _) in shown(CORNER_SHORTCUTS) {
-            let x = if at == 0 { EDGE + SHORTCUT_RADIUS } else { width - EDGE - SHORTCUT_RADIUS };
-            found.push((Button::Shortcut(at), x, foot, SHORTCUT_RADIUS));
+        Shortcuts::Column => {
+            // Up the right edge from its foot, the first lowest, clear of the power buttons'
+            // row, which is in the middle.
+            let (x, foot) = (width - EDGE - SHORTCUT_RADIUS, height - EDGE - SHORTCUT_RADIUS);
+            for (i, (at, _)) in shown(ROW_SHORTCUTS).enumerate() {
+                found.push((Button::Shortcut(at), x, foot - i as f64 * STEP, SHORTCUT_RADIUS));
+            }
+        }
+        Shortcuts::Corners => {
+            let foot = height - EDGE - SHORTCUT_RADIUS;
+            // A slot left empty keeps its side: the second shortcut is always on the right.
+            for (at, _) in shown(CORNER_SHORTCUTS) {
+                let x = if at == 0 { EDGE + SHORTCUT_RADIUS } else { width - EDGE - SHORTCUT_RADIUS };
+                found.push((Button::Shortcut(at), x, foot, SHORTCUT_RADIUS));
+            }
         }
     }
     found
@@ -343,6 +474,9 @@ pub struct Moment<'a> {
     pub chosen: Option<usize>,
     /// Whether the fingerprint reader waits for a finger.
     pub finger: bool,
+    /// How far, from 0 to 1, the effect of the last finger read has gone, and whether the
+    /// reader knew it.
+    pub finger_pulse: Option<(f64, bool)>,
 }
 
 /// The wallpaper covering `width` by `height` pixels, `nearer` times larger, blurred or not;
@@ -576,6 +710,7 @@ fn field(cr: &Context, look: &Look, moment: &Moment, x: f64, y: f64, width: f64,
         set(cr, if moment.error.is_some() { DANGER } else { INK }, 0.8);
         fingerprint(cr, x + width - FINGER_ROOM / 2.0 - 6.0, middle, 9.0);
     }
+    finger_pulse(cr, look, moment, x + width - FINGER_ROOM / 2.0 - 6.0, middle, 9.0);
 
     let note = match moment.error {
         Some((why, _)) => Some((why, DANGER, 1.0)),
@@ -615,6 +750,37 @@ fn fingerprint(cr: &Context, cx: f64, cy: f64, radius: f64) {
         cr.arc(cx, cy, r, gap + 0.18, end);
     }
     let _ = cr.stroke();
+}
+
+/// What a finger just read shows around the fingerprint at `cx`, `cy`: rings going out from
+/// it or a glow fading, in the accent where the reader knew the finger, else in red.
+fn finger_pulse(cr: &Context, look: &Look, moment: &Moment, cx: f64, cy: f64, radius: f64) {
+    let Some((t, known)) = moment.finger_pulse else { return };
+    let colour = if known { look.accent } else { DANGER };
+    let fade = 1.0 - t;
+    match look.finger_effect {
+        FingerEffect::None => {}
+        FingerEffect::Ripple => {
+            cr.set_line_width(2.0);
+            for ring in 0..2 {
+                let grown = (t - 0.25 * f64::from(ring)).max(0.0);
+                cr.new_path();
+                cr.arc(cx, cy, radius + 28.0 * grown, 0.0, 2.0 * PI);
+                set(cr, colour, 0.8 * fade);
+                let _ = cr.stroke();
+            }
+        }
+        FingerEffect::Glow => {
+            let reach = radius * 3.2;
+            let glow = RadialGradient::new(cx, cy, 0.0, cx, cy, reach);
+            glow.add_color_stop_rgba(0.0, colour.0, colour.1, colour.2, 0.7 * fade);
+            glow.add_color_stop_rgba(1.0, colour.0, colour.1, colour.2, 0.0);
+            cr.new_path();
+            cr.arc(cx, cy, reach, 0.0, 2.0 * PI);
+            let _ = cr.set_source(&glow);
+            let _ = cr.fill();
+        }
+    }
 }
 
 /// The battery as a ring `size` across, filled as far as it is charged.
@@ -784,31 +950,142 @@ fn media(cr: &Context, playing: &Playing, x: f64, cy: f64) -> Vec<Hit> {
     hits
 }
 
-/// A padlock at the top of the screen, as a phone's lock has.
-fn padlock(cr: &Context, cx: f64, top: f64) {
-    set(cr, INK, 0.86);
+/// The sign at the top of the screen, 20 points tall from `top`, as a phone's lock has.
+fn lock_icon(cr: &Context, look: &Look, icon: &Icon, cx: f64, top: f64) {
+    set(cr, look.lock_icon_colour.unwrap_or(INK), 0.86);
     cr.new_path();
     cr.set_line_width(1.8);
-    cr.arc(cx, top + 6.0, 4.5, PI, 0.0);
-    cr.line_to(cx + 4.5, top + 9.0);
-    cr.move_to(cx - 4.5, top + 9.0);
-    cr.line_to(cx - 4.5, top + 6.0);
-    let _ = cr.stroke();
-    rounded(cr, cx - 7.0, top + 9.0, 14.0, 11.0, 2.5);
-    let _ = cr.fill();
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    match icon {
+        Icon::Padlock => {
+            cr.arc(cx, top + 6.0, 4.5, PI, 0.0);
+            cr.line_to(cx + 4.5, top + 9.0);
+            cr.move_to(cx - 4.5, top + 9.0);
+            cr.line_to(cx - 4.5, top + 6.0);
+            let _ = cr.stroke();
+            rounded(cr, cx - 7.0, top + 9.0, 14.0, 11.0, 2.5);
+            let _ = cr.fill();
+        }
+        Icon::Shield => {
+            cr.move_to(cx, top);
+            cr.line_to(cx + 8.0, top + 3.0);
+            cr.curve_to(cx + 8.0, top + 12.0, cx + 4.0, top + 17.0, cx, top + 20.0);
+            cr.curve_to(cx - 4.0, top + 17.0, cx - 8.0, top + 12.0, cx - 8.0, top + 3.0);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+        Icon::Key => {
+            cr.arc(cx - 4.0, top + 10.0, 4.5, 0.0, 2.0 * PI);
+            let _ = cr.stroke();
+            cr.move_to(cx + 0.5, top + 10.0);
+            cr.line_to(cx + 9.0, top + 10.0);
+            cr.move_to(cx + 6.0, top + 10.0);
+            cr.line_to(cx + 6.0, top + 14.0);
+            cr.move_to(cx + 9.0, top + 10.0);
+            cr.line_to(cx + 9.0, top + 13.0);
+            let _ = cr.stroke();
+        }
+        Icon::Heart => {
+            cr.move_to(cx, top + 19.0);
+            cr.curve_to(cx - 12.0, top + 11.0, cx - 8.0, top + 1.0, cx, top + 6.0);
+            cr.curve_to(cx + 8.0, top + 1.0, cx + 12.0, top + 11.0, cx, top + 19.0);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+        Icon::Paw => {
+            // A cat's: the pad and four toes.
+            cr.save().ok();
+            cr.translate(cx, top + 14.5);
+            cr.scale(1.0, 0.8);
+            cr.arc(0.0, 0.0, 5.5, 0.0, 2.0 * PI);
+            cr.restore().ok();
+            let _ = cr.fill();
+            for (dx, dy) in [(-7.0, 7.5), (-2.6, 3.5), (2.6, 3.5), (7.0, 7.5)] {
+                cr.arc(cx + dx, top + dy, 2.4, 0.0, 2.0 * PI);
+                let _ = cr.fill();
+            }
+        }
+        Icon::Picture(picture) => {
+            let side = 22.0;
+            let scale = side / f64::from(picture.width().max(picture.height()).max(1));
+            cr.save().ok();
+            cr.translate(cx - f64::from(picture.width()) * scale / 2.0, top);
+            cr.scale(scale, scale);
+            let _ = cr.set_source_surface(picture, 0.0, 0.0);
+            let _ = cr.paint();
+            cr.restore().ok();
+        }
+    }
 }
 
-/// The picture placed on the lock, under the words.
-fn sticker(cr: &Context, look: &Look, width: f64, height: f64) {
-    let Some((picture, (x, y), size)) = &look.sticker else { return };
-    let scale = size / f64::from(picture.width().max(picture.height()).max(1));
-    let (w, h) = (f64::from(picture.width()) * scale, f64::from(picture.height()) * scale);
-    cr.save().ok();
-    cr.translate(x * width - w / 2.0, y * height - h / 2.0);
-    cr.scale(scale, scale);
-    let _ = cr.set_source_surface(picture, 0.0, 0.0);
-    let _ = cr.paint();
-    cr.restore().ok();
+/// The pictures placed on the lock, under the words, as opaque as `alpha`.
+fn stickers(cr: &Context, look: &Look, width: f64, height: f64, alpha: f64) {
+    for (picture, (x, y), size) in &look.stickers {
+        let scale = size / f64::from(picture.width().max(picture.height()).max(1));
+        let (w, h) = (f64::from(picture.width()) * scale, f64::from(picture.height()) * scale);
+        cr.save().ok();
+        cr.translate(x * width - w / 2.0, y * height - h / 2.0);
+        cr.scale(scale, scale);
+        let _ = cr.set_source_surface(picture, 0.0, 0.0);
+        let _ = cr.paint_with_alpha(alpha);
+        cr.restore().ok();
+    }
+}
+
+/// The message as the person styled it, at most `width` wide; its colour set, `alpha` as
+/// opaque as the style draws it and the person's opacity together.
+fn message_layout(cr: &Context, look: &Look, alpha: f64, width: f64) -> pango::Layout {
+    set(cr, look.message_colour.unwrap_or(INK), alpha * look.message_opacity);
+    line(cr, look, &look.message, look.message_size, MEDIUM, width)
+}
+
+/// The time's colour, from `x0` to `x1`: the person's, or `fallback`; through the colours,
+/// where they asked for the rainbow.
+fn clock_ink(cr: &Context, look: &Look, fallback: Rgb, alpha: f64, x0: f64, x1: f64) {
+    if !look.clock_rainbow {
+        return set(cr, look.clock_colour.unwrap_or(fallback), alpha);
+    }
+    let rainbow = LinearGradient::new(x0, 0.0, x1.max(x0 + 1.0), 0.0);
+    for stop in 0..=6 {
+        let share = f64::from(stop) / 6.0;
+        let (r, g, b) = from_hsl(share * 0.83, 0.7, 0.72);
+        rainbow.add_color_stop_rgba(share, r, g, b, alpha);
+    }
+    let _ = cr.set_source(&rainbow);
+}
+
+/// A layout's width, in points.
+fn width_of(layout: &pango::Layout) -> f64 {
+    f64::from(layout.pixel_extents().1.width())
+}
+
+/// The words and the small picture laid on the clock, centred on `cx` from `y`, or from `x`
+/// where `cx` is not given; how tall, nothing if there is neither.
+fn badge(cr: &Context, look: &Look, cx: Option<f64>, x: f64, y: f64) -> f64 {
+    const SIDE: f64 = 28.0;
+    let label = (!look.clock_label.is_empty()).then(|| text(cr, look, &look.clock_label, 15.0, MEDIUM));
+    let picture_w = if look.clock_badge.is_some() { SIDE + if label.is_some() { 8.0 } else { 0.0 } } else { 0.0 };
+    let label_w = label.as_ref().map_or(0.0, width_of);
+    if picture_w == 0.0 && label.is_none() {
+        return 0.0;
+    }
+    let left = cx.map_or(x, |cx| cx - (picture_w + label_w) / 2.0);
+    if let Some(picture) = &look.clock_badge {
+        let scale = SIDE / f64::from(picture.width().max(picture.height()).max(1));
+        cr.save().ok();
+        cr.translate(left, y);
+        cr.scale(scale, scale);
+        let _ = cr.set_source_surface(picture, 0.0, 0.0);
+        let _ = cr.paint();
+        cr.restore().ok();
+    }
+    if let Some(label) = &label {
+        set(cr, look.clock_colour.unwrap_or(look.accent), 1.0);
+        let h = f64::from(label.pixel_extents().1.height());
+        at(cr, label, left + picture_w, y + (SIDE - h) / 2.0);
+    }
+    SIDE
 }
 
 /// The middle of the column the time stands in, as wide as `half` either side of it.
@@ -842,15 +1119,27 @@ fn notice_lines(look: &Look, facts: &Facts) -> Vec<(String, String)> {
 /// The words, the widgets and the field, in points, on a surface `width` by `height` points;
 /// where the player's buttons are, which only the styles know.
 pub fn words(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> Vec<Hit> {
-    sticker(cr, look, width, height);
-    if look.lock_icon {
-        padlock(cr, width / 2.0, EDGE - 8.0);
+    stickers(cr, look, width, height, 1.0);
+    if let Some(icon) = &look.lock_icon {
+        lock_icon(cr, look, icon, width / 2.0, EDGE - 8.0);
     }
     let hits = match look.style {
         Style::Quiet => quiet(cr, look, moment, width, height),
         Style::Poster => poster(cr, look, moment, width, height),
         Style::Dial => dial(cr, look, moment, width, height),
     };
+    // What the person moved, where they put it rather than where the style does.
+    if let (Some((x, y)), false) = (look.message_at, look.message.is_empty()) {
+        let message = message_layout(cr, look, 0.86, width * 0.5);
+        let h = f64::from(message.pixel_extents().1.height());
+        centred(cr, &message, x * width, y * height - h / 2.0);
+    }
+    if let Some((x, y)) = look.notices_at {
+        let lines = notice_lines(look, moment.facts);
+        let tall = lines.len() as f64 * (CARD_H + CARD_GAP) - CARD_GAP;
+        let top = (y * height - tall / 2.0).max(EDGE);
+        cards(cr, look, &lines, (x * width).clamp(EDGE + CARD_W / 2.0, width - EDGE - CARD_W / 2.0), top, height - EDGE);
+    }
     subject(cr, look, width, height);
     draw_buttons(cr, look, moment, width, height);
     hits
@@ -875,17 +1164,49 @@ fn subject(cr: &Context, look: &Look, width: f64, height: f64) {
     cr.restore().ok();
 }
 
-fn quiet(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> Vec<Hit> {
-    const CARD_W: f64 = 380.0;
-    let cx = column(look, width, CARD_W / 2.0);
-    let mut y = height * 0.16;
-    if look.show_date {
+const CARD_W: f64 = 380.0;
+const CARD_H: f64 = 56.0;
+const CARD_GAP: f64 = 8.0;
+
+/// The notices as cards, one under another from `top` centred on `cx`, as many as fit above
+/// `bottom`.
+fn cards(cr: &Context, look: &Look, lines: &[(String, String)], cx: f64, mut top: f64, bottom: f64) {
+    for (app, summary) in lines {
+        if top + CARD_H > bottom {
+            break;
+        }
+        let x = cx - CARD_W / 2.0;
+        glass(cr, x, top, CARD_W, CARD_H, 16.0, 0.16);
+        set(cr, INK, 1.0);
+        at(cr, &line(cr, look, app, 14.0, pango::Weight::Bold, CARD_W - 32.0), x + 16.0, top + 9.0);
         set(cr, INK, 0.74);
-        y += centred(cr, &text(cr, look, moment.date, 19.0, MEDIUM), cx, y);
+        at(cr, &line(cr, look, summary, 13.0, MEDIUM, CARD_W - 32.0), x + 16.0, top + 30.0);
+        top += CARD_H + CARD_GAP;
     }
-    set(cr, look.clock_colour.unwrap_or(INK), 1.0);
+}
+
+fn quiet(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> Vec<Hit> {
+    let cx = column(look, width, CARD_W / 2.0);
     let size = (width * 0.105).min(height * 0.17).min(150.0) * look.clock_scale;
-    y += centred(cr, &clock_text(cr, look, moment.time, size), cx, y);
+    let date = look.show_date.then(|| text(cr, look, moment.date, 19.0, MEDIUM));
+    let time = clock_text(cr, look, moment.time, size);
+    let tall = |layout: &pango::Layout| f64::from(layout.pixel_extents().1.height());
+    // Where the person put the time, its middle there; else the style's place.
+    let (cx, mut y) = match look.clock_at {
+        Some((x, y)) => (x * width, y * height - (date.as_ref().map_or(0.0, tall) + tall(&time)) / 2.0),
+        None => (cx, height * 0.16),
+    };
+    if let Some(date) = &date {
+        set(cr, INK, 0.74);
+        y += centred(cr, date, cx, y);
+    }
+    let w = width_of(&time);
+    clock_ink(cr, look, INK, 1.0, cx - w / 2.0, cx + w / 2.0);
+    y += centred(cr, &time, cx, y);
+    let badged = badge(cr, look, Some(cx), 0.0, y + 6.0);
+    if badged > 0.0 {
+        y += badged + 6.0;
+    }
 
     // The widgets in rows of pills under the time, the player's buttons in its own.
     let mut hits = Vec::new();
@@ -927,21 +1248,12 @@ fn quiet(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) ->
     }
 
     // The notices, as cards stacked under them, as many as there is room for above the field.
+    let cx = column(look, width, CARD_W / 2.0);
     let field_top = (height * 0.82).min(lowest_field(look, width, height));
     let lowest = field_top - if look.show_name { 120.0 } else { 24.0 };
-    let mut top = y + 28.0;
-    for (app, summary) in notice_lines(look, moment.facts) {
-        const CARD_H: f64 = 56.0;
-        if top + CARD_H > lowest {
-            break;
-        }
-        let x = cx - CARD_W / 2.0;
-        glass(cr, x, top, CARD_W, CARD_H, 16.0, 0.16);
-        set(cr, INK, 1.0);
-        at(cr, &line(cr, look, &app, 14.0, pango::Weight::Bold, CARD_W - 32.0), x + 16.0, top + 9.0);
-        set(cr, INK, 0.74);
-        at(cr, &line(cr, look, &summary, 13.0, MEDIUM, CARD_W - 32.0), x + 16.0, top + 30.0);
-        top += CARD_H + 8.0;
+    if look.notices_at.is_none() {
+        let top = if look.clock_at.is_some() { height * 0.16 } else { y + 28.0 };
+        cards(cr, look, &notice_lines(look, moment.facts), cx, top, lowest);
     }
 
     if look.show_name {
@@ -954,18 +1266,30 @@ fn quiet(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) ->
     }
     field(cr, look, moment, cx - FIELD_WIDTH / 2.0, field_top, FIELD_WIDTH, false);
 
-    if !look.message.is_empty() {
-        set(cr, INK, 0.74);
+    if !look.message.is_empty() && look.message_at.is_none() {
         // In the top left: the corners at the foot are the shortcuts'.
-        let message = line(cr, look, &look.message, 13.0, MEDIUM, width * 0.4);
+        let message = message_layout(cr, look, 0.74, width * 0.4);
         at(cr, &message, 32.0, 28.0);
     }
     hits
 }
 
 fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> Vec<Hit> {
-    let left = (width * 0.067).max(48.0);
-    let mut y = height * 0.12;
+    let field_left = (width * 0.067).max(48.0);
+    let mut parts = moment.time.split(':');
+    let (hours, minutes, seconds) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next());
+    let size = (height * 0.235).min(width * 0.15).min(212.0) * look.clock_scale;
+    let figures = [clock_text(cr, look, hours, size), clock_text(cr, look, minutes, size)];
+    // Where the person put the time, its middle there; else the style's place.
+    let (left, mut y) = match look.clock_at {
+        Some((x, y)) => {
+            let wide = figures.iter().map(width_of).fold(0.0, f64::max);
+            let tall = figures.iter().map(|layout| f64::from(layout.pixel_extents().1.height()) * 0.76).sum::<f64>()
+                + if look.show_date { 30.0 } else { 0.0 };
+            (x * width - wide / 2.0, y * height - tall / 2.0)
+        }
+        None => (field_left, height * 0.12),
+    };
     if look.show_date {
         let (weekday, date) = moment.date.rsplit_once(' ').map_or((moment.date, ""), |(date, weekday)| (weekday, date));
         set(cr, look.accent, 1.0);
@@ -975,18 +1299,17 @@ fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -
         y += h + 6.0;
     }
 
-    let mut parts = moment.time.split(':');
-    let (hours, minutes, seconds) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next());
-    let size = (height * 0.235).min(width * 0.15).min(212.0) * look.clock_scale;
-    for (i, part) in [hours, minutes].into_iter().enumerate() {
-        let colour = if i == 0 { INK } else { look.clock_colour.unwrap_or(look.accent) };
-        set(cr, colour, 1.0);
-        let layout = clock_text(cr, look, part, size);
+    for (i, layout) in figures.iter().enumerate() {
         // The lines of figures overlap a little, as a poster sets them.
         let (ink, extent) = layout.pixel_extents();
         let x = left - size * 0.04;
+        if look.clock_rainbow {
+            clock_ink(cr, look, INK, 1.0, x, x + f64::from(extent.width()));
+        } else {
+            set(cr, if i == 0 { INK } else { look.clock_colour.unwrap_or(look.accent) }, 1.0);
+        }
         cr.move_to(x, y);
-        pangocairo::functions::show_layout(cr, &layout);
+        pangocairo::functions::show_layout(cr, layout);
         if let Some(seconds) = seconds.filter(|_| i == 1) {
             // Small, at the foot of the minutes.
             let small = clock_text(cr, look, seconds, size * 0.28);
@@ -996,7 +1319,8 @@ fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -
         }
         y += f64::from(extent.height()) * 0.76;
     }
-    y += 40.0;
+    let badged = badge(cr, look, None, left, y + 8.0);
+    y += 40.0 + if badged > 0.0 { badged + 8.0 } else { 0.0 };
 
     let mut hits = Vec::new();
     let facts: Vec<(String, String, Option<&Playing>)> = widgets(look, moment.facts)
@@ -1023,7 +1347,7 @@ fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -
 
     // The field at the foot of the column, the person's picture before it.
     let field_top = (height - (height * 0.1).max(56.0) - FIELD_HEIGHT).min(lowest_field(look, width, height));
-    let mut x = left;
+    let mut x = field_left;
     if look.show_name {
         picture(cr, look, x, field_top - 4.0, 44.0);
         x += 58.0;
@@ -1031,7 +1355,7 @@ fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -
     field(cr, look, moment, x, field_top, 260.0, true);
 
     // The notices down the right.
-    let lines = notice_lines(look, moment.facts);
+    let lines = if look.notices_at.is_none() { notice_lines(look, moment.facts) } else { Vec::new() };
     const LIST: f64 = 340.0;
     let right = width - (width * 0.05).max(40.0) - LIST;
     let mut top = height * 0.12;
@@ -1049,18 +1373,18 @@ fn poster(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -
         top += 74.0;
     }
 
-    if !look.message.is_empty() {
-        set(cr, INK, 0.74);
+    if !look.message.is_empty() && look.message_at.is_none() {
         // Over the notices, on ink as they are, the wallpaper there being bare: the corners
         // at the foot are the shortcuts'.
-        let message = line(cr, look, &look.message, 13.0, MEDIUM, LIST - 24.0);
+        let message = message_layout(cr, look, 0.86, LIST - 24.0);
         let (_, extent) = message.pixel_extents();
-        let (w, h) = (f64::from(extent.width()) + 24.0, 30.0);
+        let h = (f64::from(extent.height()) + 12.0).max(30.0);
+        let w = f64::from(extent.width()) + 24.0;
         let (x, y) = (width - (width * 0.05).max(40.0) - w, height * 0.12 - 12.0 - h);
-        rounded(cr, x, y, w, h, h / 2.0);
-        cr.set_source_rgba(0.09, 0.086, 0.094, 0.5);
+        rounded(cr, x, y, w, h, 15.0);
+        cr.set_source_rgba(0.09, 0.086, 0.094, 0.5 * look.message_opacity);
         let _ = cr.fill();
-        set(cr, INK, 0.86);
+        set(cr, look.message_colour.unwrap_or(INK), 0.86 * look.message_opacity);
         at(cr, &message, x + 12.0, y + (h - f64::from(extent.height())) / 2.0);
     }
     hits
@@ -1073,10 +1397,12 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
     let below_dial = 24.0
         + if look.show_date { 34.0 } else { 0.0 }
         + if found.iter().any(|widget| matches!(widget, Widget::Event(_) | Widget::World(..) | Widget::Weather(..))) { 22.0 } else { 0.0 }
-        + if look.show_name { 40.0 } else { 8.0 };
+        + if look.show_name { 40.0 } else { 8.0 }
+        + if look.clock_label.is_empty() && look.clock_badge.is_none() { 0.0 } else { 36.0 };
     let room = lowest_field(look, width, height) - height * 0.1 - below_dial;
     let radius = ((height * 0.24).min(width * 0.2).min(220.0) * look.clock_scale).min(room / 2.0).max(60.0);
-    let (cx, cy) = (column(look, width, radius.max(FIELD_WIDTH / 2.0)), height * 0.1 + radius);
+    let field_cx = column(look, width, radius.max(FIELD_WIDTH / 2.0));
+    let (cx, cy) = look.clock_at.map_or((field_cx, height * 0.1 + radius), |(x, y)| (x * width, y * height));
 
     set(cr, INK, 0.06);
     cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
@@ -1094,6 +1420,23 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
         cr.move_to(cx + outer * angle.sin(), cy - outer * angle.cos());
         cr.line_to(cx + inner * angle.sin(), cy - inner * angle.cos());
         let _ = cr.stroke();
+    }
+    const ROMAN: [&str; 12] = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+    if look.numerals != Numerals::None {
+        set(cr, INK, 0.72);
+        for hour in 0..12 {
+            let figure = match look.numerals {
+                Numerals::Roman => ROMAN[hour].to_string(),
+                _ => if hour == 0 { "12".to_string() } else { hour.to_string() },
+            };
+            let layout = text(cr, look, &figure, radius * 0.1, MEDIUM);
+            let angle = hour as f64 * PI / 6.0;
+            let (x, y) = (cx + radius * 0.74 * angle.sin(), cy - radius * 0.74 * angle.cos());
+            let h = f64::from(layout.pixel_extents().1.height());
+            centred(cr, &layout, x, y - h / 2.0);
+        }
+        // Text leaves the current point where it was set; what is drawn next starts afresh.
+        cr.new_path();
     }
 
     // The widgets as small dials: the battery above the middle, what plays below it; the
@@ -1129,18 +1472,28 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
     // The hands.
     let minute = f64::from(moment.minute);
     let hour = f64::from(moment.hour % 12) + minute / 60.0;
-    let hand = |angle: f64, length: f64, line: f64, colour: Rgb| {
-        set(cr, colour, 1.0);
+    // The hour hand in ink; the others in the clock's colour, or through the colours.
+    let hand = |angle: f64, length: f64, line: f64, ink: bool| {
+        if ink {
+            set(cr, INK, 1.0);
+        } else {
+            clock_ink(cr, look, look.accent, 1.0, cx - radius, cx + radius);
+        }
         cr.set_line_width(line);
         cr.move_to(cx - 0.08 * length * angle.sin(), cy + 0.08 * length * angle.cos());
         cr.line_to(cx + length * angle.sin(), cy - length * angle.cos());
         let _ = cr.stroke();
     };
     let accent = look.clock_colour.unwrap_or(look.accent);
-    hand(hour * PI / 6.0, radius * 0.5, 9.0, INK);
-    hand(minute * PI / 30.0, radius * 0.8, 5.0, accent);
+    let (hour_line, minute_line) = match look.hands {
+        Hands::Classic => (9.0, 5.0),
+        Hands::Thin => (4.0, 2.5),
+        Hands::Bold => (13.0, 8.0),
+    };
+    hand(hour * PI / 6.0, radius * 0.5, hour_line, true);
+    hand(minute * PI / 30.0, radius * 0.8, minute_line, false);
     if look.clock_seconds {
-        hand(f64::from(moment.second) * PI / 30.0, radius * 0.86, 1.6, accent);
+        hand(f64::from(moment.second) * PI / 30.0, radius * 0.86, 1.6, false);
     }
     set(cr, accent, 1.0);
     cr.arc(cx, cy, 7.0, 0.0, 2.0 * PI);
@@ -1150,6 +1503,10 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
     let _ = cr.fill();
 
     let mut below = cy + radius + 24.0;
+    let badged = badge(cr, look, Some(cx), 0.0, below - 8.0);
+    if badged > 0.0 {
+        below += badged + 4.0;
+    }
     if look.show_date {
         set(cr, INK, 0.76);
         below += centred(cr, &text(cr, look, moment.date, 18.0, MEDIUM), cx, below) + 8.0;
@@ -1162,18 +1519,20 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
         below += h;
     }
 
+    let below = if look.clock_at.is_some() { 0.0 } else { below };
     let field_top = (height * 0.8).max(below + 70.0).min(lowest_field(look, width, height));
     if look.show_name {
         set(cr, INK, 1.0);
         let name = text(cr, look, &look.name, 15.0, MEDIUM);
         let h = f64::from(name.pixel_extents().1.height());
-        centred(cr, &name, cx, field_top - 12.0 - h);
+        centred(cr, &name, field_cx, field_top - 12.0 - h);
     }
-    field(cr, look, moment, cx - FIELD_WIDTH / 2.0, field_top, FIELD_WIDTH, false);
+    field(cr, look, moment, field_cx - FIELD_WIDTH / 2.0, field_top, FIELD_WIDTH, false);
 
     // The notices as pills in the top left, the message in the top right.
     let mut x = 32.0;
-    for (app, summary) in notice_lines(look, moment.facts) {
+    let lines = if look.notices_at.is_none() { notice_lines(look, moment.facts) } else { Vec::new() };
+    for (app, summary) in lines {
         let words = format!("{app}　{summary}");
         let layout = line(cr, look, &words, 13.0, MEDIUM, 300.0);
         let (_, extent) = layout.pixel_extents();
@@ -1185,9 +1544,8 @@ fn dial(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> 
         at(cr, &layout, x + 12.0, 28.0 + (30.0 - f64::from(extent.height())) / 2.0);
         x += w + 8.0;
     }
-    if !look.message.is_empty() {
-        set(cr, INK, 0.6);
-        let message = line(cr, look, &look.message, 13.0, MEDIUM, width * 0.4);
+    if !look.message.is_empty() && look.message_at.is_none() {
+        let message = message_layout(cr, look, 0.6, width * 0.4);
         let (_, extent) = message.pixel_extents();
         at(cr, &message, width - 32.0 - f64::from(extent.width()), 34.0);
     }
@@ -1200,19 +1558,34 @@ pub fn doze(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64)
     cr.set_source_rgb(0.0, 0.0, 0.0);
     let _ = cr.paint();
     let drift = |step: u32, span: f64| (f64::from(step % 7) / 6.0 - 0.5) * span;
+    let bright = look.always_on_brightness;
+    if look.always_on_stickers {
+        stickers(cr, look, width, height, 0.5 * bright);
+    }
     let (cx, mut y) = (width / 2.0 + drift(moment.minute, 80.0), height * 0.3 + drift(moment.minute / 7, 60.0));
-    set(cr, look.clock_colour.unwrap_or(INK), 0.62);
     // Without seconds: they would keep it awake.
     let time = moment.time.splitn(3, ':').take(2).collect::<Vec<_>>().join(":");
-    y += centred(cr, &clock_text(cr, look, &time, (height * 0.12).min(110.0)), cx, y);
+    let time = clock_text(cr, look, &time, (height * 0.12).min(110.0));
+    let w = width_of(&time);
+    clock_ink(cr, look, INK, 0.62 * bright, cx - w / 2.0, cx + w / 2.0);
+    y += centred(cr, &time, cx, y);
     if look.show_date {
-        set(cr, INK, 0.42);
-        centred(cr, &text(cr, look, moment.date, 17.0, MEDIUM), cx, y + 4.0);
+        set(cr, INK, 0.42 * bright);
+        y += 4.0 + centred(cr, &text(cr, look, moment.date, 17.0, MEDIUM), cx, y + 4.0);
+    }
+    if look.always_on_widgets {
+        let found: Vec<String> = widgets(look, moment.facts).iter().map(widget_words).collect();
+        if !found.is_empty() {
+            set(cr, INK, 0.36 * bright);
+            let layout = line(cr, look, &found.join("　·　"), 15.0, MEDIUM, width * 0.6);
+            centred(cr, &layout, cx, y + 12.0);
+        }
     }
     if moment.finger {
         // Where a finger wakes and unlocks it, as a phone's always-on display shows.
-        set(cr, INK, 0.36);
+        set(cr, INK, 0.36 * bright);
         fingerprint(cr, width / 2.0, height * 0.84, 16.0);
+        finger_pulse(cr, look, moment, width / 2.0, height * 0.84, 16.0);
     }
 }
 
@@ -1275,41 +1648,195 @@ fn from_hsl(h: f64, s: f64, l: f64) -> Rgb {
     (channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0))
 }
 
-/// The locked layer `t` of the way gone, from 0 to 1, over `under`, as the effect has it.
+/// A number from 0 to 1 that looks random but is the same for the same `i` and `j`.
+fn noise(i: u32, j: u32) -> f64 {
+    let mut x = i.wrapping_mul(0x9E37_79B1) ^ j.wrapping_mul(0x85EB_CA77);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    f64::from(x % 10_000) / 10_000.0
+}
+
+/// The locked layer `t` of the way gone, from 0 to 1, over `under`, as the person's effect
+/// has it; its colour, where it has one, the wallpaper's `accent` unless they chose one.
 /// Lifted, its bottom edge fades, so it reads as a sheet taken off rather than a curtain.
 /// In pixels.
-pub fn reveal(cr: &Context, effect: Effect, under: &ImageSurface, layer: &ImageSurface, t: f64, scale: f64) {
+pub fn reveal(cr: &Context, unlock: &Unlock, accent: Rgb, under: &ImageSurface, layer: &ImageSurface, t: f64, scale: f64) {
     let _ = cr.set_source_surface(under, 0.0, 0.0);
     let _ = cr.paint();
     let (width, height) = (f64::from(layer.width()), f64::from(layer.height()));
-    let eased = 1.0 - (1.0 - t).powi(3);
-    match effect {
+    let t = t.clamp(0.0, 1.0);
+    let e = match unlock.easing {
+        Easing::Out => 1.0 - (1.0 - t).powi(3),
+        Easing::InOut if t < 0.5 => 4.0 * t.powi(3),
+        Easing::InOut => 1.0 - (2.0 - 2.0 * t).powi(3) / 2.0,
+        Easing::Linear => t,
+    };
+    let colour = unlock.colour.unwrap_or(accent);
+    let (cx, cy) = (width / 2.0, height / 2.0);
+    let reach = cx.hypot(cy) + 2.0;
+    let across = matches!(unlock.direction, Direction::Left | Direction::Right);
+    let sign = if matches!(unlock.direction, Direction::Left | Direction::Up) { -1.0 } else { 1.0 };
+    // The layer drawn through the current path only.
+    let layer_through_path = |alpha: f64| {
+        cr.save().ok();
+        cr.clip();
+        let _ = cr.set_source_surface(layer, 0.0, 0.0);
+        let _ = cr.paint_with_alpha(alpha);
+        cr.restore().ok();
+    };
+    // The layer drawn about the middle, turned, stretched and as opaque as given.
+    let layer_about_middle = |turn: f64, sx: f64, sy: f64, alpha: f64| {
+        cr.save().ok();
+        cr.translate(cx, cy);
+        cr.rotate(turn);
+        cr.scale(sx, sy);
+        cr.translate(-cx, -cy);
+        let _ = cr.set_source_surface(layer, 0.0, 0.0);
+        let _ = cr.paint_with_alpha(alpha);
+        cr.restore().ok();
+    };
+    // Strips across the way the effect goes: their first and last pixel.
+    let strips = |count: u32| {
+        let span = if across { height } else { width };
+        (0..count).map(move |i| {
+            let from = (span * f64::from(i) / f64::from(count)).floor();
+            let to = (span * f64::from(i + 1) / f64::from(count)).ceil();
+            (i, from, to)
+        })
+    };
+    let strip_rect = |from: f64, to: f64| {
+        if across {
+            cr.rectangle(0.0, from, width, to - from);
+        } else {
+            cr.rectangle(from, 0.0, to - from, height);
+        }
+    };
+    match unlock.effect {
         Effect::Lift => {
             let feather = FEATHER * scale;
-            let offset = -eased * (height + feather);
+            let offset = -e * (height + feather);
             let fade = LinearGradient::new(0.0, offset + height - feather, 0.0, offset + height);
             fade.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 1.0);
             fade.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
             let _ = cr.set_source_surface(layer, 0.0, offset);
             let _ = cr.mask(&fade);
         }
-        Effect::Fade => {
-            let _ = cr.set_source_surface(layer, 0.0, 0.0);
-            let _ = cr.paint_with_alpha(1.0 - eased);
-        }
+        Effect::Fade => layer_about_middle(0.0, 1.0, 1.0, 1.0 - e),
         Effect::Slide => {
-            let _ = cr.set_source_surface(layer, -eased * width, 0.0);
+            let (x, y) = if across { (sign * e * width, 0.0) } else { (0.0, sign * e * height) };
+            let _ = cr.set_source_surface(layer, x, y);
             let _ = cr.paint();
         }
-        Effect::Expand => {
-            let grow = 1.0 + 0.16 * eased;
-            cr.save().ok();
-            cr.translate(width / 2.0, height / 2.0);
-            cr.scale(grow, grow);
-            cr.translate(-width / 2.0, -height / 2.0);
-            let _ = cr.set_source_surface(layer, 0.0, 0.0);
-            let _ = cr.paint_with_alpha(1.0 - eased);
-            cr.restore().ok();
+        Effect::Expand => layer_about_middle(0.0, 1.0 + 0.16 * e, 1.0 + 0.16 * e, 1.0 - e),
+        Effect::Warp => layer_about_middle(0.0, 1.0 + e, 1.0 - 0.9 * e, 1.0 - e),
+        Effect::Swirl => layer_about_middle(e * PI / 2.0, 1.0 - 0.6 * e, 1.0 - 0.6 * e, 1.0 - e),
+        Effect::Spread | Effect::Ripple => {
+            let radius = e * reach;
+            cr.set_fill_rule(cairo::FillRule::EvenOdd);
+            cr.rectangle(0.0, 0.0, width, height);
+            cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
+            layer_through_path(1.0);
+            cr.set_fill_rule(cairo::FillRule::Winding);
+            if radius < 1.0 {
+                return;
+            }
+            set(cr, colour, 1.0 - e);
+            if unlock.effect == Effect::Spread {
+                cr.set_line_width(6.0 * scale);
+                cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
+                let _ = cr.stroke();
+            } else {
+                cr.set_line_width(2.5 * scale);
+                for share in [1.0, 0.78, 0.56] {
+                    cr.new_sub_path();
+                    cr.arc(cx, cy, radius * share, 0.0, 2.0 * PI);
+                }
+                let _ = cr.stroke();
+            }
+        }
+        Effect::Wave => {
+            for (i, from, to) in strips(24) {
+                let local = ((e - 0.5 * f64::from(i) / 23.0) / 0.5).clamp(0.0, 1.0);
+                let shift = sign * local * if across { width } else { height };
+                cr.save().ok();
+                strip_rect(from, to);
+                cr.clip();
+                let (x, y) = if across { (shift, 0.0) } else { (0.0, shift) };
+                let _ = cr.set_source_surface(layer, x, y);
+                let _ = cr.paint();
+                cr.restore().ok();
+            }
+        }
+        Effect::Mosaic => {
+            const COLUMNS: u32 = 16;
+            const ROWS: u32 = 10;
+            let (w, h) = (width / f64::from(COLUMNS), height / f64::from(ROWS));
+            for row in 0..ROWS {
+                for column in 0..COLUMNS {
+                    if 0.05 + 0.9 * noise(column, row) > e {
+                        cr.rectangle((f64::from(column) * w).floor(), (f64::from(row) * h).floor(), w.ceil() + 1.0, h.ceil() + 1.0);
+                    }
+                }
+            }
+            layer_through_path(1.0);
+        }
+        Effect::Wiper => {
+            // What the hand has not yet swept, clockwise from the top, or the other way.
+            let top = -PI / 2.0;
+            cr.move_to(cx, cy);
+            if sign < 0.0 {
+                cr.arc_negative(cx, cy, reach, top - e * 2.0 * PI, top - 2.0 * PI);
+            } else {
+                cr.arc(cx, cy, reach, top + e * 2.0 * PI, top + 2.0 * PI);
+            }
+            cr.close_path();
+            layer_through_path(1.0);
+        }
+        Effect::Paint => {
+            // Each band brushed off from one side to the other, a little after the last.
+            const BANDS: u32 = 6;
+            let span = if across { width } else { height };
+            let brush = 14.0 * scale;
+            for (i, from, to) in strips(BANDS) {
+                let done = ((e - 0.4 * f64::from(i) / f64::from(BANDS - 1)) / 0.6).clamp(0.0, 1.0);
+                // Where the brush is along the band.
+                let edge = if sign > 0.0 { done * span } else { (1.0 - done) * span };
+                let (start, end) = if sign > 0.0 { (edge, span) } else { (0.0, edge) };
+                let rect = |a: f64, b: f64| {
+                    if across {
+                        cr.rectangle(a, from, b - a, to - from);
+                    } else {
+                        cr.rectangle(from, a, to - from, b - a);
+                    }
+                };
+                rect(start, end);
+                layer_through_path(1.0);
+                if done > 0.0 && done < 1.0 {
+                    set(cr, colour, 1.0);
+                    rect(edge - brush / 2.0, edge + brush / 2.0);
+                    let _ = cr.fill();
+                }
+            }
+        }
+        Effect::Glitch => {
+            // Strips jumping aside, to new places a dozen times on the way, as it fades.
+            let step = (e * 12.0).floor() as u32;
+            let tint = (e * PI).sin() * 0.35;
+            for (i, from, to) in strips(18) {
+                let jump = (noise(i, step) - 0.5) * 2.0 * e * 0.3 * if across { width } else { height };
+                cr.save().ok();
+                strip_rect(from, to);
+                cr.clip();
+                let (x, y) = if across { (jump, 0.0) } else { (0.0, jump) };
+                let _ = cr.set_source_surface(layer, x, y);
+                let _ = cr.paint_with_alpha(1.0 - e);
+                if noise(step, i) < 0.2 {
+                    set(cr, colour, tint);
+                    let _ = cr.paint();
+                }
+                cr.restore().ok();
+            }
         }
     }
 }
@@ -1345,7 +1872,7 @@ pub fn pixbuf_surface(pixbuf: &Pixbuf) -> Option<ImageSurface> {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_hsl, hsl, reveal, shake, Effect};
+    use super::{from_hsl, hsl, reveal, shake, Direction, Easing, Effect, Unlock};
     use cairo::{Context, Format, ImageSurface};
 
     #[test]
@@ -1360,16 +1887,37 @@ mod tests {
             surface
         };
         let (under, layer) = (filled(0.0), filled(1.0));
-        for effect in [Effect::Lift, Effect::Fade, Effect::Slide, Effect::Expand] {
-            for (t, expected) in [(0.0, 255), (1.0, 0)] {
-                let mut target = ImageSurface::create(Format::ARgb32, 64, 600).unwrap();
-                let cr = Context::new(&target).unwrap();
-                reveal(&cr, effect, &under, &layer, t, 1.0);
-                drop(cr);
-                // The middle pixel's blue byte, white from the lock and black from the desktop.
-                let stride = target.stride() as usize;
-                let data = target.data().unwrap();
-                assert_eq!(data[300 * stride + 32 * 4], expected, "{effect:?} at {t}");
+        let effects = [
+            Effect::Lift,
+            Effect::Fade,
+            Effect::Slide,
+            Effect::Expand,
+            Effect::Spread,
+            Effect::Wave,
+            Effect::Warp,
+            Effect::Ripple,
+            Effect::Mosaic,
+            Effect::Wiper,
+            Effect::Paint,
+            Effect::Glitch,
+            Effect::Swirl,
+        ];
+        for effect in effects {
+            for direction in [Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
+                for easing in [Easing::Out, Easing::InOut, Easing::Linear] {
+                    // A grey of its own, so its edges and brushes show if they are left behind.
+                    let unlock = Unlock { effect, colour: Some((0.5, 0.5, 0.5)), direction, easing };
+                    for (t, expected) in [(0.0, 255), (1.0, 0)] {
+                        let mut target = ImageSurface::create(Format::ARgb32, 64, 600).unwrap();
+                        let cr = Context::new(&target).unwrap();
+                        reveal(&cr, &unlock, (0.5, 0.5, 0.5), &under, &layer, t, 1.0);
+                        drop(cr);
+                        // The middle pixel's blue byte, white from the lock and black from the desktop.
+                        let stride = target.stride() as usize;
+                        let data = target.data().unwrap();
+                        assert_eq!(data[300 * stride + 32 * 4], expected, "{effect:?} {direction:?} {easing:?} at {t}");
+                    }
+                }
             }
         }
     }

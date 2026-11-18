@@ -1,7 +1,8 @@
 //! Wallpapers an image service makes from a description, as One UI's generated wallpapers
 //! are: OpenAI's, Google's Gemini, Stability AI's with the person's own API key, or ChatGPT's
 //! through the Codex CLI signed in with a ChatGPT account. The service and the keys are kept
-//! in `~/.config/nekoland/image-services`, which only its owner may read.
+//! in `~/.config/nekoland/image-services`, which only its owner may read. The same services
+//! cut a wallpaper's subject out for the lock's depth effect.
 
 use std::{
     io::Write,
@@ -11,7 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use gtk::glib;
+use gtk::{gdk_pixbuf, gdk_pixbuf::prelude::*, glib};
 
 /// Each service by the name it is kept under, and as it is shown.
 pub const SERVICES: [(&str, &str); 4] = [
@@ -29,6 +30,13 @@ const GEMINI_MODEL: &str = "gemini-3.1-flash-image";
 
 /// What every service is told besides the description: a wallpaper fills a wide screen.
 const FRAMING: &str = "A wallpaper for a wide 16:9 screen, with no text or lettering.";
+
+/// What a service that cannot take a background away itself is asked for instead.
+const MASK: &str = "Return a black and white mask of this picture, at exactly its framing and \
+aspect ratio: its main subject solid white, everything else solid black. No grey, no text.";
+
+/// The longest side a picture is sent at: what the services take, and enough for a mask.
+const SENT: i32 = 1536;
 
 /// How long a picture may take; Codex plans before it draws.
 const WAIT: Duration = Duration::from_secs(300);
@@ -87,10 +95,10 @@ pub fn chatgpt_signed_in() -> Option<bool> {
 pub fn generate(service: &str, description: &str) -> Result<PathBuf, String> {
     let prompt = format!("{} {FRAMING}", description.trim());
     let picture = if service == CHATGPT {
-        by_codex(&prompt)?
+        by_codex(&prompt, None)?
     } else {
         let key = read(service).ok_or("尚未設定 API 金鑰")?;
-        by_api(service, &key, &prompt)?
+        by_api(service, &key, &prompt, None)?
     };
     let extension = match picture.get(..4) {
         Some([0xff, 0xd8, ..]) => "jpg",
@@ -98,25 +106,107 @@ pub fn generate(service: &str, description: &str) -> Result<PathBuf, String> {
         Some([0x89, b'P', b'N', b'G']) => "png",
         _ => return Err("服務沒有傳回圖片".into()),
     };
+    keep("generated", extension, &picture)
+}
+
+/// Keeps a picture among the person's wallpapers, named for what made it and when.
+fn keep(made: &str, extension: &str, picture: &[u8]) -> Result<PathBuf, String> {
     let dir = glib::user_data_dir().join("nekoland").join("wallpapers");
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let seconds = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs());
-    let path = dir.join(format!("generated-{seconds}.{extension}"));
+    let path = dir.join(format!("{made}-{seconds}.{extension}"));
     std::fs::write(&path, picture).map_err(|err| err.to_string())?;
     Ok(path)
 }
 
+/// Cuts the subject of the picture at `wallpaper` out with `service`, as One UI's depth
+/// effect does, and keeps it beside the wallpapers: a PNG framed as the picture is, clear
+/// where the subject is not. Stability AI takes the background away itself; the others are
+/// asked for a mask, which is laid on the picture.
+pub fn cut_out(service: &str, wallpaper: &Path) -> Result<PathBuf, String> {
+    let original = gdk_pixbuf::Pixbuf::from_file(wallpaper).map_err(|err| err.to_string())?;
+    let shrink = (f64::from(SENT) / f64::from(original.width().max(original.height()))).min(1.0);
+    let (width, height) = (
+        ((f64::from(original.width()) * shrink).round() as i32).max(1),
+        ((f64::from(original.height()) * shrink).round() as i32).max(1),
+    );
+    let sent = original.scale_simple(width, height, gdk_pixbuf::InterpType::Hyper).ok_or("無法讀取圖片")?;
+    let sent_path = glib::user_runtime_dir().join(format!("nekoland-cutout-{}.png", std::process::id()));
+    sent.savev(&sent_path, "png", &[]).map_err(|err| err.to_string())?;
+    let answer = if service == CHATGPT {
+        by_codex(MASK, Some(&sent_path))
+    } else {
+        read(service).ok_or_else(|| "尚未設定 API 金鑰".to_string()).and_then(|key| by_api(service, &key, MASK, Some(&sent_path)))
+    };
+    let _ = std::fs::remove_file(&sent_path);
+    let answer = answer?;
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    loader.write(&answer).and_then(|()| loader.close()).map_err(|_| "服務沒有傳回圖片".to_string())?;
+    let returned = loader.pixbuf().ok_or("服務沒有傳回圖片")?;
+    let cut = if service == "stability" { returned } else { masked(&sent, &returned).ok_or("無法套用遮罩")? };
+    let png = cut.save_to_bufferv("png", &[]).map_err(|err| err.to_string())?;
+    keep("subject", "png", &png)
+}
+
+/// `picture`, opaque where `mask`, stretched over it, is white and clear where it is black.
+fn masked(picture: &gdk_pixbuf::Pixbuf, mask: &gdk_pixbuf::Pixbuf) -> Option<gdk_pixbuf::Pixbuf> {
+    let (width, height) = (picture.width(), picture.height());
+    let mask = mask.scale_simple(width, height, gdk_pixbuf::InterpType::Bilinear)?;
+    let picture = picture.add_alpha(false, 0, 0, 0).ok()?;
+    let (from, from_stride, from_channels) = (mask.read_pixel_bytes(), mask.rowstride() as usize, mask.n_channels() as usize);
+    let stride = picture.rowstride() as usize;
+    // SAFETY: the pixbuf was just made and is not shared; nothing else reads it meanwhile.
+    let pixels = unsafe { picture.pixels() };
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let shade = &from[y * from_stride + x * from_channels..];
+            let light = (u32::from(shade[0]) * 299 + u32::from(shade[1]) * 587 + u32::from(shade[2]) * 114) / 1000;
+            // What is near black or near white is taken as such: masks are not drawn clean.
+            pixels[y * stride + x * 4 + 3] = (light.saturating_sub(24) * 255 / (255 - 48)).min(255) as u8;
+        }
+    }
+    Some(picture)
+}
+
 /// Asks a service's API through curl. The key goes in a configuration file only its owner
 /// may read, never on a command line others can see.
-fn by_api(service: &str, key: &str, prompt: &str) -> Result<Vec<u8>, String> {
+fn by_api(service: &str, key: &str, prompt: &str, picture: Option<&Path>) -> Result<Vec<u8>, String> {
     let quoted = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r'], " "));
-    let (url, headers, body): (String, Vec<String>, Option<serde_json::Value>) = match service {
-        "openai" => (
+    // Given a picture, the form fields besides its own; fields as `name=value`.
+    let mut fields: Vec<String> = Vec::new();
+    let (url, headers, body): (String, Vec<String>, Option<serde_json::Value>) = match (service, picture) {
+        ("openai", Some(_)) => {
+            fields = vec![format!("model={OPENAI_MODEL}"), format!("prompt={prompt}"), "size=auto".into()];
+            ("https://api.openai.com/v1/images/edits".into(), vec![format!("Authorization: Bearer {key}")], None)
+        }
+        ("gemini", Some(path)) => {
+            let sent = std::fs::read(path).map_err(|err| err.to_string())?;
+            (
+                format!("https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"),
+                vec![format!("x-goog-api-key: {key}"), "Content-Type: application/json".into()],
+                Some(serde_json::json!({
+                    "contents": [{ "parts": [
+                        { "inline_data": { "mime_type": "image/png", "data": glib::base64_encode(&sent).as_str() } },
+                        { "text": prompt },
+                    ] }],
+                    "generationConfig": { "responseModalities": ["TEXT", "IMAGE"] },
+                })),
+            )
+        }
+        ("stability", Some(_)) => {
+            fields = vec!["output_format=png".into()];
+            (
+                "https://api.stability.ai/v2beta/stable-image/edit/remove-background".into(),
+                vec![format!("Authorization: Bearer {key}"), "Accept: image/*".into()],
+                None,
+            )
+        }
+        ("openai", None) => (
             "https://api.openai.com/v1/images/generations".into(),
             vec![format!("Authorization: Bearer {key}"), "Content-Type: application/json".into()],
             Some(serde_json::json!({ "model": OPENAI_MODEL, "prompt": prompt, "size": "1536x1024", "n": 1 })),
         ),
-        "gemini" => (
+        ("gemini", None) => (
             format!("https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"),
             vec![format!("x-goog-api-key: {key}"), "Content-Type: application/json".into()],
             Some(serde_json::json!({
@@ -124,11 +214,14 @@ fn by_api(service: &str, key: &str, prompt: &str) -> Result<Vec<u8>, String> {
                 "generationConfig": { "responseModalities": ["TEXT", "IMAGE"], "imageConfig": { "aspectRatio": "16:9" } },
             })),
         ),
-        "stability" => (
-            "https://api.stability.ai/v2beta/stable-image/generate/core".into(),
-            vec![format!("Authorization: Bearer {key}"), "Accept: image/*".into()],
-            None,
-        ),
+        ("stability", None) => {
+            fields = vec![format!("prompt={prompt}"), "aspect_ratio=16:9".into(), "output_format=png".into()];
+            (
+                "https://api.stability.ai/v2beta/stable-image/generate/core".into(),
+                vec![format!("Authorization: Bearer {key}"), "Accept: image/*".into()],
+                None,
+            )
+        }
         _ => return Err(format!("{service}: 不明的服務")),
     };
     let mut config = format!("url = {}\n", quoted(&url));
@@ -138,8 +231,12 @@ fn by_api(service: &str, key: &str, prompt: &str) -> Result<Vec<u8>, String> {
     match &body {
         Some(_) => config += "data-binary = \"@-\"\n",
         None => {
-            for field in [format!("prompt={prompt}"), "aspect_ratio=16:9".into(), "output_format=png".into()] {
-                config += &format!("form-string = {}\n", quoted(&field));
+            for field in &fields {
+                config += &format!("form-string = {}\n", quoted(field));
+            }
+            // Ours, in the runtime directory: a name curl's form syntax reads as it is.
+            if let Some(path) = picture {
+                config += &format!("form = {}\n", quoted(&format!("image=@{}", path.display())));
             }
         }
     }
@@ -220,7 +317,7 @@ fn longest_string(json: &serde_json::Value) -> Option<&str> {
 
 /// Has Codex draw it with its own image tool, which a ChatGPT sign-in pays for, and takes
 /// the picture it saved.
-fn by_codex(prompt: &str) -> Result<Vec<u8>, String> {
+fn by_codex(prompt: &str, picture: Option<&Path>) -> Result<Vec<u8>, String> {
     if chatgpt_signed_in() != Some(true) {
         return Err("尚未以 ChatGPT 登入".into());
     }
@@ -230,6 +327,7 @@ fn by_codex(prompt: &str) -> Result<Vec<u8>, String> {
     let mut child = Command::new(codex().ok_or("尚未安裝 Codex")?)
         .args(["exec", "--skip-git-repo-check", "-C"])
         .arg(&scratch)
+        .args(picture.map(|path| format!("--image={}", path.display())))
         .arg(format!("$imagegen {prompt}"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())

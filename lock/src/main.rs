@@ -20,6 +20,11 @@
 //! `lock_unlock_duration` (milliseconds), `lock_sticker` (a picture) placed at
 //! `lock_sticker_at` (`[x, y]` as shares of the screen) `lock_sticker_size` points large,
 //! `lock_wallpaper_subject` (the wallpaper's subject cut out, drawn over the time),
+//! and the rest of Good Lock's LockStar and ClockFace, which the README lists:
+//! `lock_stickers`, `lock_wallpaper_folder`, `lock_lock_icon`, the unlock effect's colour,
+//! direction and easing, the clock's rainbow, text, picture and dial, where the clock, the
+//! notices and the message stand, the message's size, colour and opacity, what the
+//! always-on display shows, and what a finger on the reader shows,
 //! `weather` in `lock_widgets` with `lock_weather_at` (`[latitude, longitude]`, asked of
 //! MET Norway) shown as `lock_weather_name`, and `lock_always_on`: left as long as
 //! `lock_screen_off_after` says (30 seconds unless set), the time dim on black. With
@@ -128,8 +133,13 @@ struct Locker {
     dozing: bool,
     /// Whether the fingerprint reader is waiting for a finger.
     finger: bool,
+    /// When the reader last read a finger, and whether it knew it.
+    finger_seen: Option<(Instant, bool)>,
     exit: bool,
 }
+
+/// How long what a finger on the reader shows goes on.
+const FINGER_PULSE: Duration = Duration::from_millis(600);
 
 /// `nekoland-lock --preview FILE WIDTH HEIGHT [STYLE]` draws the lock as it would look now into
 /// a PNG, without locking, for Settings to show; with a style, as it would look picked anew.
@@ -137,7 +147,7 @@ fn preview(file: &str, width: &str, height: &str, style: Option<&str>) -> ! {
     let (Ok(width), Ok(height)) = (width.parse::<i32>(), height.parse::<i32>()) else {
         fail("--preview FILE WIDTH HEIGHT [STYLE]");
     };
-    let (_, look) = read_look(style);
+    let (_, look) = read_look(style, false);
     if let Some(at) = look.weather {
         fetch_weather(at);
     }
@@ -160,6 +170,7 @@ fn preview(file: &str, width: &str, height: &str, style: Option<&str>) -> ! {
         error: None,
         chosen: None,
         finger: false,
+        finger_pulse: None,
     };
     let Some(surface) = draw::backdrop(&look, width, height, true, look.blur) else {
         fail("cannot draw");
@@ -190,7 +201,7 @@ fn main() {
     let mut event_loop: EventLoop<Locker> = EventLoop::try_new().unwrap_or_else(|err| fail(&err.to_string()));
     let shm = Shm::bind(&globals, &qh).unwrap_or_else(|err| fail(&err.to_string()));
     let pool = SlotPool::new(4 * 1920 * 1080, &shm).unwrap_or_else(|err| fail(&err.to_string()));
-    let (user, look) = read_look(None);
+    let (user, look) = read_look(None, true);
     let mut locker = Locker {
         conn: conn.clone(),
         handle: event_loop.handle(),
@@ -219,6 +230,7 @@ fn main() {
         last_touch: Instant::now(),
         dozing: false,
         finger: false,
+        finger_seen: None,
         exit: false,
     };
     locker.lock = Some(
@@ -302,8 +314,9 @@ fn fail(why: &str) -> ! {
 
 /// The user's name to show, and how the configuration says the lock looks.
 /// `picked` is a style as Settings offers it: with the clock and the blur it comes with, rather
-/// than those set for the one in use.
-fn read_look(picked: Option<&str>) -> (String, Look) {
+/// than those set for the one in use. `locking`, the folder's next picture is shown at the next
+/// lock.
+fn read_look(picked: Option<&str>, locking: bool) -> (String, Look) {
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = std::env::var_os("XDG_CONFIG_HOME")
         .map_or_else(|| PathBuf::from(&home).join(".config"), PathBuf::from);
@@ -335,10 +348,13 @@ fn read_look(picked: Option<&str>) -> (String, Look) {
                 })
         });
     let word = |key: &str| config.get(key).and_then(toml::Value::as_str).unwrap_or_default();
-    let wallpaper = Some(word("lock_wallpaper_file"))
-        .filter(|path| !path.is_empty())
-        .or_else(|| config.get("wallpaper").and_then(toml::Value::as_str))
-        .or(started)
+    let own = Some(word("lock_wallpaper_file")).filter(|path| !path.is_empty());
+    let turning = own.is_none().then(|| folder_wallpaper(&word("lock_wallpaper_folder").replacen('~', &home, 1), locking)).flatten();
+    let wallpaper = own
+        .map(str::to_string)
+        .or(turning.clone())
+        .or_else(|| config.get("wallpaper").and_then(toml::Value::as_str).map(str::to_string))
+        .or(started.map(str::to_string))
         .filter(|_| flag("lock_wallpaper"))
         .and_then(|path| {
             let path = path.replacen('~', &home, 1);
@@ -348,23 +364,38 @@ fn read_look(picked: Option<&str>) -> (String, Look) {
         });
     let (user, name) = account();
     let number = |key: &str, default: f64| config.get(key).and_then(toml::Value::as_integer).map_or(default, |n| n as f64);
-    let sticker = Some(word("lock_sticker")).filter(|path| !path.is_empty()).and_then(|path| {
+    // A picture to be shown `size` points large: twice that in pixels, for a display at twice
+    // the pixels, and no larger.
+    let load = |path: &str, size: f64| {
         let path = path.replacen('~', &home, 1);
         let picture = gdk_pixbuf::Pixbuf::from_file(&path).map_err(|err| eprintln!("nekoland-lock: {path}: {err}")).ok()?;
-        let size = number("lock_sticker_size", 160.0).clamp(32.0, 600.0);
-        // Twice as large as shown, for a display at twice the pixels; no larger.
         let shrink = (2.0 * size / f64::from(picture.width().max(picture.height()))).min(1.0);
         let picture = picture.scale_simple(
             ((f64::from(picture.width()) * shrink) as i32).max(1),
             ((f64::from(picture.height()) * shrink) as i32).max(1),
             gdk_pixbuf::InterpType::Hyper,
         )?;
-        let at = config.get("lock_sticker_at").and_then(toml::Value::as_array).and_then(|at| {
-            let share = |i: usize| at.get(i).and_then(|n| n.as_float().or_else(|| n.as_integer().map(|n| n as f64)));
-            Some((share(0)?.clamp(0.0, 1.0), share(1)?.clamp(0.0, 1.0)))
-        });
-        Some((draw::pixbuf_surface(&picture)?, at.unwrap_or((0.78, 0.3)), size))
-    });
+        draw::pixbuf_surface(&picture)
+    };
+    let sticker = |file: &str, at: Option<&toml::Value>, size: Option<&toml::Value>| {
+        let size = size.and_then(toml::Value::as_integer).map_or(160.0, |n| n as f64).clamp(32.0, 600.0);
+        let at = at.and_then(shares).unwrap_or((0.78, 0.3));
+        Some((load(file, size)?, at, size))
+    };
+    // The one sticker Settings first had, and those after it.
+    let mut stickers: Vec<draw::Sticker> = Some(word("lock_sticker"))
+        .filter(|path| !path.is_empty())
+        .and_then(|path| sticker(path, config.get("lock_sticker_at"), config.get("lock_sticker_size")))
+        .into_iter()
+        .collect();
+    if let Some(listed) = config.get("lock_stickers").and_then(toml::Value::as_array) {
+        for entry in listed.iter().filter_map(toml::Value::as_table) {
+            if let Some(file) = entry.get("file").and_then(toml::Value::as_str) {
+                stickers.extend(sticker(file, entry.get("at"), entry.get("size")));
+            }
+        }
+    }
+    let at = |key: &str| config.get(key).and_then(shares);
     let style = match picked.unwrap_or(word("lock_style")) {
         "poster" => Style::Poster,
         "dial" => Style::Dial,
@@ -375,12 +406,43 @@ fn read_look(picked: Option<&str>) -> (String, Look) {
         .and_then(toml::Value::as_array)
         .map_or_else(|| vec!["battery", "playing"], |listed| listed.iter().filter_map(toml::Value::as_str).collect());
     let accent = wallpaper.as_ref().and_then(draw::accent_of).unwrap_or(draw::SAND);
+    let effect = match word("lock_unlock_effect") {
+        "fade" => Effect::Fade,
+        "slide" => Effect::Slide,
+        "expand" => Effect::Expand,
+        "spread" => Effect::Spread,
+        "wave" => Effect::Wave,
+        "warp" => Effect::Warp,
+        "ripple" => Effect::Ripple,
+        "mosaic" => Effect::Mosaic,
+        "wiper" => Effect::Wiper,
+        "paint" => Effect::Paint,
+        "glitch" => Effect::Glitch,
+        "swirl" => Effect::Swirl,
+        _ => Effect::Lift,
+    };
     let look = Look {
         blur: if picked.is_some() { style != Style::Poster } else { flag("lock_blur") },
         accent,
         wallpaper,
         style,
         clock_colour: hex(word("lock_clock_color")),
+        clock_rainbow: word("lock_clock_color") == "rainbow",
+        clock_label: word("lock_clock_text").to_string(),
+        clock_badge: Some(word("lock_clock_image")).filter(|path| !path.is_empty()).and_then(|path| load(path, 28.0)),
+        numerals: match word("lock_dial_numerals") {
+            "arabic" => draw::Numerals::Arabic,
+            "roman" => draw::Numerals::Roman,
+            _ => draw::Numerals::None,
+        },
+        hands: match word("lock_dial_hands") {
+            "thin" => draw::Hands::Thin,
+            "bold" => draw::Hands::Bold,
+            _ => draw::Hands::Classic,
+        },
+        clock_at: at("lock_clock_at"),
+        notices_at: at("lock_notices_at"),
+        message_at: at("lock_message_at"),
         clock_weight: match if picked.is_some() { "" } else { word("lock_clock_weight") } {
             // As thin as the quiet style's own, which Settings shows as 細.
             "light" => pango::Weight::Ultralight,
@@ -419,32 +481,71 @@ fn read_look(picked: Option<&str>) -> (String, Look) {
             }),
         weather_name: word("lock_weather_name").to_string(),
         always_on: config.get("lock_always_on").and_then(toml::Value::as_bool).unwrap_or(false),
+        always_on_widgets: config.get("lock_always_on_widgets").and_then(toml::Value::as_bool).unwrap_or(false),
+        always_on_stickers: config.get("lock_always_on_stickers").and_then(toml::Value::as_bool).unwrap_or(false),
+        always_on_brightness: number("lock_always_on_brightness", 100.0).clamp(20.0, 100.0) / 100.0,
         fingerprint: config.get("lock_fingerprint").and_then(toml::Value::as_bool).unwrap_or(true),
+        finger_effect: match word("lock_fingerprint_effect") {
+            "none" => draw::FingerEffect::None,
+            "glow" => draw::FingerEffect::Glow,
+            _ => draw::FingerEffect::Ripple,
+        },
         doze_after: Duration::from_secs(
             config.get("lock_screen_off_after").and_then(toml::Value::as_integer).filter(|seconds| *seconds > 0).unwrap_or(30) as u64,
         ),
         dim: number("lock_dim", 0.0).clamp(0.0, 80.0) / 100.0,
-        lock_icon: config.get("lock_show_lock_icon").and_then(toml::Value::as_bool).unwrap_or(false),
-        unlock_effect: match word("lock_unlock_effect") {
-            "fade" => Effect::Fade,
-            "slide" => Effect::Slide,
-            "expand" => Effect::Expand,
-            _ => Effect::Lift,
+        // Settings' first switch for it showed the padlock.
+        lock_icon: match word("lock_lock_icon") {
+            "padlock" => Some(draw::Icon::Padlock),
+            "shield" => Some(draw::Icon::Shield),
+            "key" => Some(draw::Icon::Key),
+            "heart" => Some(draw::Icon::Heart),
+            "paw" => Some(draw::Icon::Paw),
+            "picture" => load(word("lock_lock_icon_file"), 22.0).map(draw::Icon::Picture),
+            "" if config.get("lock_show_lock_icon").and_then(toml::Value::as_bool).unwrap_or(false) => Some(draw::Icon::Padlock),
+            _ => None,
+        },
+        lock_icon_colour: hex(word("lock_lock_icon_color")),
+        unlock: draw::Unlock {
+            effect,
+            colour: hex(word("lock_unlock_color")),
+            direction: match word("lock_unlock_direction") {
+                "left" => draw::Direction::Left,
+                "right" => draw::Direction::Right,
+                "up" => draw::Direction::Up,
+                "down" => draw::Direction::Down,
+                // The slide went to the left before it could be told which way.
+                _ if effect == Effect::Slide => draw::Direction::Left,
+                _ => draw::Direction::Right,
+            },
+            easing: match word("lock_unlock_easing") {
+                "inout" => draw::Easing::InOut,
+                "linear" => draw::Easing::Linear,
+                _ => draw::Easing::Out,
+            },
         },
         unlock_duration: Duration::from_millis(number("lock_unlock_duration", 560.0).clamp(200.0, 2000.0) as u64),
-        sticker,
-        subject: Some(word("lock_wallpaper_subject")).filter(|path| !path.is_empty()).and_then(|path| {
+        stickers,
+        // Cut from one picture: not over a folder's others.
+        subject: Some(word("lock_wallpaper_subject")).filter(|path| !path.is_empty() && turning.is_none()).and_then(|path| {
             let path = path.replacen('~', &home, 1);
             let picture = gdk_pixbuf::Pixbuf::from_file(&path).map_err(|err| eprintln!("nekoland-lock: {path}: {err}")).ok()?;
             draw::pixbuf_surface(&picture)
         }),
-        shortcuts_row: word("lock_shortcuts_layout") == "row",
+        shortcuts_layout: match word("lock_shortcuts_layout") {
+            "row" => draw::Shortcuts::Row,
+            "column" => draw::Shortcuts::Column,
+            _ => draw::Shortcuts::Corners,
+        },
         notices: match word("lock_notices") {
             "hidden" => Notices::Hidden,
             "full" => Notices::Full,
             _ => Notices::Count,
         },
         message: word("lock_message").to_string(),
+        message_size: number("lock_message_size", 13.0).clamp(10.0, 40.0),
+        message_colour: hex(word("lock_message_color")),
+        message_opacity: number("lock_message_opacity", 100.0).clamp(10.0, 100.0) / 100.0,
         show_name: flag("lock_show_name"),
         power_buttons: flag("lock_power_buttons"),
         shortcuts_unlocked: config.get("lock_shortcuts_unlocked").and_then(toml::Value::as_bool).unwrap_or(false),
@@ -471,6 +572,56 @@ fn read_look(picked: Option<&str>) -> (String, Look) {
         name,
     };
     (user, look)
+}
+
+/// `[x, y]` as shares of the screen.
+fn shares(value: &toml::Value) -> Option<(f64, f64)> {
+    let at = value.as_array()?;
+    let share = |i: usize| at.get(i).and_then(|n| n.as_float().or_else(|| n.as_integer().map(|n| n as f64)));
+    Some((share(0)?.clamp(0.0, 1.0), share(1)?.clamp(0.0, 1.0)))
+}
+
+/// Where the lock keeps which of the folder's pictures it shows.
+fn turn_file() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"), PathBuf::from)
+        .join("nekoland/lock-wallpaper")
+}
+
+/// The pictures in `folder`, by name.
+fn folder_pictures(folder: &str) -> Vec<PathBuf> {
+    if folder.is_empty() {
+        return Vec::new();
+    }
+    let mut pictures: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map_err(|err| eprintln!("nekoland-lock: {folder}: {err}"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+            matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp")
+        })
+        .collect();
+    pictures.sort();
+    pictures
+}
+
+/// The folder's picture whose turn it is, as Dynamic Lock Screen changes it each lock;
+/// `turn`, the next one's turn after it.
+fn folder_wallpaper(folder: &str, turn: bool) -> Option<String> {
+    let pictures = folder_pictures(folder);
+    let file = turn_file();
+    let at: usize = std::fs::read_to_string(&file).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(0);
+    let picture = pictures.get(at % pictures.len().max(1))?;
+    if turn {
+        let written = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, ((at + 1) % pictures.len()).to_string()));
+        if let Err(err) = written {
+            eprintln!("nekoland-lock: {}: {err}", file.display());
+        }
+    }
+    Some(picture.to_string_lossy().into_owned())
 }
 
 /// The icon the compositor drew for the shortcut at `at`, if it found one.
@@ -838,6 +989,10 @@ impl Locker {
             error,
             chosen: self.chosen,
             finger: self.finger,
+            finger_pulse: self.finger_seen.and_then(|(at, known)| {
+                let t = at.elapsed().as_secs_f64() / FINGER_PULSE.as_secs_f64();
+                (t < 1.0).then_some((t, known))
+            }),
         };
         let lifted = self
             .opened
@@ -893,7 +1048,7 @@ impl Locker {
                             let _ = lc.paint();
                             words(&lc);
                         }
-                        draw::reveal(&cr, self.look.unlock_effect, sharp, &layer, lifted, f64::from(scale));
+                        draw::reveal(&cr, &self.look.unlock, self.look.accent, sharp, &layer, lifted, f64::from(scale));
                     }
                 }
                 _ => {
@@ -928,7 +1083,8 @@ impl Locker {
                     return TimeoutAction::Drop;
                 }
                 let shaking = locker.error.is_some_and(|(_, at)| at.elapsed() < SHAKE);
-                if locker.opened.is_none() && !shaking {
+                let pulsing = locker.finger_seen.is_some_and(|(at, _)| at.elapsed() < FINGER_PULSE);
+                if locker.opened.is_none() && !shaking && !pulsing {
                     locker.moving = false;
                     return TimeoutAction::Drop;
                 }
@@ -975,8 +1131,12 @@ impl Locker {
                 self.error = None;
                 self.password.clear();
                 self.opened = Some(Instant::now());
+                self.finger_seen = Some((Instant::now(), true));
             }
-            Finger::Wrong => self.error = Some(("指紋不符", Instant::now())),
+            Finger::Wrong => {
+                self.error = Some(("指紋不符", Instant::now()));
+                self.finger_seen = Some((Instant::now(), false));
+            }
             Finger::Again => self.error = Some(("請再掃描一次", Instant::now())),
         }
         // A finger on the reader is the person there.
