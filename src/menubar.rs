@@ -755,20 +755,34 @@ impl MenuBar {
             x += rect.size.w;
         }
 
-        // Right, from the edge in: the clock, the system's items, then the programs' items.
+        // Right, from the edge in: the bell, the clock, the system's items, then the programs'.
+        let slot = STATUS_ICON + TITLE_PADDING * 2 - 8;
+        let icon_at = |side| f64::from(side - STATUS_ICON) / 2.0;
+        // The bell is what lights while the Notification Center is open, not the clock.
+        let bell_rect = Rectangle::new((width - CLOCK_PADDING - slot, 0).into(), (slot, MENU_BAR_HEIGHT).into());
+        let bell_lit = self.notification_center.is_some();
+        if bell_lit {
+            highlight(&cr, bell_rect);
+        }
+        crate::notification_center::draw_bar_icon(
+            &cr,
+            f64::from(bell_rect.loc.x) + icon_at(slot),
+            icon_at(MENU_BAR_HEIGHT),
+            f64::from(STATUS_ICON),
+            if bell_lit { colors.on_ink } else { colors.ink },
+        );
+        self.titles.push(Title {
+            rect: bell_rect,
+            source: Source::Notifications,
+        });
         let clock_font = font("Medium", 10.0);
         let clock_width = text_size(clock, &clock_font).0;
-        let mut right = width - 12 - clock_width;
+        let mut right = bell_rect.loc.x - CLOCK_PADDING - clock_width;
         let clock_rect = Rectangle::new(
             (right - CLOCK_PADDING, 0).into(),
             (clock_width + CLOCK_PADDING * 2, MENU_BAR_HEIGHT).into(),
         );
-        let clock_lit = self.notification_center.is_some();
-        if clock_lit {
-            highlight(&cr, clock_rect);
-        }
-        let clock_color = if clock_lit { colors.on_ink } else { colors.ink };
-        show_text(&cr, clock, &clock_font, f64::from(right), center, clock_color);
+        show_text(&cr, clock, &clock_font, f64::from(right), center, colors.ink);
         self.titles.push(Title {
             rect: clock_rect,
             source: Source::Clock,
@@ -777,8 +791,7 @@ impl MenuBar {
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
-        let drawn_here = |source| (source, String::new(), String::new(), String::new(), None);
-        let mut icons: Vec<Icon> = vec![drawn_here(Source::Notifications), drawn_here(Source::Control)];
+        let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
         if let Some(battery) = self.battery.filter(|_| config.menu_bar_battery) {
             icons.push((Source::Battery, "battery".into(), battery_icon(battery), String::new(), None));
         }
@@ -817,14 +830,12 @@ impl MenuBar {
                 .filter(|_| source == Source::Battery && config.menu_bar_battery_percent)
                 .map(|battery| format!("{}%", battery.percent));
             let label_width = percent.as_ref().map_or(0, |percent| text_size(percent, &clock_font).0 + 4);
-            let base = STATUS_ICON + TITLE_PADDING * 2 - 8;
+            let base = slot;
             let rect = Rectangle::new(
                 (right - base - label_width, 0).into(),
                 (base + label_width, MENU_BAR_HEIGHT).into(),
             );
-            let lit = open == Some(self.titles.len())
-                || (source == Source::Control && self.control.is_some())
-                || (source == Source::Notifications && self.notification_center.is_some());
+            let lit = open == Some(self.titles.len()) || (source == Source::Control && self.control.is_some());
             if lit {
                 highlight(&cr, rect);
             }
@@ -833,12 +844,9 @@ impl MenuBar {
                 let at = f64::from(rect.loc.x + (base - STATUS_ICON) / 2);
                 show_text(&cr, percent, &clock_font, at, center, tint);
             }
-            let at = |side| f64::from(side - STATUS_ICON) / 2.0;
-            let (icon_x, icon_y) = (f64::from(rect.loc.x) + at(rect.size.w), at(MENU_BAR_HEIGHT));
+            let (icon_x, icon_y) = (f64::from(rect.loc.x) + icon_at(rect.size.w), icon_at(MENU_BAR_HEIGHT));
             if source == Source::Control {
                 control::draw_bar_icon(&cr, icon_x, icon_y, f64::from(STATUS_ICON), tint);
-            } else if source == Source::Notifications {
-                crate::notification_center::draw_bar_icon(&cr, icon_x, icon_y, f64::from(STATUS_ICON), tint);
             } else if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
                 let (w, h) = text::points(&icon);
                 let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);

@@ -247,7 +247,8 @@ Nekoland draws the bar along the top itself, as the Mac does:
   and the program's windows. The Help menu searches every other menu as you type.
 - On the right: the status items programs register as StatusNotifierItems, with their
   menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
-  center; the bell and the clock, either of which opens the Notification Center.
+  center; the clock; and at the very end the bell. The clock and the bell each open the
+  Notification Center, and the bell is lit while it is open.
 - The control center, as the Mac's, opens a panel on the menus' glass. At its top, what is
   recording, in the colours of the bar's dots. Then tiles: the network, whose list of
   Wi-Fi networks joins one or turns Wi-Fi on or off through `nmcli`; Bluetooth, whether
