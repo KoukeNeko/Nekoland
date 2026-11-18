@@ -2,7 +2,7 @@
 """Draws Nekoland's boot splash for one screen size, as a Plymouth script theme.
 
 The splash is GRUB's picture continued: the same glow, cat and name (see ../grub/make-theme.py,
-whose drawing it reuses), the cat's eyes closed at first, then opening and blinking, and a
+whose drawing it reuses; the task being done is written bottom left by the script), the cat's eyes closed at first, then opening and blinking, and a
 short bar going back and forth under the name, since a boot has no known length.
 
     make-theme.py WIDTH HEIGHT OUTPUT_DIR
@@ -25,6 +25,7 @@ spec.loader.exec_module(grub)
 CAT_SIZE = 168
 TRACK = (220, 3)
 THUMB_WIDTH = 70
+TEXT_SIZE = 17
 SUPERSAMPLE = grub.SUPERSAMPLE
 EYE_SEARCH = (30, 80, 162, 135)  # where the logo's two eyes are, in the logo's own pixels
 
@@ -117,6 +118,7 @@ def main(arguments):
     for key, value in {
         "LEFT_EYE_X": left_eye[0] * factor, "RIGHT_EYE_X": right_eye[0] * factor,
         "EYE_Y": left_eye[1] * factor,
+        "MARGIN_X": 56 * scale, "MARGIN_BOTTOM": 48 * scale, "TEXT_SIZE": TEXT_SIZE * scale,
         "NAME_GAP": 44 * scale, "TRACK_GAP": 72 * scale, "RISE": 10 * scale,
     }.items():
         script = script.replace(f"@{key}@", f"{value:.1f}")
