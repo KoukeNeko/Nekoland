@@ -165,7 +165,7 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<UsersPage>) {
         move |_| {
             let me = me.clone();
             let parent = page.clone();
-            ask_password(&parent, "變更密碼", move |typed| {
+            ask_password(&parent, "變更密碼", "變更", Rc::new(|| {}), move |typed| {
                 as_root("變更密碼", &["chpasswd"], Some(format!("{me}:{typed}\n")), move |worked| {
                     if !worked {
                         failed(&page, "無法變更密碼");
@@ -309,23 +309,31 @@ fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
     list
 }
 
-/// Asks for a new password twice; `then` gets it when both are the same.
-fn ask_password(page: &adw::PreferencesPage, title: &str, then: impl FnOnce(String) + 'static) {
+/// Asks for a new password twice, done with `action`; `then` gets it when both are the same,
+/// and `cancelled` runs when it is not given.
+pub fn ask_password(
+    page: &adw::PreferencesPage,
+    title: &str,
+    action: &str,
+    cancelled: Rc<dyn Fn()>,
+    then: impl FnOnce(String) + 'static,
+) {
     let first = adw::PasswordEntryRow::builder().title("新密碼").build();
     let again = adw::PasswordEntryRow::builder().title("確認密碼").build();
     let alert = adw::AlertDialog::new(Some(title), None);
     alert.set_extra_child(Some(&form(&[first.upcast_ref(), again.upcast_ref()])));
-    alert.add_responses(&[("cancel", "取消"), ("do", "變更")]);
+    alert.add_responses(&[("cancel", "取消"), ("do", action)]);
     alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
     alert.set_default_response(Some("do"));
     alert.set_close_response("cancel");
     let page = page.clone();
     alert.choose(&page.clone(), gio::Cancellable::NONE, move |response| {
         if response != "do" {
-            return;
+            return cancelled();
         }
         let typed = first.text().to_string();
         if typed.is_empty() || typed != again.text() || typed.contains('\n') {
+            cancelled();
             return alert::notice(&page, "密碼不相符", Some("兩次輸入的密碼必須相同，且不能是空白。"));
         }
         then(typed);

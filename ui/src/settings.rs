@@ -4432,7 +4432,101 @@ fn sharing_page() -> adw::PreferencesPage {
     if let Some(ssh) = ssh_units() {
         page.add(&remote_login_group(ssh));
     }
+    page.add(&file_sharing_group(&page));
     page
+}
+
+/// Turns on Samba and shares the Public folder as `$3`, with the account's own
+/// Samba password: Samba keeps its own, so it is asked for as sharing is turned on.
+const SHARE_FOLDER: &str = r#"set -e
+usermod -aG sambashare "$1"
+smbpasswd -a -s "$1"
+# Ubuntu's smb.conf leaves the users' own shares off, its line for them commented out.
+grep -Eq '^[[:space:]]*usershare max shares' /etc/samba/smb.conf ||
+    sed -i '/^\[global\]/a\   usershare max shares = 100' /etc/samba/smb.conf
+systemctl enable --now smbd
+runuser -u "$1" -g sambashare -- net usershare add "$3" "$2" "" Everyone:F guest_ok=n
+"#;
+
+/// 檔案共享: the Public folder over SMB, as the Mac and Windows share it.
+fn file_sharing_group(page: &adw::PreferencesPage) -> adw::PreferencesGroup {
+    let sharing = group("");
+    let user = std::env::var("USER").unwrap_or_default();
+    // Installing Samba starts it; sharing is on once the folder was shared, which put the
+    // person in `sambashare`, whose share list only its members can read.
+    let state = glib::clone!(
+        #[strong]
+        user,
+        move || {
+            let shown = output("systemctl", &["show", "smbd", "--property=LoadState,ActiveState"])?;
+            let value = |key: &str| field(&shown, key, '=');
+            let member = output("getent", &["group", "sambashare"])
+                .is_some_and(|line| line.trim().rsplit(':').next().is_some_and(|members| members.split(',').any(|m| m == user)));
+            (value("LoadState").as_deref() == Some("loaded"))
+                .then(|| member && value("ActiveState").as_deref() == Some("active"))
+        }
+    );
+    let folder = glib::user_special_dir(glib::UserDirectory::PublicShare)
+        .unwrap_or_else(|| glib::home_dir().join("Public"));
+    // Samba takes no share named as a user.
+    let share = format!("{}-{user}", folder.file_name().unwrap_or_default().to_string_lossy());
+    let service = adw::SwitchRow::builder().title("檔案共享").build();
+    let shared = fact_row("共享資料夾", &folder.display().to_string());
+    sharing.add(&service);
+    sharing.add(&shared);
+    // Set while the switch is put back to what Samba is.
+    let showing = Rc::new(Cell::new(false));
+    let show = Rc::new(glib::clone!(
+        #[weak]
+        service,
+        #[weak]
+        shared,
+        #[strong]
+        showing,
+        #[strong]
+        share,
+        move || {
+            let running = state();
+            showing.set(true);
+            service.set_active(running == Some(true));
+            showing.set(false);
+            service.set_sensitive(running.is_some());
+            service.set_subtitle(&match running {
+                None => "未安裝 Samba".to_string(),
+                Some(true) => format!("smb://{}/{share}", remote_address()),
+                Some(false) => String::new(),
+            });
+            shared.set_visible(running == Some(true));
+        }
+    ));
+    show();
+    let page = page.clone();
+    service.connect_active_notify(move |row| {
+        if showing.get() {
+            return;
+        }
+        row.set_sensitive(false);
+        let show = show.clone();
+        if !row.is_active() {
+            return as_root("關閉檔案共享", &["systemctl", "disable", "--now", "smbd"], None, move |_| show());
+        }
+        if let Err(err) = std::fs::create_dir_all(&folder) {
+            eprintln!("{}: {err}", folder.display());
+            return show();
+        }
+        let (user, folder, share, page) = (user.clone(), folder.display().to_string(), share.clone(), page.clone());
+        let cancelled: Rc<dyn Fn()> = show.clone();
+        users::ask_password(&page.clone(), "檔案共享密碼", "開啟", cancelled, move |typed| {
+            let args = ["sh", "-c", SHARE_FOLDER, "sh", user.as_str(), folder.as_str(), share.as_str()];
+            as_root("開啟檔案共享", &args, Some(format!("{typed}\n{typed}\n")), move |worked| {
+                if !worked {
+                    alert::notice(&page, "無法開啟檔案共享", None);
+                }
+                show();
+            });
+        });
+    });
+    sharing
 }
 
 /// The units that start OpenSSH's server: a socket where it is started on demand, as Ubuntu

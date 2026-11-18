@@ -399,7 +399,10 @@ address and port to connect to, and gives xrdp sessions Nekoland by writing `~/.
 xrdp's session script runs; one already there is kept in `~/.config/nekoland/xsession`
 and put back when the session is set to the system's again.
 The same page has 遠端登入, which turns OpenSSH's server on and off (`ssh.socket` where
-there is one) and shows the `ssh` command to reach this computer with.
+there is one) and shows the `ssh` command to reach this computer with. With Samba installed
+(`sudo apt install samba`), 檔案共享 shares the Public folder over SMB as
+`Public-USER`: turning it on asks for a Samba password, adds the person to `sambashare`,
+turns on users' shares in `/etc/samba/smb.conf` and starts `smbd`.
 
 Nekoland knows the session by xrdp's `XRDP_SESSION` and, as on a console, names itself
 to the portals and to the services D-Bus starts. Sleep, from the menu, the power button
