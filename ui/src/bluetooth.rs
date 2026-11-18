@@ -13,6 +13,11 @@ use crate::{alert, group, output};
 
 /// How long the page looks for devices nearby each time.
 const SCAN_SECONDS: &str = "8";
+/// How long a question to bluetoothctl may hold up the window: without bluetoothd it waits
+/// for the daemon forever.
+const QUERY_SECONDS: &str = "2";
+/// Where the kernel lists Bluetooth adapters.
+const ADAPTERS_DIR: &str = "/sys/class/bluetooth";
 
 /// A device BlueZ knows, as `bluetoothctl devices` lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,7 +35,19 @@ struct BluetoothPage {
 
 /// Whether there is a Bluetooth adapter, without which there is no Bluetooth page.
 pub fn has_bluetooth() -> bool {
-    output("bluetoothctl", &["list"]).is_some_and(|text| text.lines().any(|line| line.starts_with("Controller ")))
+    has_adapter() && query(&["list"]).is_some_and(|text| text.lines().any(|line| line.starts_with("Controller ")))
+}
+
+/// Whether the kernel knows an adapter, asked first so a computer without one starts no
+/// bluetoothctl at all.
+fn has_adapter() -> bool {
+    std::fs::read_dir(ADAPTERS_DIR).is_ok_and(|mut adapters| adapters.next().is_some())
+}
+
+/// What bluetoothctl answers, given up on after `QUERY_SECONDS`.
+fn query(args: &[&str]) -> Option<String> {
+    let bounded: Vec<&str> = ["--timeout", QUERY_SECONDS].into_iter().chain(args.iter().copied()).collect();
+    output("bluetoothctl", &bounded)
 }
 
 /// "Device AA:BB:CC:DD:EE:FF Name" lines; a device that gave no name has its address for one.
@@ -49,17 +66,17 @@ fn parse_devices(text: &str) -> Vec<Device> {
 fn devices(filter: Option<&str>) -> Vec<Device> {
     let mut args = vec!["devices"];
     args.extend(filter);
-    parse_devices(&output("bluetoothctl", &args).unwrap_or_default())
+    parse_devices(&query(&args).unwrap_or_default())
 }
 
 fn powered() -> Option<bool> {
-    let shown = output("bluetoothctl", &["show"])?;
+    let shown = query(&["show"])?;
     Some(shown.lines().any(|line| line.trim() == "Powered: yes"))
 }
 
 /// The icon BlueZ gives the kind of device, or a generic one.
 fn device_icon(address: &str) -> String {
-    output("bluetoothctl", &["info", address])
+    query(&["info", address])
         .and_then(|info| {
             info.lines()
                 .find_map(|line| line.trim().strip_prefix("Icon: ").map(|icon| format!("{icon}-symbolic")))
@@ -259,7 +276,7 @@ fn connect_pair(row: &adw::ActionRow, shown: &Rc<BluetoothPage>, done: &Rc<dyn F
 /// Whether bluez itself says the device is paired, past what its name could say: the name
 /// comes before bluez's own "Paired:" line.
 fn is_paired(address: &str) -> bool {
-    let info = output("bluetoothctl", &["info", address]).unwrap_or_default();
+    let info = query(&["info", address]).unwrap_or_default();
     info.lines().rev().find_map(|line| line.trim().strip_prefix("Paired:")).is_some_and(|paired| paired.trim() == "yes")
 }
 
