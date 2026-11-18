@@ -80,14 +80,18 @@ struct Udev {
     dark: HashSet<crtc::Handle>,
     /// The outputs whose gamma can be set, by the length of their ramps.
     gamma: HashMap<crtc::Handle, u32>,
-    /// The red, green and blue gains each output's ramps were last set to.
-    ramps: HashMap<crtc::Handle, (f64, f64, f64)>,
+    /// The red, green and blue gains each output's ramps were last set to, and whether the
+    /// colours are inverted.
+    ramps: HashMap<crtc::Handle, (f64, f64, f64, bool)>,
+    /// The `color_filter` each output's colour matrix was last set to; None for one that has
+    /// no matrix.
+    filters: HashMap<crtc::Handle, Option<String>>,
     /// The `color_profile` setting the ramps follow, and the calibration curves read from it.
     profile: (Option<String>, Option<crate::icc::Curves>),
     /// Each output's modes and size in millimetres, to choose from again as the settings change.
     displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
     /// The `mode`, `scale` and `rotation` settings the outputs were last set up with.
-    applied: (Option<String>, Option<f64>, Rotation),
+    applied: (Option<String>, Option<f64>, Rotation, Vec<String>, String),
     /// While it is open, the power button and the lid are Nekoland's.
     _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
@@ -169,7 +173,7 @@ pub fn init_udev(
             .outputs()
             .map(|o| state.space.output_geometry(o).unwrap().size.w)
             .sum::<i32>();
-        let scale = chosen_scale(&state.config, mode, (width_mm, height_mm));
+        let scale = chosen_scale(&state.config, &name, mode, (width_mm, height_mm));
         info!("{name}: scale {scale}");
         output.set_preferred(mode);
         output.change_current_state(
@@ -180,6 +184,7 @@ pub fn init_udev(
         );
         crate::text::set_picture_scale(scale);
         state.space.map_output(&output, (x, 0));
+        lay_out_outputs(state);
 
         let surface = manager
             .initialize_output::<GlesRenderer, SceneElement>(
@@ -217,6 +222,7 @@ pub fn init_udev(
         applied: applied_settings(&state.config),
         gamma,
         ramps: HashMap::new(),
+        filters: HashMap::new(),
         profile: (None, None),
         _power_keys: power_keys,
         glass: surfaces
@@ -310,6 +316,7 @@ pub fn init_udev(
                 }
                 // Whoever had the display meanwhile may have left ramps of their own.
                 backend.ramps.clear();
+                backend.filters.clear();
                 drop(backend);
                 render_all(&udev, data, &loop_handle);
             }
@@ -370,6 +377,7 @@ fn render(
         dark,
         gamma,
         ramps,
+        filters,
         profile,
         ..
     } = &mut *guard;
@@ -382,19 +390,35 @@ fn render(
         *profile = (state.config.color_profile.clone(), state.config.color_profile.as_deref().and_then(crate::icc::load));
         ramps.clear();
     }
+    let filter = &state.config.color_filter;
+    let applied = filters.get(&crtc).cloned().unwrap_or(Some("none".into()));
+    if applied.is_some_and(|applied| applied != *filter) {
+        match set_colour_matrix(manager.device(), crtc, filter_matrix(filter)) {
+            Ok(()) => {
+                filters.insert(crtc, Some(filter.clone()));
+            }
+            Err(err) => {
+                warn!("could not set the colour matrix of {}: {err}", output.name());
+                filters.insert(crtc, None);
+            }
+        }
+    }
     if let Some(&size) = gamma.get(&crtc) {
         let gains = if state.night_shift {
             crate::night::gains(state.config.night_shift_warmth)
         } else {
             (1.0, 1.0, 1.0)
         };
+        let invert = state.config.invert_colors;
+        let gains = (gains.0, gains.1, gains.2, invert);
         if ramps.get(&crtc) != Some(&gains) {
-            let (r, g, b) = gains;
+            let (r, g, b, _) = gains;
             let ramp = |channel: usize, gain: f64| -> Vec<u16> {
                 (0..size)
                     .map(|i| {
                         let x = f64::from(i) / f64::from(size - 1);
                         let level = profile.1.as_ref().map_or(x, |curves| curves.at(channel, x));
+                        let level = if invert { 1.0 - level } else { level };
                         (level * gain * 65535.0).round() as u16
                     })
                     .collect()
@@ -474,15 +498,114 @@ fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode
         .copied()
 }
 
-fn chosen_scale(config: &Config, mode: Mode, (width_mm, height_mm): (u32, u32)) -> f64 {
+fn chosen_scale(config: &Config, name: &str, mode: Mode, (width_mm, height_mm): (u32, u32)) -> f64 {
     config
-        .scale
+        .display_scales
+        .get(name)
+        .copied()
+        .or(config.scale)
         .unwrap_or_else(|| density_scale(mode.size.w, mode.size.h, width_mm, height_mm))
 }
 
+type Matrix = [[f64; 3]; 3];
+
+/// Machado, Oliveira and Fernandes' matrices for how a viewer without the red, green or blue
+/// cones sees colours.
+const PROTANOPIA: Matrix =
+    [[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216], [-0.003882, -0.048116, 1.051998]];
+const DEUTERANOPIA: Matrix =
+    [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.011820, 0.042940, 0.968881]];
+const TRITANOPIA: Matrix =
+    [[1.255528, -0.076749, -0.178779], [-0.078411, 0.930809, 0.147602], [0.004733, 0.691367, 0.303900]];
+/// Rec. 709 luminance in each row.
+const GRAYSCALE: Matrix = [[0.2126, 0.7152, 0.0722]; 3];
+
+/// The matrix a `color_filter` is; None for none. A correction adds what the viewer misses,
+/// the difference between a colour and how they see it, back in the channels they can tell.
+// shortcut: worked on the encoded values, not linear light, which a CRTC's matrix is given.
+fn filter_matrix(filter: &str) -> Option<Matrix> {
+    let seen = match filter {
+        "grayscale" => return Some(GRAYSCALE),
+        "protanopia" => PROTANOPIA,
+        "deuteranopia" => DEUTERANOPIA,
+        "tritanopia" => TRITANOPIA,
+        _ => return None,
+    };
+    // Moves what is missing into the green and blue channels.
+    const SHIFT: Matrix = [[0.0, 0.0, 0.0], [0.7, 1.0, 0.0], [0.7, 0.0, 1.0]];
+    let mut matrix = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for column in 0..3 {
+            let missing = |k: usize| f64::from(u8::from(k == column)) - seen[k][column];
+            let shifted: f64 = (0..3).map(|k| SHIFT[row][k] * missing(k)).sum();
+            matrix[row][column] = f64::from(u8::from(row == column)) + shifted;
+        }
+    }
+    Some(matrix)
+}
+
+/// Sets a CRTC's colour matrix, or back to none; an error for a CRTC that has none.
+fn set_colour_matrix(
+    device: &impl smithay::reexports::drm::control::Device,
+    crtc: crtc::Handle,
+    matrix: Option<Matrix>,
+) -> Result<(), String> {
+    /// `struct drm_color_ctm`: nine S31.32 sign-magnitude numbers, a row after another.
+    #[repr(C)]
+    struct ColorMatrix([u64; 9]);
+    let fixed = |number: f64| {
+        let magnitude = (number.abs() * (1u64 << 32) as f64) as u64;
+        if number < 0.0 { magnitude | 1 << 63 } else { magnitude }
+    };
+
+    let properties = device.get_properties(crtc).map_err(|err| err.to_string())?;
+    let (handles, _) = properties.as_props_and_values();
+    let property = handles
+        .iter()
+        .find(|handle| device.get_property(**handle).is_ok_and(|info| info.name().to_bytes() == b"CTM"))
+        .ok_or("no CTM property")?;
+    let value = match matrix {
+        Some(matrix) => {
+            let mut cells = [0u64; 9];
+            for (cell, number) in cells.iter_mut().zip(matrix.iter().flatten()) {
+                *cell = fixed(*number);
+            }
+            device.create_property_blob(&ColorMatrix(cells)).map_err(|err| err.to_string())?.into()
+        }
+        None => 0,
+    };
+    device.set_property(crtc, *property, value).map_err(|err| err.to_string())
+}
+
 /// The settings the outputs are set up from, to tell when they change.
-fn applied_settings(config: &Config) -> (Option<String>, Option<f64>, Rotation) {
-    (config.mode.clone(), config.scale, config.rotation)
+fn applied_settings(config: &Config) -> (Option<String>, Option<f64>, Rotation, Vec<String>, String) {
+    (
+        config.mode.clone(),
+        config.scale,
+        config.rotation,
+        config.display_order.clone(),
+        format!("{:?}{}", config.display_scales, config.mirror_displays),
+    )
+}
+
+/// Puts the outputs side by side in the order the settings name, the first mapped first, as
+/// the main display everything else follows.
+fn lay_out_outputs(state: &mut Nekoland) {
+    let mut outputs: Vec<Output> = state.space.outputs().cloned().collect();
+    // Stable: the displays the settings leave out stay in the order they were found.
+    outputs.sort_by_key(|output| {
+        state.config.display_order.iter().position(|name| *name == output.name()).unwrap_or(usize::MAX)
+    });
+    let mut x = 0;
+    for output in &outputs {
+        let width = state.space.output_geometry(output).map_or(0, |geometry| geometry.size.w);
+        state.space.unmap_output(output);
+        output.change_current_state(None, None, None, Some((x, 0).into()));
+        state.space.map_output(output, (x, 0));
+        if !state.config.mirror_displays {
+            x += width;
+        }
+    }
 }
 
 /// Sets every output to the mode, scale and rotation the settings now ask for, lays the
@@ -505,7 +628,7 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
             }
             info!("{}: {}x{}", output.name(), mode.size.w, mode.size.h);
         }
-        let scale = chosen_scale(&state.config, mode, *size_mm);
+        let scale = chosen_scale(&state.config, &output.name(), mode, *size_mm);
         output.change_current_state(
             Some(mode),
             Some(state.config.rotation.transform()),
@@ -515,12 +638,7 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
         crate::text::set_picture_scale(scale);
         smithay::desktop::layer_map_for_output(output).arrange();
     }
-    let mut x = 0;
-    for output in state.space.outputs().cloned().collect::<Vec<_>>() {
-        output.change_current_state(None, None, None, Some((x, 0).into()));
-        state.space.map_output(&output, (x, 0));
-        x += state.space.output_geometry(&output).map_or(0, |geometry| geometry.size.w);
-    }
+    lay_out_outputs(state);
     state.dock.drawn = None;
     state.menu_bar.drawn = None;
     state.fit_windows_to_display();
@@ -661,7 +779,24 @@ pub fn density_scale(width: i32, height: i32, width_mm: u32, height_mm: u32) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::density_scale;
+    use super::{density_scale, filter_matrix};
+
+    #[test]
+    fn a_filter_keeps_white_white_and_none_is_no_matrix() {
+        assert_eq!(filter_matrix("none"), None);
+        assert_eq!(filter_matrix("nonsense"), None);
+        for filter in ["grayscale", "protanopia", "deuteranopia", "tritanopia"] {
+            let matrix = filter_matrix(filter).unwrap();
+            for row in matrix {
+                assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-3, "{filter}: {row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_correction_leaves_the_red_channel_alone() {
+        assert_eq!(filter_matrix("protanopia").unwrap()[0], [1.0, 0.0, 0.0]);
+    }
 
     #[test]
     fn dense_displays_are_drawn_at_twice() {

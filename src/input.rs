@@ -19,6 +19,63 @@ use crate::{
     windows::{window_names, LAUNCHER_APP_ID},
 };
 
+/// Sticky keys: a modifier let go with no other key pressed between stays on for the next key
+/// pressed, which lets it go; pressed and let go again alone, it goes off.
+#[derive(Default)]
+pub struct StickyKeys {
+    /// The modifier key pressed alone, and which modifier it is: shift, control, alt, logo.
+    candidate: Option<(smithay::input::keyboard::Keycode, usize)>,
+    latched: [bool; 4],
+    /// Set when a key is pressed with modifiers latched, for them to be let go once it is sent.
+    release_after: bool,
+}
+
+impl StickyKeys {
+    fn modifier(sym: Keysym) -> Option<usize> {
+        match sym {
+            Keysym::Shift_L | Keysym::Shift_R => Some(0),
+            Keysym::Control_L | Keysym::Control_R => Some(1),
+            Keysym::Alt_L | Keysym::Alt_R => Some(2),
+            Keysym::Super_L | Keysym::Super_R => Some(3),
+            _ => None,
+        }
+    }
+
+    fn state(&self) -> ModifiersState {
+        let [shift, ctrl, alt, logo] = self.latched;
+        ModifiersState { shift, ctrl, alt, logo, ..Default::default() }
+    }
+
+    /// Takes a key event in; the modifiers to latch from now on, when they change.
+    fn key(
+        &mut self,
+        code: smithay::input::keyboard::Keycode,
+        modifier: Option<usize>,
+        pressed: bool,
+        alone: bool,
+    ) -> Option<ModifiersState> {
+        match (modifier, pressed) {
+            (Some(modifier), true) => {
+                self.candidate = alone.then_some((code, modifier));
+                None
+            }
+            (Some(modifier), false) => {
+                if self.candidate.take() != Some((code, modifier)) {
+                    return None;
+                }
+                self.latched[modifier] = !self.latched[modifier];
+                Some(self.state())
+            }
+            (None, true) => {
+                self.candidate = None;
+                self.release_after = self.latched.contains(&true);
+                None
+            }
+            (None, false) => None,
+        }
+    }
+}
+
 impl Nekoland {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         self.last_input = std::time::Instant::now();
@@ -58,6 +115,22 @@ impl Nekoland {
                             }
                             return FilterResult::Intercept(());
                         }
+                        let bounce = std::time::Duration::from_millis(state.config.bounce_keys_ms.into());
+                        if pressed && state.key_released_at.get(&code).is_some_and(|at| at.elapsed() < bounce) {
+                            state.suppressed_keys.insert(code);
+                            return FilterResult::Intercept(());
+                        }
+                        if !pressed && !bounce.is_zero() {
+                            state.key_released_at.insert(code, std::time::Instant::now());
+                        }
+                        let modifier = keysym.raw_syms().first().copied().and_then(StickyKeys::modifier);
+                        if state.config.sticky_keys {
+                            let keyboard = state.seat.get_keyboard().unwrap();
+                            let alone = keyboard.pressed_keys().len() <= 1;
+                            if let Some(latched) = state.sticky.key(code, modifier, pressed, alone) {
+                                keyboard.set_latched_modifiers(state, &latched);
+                            }
+                        }
                         let handled = match key_state {
                             KeyState::Pressed => {
                                 // Letters by their plain symbol, so that Shift does not change them;
@@ -71,10 +144,23 @@ impl Nekoland {
                                     state.key_pressed(modifiers, sym, keysym.modified_sym().key_char());
                                 if handled {
                                     state.suppressed_keys.insert(code);
+                                } else if state.config.slow_keys_ms > 0 && modifier.is_none() {
+                                    // Held back until it is let go, to be sent then if it was held long enough.
+                                    state.slow_pressed.insert(code, std::time::Instant::now());
+                                    return FilterResult::Intercept(());
                                 }
                                 handled
                             }
                             KeyState::Released => {
+                                if let Some(at) = state.slow_pressed.remove(&code) {
+                                    let slow = std::time::Duration::from_millis(state.config.slow_keys_ms.into());
+                                    if at.elapsed() < slow {
+                                        return FilterResult::Intercept(());
+                                    }
+                                    let keyboard = state.seat.get_keyboard().unwrap();
+                                    keyboard.input_forward(state, code, KeyState::Pressed, SERIAL_COUNTER.next_serial(), time, false);
+                                    return FilterResult::Forward;
+                                }
                                 state.key_released(keysym.modified_sym());
                                 state.suppressed_keys.remove(&code)
                             }
@@ -86,6 +172,11 @@ impl Nekoland {
                         }
                     },
                 );
+                if std::mem::take(&mut self.sticky.release_after) {
+                    self.sticky.latched = [false; 4];
+                    let keyboard = self.seat.get_keyboard().unwrap();
+                    keyboard.set_latched_modifiers(self, &ModifiersState::default());
+                }
             }
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
@@ -508,6 +599,32 @@ fn close(window: Option<Window>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modifier_let_go_alone_stays_on_for_the_next_key() {
+        use smithay::input::keyboard::Keycode;
+        let (shift, letter) = (Keycode::new(42), Keycode::new(30));
+        let modifier = StickyKeys::modifier(Keysym::Shift_L);
+        assert_eq!(modifier, Some(0));
+        let mut sticky = StickyKeys::default();
+        assert_eq!(sticky.key(shift, modifier, true, true), None);
+        assert!(sticky.key(shift, modifier, false, true).unwrap().shift);
+        // The next key takes it, and lets it go once it is sent.
+        assert_eq!(sticky.key(letter, None, true, true), None);
+        assert!(sticky.release_after);
+        // Held with another key, a modifier is not latched.
+        let mut sticky = StickyKeys::default();
+        sticky.key(letter, None, true, true);
+        sticky.key(shift, modifier, true, false);
+        assert_eq!(sticky.key(shift, modifier, false, false), None);
+        // Alone again, it goes off.
+        let mut sticky = StickyKeys::default();
+        for _ in 0..2 {
+            sticky.key(shift, modifier, true, true);
+            sticky.key(shift, modifier, false, true);
+        }
+        assert!(!sticky.latched.contains(&true));
+    }
 
     #[test]
     fn super_with_the_arrows_halves_maximizes_and_restores() {

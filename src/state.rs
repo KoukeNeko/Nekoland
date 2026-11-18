@@ -114,6 +114,11 @@ pub struct Nekoland {
     pub super_tap: bool,
     /// Keys whose press ran a shortcut, so their release is not sent to a client either.
     pub suppressed_keys: HashSet<Keycode>,
+    pub sticky: crate::input::StickyKeys,
+    /// When each key held back by `slow_keys_ms` was pressed.
+    pub slow_pressed: std::collections::HashMap<Keycode, std::time::Instant>,
+    /// When each key was last let go, for `bounce_keys_ms`.
+    pub key_released_at: std::collections::HashMap<Keycode, std::time::Instant>,
     pub loop_signal: LoopSignal,
 
     // Smithay State
@@ -237,6 +242,9 @@ impl Nekoland {
             apps: Apps::default(),
             super_tap: false,
             suppressed_keys: HashSet::new(),
+            sticky: Default::default(),
+            slow_pressed: std::collections::HashMap::new(),
+            key_released_at: std::collections::HashMap::new(),
             loop_signal,
             socket_name,
 

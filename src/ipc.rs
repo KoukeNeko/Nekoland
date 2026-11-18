@@ -197,6 +197,20 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
             return Some(lines.join("\n") + "\n");
         }
+        // Every output, one a line, left to right: its name, its size in points, and where
+        // its left edge is.
+        "displays" => {
+            return Some(
+                state
+                    .space
+                    .outputs()
+                    .filter_map(|output| {
+                        let area = state.space.output_geometry(output)?;
+                        Some(format!("{}\t{}x{}\t{}\n", output.name(), area.size.w, area.size.h, area.loc.x))
+                    })
+                    .collect(),
+            );
+        }
         // The output as Settings shows it: `current` and `preferred` modes as WIDTHxHEIGHT@HZ,
         // the `scale` drawn with and the `density_scale` used when the settings name none.
         "display" => {

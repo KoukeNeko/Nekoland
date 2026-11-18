@@ -12,8 +12,17 @@ pub struct Config {
     pub mode: Option<String>,
     /// How many pixels a point is drawn with; worked out from the display's density otherwise.
     pub scale: Option<f64>,
+    /// The scale of single displays, by name, in place of `scale` for those.
+    pub display_scales: std::collections::BTreeMap<String, f64>,
     /// How far the picture is turned on the displays, clockwise, for one stood on its side.
     pub rotation: Rotation,
+    /// The displays' names, as the connectors are, from left to right: the first is the main
+    /// display, which has the menu bar and the Dock. Displays it leaves out follow in the
+    /// order they were found.
+    pub display_order: Vec<String>,
+    /// Whether the displays show the same part of the desktop, all from its left edge, instead
+    /// of side by side; what a display is too small for is cut off.
+    pub mirror_displays: bool,
     /// Whether the frames drawn each second are counted in a corner of the screen.
     pub show_fps: bool,
     /// Whether Night Shift is on, off, or on from `night_shift_from` to `night_shift_to`, and
@@ -298,6 +307,21 @@ pub struct Config {
     pub key_repeat: bool,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
+    /// Milliseconds after a key is let go within which pressing it again is taken for a
+    /// bounce and ignored, for a hand that cannot keep still; 0 for every press.
+    pub bounce_keys_ms: u32,
+    /// Whether a modifier key let go on its own stays on for the next key pressed.
+    pub sticky_keys: bool,
+    /// Milliseconds a key is held before it counts, for a hand that brushes keys; a key held
+    /// that long is sent when it is let go. 0 for every press.
+    pub slow_keys_ms: u32,
+    /// Whether the displays' colours are inverted, through their gamma ramps, so that it takes
+    /// a display whose gamma can be set.
+    pub invert_colors: bool,
+    /// A filter the displays' colour matrix applies: `grayscale`, or the correction for
+    /// `protanopia`, `deuteranopia` or `tritanopia`; `none` for none. It takes a display
+    /// that has a colour matrix.
+    pub color_filter: String,
 }
 
 /// The ways the applications can be shown.
@@ -625,7 +649,10 @@ impl Default for Config {
         Self {
             mode: None,
             scale: None,
+            display_scales: Default::default(),
             rotation: Rotation::default(),
+            display_order: Vec::new(),
+            mirror_displays: false,
             show_fps: false,
             autostart: Vec::new(),
             terminal: "foot".into(),
@@ -823,6 +850,11 @@ impl Default for Config {
             key_repeat: true,
             repeat_delay: 200,
             repeat_rate: 25,
+            bounce_keys_ms: 0,
+            sticky_keys: false,
+            slow_keys_ms: 0,
+            invert_colors: false,
+            color_filter: "none".into(),
         }
     }
 }

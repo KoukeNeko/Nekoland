@@ -1129,6 +1129,34 @@ impl<D: SeatHandler + 'static> KeyboardHandle<D> {
         modifiers_changed
     }
 
+    /// Latches the modifiers that are set in `latched` (its control, alt, shift and logo), as
+    /// sticky keys do, and lets go of the ones that were latched and are not; the focused
+    /// client is told. Held and locked modifiers are left as they are.
+    pub fn set_latched_modifiers(&self, data: &mut D, latched: &ModifiersState) {
+        let internal = &mut *self.arc.internal.lock().unwrap();
+        {
+            let xkb = &mut internal.xkb.lock().unwrap();
+            let mask = latched.serialize_back(&xkb.state).depressed;
+            let state = &mut xkb.state;
+            let changed = state.update_mask(
+                state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+                mask,
+                state.serialize_mods(xkb::STATE_MODS_LOCKED),
+                state.serialize_layout(xkb::STATE_LAYOUT_DEPRESSED),
+                state.serialize_layout(xkb::STATE_LAYOUT_LATCHED),
+                state.serialize_layout(xkb::STATE_LAYOUT_LOCKED),
+            );
+            if changed == 0 {
+                return;
+            }
+            internal.mods_state.update_with(state);
+        }
+        if let Some((focus, _)) = internal.focus.as_mut() {
+            let seat = self.get_seat(data);
+            focus.modifiers(&seat, data, internal.mods_state, SERIAL_COUNTER.next_serial());
+        }
+    }
+
     /// Get the current led state
     pub fn led_state(&self) -> LedState {
         self.arc.internal.lock().unwrap().led_state
