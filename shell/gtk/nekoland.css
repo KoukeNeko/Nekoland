@@ -172,6 +172,62 @@ toggle-group > toggle:checked {
   box-shadow: none;
 }
 
+/* Toggles joined in a row are one of a few as well, and look as a group does: one track,
+ * the chosen one solid ink within it. A stylesheet cannot tell a box by what is in it, so
+ * each toggle draws its own stretch of the track and stays still when pressed, and what is
+ * in it is the part that turns to ink and gives under the press. */
+.linked:not(.vertical) > button.toggle,
+.linked:not(.vertical) > button.toggle:hover,
+.linked:not(.vertical) > button.toggle:active,
+.linked:not(.vertical) > button.toggle:checked {
+  min-width: 0;
+  min-height: 28px;
+  /* Room on every side of what is in it, which a press's spring takes a little past its
+   * size: half the gap between two of them to each, the whole of it at the track's ends. */
+  padding: 2px 1px;
+  border: none;
+  border-radius: 0;
+  background-color: var(--nekoland-fill);
+  background-image: none;
+  box-shadow: none;
+  /* The chosen one is solid already, and a ring would go round its stretch of the track. */
+  outline: none;
+  transform: none;
+}
+.linked:not(.vertical) > button.toggle:first-child {
+  padding-left: 2px;
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.linked:not(.vertical) > button.toggle:last-child {
+  padding-right: 2px;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+.linked:not(.vertical) > button.toggle > * {
+  min-width: 10px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--nekoland-ink-2);
+  font-weight: 400;
+  transition: transform 260ms cubic-bezier(0.2, 1.6, 0.4, 1),
+    background-color 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.linked:not(.vertical) > button.toggle:hover > * {
+  color: var(--nekoland-ink);
+}
+.linked:not(.vertical) > button.toggle:checked > * {
+  background-color: var(--nekoland-ink);
+  color: var(--nekoland-on-ink);
+  font-weight: 500;
+}
+.linked:not(.vertical) > button.toggle:active > * {
+  transform: scale(0.95);
+  transition-duration: 90ms, 150ms, 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 /* A slider: a thin line, ink up to a knob ringed in ink. The knob's ring stays within the
  * line, which runs out to its far side at either end, as the Mac's does; the line fills the
  * slider's padding so it ends where a switch beside it does. */
