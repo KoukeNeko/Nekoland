@@ -11,7 +11,9 @@
 //! for the pill. The pill can also be taken hold of and dragged along the row, and chooses
 //! the button it is let go over. The row is marked with a style class, which is what tells the stylesheet
 //! to leave the chosen button's own background out; a program this is not loaded into has
-//! no such class and keeps the look the stylesheet gives it alone.
+//! no such class and keeps the look the stylesheet gives it alone. Where Nekoland's look is
+//! not the one in use the class reaches no rule, and no pill is drawn: the row stays as
+//! the look in use, such as GNOME's own, draws it.
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -104,7 +106,7 @@ struct RoundedRect {
 }
 
 /// GDK's `GdkRGBA`.
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 #[repr(C)]
 struct Rgba {
     red: f32,
@@ -365,6 +367,31 @@ impl Gtk {
         slide
     }
 
+    unsafe fn colour_of(&self, widget: *mut c_void) -> Rgba {
+        let mut colour = Rgba::default();
+        (self.color)(widget, &mut colour);
+        colour
+    }
+
+    /// Whether Nekoland's look is what draws a marked row. Only it gives the row the
+    /// pill's colour, a button the one that reads on the pill and what is in the button a
+    /// third; under any other look the three are one colour, and the row is left to it.
+    unsafe fn in_look(&self, row: *mut c_void, chosen: *mut c_void) -> bool {
+        let content = (self.first_child)(chosen);
+        let on_ink = self.colour_of(chosen);
+        !content.is_null() && self.colour_of(row) != on_ink && self.colour_of(content) != on_ink
+    }
+
+    /// Leaves a row without a pill, with none to take hold of or to slide from.
+    unsafe fn forget_pill(&self, row: *mut c_void) {
+        let slide = &mut *self.slide_of(row);
+        slide.chosen = std::ptr::null_mut();
+        slide.from = None;
+        slide.shown = None;
+        slide.held = None;
+        slide.dragged = None;
+    }
+
     /// Where the pill is this frame, on its way to the chosen button, and how far it has
     /// given under a press; starts the frames that take it the rest of the way.
     unsafe fn step(&self, row: *mut c_void, chosen: *mut c_void, goal: Rect) -> Rect {
@@ -419,9 +446,7 @@ impl Gtk {
         let shape = RoundedRect { bounds: pill, corners: [[radius, radius]; 4] };
         // The row's own colour is the pill's, and a button's the one that reads on it; what
         // is in a button has the colour that reads on the track.
-        let (mut ink, mut on_ink) = (Rgba::default(), Rgba::default());
-        (self.color)(row, &mut ink);
-        (self.color)(chosen, &mut on_ink);
+        let (ink, on_ink) = (self.colour_of(row), self.colour_of(chosen));
         // Every colour becomes the one for the pill, as see-through as it was.
         let mut only_alpha = Matrix([0.0; 16]);
         let mut kept = [0.0f32; 16];
@@ -562,7 +587,11 @@ unsafe extern "C" fn snapshot(widget: *mut c_void, snapshot: *mut c_void) {
         Some((toggles, chosen)) if marked => {
             // A button put in the row since it was marked is told of as well.
             gtk.mark(widget, &toggles);
-            gtk.draw_pill(widget, &toggles, chosen, snapshot)
+            if gtk.in_look(widget, chosen) {
+                gtk.draw_pill(widget, &toggles, chosen, snapshot)
+            } else {
+                gtk.forget_pill(widget)
+            }
         }
         // The look that goes with the pill is there from the next frame.
         Some((toggles, _)) => gtk.mark(widget, &toggles),
