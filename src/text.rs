@@ -194,8 +194,8 @@ fn layout(cr: &Context, text: &str, points: i32, bold: bool, max_width: i32) -> 
 /// A line of white text with a soft shadow, as wide as it needs up to `max_width`,
 /// on a rounded pill if `pill` says how opaque.
 fn label_surface(text: &str, points: i32, max_width: i32, pill: Option<f64>) -> Option<ImageSurface> {
-    const PAD_X: i32 = 14;
-    const PAD_Y: i32 = 6;
+    const PAD_X: i32 = 12;
+    const PAD_Y: i32 = 8;
 
     // Measured on a surface of no size first; the real one needs the result.
     let probe = Context::new(ImageSurface::create(Format::ARgb32, 1, 1).ok()?).ok()?;

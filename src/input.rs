@@ -334,8 +334,16 @@ impl Nekoland {
         if self.hover_key(sym, typed) {
             return true;
         }
-        if self.menu_bar_panel_open() && sym == Keysym::Escape {
+        if self.alert_shown() && sym == Keysym::Escape {
+            self.dismiss_alert();
+            return true;
+        }
+        if (self.menu_bar_panel_open() || self.menu_bar.clock_panel.is_some()) && sym == Keysym::Escape {
             self.close_menu();
+            return true;
+        }
+        // A pinned panel leaves the keyboard to the window in front.
+        if !(ctrl || alt || logo) && !self.clock_panel_pinned() && self.clock_panel_key(sym, typed, shift) {
             return true;
         }
         if self.menu_bar.open.is_some() {

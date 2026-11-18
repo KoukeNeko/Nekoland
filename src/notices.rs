@@ -24,7 +24,7 @@ use crate::{
 pub(crate) const WIDTH: i32 = 360;
 const PADDING: i32 = 12;
 const ICON: i32 = 36;
-const GAP: i32 = 10;
+const GAP: i32 = 8;
 const RADIUS: i32 = 14;
 /// How far the banners, and the Notification Center where they are, stay from the screen's
 /// edges.

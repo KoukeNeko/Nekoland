@@ -308,13 +308,9 @@ impl NotificationCenter {
     fn draw(&mut self, kept: &[Kept], shown: &Shown) {
         let colors = colors(shown.dark);
         let height = self.layout.height.min(shown.room);
-        let Ok(surface) = text::canvas(WIDTH, height) else {
+        let Some((surface, cr)) = draw_panel(WIDTH, height, shown.dark, &colors) else {
             return;
         };
-        let Ok(cr) = Context::new(&surface) else {
-            return;
-        };
-        draw_panel(&cr, &colors, shown.dark, (WIDTH, height));
         // What is scrolled past is cut off at the panel's edge.
         text::rounded_rectangle(&cr, 0.0, 0.0, f64::from(WIDTH), f64::from(height), f64::from(MENU_RADIUS));
         cr.clip();

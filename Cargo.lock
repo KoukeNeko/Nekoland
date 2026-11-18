@@ -3196,6 +3196,7 @@ dependencies = [
  "gdk-pixbuf",
  "gio",
  "libc",
+ "nekoland-calendar-data",
  "pango",
  "pangocairo",
  "serde",
@@ -3211,6 +3212,13 @@ dependencies = [
  "wayland-server",
  "xcursor",
  "zbus",
+]
+
+[[package]]
+name = "nekoland-calendar-data"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3241,6 +3249,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libc",
+ "nekoland-calendar-data",
  "pangocairo",
  "serde",
  "serde_json",

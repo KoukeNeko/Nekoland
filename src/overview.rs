@@ -28,8 +28,8 @@ const NAME_PADDING: i32 = 12;
 const NAME_GAP: i32 = 8;
 const NAME_PILL: i32 = 24;
 const THUMBNAIL_WIDTH: i32 = 192;
-const THUMBNAIL_GAP: i32 = 28;
-const EXPANDED_PADDING: i32 = 14;
+const THUMBNAIL_GAP: i32 = 32;
+const EXPANDED_PADDING: i32 = 12;
 const LABEL_HEIGHT: i32 = 24;
 /// How long the bar takes to open up or close.
 const EXPAND_DURATION: Duration = Duration::from_millis(180);

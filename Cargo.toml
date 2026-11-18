@@ -10,6 +10,7 @@ cairo-rs = { version = "0.20", features = ["png"] }
 gdk-pixbuf = "0.20"
 gio = "0.20"
 libc = "0.2"
+nekoland-calendar-data = { path = "calendar-data" }
 pango = { version = "0.20", features = ["v1_44"] }
 pangocairo = "0.20"
 serde = { version = "1", features = ["derive"] }
@@ -41,7 +42,7 @@ features = [
 ]
 
 [workspace]
-members = ["ui", "menus", "lock"]
+members = ["ui", "menus", "lock", "calendar-data"]
 exclude = ["third_party"]
 
 # Smithay 0.7.0 with its DRM compositor's damage clips turned with the output: upstream
