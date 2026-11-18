@@ -63,7 +63,8 @@ fi
 
 # Ubuntu hides the menu (GRUB_TIMEOUT_STYLE=hidden, timeout 0), and its cloud images fix the
 # terminal to the console, which has no theme. Files in /etc/default/grub.d are read after
-# /etc/default/grub, so this one has the last word; Plymouth needs quiet splash to show.
+# /etc/default/grub, so this one has the last word. Plymouth needs quiet splash to show, and
+# on a board whose firmware names a serial console it shows only text unless told to ignore it.
 sudo install -d /etc/default/grub.d
 sudo tee /etc/default/grub.d/99-nekoland.cfg >/dev/null <<'CFG'
 # Nekoland: the boot menu is shown for 5 seconds, graphically, and the splash is on.
@@ -71,10 +72,12 @@ GRUB_TIMEOUT_STYLE=menu
 GRUB_TIMEOUT=5
 GRUB_RECORDFAIL_TIMEOUT=5
 unset GRUB_TERMINAL GRUB_TERMINAL_OUTPUT
-case " $GRUB_CMDLINE_LINUX_DEFAULT " in
-    *" splash "*) ;;
-    *) GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT quiet splash" ;;
-esac
+for option in quiet splash plymouth.ignore-serial-consoles; do
+    case " $GRUB_CMDLINE_LINUX_DEFAULT " in
+        *" $option "*) ;;
+        *) GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT $option" ;;
+    esac
+done
 CFG
 
 sh "$here/../plymouth/install-splash.sh" "$mode"

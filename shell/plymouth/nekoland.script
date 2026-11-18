@@ -1,7 +1,8 @@
 # Nekoland's boot splash; make-theme.py fills in the @NUMBERS@ for the screen it draws for.
 # The cat fades in with its eyes closed, opens them, and blinks now and then; the name
 # follows, and a short bar goes back and forth under it, because a boot has no known length.
-# Bottom left, the task being done is the last message systemd sent, as it worded it.
+# Bottom left, the task being done is what systemd last reported, as it worded it: the unit it
+# is on, sent as a status update, or a message when there is one.
 # Time is counted in refreshes, about fifty a second.
 
 screen_width = Window.GetWidth();
@@ -44,11 +45,8 @@ thumb.SetOpacity(0);
 
 task_font = "Ubuntu @TEXT_SIZE@";
 task_max_width = screen_width * 0.4;
-task_now = Sprite();
-task_before = Sprite();
-task_now_image = Image.Text(" ", 0.545, 0.541, 0.565, 1, task_font);
-task_before_image = task_now_image;
-task_changed = 0;
+task = Sprite();
+task.SetZ(8);
 
 frame = 0;
 
@@ -64,31 +62,19 @@ fun place_eye(sprite, x, open, rise) {
     sprite.SetPosition(cat_x + x - eye_width / 2, cat_y + rise + @EYE_Y@ - height / 2, 2);
 }
 
-# A new message slides up over the one before, which fades out; one too wide for the
+# Each task replaces the one before as soon as systemd reports it; one too wide for the
 # screen's left side is shrunk to fit.
 fun show_task(text) {
     image = Image.Text(text, 0.545, 0.541, 0.565, 1, task_font);
     if (image.GetWidth() > task_max_width) {
         image = image.Scale(task_max_width, Math.Max(1, Math.Int(image.GetHeight() * task_max_width / image.GetWidth())));
     }
-    global.task_before_image = global.task_now_image;
-    global.task_now_image = image;
-    global.task_changed = global.frame;
-}
-
-fun place_task() {
-    p = clamp((global.frame - global.task_changed) / 12);
-    task_now.SetImage(task_now_image);
-    task_now.SetOpacity(p);
-    task_now.SetPosition(@MARGIN_X@, screen_height - @MARGIN_BOTTOM@ - task_now_image.GetHeight() + @RISE@ * (1 - p) * 0.6, 8);
-    task_before.SetImage(task_before_image);
-    task_before.SetOpacity(1 - p);
-    task_before.SetPosition(@MARGIN_X@, screen_height - @MARGIN_BOTTOM@ - task_before_image.GetHeight() - @RISE@ * p * 0.6, 8);
+    task.SetImage(image);
+    task.SetPosition(@MARGIN_X@, screen_height - @MARGIN_BOTTOM@ - image.GetHeight(), 8);
 }
 
 fun refresh() {
     global.frame++;
-    place_task();
     t = global.frame / 50;
 
     fade = clamp(t / 0.7);
@@ -117,4 +103,5 @@ fun refresh() {
 }
 
 Plymouth.SetRefreshFunction(refresh);
+Plymouth.SetUpdateStatusFunction(show_task);
 Plymouth.SetMessageFunction(show_task);
