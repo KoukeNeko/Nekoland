@@ -253,7 +253,16 @@ enum Source {
     Network,
     Battery,
     Control,
+    /// The bell, which opens the Notification Center as the clock does.
+    Notifications,
     Clock,
+}
+
+impl Source {
+    /// Whether a click on it opens the Notification Center.
+    fn opens_notifications(&self) -> bool {
+        matches!(self, Source::Notifications | Source::Clock)
+    }
 }
 
 struct Title {
@@ -768,7 +777,8 @@ impl MenuBar {
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
-        let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
+        let drawn_here = |source| (source, String::new(), String::new(), String::new(), None);
+        let mut icons: Vec<Icon> = vec![drawn_here(Source::Notifications), drawn_here(Source::Control)];
         if let Some(battery) = self.battery.filter(|_| config.menu_bar_battery) {
             icons.push((Source::Battery, "battery".into(), battery_icon(battery), String::new(), None));
         }
@@ -812,7 +822,9 @@ impl MenuBar {
                 (right - base - label_width, 0).into(),
                 (base + label_width, MENU_BAR_HEIGHT).into(),
             );
-            let lit = open == Some(self.titles.len()) || (source == Source::Control && self.control.is_some());
+            let lit = open == Some(self.titles.len())
+                || (source == Source::Control && self.control.is_some())
+                || (source == Source::Notifications && self.notification_center.is_some());
             if lit {
                 highlight(&cr, rect);
             }
@@ -821,9 +833,12 @@ impl MenuBar {
                 let at = f64::from(rect.loc.x + (base - STATUS_ICON) / 2);
                 show_text(&cr, percent, &clock_font, at, center, tint);
             }
+            let at = |side| f64::from(side - STATUS_ICON) / 2.0;
+            let (icon_x, icon_y) = (f64::from(rect.loc.x) + at(rect.size.w), at(MENU_BAR_HEIGHT));
             if source == Source::Control {
-                let at = |side| f64::from(side - STATUS_ICON) / 2.0;
-                control::draw_bar_icon(&cr, f64::from(rect.loc.x) + at(rect.size.w), at(MENU_BAR_HEIGHT), f64::from(STATUS_ICON), tint);
+                control::draw_bar_icon(&cr, icon_x, icon_y, f64::from(STATUS_ICON), tint);
+            } else if source == Source::Notifications {
+                crate::notification_center::draw_bar_icon(&cr, icon_x, icon_y, f64::from(STATUS_ICON), tint);
             } else if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
                 let (w, h) = text::points(&icon);
                 let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);
@@ -1465,7 +1480,7 @@ impl Nekoland {
             self.toggle_control_center(self.menu_bar.titles[title].rect);
             return;
         }
-        if source == Source::Clock {
+        if source.opens_notifications() {
             self.toggle_notification_center();
             return;
         }
@@ -1894,7 +1909,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
-            Source::Control | Source::Clock => Vec::new(),
+            Source::Control | Source::Notifications | Source::Clock => Vec::new(),
         }
     }
 
@@ -1909,7 +1924,7 @@ impl Nekoland {
         if let Some(title) = self.title_at(local) {
             let panel_open = self.menu_bar.titles.get(title).is_some_and(|title| match title.source {
                 Source::Control => self.menu_bar.control.is_some(),
-                Source::Clock => self.menu_bar.notification_center.is_some(),
+                Source::Notifications | Source::Clock => self.menu_bar.notification_center.is_some(),
                 _ => false,
             });
             if panel_open
@@ -1966,7 +1981,7 @@ impl Nekoland {
                 return;
             };
             match self.title_at(local) {
-                Some(title) if self.menu_bar.titles[title].source != Source::Clock => {
+                Some(title) if !self.menu_bar.titles[title].source.opens_notifications() => {
                     self.open_menu(title, false)
                 }
                 _ => self.notification_center_motion(local),

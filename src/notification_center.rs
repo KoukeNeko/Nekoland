@@ -57,6 +57,11 @@ const BUTTON_POINTS: f64 = 9.0;
 const NAME_POINTS: f64 = 10.0;
 const EMPTY_POINTS: f64 = 10.0;
 
+/// The grid the bar's bell is drawn on, as the control center's icon is, and how thick
+/// its line is on it.
+const BELL_GRID: f64 = 16.0;
+const BELL_LINE: f64 = 1.5;
+
 const CLEAR_ALL: &str = "清除全部";
 const CLEAR_APP: &str = "清除";
 const SHOW_LESS: &str = "顯示較少";
@@ -385,6 +390,33 @@ fn draw_stacked(cr: &Context, colors: &Colors, card: &Card) {
         draw_well(cr, colors, under, f64::from(MENU_RADIUS));
         cr.restore().ok();
     }
+}
+
+/// The Notification Center's icon in the bar: a bell, on the control center's own grid
+/// and of its line.
+pub(crate) fn draw_bar_icon(cr: &Context, x: f64, y: f64, size: f64, color: (f64, f64, f64)) {
+    let unit = size / BELL_GRID;
+    cr.save().ok();
+    cr.translate(x, y);
+    cr.scale(unit, unit);
+    cr.set_source_rgb(color.0, color.1, color.2);
+    cr.set_line_width(BELL_LINE);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.set_line_cap(cairo::LineCap::Round);
+    // The body: a dome over sides that flare out to the rim.
+    cr.new_sub_path();
+    cr.move_to(2.5, 11.25);
+    cr.curve_to(4.0, 10.0, 4.0, 8.5, 4.0, 6.5);
+    cr.curve_to(4.0, 4.0, 5.75, 2.25, 8.0, 2.25);
+    cr.curve_to(10.25, 2.25, 12.0, 4.0, 12.0, 6.5);
+    cr.curve_to(12.0, 8.5, 12.0, 10.0, 13.5, 11.25);
+    cr.close_path();
+    let _ = cr.stroke();
+    // The clapper, showing under the rim.
+    cr.new_sub_path();
+    cr.arc(8.0, 12.25, 1.5, 0.0, std::f64::consts::PI);
+    let _ = cr.stroke();
+    cr.restore().ok();
 }
 
 /// The × at a card's corner, as the Mac shows on a notification under the pointer.

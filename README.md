@@ -147,7 +147,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   at; a click does what the program offers for it. What is not transient is kept after
   its banner for the Notification Center, the newest 50 of them, until Nekoland
   restarts; one its program closes or replaces goes from there too.
-- The Notification Center, as the Mac's, opens from the clock in the menu bar, on the
+- The Notification Center, as the Mac's, opens from the bell or the clock in the menu bar, on the
   menus' glass where the banners stand, and closes on a second click, a click outside it
   or Escape. Each program's notifications are stacked under its newest, saying how many,
   and spread out by a click; a notification shows its program's name, when it came, its
@@ -247,7 +247,7 @@ Nekoland draws the bar along the top itself, as the Mac does:
   and the program's windows. The Help menu searches every other menu as you type.
 - On the right: the status items programs register as StatusNotifierItems, with their
   menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
-  center; the clock, which opens the Notification Center.
+  center; the bell and the clock, either of which opens the Notification Center.
 - The control center, as the Mac's, opens a panel on the menus' glass. At its top, what is
   recording, in the colours of the bar's dots. Then tiles: the network, whose list of
   Wi-Fi networks joins one or turns Wi-Fi on or off through `nmcli`; Bluetooth, whether
