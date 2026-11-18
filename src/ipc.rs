@@ -257,6 +257,7 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         "overview" => state.toggle_overview(),
         "lock" => state.lock_screen(),
+        open if open.starts_with("lock-open ") => state.open_from_lock(&open["lock-open ".len()..]),
         "sleep" => state.sleep(),
         "workspace-add" => {
             state.add_workspace();

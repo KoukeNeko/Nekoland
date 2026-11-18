@@ -96,9 +96,22 @@ wallpaper and an input method. Every key is optional:
 | `lock_wallpaper`, `lock_blur` | Whether the lock shows the wallpaper rather than dark paper, and blurs it; both on unless set |
 | `lock_style` | The lock's layout: `quiet` (the time in the middle, a row of widgets under it), `poster` (the hours over the minutes, bold, on the left) or `dial` (a clock with hands, its widgets on its face); `quiet` unless set |
 | `lock_clock_color`, `lock_clock_weight` | The lock's clock as `#rrggbb`, else a colour of the wallpaper's where the style has one; and `light`, `regular` or `bold`, else the style's |
-| `lock_widgets` | What the lock shows beside the time, of `battery` and `playing` (an MPRIS player's title); both unless set |
+| `lock_clock_font`, `lock_clock_size`, `lock_clock_align` | The lock's clock's family, `font`'s unless set; `small`, `medium` or `large`, `medium` unless set; and `left`, `center` or `right`, `center` unless set, but the poster's always left |
+| `lock_clock_seconds`, `lock_show_date` | Whether the lock's clock shows seconds, off unless set, and the date, on unless set |
+| `lock_widgets` | What the lock shows beside the time, of `battery`, `playing` (an MPRIS player's title, with buttons to go back, play or pause and go on), `calendar` (today's next event from the Calendar), `world_clock` and `weather`; `battery` and `playing` unless set |
+| `lock_world_clock`, `lock_world_clock_name` | The `world_clock` widget's zone, as `Asia/Tokyo`, and the city it is shown as, else the zone's last part |
+| `lock_wallpaper_subject` | A picture of the wallpaper's subject on transparency, framed as the wallpaper is, drawn over the time above the password field, as One UI's depth effect does; best with `lock_blur = false` |
+| `lock_weather_at`, `lock_weather_name` | The `weather` widget's place, as `[latitude, longitude]`, and the city it is shown as. The place is sent to MET Norway (api.met.no) every half hour while locked |
 | `lock_notices` | The notifications that came in while locked: `hidden`, `count` (how many from each program) or `full`; `count` unless set |
-| `lock_message`, `lock_show_name` | Words the lock shows, such as whom to call; and whether it shows the user's name and picture (`~/.face`), on unless set |
+| `lock_message`, `lock_show_name`, `lock_show_lock_icon` | Words the lock shows, such as whom to call; whether it shows the user's name and picture (`~/.face`), on unless set; and a padlock at the top, off unless set |
+| `lock_power_buttons` | Whether the lock has sleep, restart and power off buttons at its foot; on unless set |
+| `lock_shortcuts`, `lock_shortcuts_layout`, `lock_shortcuts_unlocked` | Apps the lock opens, by desktop entry ID: two in the corners at its foot (`corners`) or six in a row (`row`), `corners` unless set; and whether they open over the lock without the password, off unless set |
+| `lock_wallpaper_file`, `lock_dim` | A picture of the lock's own, the desktop's unless set; and how much darker the lock makes it, 0 to 80 percent, 0 unless set. Settings › 鎖定畫面 › AI 生成桌布 has one made from a description by OpenAI, Google Gemini or Stability AI with the person's API key, or by ChatGPT through the Codex CLI signed in with ChatGPT; the description goes to that service, and the keys are kept in `~/.config/nekoland/image-services`, readable by its owner alone |
+| `lock_sticker`, `lock_sticker_at`, `lock_sticker_size` | A picture placed on the lock, its centre as `[x, y]` shares of the screen, `[0.78, 0.3]` unless set, and its longer side in points, 160 unless set |
+| `lock_unlock_effect`, `lock_unlock_duration` | How the lock goes once the password is given: `lift`, `fade`, `slide` or `expand`, `lift` unless set; and in how many milliseconds, 560 unless set |
+| `lock_screen_off_after` | Seconds without input while locked after which the displays turn off, counted from locking at the soonest; as `screen_off_after` unless set |
+| `lock_always_on` | Whether the locked displays dim to the time on black instead of turning off, after `lock_screen_off_after` (30 seconds unless set) |
+| `lock_fingerprint` | Whether a finger enrolled with fprintd unlocks, as the password does (on unless set). Settings › 鎖定畫面 › 指紋 enrolls and removes fingers |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |

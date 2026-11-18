@@ -437,6 +437,7 @@ impl Nekoland {
         // So are the desktop entries, as of an application installed since it was first seen.
         self.apps = Apps::default();
         crate::text::set_icon_theme(&self.config.icon_theme);
+        self.draw_lock_shortcuts();
         if self.config.font != old_font {
             // shortcut: other text than the bar's and the Dock's keeps the old font until it is
             // next drawn.

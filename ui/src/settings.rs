@@ -8,6 +8,7 @@ mod backup;
 mod bluetooth;
 mod display;
 mod focus;
+mod imagegen;
 mod network;
 mod printers;
 mod region;
@@ -1067,6 +1068,72 @@ const LOCK_WEIGHTS: [&str; 3] = ["light", "regular", "bold"];
 /// The clock's colours to pick from, after the style's own: white, and colours that read on
 /// ink as the wallpaper's would.
 const LOCK_CLOCK_COLOURS: [&str; 6] = ["#f1efea", "#f2b28a", "#9cc4e6", "#a8d8b9", "#ff8f6b", "#c3b1e1"];
+const LOCK_CLOCK_SIZES: [&str; 3] = ["small", "medium", "large"];
+const LOCK_CLOCK_ALIGNS: [&str; 3] = ["left", "center", "right"];
+const LOCK_EFFECTS: [&str; 4] = ["lift", "fade", "slide", "expand"];
+/// How long unlocking takes, in milliseconds: quick, as it was, and slow.
+const LOCK_DURATIONS: [i64; 3] = [320, 560, 900];
+/// Seconds idle while locked before the displays go dark; 0 for as they otherwise do.
+const LOCK_SCREEN_OFF: [i64; 4] = [0, 10, 30, 60];
+/// The second clock's zones, and the city each is shown as.
+const WORLD_CLOCKS: [(&str, &str); 10] = [
+    ("Asia/Tokyo", "東京"),
+    ("Asia/Seoul", "首爾"),
+    ("Asia/Shanghai", "上海"),
+    ("Asia/Hong_Kong", "香港"),
+    ("Asia/Singapore", "新加坡"),
+    ("Europe/London", "倫敦"),
+    ("Europe/Paris", "巴黎"),
+    ("America/New_York", "紐約"),
+    ("America/Los_Angeles", "洛杉磯"),
+    ("Australia/Sydney", "雪梨"),
+];
+/// The weather's places, as latitude and longitude.
+const WEATHER_PLACES: [(&str, [f64; 2]); 14] = [
+    ("臺北", [25.03, 121.57]),
+    ("新北", [25.01, 121.47]),
+    ("桃園", [24.99, 121.30]),
+    ("新竹", [24.80, 120.97]),
+    ("臺中", [24.15, 120.67]),
+    ("嘉義", [23.48, 120.45]),
+    ("臺南", [22.99, 120.21]),
+    ("高雄", [22.63, 120.30]),
+    ("花蓮", [23.99, 121.60]),
+    ("東京", [35.68, 139.69]),
+    ("香港", [22.32, 114.17]),
+    ("新加坡", [1.35, 103.82]),
+    ("倫敦", [51.51, -0.13]),
+    ("紐約", [40.71, -74.01]),
+];
+/// As many shortcuts as the lock shows in a row.
+const LOCK_ROW_SHORTCUTS: usize = 6;
+
+/// A button that asks for a picture, and gives its path to `chosen`.
+fn picture_button(chosen: impl Fn(std::path::PathBuf) + 'static) -> gtk::Button {
+    let button = gtk::Button::builder().label("選擇⋯").valign(gtk::Align::Center).build();
+    let chosen = Rc::new(chosen);
+    button.connect_clicked(move |button| {
+        let images = gtk::FileFilter::new();
+        images.add_pixbuf_formats();
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&images);
+        let dialog = gtk::FileDialog::builder().title("選擇圖片").filters(&filters).build();
+        let chosen = chosen.clone();
+        let window = button.root().and_downcast::<gtk::Window>();
+        dialog.open(window.as_ref(), gio::Cancellable::NONE, move |picked| match picked.map(|file| file.path()) {
+            Ok(Some(path)) => chosen(path),
+            Ok(None) => eprintln!("lock: the file chosen has no local path"),
+            Err(err) if err.matches(gtk::DialogError::Dismissed) => {}
+            Err(err) => eprintln!("lock: {err}"),
+        });
+    });
+    button
+}
+
+/// A file's name, to show which is chosen.
+fn file_name(path: &str) -> String {
+    std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |name| name.to_string_lossy().into_owned())
+}
 /// How large the lock is drawn for its preview: the first display's points, as the lock
 /// lays itself out by them.
 fn lock_preview_size() -> (i32, i32) {
@@ -1168,6 +1235,18 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     let when = group("");
     when.add(&idle_row(config, "閒置後鎖定", "lock_after"));
     when.add(&idle_row(config, "閒置後關閉螢幕", "screen_off_after"));
+    let locked_off = config.0.get("lock_screen_off_after").and_then(toml::Value::as_integer).unwrap_or(0);
+    let screen_off = adw::ComboRow::builder()
+        .title("鎖定時關閉螢幕")
+        .model(&gtk::StringList::new(&["與平時相同", "10 秒", "30 秒", "1 分鐘"]))
+        .selected(LOCK_SCREEN_OFF.iter().position(|seconds| *seconds == locked_off).unwrap_or(0) as u32)
+        .build();
+    screen_off.connect_selected_notify(|row| {
+        if let Some(seconds) = LOCK_SCREEN_OFF.get(row.selected() as usize) {
+            set(&format!("lock_screen_off_after = {seconds}"));
+        }
+    });
+    when.add(&screen_off);
     page.add(&when);
 
     // Each change is drawn into the preview once it is written.
@@ -1196,11 +1275,73 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
         .title("模糊桌布")
         .active(config.0.get("lock_blur").and_then(toml::Value::as_bool).unwrap_or(true))
         .build();
+    // A choice or a switch of the lock's, drawn into the preview once written.
+    let lock_choice = |title: &str, key: &'static str, names: &'static [&'static str], labels: &[&str], default: u32| {
+        let current = names.iter().position(|name| *name == config.word(key)).map_or(default, |at| at as u32);
+        let row = adw::ComboRow::builder()
+            .title(title)
+            .model(&gtk::StringList::new(labels))
+            .selected(current)
+            .build();
+        row.connect_selected_notify(glib::clone!(
+            #[strong]
+            refresh,
+            move |row| {
+                if let Some(name) = names.get(row.selected() as usize) {
+                    changed(format!("{key} = {name:?}"), &refresh);
+                }
+            }
+        ));
+        row
+    };
+    let lock_switch = |title: &str, key: &'static str, default: bool| {
+        let row = adw::SwitchRow::builder()
+            .title(title)
+            .active(config.0.get(key).and_then(toml::Value::as_bool).unwrap_or(default))
+            .build();
+        row.connect_active_notify(glib::clone!(
+            #[strong]
+            refresh,
+            move |row| changed(format!("{key} = {}", row.is_active()), &refresh)
+        ));
+        row
+    };
+    let font_button = gtk::FontDialogButton::builder()
+        .dialog(&gtk::FontDialog::builder().title("時鐘字型").build())
+        .level(gtk::FontLevel::Family)
+        .use_font(true)
+        .valign(gtk::Align::Center)
+        .build();
+    let family = Some(config.word("lock_clock_font"))
+        .filter(|family| !family.is_empty())
+        .or(Some(config.word("font")).filter(|family| !family.is_empty()))
+        .unwrap_or("Ubuntu Sans");
+    font_button.set_font_desc(&gtk::pango::FontDescription::from_string(family));
+    font_button.connect_font_desc_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |button| {
+            if let Some(family) = button.font_desc().and_then(|font| font.family()) {
+                changed(format!("lock_clock_font = {}", toml::Value::String(family.to_string())), &refresh);
+            }
+        }
+    ));
+    let font = adw::ActionRow::builder().title("時鐘字型").build();
+    font.add_suffix(&font_button);
+    let size = lock_choice("時鐘大小", "lock_clock_size", &LOCK_CLOCK_SIZES, &["小", "中", "大"], 1);
+    let align = lock_choice("時鐘位置", "lock_clock_align", &LOCK_CLOCK_ALIGNS, &["靠左", "置中", "靠右"], 1);
+    // The poster's time is always on the left.
+    align.set_visible(selected != 1);
+    let seconds = lock_switch("顯示秒數", "lock_clock_seconds", false);
+    let date = lock_switch("顯示日期", "lock_show_date", true);
+
     buttons[selected as usize].set_active(true);
     for (at, button) in (0..).zip(&buttons) {
         button.connect_toggled(glib::clone!(
             #[weak]
             weight,
+            #[weak]
+            align,
             #[weak]
             blur,
             #[strong]
@@ -1215,6 +1356,7 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
                 // after, they stay as changed.
                 weight.set_selected(style_weight(at));
                 weight.set_visible(at != 2);
+                align.set_visible(at != 1);
                 blur.set_active(name != "poster");
                 refresh();
             }
@@ -1247,8 +1389,9 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
         .label("自動")
         .valign(gtk::Align::Center)
         .tooltip_text("取自桌布")
-        .active(!LOCK_CLOCK_COLOURS.contains(&current.as_str()))
+        .active(current.is_empty())
         .build();
+    let mut toggles = vec![automatic.clone()];
     automatic.connect_toggled(glib::clone!(
         #[strong]
         refresh,
@@ -1279,10 +1422,52 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
             }
         ));
         swatches.append(&swatch);
+        toggles.push(swatch);
     }
+    // Any other colour, as One UI's palette has it.
+    let custom = gtk::Button::builder()
+        .icon_name("color-select-symbolic")
+        .valign(gtk::Align::Center)
+        .tooltip_text("自訂")
+        .css_classes(["circular", "flat"])
+        .build();
+    let picked = Rc::new(RefCell::new(
+        Some(current.as_str())
+            .filter(|colour| !colour.is_empty() && !LOCK_CLOCK_COLOURS.contains(colour))
+            .and_then(|colour| gdk::RGBA::parse(colour).ok()),
+    ));
+    custom.connect_clicked(glib::clone!(
+        #[strong]
+        refresh,
+        move |button| {
+            let dialog = gtk::ColorDialog::builder().title("時鐘顏色").with_alpha(false).build();
+            let window = button.root().and_downcast::<gtk::Window>();
+            let (toggles, picked, refresh) = (toggles.clone(), picked.clone(), refresh.clone());
+            let initial = *picked.borrow();
+            dialog.choose_rgba(window.as_ref(), initial.as_ref(), gio::Cancellable::NONE, move |chosen| {
+                let colour = match chosen {
+                    Ok(colour) => colour,
+                    Err(err) if err.matches(gtk::DialogError::Dismissed) => return,
+                    Err(err) => return eprintln!("lock clock colour: {err}"),
+                };
+                let channel = |value: f32| (value * 255.0).round() as u8;
+                let hex = format!("#{:02x}{:02x}{:02x}", channel(colour.red()), channel(colour.green()), channel(colour.blue()));
+                *picked.borrow_mut() = Some(colour);
+                // None of the others is the clock's colour now.
+                toggles.iter().for_each(|toggle| toggle.set_active(false));
+                changed(format!("lock_clock_color = {hex:?}"), &refresh);
+            });
+        }
+    ));
+    swatches.append(&custom);
     colours.add_suffix(&swatches);
     look.add(&colours);
     look.add(&weight);
+    look.add(&font);
+    look.add(&size);
+    look.add(&align);
+    look.add(&seconds);
+    look.add(&date);
     page.add(&look);
 
     let widgets = group("小工具");
@@ -1293,29 +1478,185 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
         .map_or_else(|| vec!["battery".into(), "playing".into()], |listed| {
             listed.iter().filter_map(toml::Value::as_str).map(String::from).collect()
         });
-    let battery = adw::SwitchRow::builder().title("電池").active(listed.iter().any(|name| name == "battery")).build();
-    let playing = adw::SwitchRow::builder().title("正在播放").active(listed.iter().any(|name| name == "playing")).build();
-    for row in [&battery, &playing] {
+    let shown_widget = |title: &str, name: &str| {
+        adw::SwitchRow::builder().title(title).active(listed.iter().any(|listed| listed == name)).build()
+    };
+    let rows: Rc<Vec<(adw::SwitchRow, &str)>> = Rc::new(vec![
+        (shown_widget("電池", "battery"), "battery"),
+        (shown_widget("正在播放", "playing"), "playing"),
+        (shown_widget("今天的行程", "calendar"), "calendar"),
+        (shown_widget("世界時鐘", "world_clock"), "world_clock"),
+        (shown_widget("天氣", "weather"), "weather"),
+    ]);
+    let zone = adw::ComboRow::builder()
+        .title("時鐘城市")
+        .model(&gtk::StringList::new(&WORLD_CLOCKS.map(|(_, city)| city)))
+        .selected(WORLD_CLOCKS.iter().position(|(zone, _)| *zone == config.word("lock_world_clock")).unwrap_or(0) as u32)
+        .build();
+    rows[3].0.bind_property("active", &zone, "visible").sync_create().build();
+    let set_zone = |row: &adw::ComboRow| {
+        if let Some((zone, city)) = WORLD_CLOCKS.get(row.selected() as usize) {
+            set(&format!("lock_world_clock = {zone:?}"));
+            set(&format!("lock_world_clock_name = {city:?}"));
+        }
+    };
+    zone.connect_selected_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| {
+            set_zone(row);
+            refresh();
+        }
+    ));
+    let kept_place = config.word("lock_weather_name");
+    let place = adw::ComboRow::builder()
+        .title("天氣城市")
+        .model(&gtk::StringList::new(&WEATHER_PLACES.map(|(city, _)| city)))
+        .selected(WEATHER_PLACES.iter().position(|(city, _)| *city == kept_place).unwrap_or(0) as u32)
+        .build();
+    rows[4].0.bind_property("active", &place, "visible").sync_create().build();
+    let set_place = |row: &adw::ComboRow| {
+        if let Some((city, at)) = WEATHER_PLACES.get(row.selected() as usize) {
+            set(&format!("lock_weather_at = {at:?}"));
+            set(&format!("lock_weather_name = {city:?}"));
+        }
+    };
+    place.connect_selected_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| {
+            set_place(row);
+            refresh();
+        }
+    ));
+    for (row, _) in rows.iter() {
         row.connect_active_notify(glib::clone!(
+            #[strong]
+            rows,
             #[weak]
-            battery,
+            zone,
             #[weak]
-            playing,
+            place,
             #[strong]
             refresh,
             move |_| {
-                let names: Vec<&str> = [(&battery, "battery"), (&playing, "playing")]
-                    .into_iter()
-                    .filter(|(row, _)| row.is_active())
-                    .map(|(_, name)| name)
-                    .collect();
+                let names: Vec<&str> = rows.iter().filter(|(row, _)| row.is_active()).map(|(_, name)| *name).collect();
+                if names.contains(&"world_clock") {
+                    set_zone(&zone);
+                }
+                if names.contains(&"weather") {
+                    set_place(&place);
+                }
                 changed(format!("lock_widgets = {names:?}"), &refresh);
             }
         ));
+        widgets.add(row);
     }
-    widgets.add(&battery);
-    widgets.add(&playing);
+    widgets.add(&zone);
+    widgets.add(&place);
     page.add(&widgets);
+
+    // Two apps at the lock's foot, left and right, as One UI has them, or a row of them, as
+    // Good Lock's LockStar has.
+    let shortcuts = group("捷徑");
+    let mut apps: Vec<gio::AppInfo> = gio::AppInfo::all().into_iter().filter(gio::AppInfo::should_show).collect();
+    apps.sort_by_key(|app| app.display_name().to_lowercase());
+    let ids: Rc<Vec<String>> = Rc::new(
+        apps.iter()
+            .map(|app| app.id().map(|id| id.trim_end_matches(".desktop").to_string()).unwrap_or_default())
+            .collect(),
+    );
+    let chosen: Vec<String> = config
+        .0
+        .get("lock_shortcuts")
+        .and_then(toml::Value::as_array)
+        .map(|listed| listed.iter().filter_map(toml::Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+    let mut names = vec!["無".to_string()];
+    names.extend(apps.iter().map(|app| app.display_name().to_string()));
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let layout = adw::ComboRow::builder()
+        .title("排列")
+        .model(&gtk::StringList::new(&["左右兩側", "一列"]))
+        .selected(u32::from(config.word("lock_shortcuts_layout") == "row"))
+        .build();
+    shortcuts.add(&layout);
+    let sides: Vec<adw::ComboRow> = (0..LOCK_ROW_SHORTCUTS)
+        .map(|at| {
+            let current = chosen.get(at).and_then(|app| ids.iter().position(|id| id == app));
+            adw::ComboRow::builder()
+                .model(&gtk::StringList::new(&names))
+                .selected(current.map_or(0, |at| at as u32 + 1))
+                .build()
+        })
+        .collect();
+    let sides = Rc::new(sides);
+    // The corners' two are named by their side, a row's by their place in it.
+    let name_sides = glib::clone!(
+        #[strong]
+        sides,
+        move |row: bool| {
+            for (at, side) in sides.iter().enumerate() {
+                side.set_visible(row || at < 2);
+                side.set_title(&if row { format!("第 {} 個", at + 1) } else if at == 0 { "左側".into() } else { "右側".into() });
+            }
+        }
+    );
+    name_sides(layout.selected() == 1);
+    let write_sides = glib::clone!(
+        #[strong]
+        sides,
+        #[strong]
+        ids,
+        #[weak]
+        layout,
+        #[strong]
+        refresh,
+        move || {
+            // 無 is the first; the apps follow it.
+            let mut picked: Vec<String> = sides
+                .iter()
+                .take(if layout.selected() == 1 { LOCK_ROW_SHORTCUTS } else { 2 })
+                .map(|row| row.selected().checked_sub(1).and_then(|at| ids.get(at as usize)).cloned().unwrap_or_default())
+                .collect();
+            while picked.last().is_some_and(String::is_empty) {
+                picked.pop();
+            }
+            if picked.is_empty() {
+                unset("lock_shortcuts");
+                refresh();
+            } else {
+                changed(format!("lock_shortcuts = {picked:?}"), &refresh);
+            }
+        }
+    );
+    let write_sides = Rc::new(write_sides);
+    layout.connect_selected_notify(glib::clone!(
+        #[strong]
+        write_sides,
+        move |layout| {
+            let row = layout.selected() == 1;
+            name_sides(row);
+            set(&format!("lock_shortcuts_layout = {:?}", if row { "row" } else { "corners" }));
+            write_sides();
+        }
+    ));
+    for row in sides.iter() {
+        row.connect_selected_notify(glib::clone!(
+            #[strong]
+            write_sides,
+            move |_| write_sides()
+        ));
+        shortcuts.add(row);
+    }
+    let unlocked = adw::SwitchRow::builder()
+        .title("不需密碼即可開啟")
+        .subtitle("鎖定時任何人都能使用這些 App")
+        .active(config.flag("lock_shortcuts_unlocked"))
+        .build();
+    unlocked.connect_active_notify(|row| set(&format!("lock_shortcuts_unlocked = {}", row.is_active())));
+    shortcuts.add(&unlocked);
+    page.add(&shortcuts);
 
     let locked = group("鎖定時");
     let notices = adw::ComboRow::builder()
@@ -1359,10 +1700,23 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
             }
         }
     ));
+    let power = adw::SwitchRow::builder()
+        .title("顯示睡眠、重新開機和關機按鈕")
+        .active(config.0.get("lock_power_buttons").and_then(toml::Value::as_bool).unwrap_or(true))
+        .build();
+    power.connect_active_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| changed(format!("lock_power_buttons = {}", row.is_active()), &refresh)
+    ));
     locked.add(&notices);
     locked.add(&name);
+    locked.add(&lock_switch("顯示鎖頭圖示", "lock_show_lock_icon", false));
+    locked.add(&lock_switch("全天候顯示", "lock_always_on", false));
+    locked.add(&power);
     locked.add(&message);
     page.add(&locked);
+    page.add(&fingerprint_group(lock_switch("以指紋解鎖", "lock_fingerprint", true)));
 
     let background = group("背景");
     let wallpaper = adw::SwitchRow::builder()
@@ -1379,7 +1733,261 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     }
     background.add(&wallpaper);
     background.add(&blur);
+
+    // A picture of the lock's own, rather than the desktop's.
+    let own = adw::ActionRow::builder().title("鎖定畫面桌布").build();
+    let clear_own = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("與桌面相同")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let show_own = glib::clone!(
+        #[weak]
+        own,
+        #[weak]
+        clear_own,
+        move |path: &str| {
+            own.set_subtitle(&if path.is_empty() { "與桌面相同".to_string() } else { file_name(path) });
+            clear_own.set_visible(!path.is_empty());
+        }
+    );
+    show_own(config.word("lock_wallpaper_file"));
+    clear_own.connect_clicked(glib::clone!(
+        #[strong]
+        show_own,
+        #[strong]
+        refresh,
+        move |_| {
+            unset("lock_wallpaper_file");
+            show_own("");
+            refresh();
+        }
+    ));
+    own.add_suffix(&clear_own);
+    own.add_suffix(&picture_button(glib::clone!(
+        #[strong]
+        show_own,
+        #[strong]
+        refresh,
+        move |path| {
+            let path = path.to_string_lossy().into_owned();
+            show_own(&path);
+            changed(format!("lock_wallpaper_file = {}", toml::Value::String(path)), &refresh);
+        }
+    )));
+    wallpaper.bind_property("active", &own, "sensitive").sync_create().build();
+    background.add(&own);
+    let subject = adw::ActionRow::builder().title("前景主體").build();
+    let clear_subject = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("移除")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let show_subject = glib::clone!(
+        #[weak]
+        subject,
+        #[weak]
+        clear_subject,
+        move |path: &str| {
+            subject.set_subtitle(&if path.is_empty() { "未設定".to_string() } else { file_name(path) });
+            clear_subject.set_visible(!path.is_empty());
+        }
+    );
+    show_subject(config.word("lock_wallpaper_subject"));
+    clear_subject.connect_clicked(glib::clone!(
+        #[strong]
+        show_subject,
+        #[strong]
+        refresh,
+        move |_| {
+            unset("lock_wallpaper_subject");
+            show_subject("");
+            refresh();
+        }
+    ));
+    subject.add_suffix(&clear_subject);
+    subject.add_suffix(&picture_button(glib::clone!(
+        #[strong]
+        show_subject,
+        #[strong]
+        refresh,
+        move |path| {
+            let path = path.to_string_lossy().into_owned();
+            show_subject(&path);
+            changed(format!("lock_wallpaper_subject = {}", toml::Value::String(path)), &refresh);
+        }
+    )));
+    wallpaper.bind_property("active", &subject, "sensitive").sync_create().build();
+    background.add(&subject);
+    // A picture an image service makes from a description becomes the lock's own.
+    let generated = adw::ActionRow::builder().title("AI 生成桌布").activatable(true).build();
+    let spinner = gtk::Spinner::builder().spinning(true).visible(false).build();
+    generated.add_suffix(&spinner);
+    generated.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    generated.connect_activated(glib::clone!(
+        #[strong]
+        show_own,
+        #[strong]
+        refresh,
+        #[weak]
+        spinner,
+        move |row| {
+            let (show_own, refresh, spinner, shown) = (show_own.clone(), refresh.clone(), spinner.clone(), row.clone());
+            ask_for_wallpaper(row, move |service, description| {
+                shown.set_sensitive(false);
+                shown.set_subtitle("生成中");
+                spinner.set_visible(true);
+                let (show_own, refresh, spinner, shown) = (show_own.clone(), refresh.clone(), spinner.clone(), shown.clone());
+                glib::spawn_future_local(async move {
+                    let made = gio::spawn_blocking(move || imagegen::generate(&service, &description))
+                        .await
+                        .unwrap_or_else(|_| Err("無法生成桌布".into()));
+                    shown.set_sensitive(true);
+                    shown.set_subtitle("");
+                    spinner.set_visible(false);
+                    match made {
+                        Ok(path) => {
+                            let path = path.to_string_lossy().into_owned();
+                            show_own(&path);
+                            changed(format!("lock_wallpaper_file = {}", toml::Value::String(path)), &refresh);
+                        }
+                        Err(why) => alert::notice(&shown, "無法生成桌布", Some(&why)),
+                    }
+                });
+            });
+        }
+    ));
+    wallpaper.bind_property("active", &generated, "sensitive").sync_create().build();
+    background.add(&generated);
+    background.add(&scale_row(
+        "調暗",
+        config.number("lock_dim", 0.0) / 100.0,
+        (0.0, 0.8, 0.05),
+        percent,
+        glib::clone!(
+            #[strong]
+            refresh,
+            move |share| changed(format!("lock_dim = {}", (share * 100.0).round() as i64), &refresh)
+        ),
+    ));
     page.add(&background);
+
+    // A picture placed anywhere on the lock, as LockStar's stickers are.
+    let sticker = group("貼圖");
+    let picture = adw::ActionRow::builder().title("圖片").build();
+    let at: Vec<f64> = config
+        .0
+        .get("lock_sticker_at")
+        .and_then(toml::Value::as_array)
+        .map(|at| at.iter().filter_map(|n| n.as_float().or_else(|| n.as_integer().map(|n| n as f64))).collect())
+        .filter(|at: &Vec<f64>| at.len() == 2)
+        .unwrap_or_else(|| vec![0.78, 0.3]);
+    let at = Rc::new(RefCell::new(at));
+    let write_at = glib::clone!(
+        #[strong]
+        at,
+        #[strong]
+        refresh,
+        move |axis: usize, share: f64| {
+            at.borrow_mut()[axis] = share;
+            changed(format!("lock_sticker_at = {:?}", at.borrow()), &refresh);
+        }
+    );
+    let write_at = Rc::new(write_at);
+    let across = scale_row("水平位置", at.borrow()[0], (0.0, 1.0, 0.01), percent, glib::clone!(
+        #[strong]
+        write_at,
+        move |share| write_at(0, share)
+    ));
+    let down = scale_row("垂直位置", at.borrow()[1], (0.0, 1.0, 0.01), percent, glib::clone!(
+        #[strong]
+        write_at,
+        move |share| write_at(1, share)
+    ));
+    let large = scale_row(
+        "大小",
+        config.number("lock_sticker_size", 160.0),
+        (64.0, 480.0, 8.0),
+        |points| format!("{points:.0} pt"),
+        glib::clone!(
+            #[strong]
+            refresh,
+            move |points| changed(format!("lock_sticker_size = {}", points as i64), &refresh)
+        ),
+    );
+    let clear_sticker = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("移除")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let show_sticker = glib::clone!(
+        #[weak]
+        picture,
+        #[weak]
+        clear_sticker,
+        #[weak]
+        across,
+        #[weak]
+        down,
+        #[weak]
+        large,
+        move |path: &str| {
+            picture.set_subtitle(&if path.is_empty() { "無".to_string() } else { file_name(path) });
+            clear_sticker.set_visible(!path.is_empty());
+            for row in [&across, &down, &large] {
+                row.set_sensitive(!path.is_empty());
+            }
+        }
+    );
+    show_sticker(config.word("lock_sticker"));
+    clear_sticker.connect_clicked(glib::clone!(
+        #[strong]
+        show_sticker,
+        #[strong]
+        refresh,
+        move |_| {
+            unset("lock_sticker");
+            show_sticker("");
+            refresh();
+        }
+    ));
+    picture.add_suffix(&clear_sticker);
+    picture.add_suffix(&picture_button(glib::clone!(
+        #[strong]
+        show_sticker,
+        #[strong]
+        refresh,
+        move |path| {
+            let path = path.to_string_lossy().into_owned();
+            show_sticker(&path);
+            changed(format!("lock_sticker = {}", toml::Value::String(path)), &refresh);
+        }
+    )));
+    sticker.add(&picture);
+    sticker.add(&across);
+    sticker.add(&down);
+    sticker.add(&large);
+    page.add(&sticker);
+
+    // How the lock goes once the password is given, as LockStar's unlock effects.
+    let unlock = group("解鎖");
+    unlock.add(&lock_choice("效果", "lock_unlock_effect", &LOCK_EFFECTS, &["往上掀起", "淡出", "滑開", "放大淡出"], 0));
+    let duration = config.0.get("lock_unlock_duration").and_then(toml::Value::as_integer).unwrap_or(560);
+    let speed = adw::ComboRow::builder()
+        .title("速度")
+        .model(&gtk::StringList::new(&["快", "標準", "慢"]))
+        .selected(LOCK_DURATIONS.iter().position(|ms| *ms == duration).unwrap_or(1) as u32)
+        .build();
+    speed.connect_selected_notify(|row| {
+        if let Some(ms) = LOCK_DURATIONS.get(row.selected() as usize) {
+            set(&format!("lock_unlock_duration = {ms}"));
+        }
+    });
+    unlock.add(&speed);
+    page.add(&unlock);
     page
 }
 
@@ -4933,6 +5541,305 @@ fn as_root(reason: &str, args: &[&str], input: Option<String>, then: impl FnOnce
     });
 }
 
+/// Asks which image service makes the wallpaper, with its key or its sign-in, and what it
+/// shows; `then` gets the service and the description, the choice and the key kept.
+fn ask_for_wallpaper(parent: &impl IsA<gtk::Widget>, then: impl Fn(String, String) + 'static) {
+    let names: Vec<&str> = imagegen::SERVICES.iter().map(|(_, name)| *name).collect();
+    let kept = imagegen::read("service");
+    let service = adw::ComboRow::builder()
+        .title("服務")
+        .model(&gtk::StringList::new(&names))
+        .selected(imagegen::SERVICES.iter().position(|(id, _)| Some(*id) == kept.as_deref()).unwrap_or(0) as u32)
+        .build();
+    let key = adw::PasswordEntryRow::builder().title("API 金鑰").build();
+    let account = adw::ActionRow::builder().title("ChatGPT 帳號").build();
+    let sign_in = gtk::Button::builder().label("登入").valign(gtk::Align::Center).build();
+    account.add_suffix(&sign_in);
+    let description = adw::EntryRow::builder().title("描述").build();
+    let rows = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .width_request(alert::FIELD_WIDTH)
+        .build();
+    for row in [service.upcast_ref::<gtk::Widget>(), key.upcast_ref(), account.upcast_ref(), description.upcast_ref()] {
+        rows.append(row);
+    }
+    let alert = adw::AlertDialog::new(Some("AI 生成桌布"), Some("每次生成都由所選服務計費。"));
+    alert.set_extra_child(Some(&rows));
+    alert.add_responses(&[("cancel", "取消"), ("do", "生成")]);
+    alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
+    alert.set_default_response(Some("do"));
+    alert.set_close_response("cancel");
+    let chosen = {
+        let service = service.clone();
+        move || imagegen::SERVICES[service.selected() as usize % imagegen::SERVICES.len()].0
+    };
+    // What 生成 needs: a description, and the chosen service's key or its sign-in.
+    let ready = Rc::new(glib::clone!(
+        #[weak]
+        alert,
+        #[weak]
+        key,
+        #[weak]
+        account,
+        #[weak]
+        sign_in,
+        #[weak]
+        description,
+        #[strong]
+        chosen,
+        move || {
+            let id = chosen();
+            let chatgpt = id == imagegen::CHATGPT;
+            key.set_visible(!chatgpt);
+            account.set_visible(chatgpt);
+            let state = if chatgpt { imagegen::chatgpt_signed_in() } else { None };
+            let signed_in = state == Some(true);
+            if chatgpt {
+                sign_in.set_visible(state == Some(false));
+                account.set_subtitle(match state {
+                    None => "未安裝 Codex",
+                    Some(true) => "已登入",
+                    Some(false) => "未登入",
+                });
+            } else {
+                key.set_text(&imagegen::read(id).unwrap_or_default());
+            }
+            let has_key = !chatgpt && !key.text().trim().is_empty();
+            alert.set_response_enabled("do", !description.text().trim().is_empty() && (signed_in || has_key));
+        }
+    ));
+    ready();
+    service.connect_selected_notify(glib::clone!(
+        #[strong]
+        ready,
+        move |_| ready()
+    ));
+    key.connect_changed(glib::clone!(
+        #[weak]
+        alert,
+        #[weak]
+        description,
+        move |key| alert.set_response_enabled("do", !description.text().trim().is_empty() && !key.text().trim().is_empty())
+    ));
+    description.connect_changed(glib::clone!(
+        #[weak]
+        alert,
+        #[weak]
+        key,
+        #[strong]
+        chosen,
+        move |description| {
+            let given = if chosen() == imagegen::CHATGPT {
+                imagegen::chatgpt_signed_in() == Some(true)
+            } else {
+                !key.text().trim().is_empty()
+            };
+            alert.set_response_enabled("do", !description.text().trim().is_empty() && given);
+        }
+    ));
+    // Codex signs in through the browser and keeps the sign-in itself.
+    sign_in.connect_clicked(glib::clone!(
+        #[strong]
+        ready,
+        move |button| {
+            let codex = imagegen::codex().unwrap_or_else(|| PathBuf::from("codex"));
+            match gio::Subprocess::newv(&[codex.as_os_str(), std::ffi::OsStr::new("login")], gio::SubprocessFlags::NONE) {
+                Ok(child) => {
+                    button.set_sensitive(false);
+                    let (button, ready) = (button.clone(), ready.clone());
+                    child.wait_async(gio::Cancellable::NONE, move |_| {
+                        button.set_sensitive(true);
+                        ready();
+                    });
+                }
+                Err(err) => {
+                    eprintln!("codex login: {err}");
+                    alert::notice(button, "無法登入 ChatGPT", Some("需要先安裝 Codex。"));
+                }
+            }
+        }
+    ));
+    alert.choose(parent, gio::Cancellable::NONE, move |response| {
+        if response != "do" {
+            return;
+        }
+        let id = chosen();
+        if let Err(err) = imagegen::write("service", id) {
+            eprintln!("image-services: {err}");
+        }
+        if id != imagegen::CHATGPT {
+            if let Err(err) = imagegen::write(id, &key.text()) {
+                eprintln!("image-services: {err}");
+            }
+        }
+        then(id.to_string(), description.text().trim().to_string());
+    });
+}
+
+/// fprintd's names for the fingers, in the order new ones are taken, and what they are called.
+const FINGERS: [(&str, &str); 10] = [
+    ("right-index-finger", "右手食指"),
+    ("left-index-finger", "左手食指"),
+    ("right-thumb", "右手拇指"),
+    ("left-thumb", "左手拇指"),
+    ("right-middle-finger", "右手中指"),
+    ("left-middle-finger", "左手中指"),
+    ("right-ring-finger", "右手無名指"),
+    ("left-ring-finger", "左手無名指"),
+    ("right-little-finger", "右手小指"),
+    ("left-little-finger", "左手小指"),
+];
+
+/// The fingers enrolled with fprintd, and one more to add, with whether the lock takes them;
+/// hidden where there is no reader. `unlock` is the switch for the lock.
+fn fingerprint_group(unlock: adw::SwitchRow) -> adw::PreferencesGroup {
+    let fingers = group("指紋");
+    fingers.set_visible(false);
+    fill_fingers(&fingers, &Rc::default(), &unlock);
+    fingers
+}
+
+/// Lists the fingers again, off the window's thread, as fprintd's answer can be slow.
+fn fill_fingers(fingers: &adw::PreferencesGroup, rows: &Rc<RefCell<Vec<gtk::Widget>>>, unlock: &adw::SwitchRow) {
+    let (weak, rows, unlock) = (fingers.downgrade(), rows.clone(), unlock.clone());
+    glib::spawn_future_local(async move {
+        let user = std::env::var("USER").unwrap_or_default();
+        let listed = gio::spawn_blocking({
+            let user = user.clone();
+            move || output("fprintd-list", &[&user]).map(|listed| enrolled_fingers(&listed))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(fingers) = weak.upgrade() else { return };
+        for row in rows.take() {
+            fingers.remove(&row);
+        }
+        let Some(enrolled) = listed else {
+            fingers.set_visible(false);
+            return;
+        };
+        fingers.set_visible(true);
+        let mut shown: Vec<gtk::Widget> = Vec::new();
+        let refill = {
+            let (weak, rows, unlock) = (fingers.downgrade(), rows.clone(), unlock.clone());
+            Rc::new(move || {
+                if let Some(fingers) = weak.upgrade() {
+                    fill_fingers(&fingers, &rows, &unlock);
+                }
+            })
+        };
+        for finger in enrolled.iter().cloned() {
+            let name = FINGERS.iter().find(|(id, _)| *id == finger).map_or(finger.as_str(), |(_, name)| name);
+            let row = adw::ActionRow::builder().title(name).build();
+            let remove = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("移除")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            let (user, refill) = (user.clone(), refill.clone());
+            remove.connect_clicked(move |remove| {
+                let (user, finger, refill, parent) = (user.clone(), finger.clone(), refill.clone(), remove.clone());
+                alert::confirm(remove, "移除這個指紋？", None, "移除", move || {
+                    // fprintd lets only an authorised session change fingers, and Nekoland
+                    // has no polkit agent: root may.
+                    as_root("移除指紋", &["fprintd-delete", &user, "-f", &finger], None, move |worked| {
+                        if !worked {
+                            alert::notice(&parent, "無法移除指紋", None);
+                        }
+                        refill();
+                    });
+                });
+            });
+            row.add_suffix(&remove);
+            fingers.add(&row);
+            shown.push(row.upcast());
+        }
+        if let Some((next, _)) = FINGERS.iter().find(|(id, _)| !enrolled.iter().any(|finger| finger == id)) {
+            let add = adw::ActionRow::builder().title("新增指紋").activatable(true).build();
+            add.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+            let refill = refill.clone();
+            add.connect_activated(move |add| enroll_finger(add, next, refill.clone()));
+            fingers.add(&add);
+            shown.push(add.upcast());
+        }
+        unlock.set_sensitive(!enrolled.is_empty());
+        fingers.add(&unlock);
+        shown.push(unlock.clone().upcast());
+        *rows.borrow_mut() = shown;
+    });
+}
+
+/// The fingers `fprintd-list` lists, as fprintd names them.
+fn enrolled_fingers(listed: &str) -> Vec<String> {
+    listed
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- #")?.split_once(": ").map(|(_, finger)| finger.trim().to_string()))
+        .collect()
+}
+
+/// Enrolls `finger` through `fprintd-enroll`, as root for want of a polkit agent, saying how
+/// far it has come; `done` once it has ended either way.
+fn enroll_finger(parent: &impl IsA<gtk::Widget>, finger: &'static str, done: Rc<dyn Fn()>) {
+    let user = std::env::var("USER").unwrap_or_default();
+    let child = match sudo("新增指紋", &["fprintd-enroll", "-f", finger, &user], gio::SubprocessFlags::STDOUT_PIPE) {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("fprintd-enroll: {err}");
+            return alert::notice(parent, "無法新增指紋", None);
+        }
+    };
+    let alert = adw::AlertDialog::new(Some("新增指紋"), Some("將手指放在感應器上，抬起後再放上，直到完成。"));
+    alert.add_response("cancel", "取消");
+    alert.set_close_response("cancel");
+    let (stopped, cancelled) = (child.clone(), Rc::new(Cell::new(false)));
+    alert.connect_response(
+        None,
+        glib::clone!(
+            #[strong]
+            cancelled,
+            move |_, _| {
+                cancelled.set(true);
+                stopped.force_exit();
+            }
+        ),
+    );
+    alert.present(Some(parent));
+    let Some(said) = child.stdout_pipe() else { return };
+    let lines = gio::DataInputStream::new(&said);
+    let parent = parent.as_ref().clone();
+    glib::spawn_future_local(async move {
+        let mut scans = 0;
+        let mut ended = None;
+        while let Ok(Some(line)) = lines.read_line_utf8_future(glib::Priority::DEFAULT).await {
+            let Some(result) = line.trim().strip_prefix("Enroll result: ") else { continue };
+            match result {
+                "enroll-stage-passed" => {
+                    scans += 1;
+                    alert.set_body(&format!("已掃描 {scans} 次"));
+                }
+                "enroll-completed" => ended = Some(None),
+                "enroll-duplicate" => ended = Some(Some("這個指紋已經新增過")),
+                "enroll-retry-scan" | "enroll-swipe-too-short" | "enroll-finger-not-centered" | "enroll-remove-and-retry" => {
+                    alert.set_body("請再掃描一次");
+                }
+                _ => ended = Some(Some("無法新增指紋")),
+            }
+            if ended.is_some() {
+                break;
+            }
+        }
+        // Closed by 取消, or sudo's password was not given: nothing to tell.
+        alert.force_close();
+        if let (Some(Some(why)), false) = (ended, cancelled.get()) {
+            alert::notice(&parent, why, None);
+        }
+        done();
+    });
+}
+
 /// The absolute path of one of Nekoland's programs, installed beside Settings; sudo takes
 /// only an absolute path.
 fn nekoland_program(name: &str) -> PathBuf {
@@ -6537,6 +7444,13 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_enrolled_fingers_are_read_from_fprintd_list() {
+        let listed = "found 1 devices\nDevice at /net/reactivated/Fprint/Device/0\nUsing device /net/reactivated/Fprint/Device/0\nFingerprints for user doeshing on Virtual device (press):\n - #0: right-index-finger\n - #1: left-thumb\n";
+        assert_eq!(enrolled_fingers(listed), ["right-index-finger", "left-thumb"]);
+        assert!(enrolled_fingers("User doeshing has no fingers enrolled for Virtual device.\n").is_empty());
+    }
 
     #[test]
     fn power_modes_are_read() {
