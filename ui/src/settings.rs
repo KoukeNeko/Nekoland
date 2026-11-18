@@ -524,6 +524,14 @@ fn build(app: &adw::Application) {
     let side = gtk::Stack::new();
     side.add_named(&scrolled(&sidebar), Some("pages"));
     side.add_named(&scrolled(&results), Some("results"));
+    side.add_named(
+        &adw::StatusPage::builder()
+            .icon_name("edit-find-symbolic")
+            .title("沒有結果")
+            .css_classes(["compact"])
+            .build(),
+        Some("empty"),
+    );
     let search = gtk::SearchEntry::builder()
         .placeholder_text("搜尋設定")
         .margin_start(8)
@@ -611,7 +619,7 @@ fn build(app: &adw::Application) {
                 results.append(&column(2, &[label.upcast_ref(), place.upcast_ref()]));
                 hits.borrow_mut().push((at, target));
             }
-            side.set_visible_child_name("results");
+            side.set_visible_child_name(if hits.borrow().is_empty() { "empty" } else { "results" });
         }
     ));
     search.connect_activate(glib::clone!(
