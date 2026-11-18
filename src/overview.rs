@@ -272,6 +272,9 @@ pub struct Overview {
     /// How far the desktops' bar is opened up, 0 to 1, how fast, and whether it is opening.
     expansion: f64,
     expansion_speed: f64,
+    /// How much the desktops' names showed on the strip when the overview began to close,
+    /// so that they only fade from there and do not come back as the bar closes.
+    names_at_close: f64,
     expanding: bool,
     last_tick: Instant,
     strip_id: Id,
@@ -452,6 +455,7 @@ impl Nekoland {
             bar: SpacesBar::default(),
             expansion: 0.0,
             expansion_speed: 0.0,
+            names_at_close: 1.0,
             expanding: false,
             last_tick: Instant::now(),
             strip_id: Id::new(),
@@ -792,13 +796,21 @@ impl Nekoland {
                 });
             }
         }
-        if let Some(picture) = overview.bar.strip.as_ref().filter(|_| expansion < 1.0) {
+        // Over the applications the bar only opens up and closes: the names are not shown.
+        let names = if overview.apps.is_some() {
+            0.0
+        } else if overview.closing {
+            overview.names_at_close * overview.progress()
+        } else {
+            1.0 - expansion
+        };
+        if let Some(picture) = overview.bar.strip.as_ref().filter(|_| names > 0.0) {
             overlays.push(Overlay {
                 fade: 1.0,
                 id: &overview.strip_id,
                 rect: panel,
                 glass: None,
-                alpha: (1.0 - expansion) as f32,
+                alpha: names as f32,
                 picture,
             });
         }
@@ -836,6 +848,7 @@ impl Nekoland {
         }
         overview.closing = true;
         overview.started = Instant::now();
+        overview.names_at_close = 1.0 - overview.expansion;
         // The bar over the applications gets out of the way first, and they leave as it
         // nearly has: until then the overview is held where it is.
         let under_bar = (overview.apps.as_ref()).is_some_and(|apps| apps.style() == crate::config::AppsView::Overview);
