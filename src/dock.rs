@@ -3643,7 +3643,7 @@ fn tile_picture(tile: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
 }
 
 /// The part of `rect` a window fills when fitted to it, in the middle.
-fn fit_window(window: &Window, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+pub(crate) fn fit_window(window: &Window, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     let size = window.geometry().size;
     if size.w <= 0 || size.h <= 0 {
         return rect;

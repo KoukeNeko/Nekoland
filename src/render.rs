@@ -52,6 +52,7 @@ render_elements! {
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     Solid=SolidColorRenderElement,
     Ghost=GhostElement,
+    ZoomedPicture=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -686,19 +687,24 @@ fn floating_elements(
             overlay.rect.size.h.min(overlay.picture.size.h),
         ));
         let crop = (fits != overlay.picture.size).then_some(fits);
-        elements.extend(
-            MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                rect.loc.to_f64(),
-                &overlay.picture.buffer,
-                Some(overlay.alpha * overlay.fade),
-                crop.map(|size| Rectangle::from_size(size).to_f64()),
-                crop,
-                Kind::Unspecified,
-            )
-            .ok()
-            .map(SceneElement::Picture),
-        );
+        let picture = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            rect.loc.to_f64(),
+            &overlay.picture.buffer,
+            Some(overlay.alpha * overlay.fade),
+            crop.map(|size| Rectangle::from_size(size).to_f64()),
+            crop,
+            Kind::Unspecified,
+        )
+        .ok();
+        // The applications come in and go out a little larger, around their middle.
+        elements.extend(picture.map(|picture| match state.apps_zoom_of(overlay.id) {
+            Some(zoom) => {
+                let middle = rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2));
+                SceneElement::ZoomedPicture(RescaleRenderElement::from_element(picture, middle, zoom))
+            }
+            None => SceneElement::Picture(picture),
+        }));
         elements.extend(
             glass
                 .as_deref_mut()

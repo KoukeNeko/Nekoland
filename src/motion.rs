@@ -31,7 +31,11 @@ use smithay::{
     wayland::{compositor::with_states, seat::WaylandFocus},
 };
 
-use crate::{windows::is_managed, Nekoland};
+use crate::{
+    dock::fit_window,
+    windows::{is_managed, window_names},
+    Nekoland,
+};
 
 /// A spring from 0 to 1, named as SwiftUI names its own: `response` is how many seconds one
 /// swing would take with nothing to slow it, and `damping` how much of the slowing that
@@ -113,6 +117,21 @@ const POPUP: Spring = Spring::new(0.22, 0.85);
 const POPUP_SCALE: f64 = 0.92;
 const POPUP_FADE: f64 = 0.08;
 
+/// The applications coming in from a little larger than they are, as a phone's icons
+/// come home, and going out the way they came.
+const APPS: Spring = Spring::new(0.38, 0.82);
+const APPS_SCALE: f64 = 1.12;
+/// How long an application started from its icon may take to show a window that still
+/// opens out of that icon.
+const LAUNCH_PATIENCE: f64 = 10.0;
+
+/// How many times their size the applications are drawn: `opened` a moment ago, or
+/// `leaving`, from 1 down to 0, with the view they are part of.
+pub fn apps_zoom(opened: Instant, leaving: Option<f64>) -> f64 {
+    let arrived = leaving.unwrap_or_else(|| APPS.at(opened));
+    1.0 + (APPS_SCALE - 1.0) * (1.0 - arrived)
+}
+
 /// The rectangle `t` of the way from one to another; a spring's `t` may pass 1.
 pub fn lerp(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
     let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
@@ -163,6 +182,15 @@ struct Opening {
     started: Instant,
 }
 
+/// An application started from its icon, whose window has not shown yet.
+struct Launch {
+    /// What its window may give as its application: the desktop entry's name, and the
+    /// window class the entry says it has.
+    names: Vec<String>,
+    icon: Rectangle<i32, Logical>,
+    started: Instant,
+}
+
 struct Morph {
     window: Window,
     /// Where it was drawn when it was sent off, and the size it had then, by which to tell
@@ -196,6 +224,7 @@ pub struct Motion {
     morphing: Vec<Morph>,
     ghosts: Vec<Ghost>,
     slide: Option<Slide>,
+    launches: Vec<Launch>,
 }
 
 /// A window as it was last drawn, with the part of it the picture covers, from where its
@@ -398,6 +427,40 @@ impl Nekoland {
         {
             motion.slide = None;
         }
+        motion
+            .launches
+            .retain(|launch| seconds_since(launch.started) < LAUNCH_PATIENCE);
+    }
+
+    /// An application was started from its `icon` on screen: its window opens out of it.
+    pub fn motion_launching(&mut self, names: Vec<String>, icon: Rectangle<i32, Logical>) {
+        if !self.config.animations {
+            return;
+        }
+        self.motion.launches.push(Launch {
+            names,
+            icon,
+            started: Instant::now(),
+        });
+    }
+
+    /// The icon a window's application was just started from, if it was, fitted to the
+    /// window's shape. A dialog is not what the icon started.
+    fn icon_launched_from(&mut self, window: &Window) -> Option<Rectangle<i32, Logical>> {
+        if window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.parent().is_some())
+        {
+            return None;
+        }
+        let app_id = window_names(window).1;
+        let index = self
+            .motion
+            .launches
+            .iter()
+            .position(|launch| launch.names.iter().any(|name| name.eq_ignore_ascii_case(&app_id)))?;
+        let launch = self.motion.launches.remove(index);
+        Some(fit_window(window, launch.icon))
     }
 
     /// Whether a window is drawn somewhere other than where it is, or is about to be.
@@ -498,13 +561,16 @@ impl Nekoland {
             .collect()
     }
 
-    /// A window was shown for the first time: an application's first comes out of its icon
-    /// in the Dock, any other grows a little where it is.
+    /// A window was shown for the first time: one started from an icon among the
+    /// applications comes out of that icon, an application's first otherwise out of its icon
+    /// in the Dock, and any other grows a little where it is.
     pub fn motion_open(&mut self, window: &Window) {
         if !self.config.animations {
             return;
         }
-        let from = self.dock_icon_to_open_from(window);
+        let from = self
+            .icon_launched_from(window)
+            .or_else(|| self.dock_icon_to_open_from(window));
         self.start_opening(window, from);
     }
 
@@ -655,6 +721,15 @@ mod tests {
         assert_eq!(slide_offsets(1.0, 1920, true), (0, -1920));
         // And the other way going back.
         assert_eq!(slide_offsets(0.25, 1920, false), (-1440, 480));
+    }
+
+    #[test]
+    fn the_applications_come_in_larger_and_leave_the_way_they_came() {
+        let long_ago = Instant::now() - std::time::Duration::from_secs(5);
+        assert_eq!(apps_zoom(Instant::now(), Some(1.0)), 1.0);
+        assert!((apps_zoom(Instant::now(), Some(0.0)) - APPS_SCALE).abs() < 1e-9);
+        assert!((apps_zoom(Instant::now(), None) - APPS_SCALE).abs() < 0.01);
+        assert!((apps_zoom(long_ago, None) - 1.0).abs() < SETTLED);
     }
 
     #[test]
