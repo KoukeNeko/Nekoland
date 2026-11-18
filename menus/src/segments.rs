@@ -8,7 +8,8 @@
 //! gives them. So `GtkWidget`'s own way of drawing is changed before any class is made
 //! from it: a row that chooses one of a few is drawn as it was, then the pill over it, and
 //! then its buttons once more inside the pill, every colour of theirs turned into the one
-//! for the pill. The row is marked with a style class, which is what tells the stylesheet
+//! for the pill. The pill can also be taken hold of and dragged along the row, and chooses
+//! the button it is let go over. The row is marked with a style class, which is what tells the stylesheet
 //! to leave the chosen button's own background out; a program this is not loaded into has
 //! no such class and keeps the look the stylesheet gives it alone.
 
@@ -26,6 +27,9 @@ const SLIDE_KEY: &CStr = c"nekoland-segments";
 /// What a button is marked with once its row is told of its changes.
 const WATCHED_KEY: &CStr = c"nekoland-segment-watched";
 const STATE_CHANGED: &CStr = c"state-flags-changed";
+const DRAG_BEGIN: &CStr = c"drag-begin";
+const DRAG_UPDATE: &CStr = c"drag-update";
+const DRAG_END: &CStr = c"drag-end";
 const ANIMATIONS: &CStr = c"gtk-enable-animations";
 
 /// `GTK_ORIENTATION_HORIZONTAL`.
@@ -33,6 +37,10 @@ const HORIZONTAL: c_int = 0;
 /// `GTK_STATE_FLAG_ACTIVE` and `GTK_STATE_FLAG_CHECKED`.
 const HELD: c_uint = 1 << 0;
 const CHECKED: c_uint = 1 << 11;
+/// `GTK_PHASE_CAPTURE`: a row hears of a press before the button under it does.
+const CAPTURE: c_int = 1;
+/// `GTK_EVENT_SEQUENCE_CLAIMED`: the press is the row's, and no longer a click on a button.
+const CLAIMED: c_int = 1;
 /// `G_SOURCE_CONTINUE` and `G_SOURCE_REMOVE`.
 const AGAIN: c_int = 1;
 const DONE: c_int = 0;
@@ -46,6 +54,9 @@ const ARRIVED: f64 = 0.001;
 /// seconds it takes to give and to come back.
 const HELD_SCALE: f64 = 0.95;
 const GIVE_SECONDS: f64 = 0.12;
+/// How far the pointer goes with the pill held before the pill comes along, so that a
+/// click with an unsteady hand stays a click.
+const DRAG_SLACK: f64 = 4.0;
 /// The longest a frame is taken to have lasted, after a while with none.
 const LONGEST_FRAME: f64 = 0.05;
 /// The pill's corners, as nekoland.css rounds what is chosen in a group.
@@ -60,6 +71,8 @@ type Snapshot = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type Tick = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> c_int;
 type Destroy = unsafe extern "C" fn(*mut c_void);
 type StateChanged = unsafe extern "C" fn(*mut c_void, c_uint, *mut c_void);
+/// What a drag calls back with: its gesture, and where it began or how far it has gone.
+type Dragged = unsafe extern "C" fn(*mut c_void, f64, f64, *mut c_void);
 
 /// GTK's `GtkWidgetClass`, as far as `snapshot`.
 #[repr(C)]
@@ -114,14 +127,21 @@ struct Gtk {
     first_child: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     next_sibling: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     parent: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    /// Has a signal call a function, whose type is the signal's own.
     connect: unsafe extern "C" fn(
         *mut c_void,
         *const c_char,
-        StateChanged,
+        *const c_void,
         *mut c_void,
         Option<Destroy>,
         c_uint,
     ) -> std::ffi::c_ulong,
+    drag_gesture: unsafe extern "C" fn() -> *mut c_void,
+    set_phase: unsafe extern "C" fn(*mut c_void, c_int),
+    add_controller: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    controller_widget: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    set_gesture_state: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+    set_active: unsafe extern "C" fn(*mut c_void, c_int),
     is_visible: unsafe extern "C" fn(*mut c_void) -> c_int,
     has_class: unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int,
     add_class: unsafe extern "C" fn(*mut c_void, *const c_char),
@@ -166,6 +186,12 @@ struct Slide {
     last_frame: i64,
     moving: bool,
     ticking: bool,
+    /// Whether the row already hears of drags.
+    draggable: bool,
+    /// The pill as it was taken hold of, while the pointer is down on it.
+    held: Option<Rect>,
+    /// Where the pointer has taken it, once it has come along.
+    dragged: Option<Rect>,
 }
 
 /// A function of the program's by its name, as the type it is called with.
@@ -258,9 +284,54 @@ impl Gtk {
         for toggle in toggles {
             if (self.data)(*toggle, WATCHED_KEY.as_ptr()).is_null() {
                 (self.set_data)(*toggle, WATCHED_KEY.as_ptr(), SEGMENTED.as_ptr() as *mut c_void, None);
-                (self.connect)(*toggle, STATE_CHANGED.as_ptr(), state_changed, std::ptr::null_mut(), None, 0);
+                self.on(*toggle, STATE_CHANGED, state_changed as StateChanged as *const c_void);
             }
         }
+        let slide = &mut *self.slide_of(row);
+        if !slide.draggable {
+            slide.draggable = true;
+            let drag = (self.drag_gesture)();
+            (self.set_phase)(drag, CAPTURE);
+            self.on(drag, DRAG_BEGIN, drag_begun as Dragged as *const c_void);
+            self.on(drag, DRAG_UPDATE, drag_moved as Dragged as *const c_void);
+            self.on(drag, DRAG_END, drag_ended as Dragged as *const c_void);
+            // The row keeps the gesture from here on.
+            (self.add_controller)(row, drag);
+        }
+    }
+
+    unsafe fn on(&self, object: *mut c_void, signal: &CStr, handler: *const c_void) {
+        (self.connect)(object, signal.as_ptr(), handler, std::ptr::null_mut(), None, 0);
+    }
+
+    /// Where a button is in its row.
+    unsafe fn place_of(&self, toggle: *mut c_void, row: *mut c_void) -> Option<Rect> {
+        let mut place = Rect::default();
+        ((self.bounds)(toggle, row, &mut place) != 0).then_some(place)
+    }
+
+    /// The pill so far along its row from where it was taken hold of, kept within the
+    /// row's buttons.
+    unsafe fn dragged_to(&self, row: *mut c_void, held: Rect, offset: f64) -> Rect {
+        let (toggles, _) = self.toggles(row);
+        let places: Vec<Rect> = toggles.iter().filter_map(|toggle| self.place_of(*toggle, row)).collect();
+        let left = places.iter().map(|place| place.x).fold(held.x, f32::min);
+        let right = places.iter().map(|place| place.x + place.width).fold(held.x + held.width, f32::max);
+        Rect { x: (held.x + offset as f32).clamp(left, right - held.width), ..held }
+    }
+
+    /// The button the middle of the pill is nearest to.
+    unsafe fn nearest(&self, row: *mut c_void, pill: Rect) -> Option<*mut c_void> {
+        let middle = |place: Rect| place.x + place.width / 2.0;
+        let (toggles, _) = self.toggles(row);
+        toggles
+            .into_iter()
+            .filter_map(|toggle| Some((toggle, self.place_of(toggle, row)?)))
+            .min_by(|(_, one), (_, other)| {
+                let away = |place: &Rect| (middle(*place) - middle(pill)).abs();
+                away(one).total_cmp(&away(other))
+            })
+            .map(|(toggle, _)| toggle)
     }
 
     unsafe fn animated(&self) -> bool {
@@ -286,6 +357,9 @@ impl Gtk {
             last_frame: 0,
             moving: false,
             ticking: false,
+            draggable: false,
+            held: None,
+            dragged: None,
         }));
         (self.set_data)(row, SLIDE_KEY.as_ptr(), slide as *mut c_void, Some(drop_slide));
         slide
@@ -304,6 +378,7 @@ impl Gtk {
             slide.chosen = chosen;
         }
         let place = match slide.from {
+            _ if slide.dragged.is_some() => slide.dragged.unwrap_or(goal),
             Some((from, started)) => {
                 let gone = spring((now - started) as f64 / MICROSECONDS);
                 if 1.0 - gone < ARRIVED {
@@ -317,7 +392,8 @@ impl Gtk {
         };
         slide.shown = Some(place);
 
-        let held = if (self.state_flags)(chosen) & HELD != 0 { 1.0 } else { 0.0 };
+        let in_hand = slide.dragged.is_some() || (self.state_flags)(chosen) & HELD != 0;
+        let held = if in_hand { 1.0 } else { 0.0 };
         let frame = ((now - slide.last_frame) as f64 / MICROSECONDS).clamp(0.0, LONGEST_FRAME);
         let step = if animated { frame / GIVE_SECONDS } else { 1.0 };
         slide.given += (held - slide.given).clamp(-step, step);
@@ -384,6 +460,69 @@ unsafe extern "C" fn tick(row: *mut c_void, _clock: *mut c_void, _data: *mut c_v
     }
     (gtk.queue_draw)(row);
     AGAIN
+}
+
+/// The row a drag is on and what is kept with it.
+unsafe fn dragged_row(gtk: &Gtk, gesture: *mut c_void) -> Option<(*mut c_void, &'static mut Slide)> {
+    let row = (gtk.controller_widget)(gesture);
+    let slide = if row.is_null() { std::ptr::null_mut() } else { (gtk.data)(row, SLIDE_KEY.as_ptr()) as *mut Slide };
+    (!slide.is_null()).then(|| (row, &mut *slide))
+}
+
+/// A press on the pill takes hold of it; one anywhere else is left to the button under it.
+unsafe extern "C" fn drag_begun(gesture: *mut c_void, x: f64, y: f64, _data: *mut c_void) {
+    let Some((_, slide)) = GTK.get().and_then(|gtk| dragged_row(gtk, gesture)) else {
+        return;
+    };
+    let on_pill = |pill: &Rect| {
+        let (x, y) = (x as f32, y as f32);
+        x >= pill.x && x < pill.x + pill.width && y >= pill.y && y < pill.y + pill.height
+    };
+    slide.held = slide.shown.filter(on_pill);
+    slide.dragged = None;
+}
+
+/// The pill comes along with the pointer once it has gone far enough to be a drag.
+unsafe extern "C" fn drag_moved(gesture: *mut c_void, offset: f64, _down: f64, _data: *mut c_void) {
+    let Some(gtk) = GTK.get() else {
+        return;
+    };
+    let Some((row, slide)) = dragged_row(gtk, gesture) else {
+        return;
+    };
+    let Some(held) = slide.held else {
+        return;
+    };
+    if slide.dragged.is_none() {
+        if offset.abs() < DRAG_SLACK {
+            return;
+        }
+        (gtk.set_gesture_state)(gesture, CLAIMED);
+        slide.from = None;
+    }
+    slide.dragged = Some(gtk.dragged_to(row, held, offset));
+    (gtk.queue_draw)(row);
+}
+
+/// Let go, the pill chooses the button it is nearest and springs the rest of the way.
+unsafe extern "C" fn drag_ended(gesture: *mut c_void, _offset: f64, _down: f64, _data: *mut c_void) {
+    let Some(gtk) = GTK.get() else {
+        return;
+    };
+    let Some((row, slide)) = dragged_row(gtk, gesture) else {
+        return;
+    };
+    slide.held = None;
+    let Some(pill) = slide.dragged.take() else {
+        return;
+    };
+    // From where it was let go, whether to another button or back to its own.
+    slide.shown = Some(pill);
+    slide.from = gtk.animated().then_some((pill, slide.last_frame));
+    if let Some(toggle) = gtk.nearest(row, pill) {
+        (gtk.set_active)(toggle, 1);
+    }
+    (gtk.queue_draw)(row);
 }
 
 /// Has a button's row drawn again when the button is chosen, let go of, or held.
@@ -464,6 +603,12 @@ unsafe fn load() -> Option<Gtk> {
         next_sibling: function(c"gtk_widget_get_next_sibling")?,
         parent: function(c"gtk_widget_get_parent")?,
         connect: function(c"g_signal_connect_data")?,
+        drag_gesture: function(c"gtk_gesture_drag_new")?,
+        set_phase: function(c"gtk_event_controller_set_propagation_phase")?,
+        add_controller: function(c"gtk_widget_add_controller")?,
+        controller_widget: function(c"gtk_event_controller_get_widget")?,
+        set_gesture_state: function(c"gtk_gesture_set_state")?,
+        set_active: function(c"gtk_toggle_button_set_active")?,
         is_visible: function(c"gtk_widget_get_visible")?,
         has_class: function(c"gtk_widget_has_css_class")?,
         add_class: function(c"gtk_widget_add_css_class")?,
