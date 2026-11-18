@@ -1,19 +1,24 @@
-//! `nekoland-calendar`: a small calendar, of GTK's and libadwaita's own widgets with no
-//! styling of its own, so that it looks as the system's GTK style says: it is how
-//! Nekoland's look for GTK applications is tried on an application that knows nothing of
-//! it. A month to pick a day from, the day's events and reminders, kept in the files the
-//! clock's panel reads, and an editor for them that understands an event typed as a sentence.
+//! `nekoland-calendar`: a calendar of GTK's and libadwaita's own widgets, with no stylesheet
+//! of its own, so that it looks as the system's GTK style says: it is how Nekoland's look
+//! for GTK applications is tried on an application that knows nothing of it. The month, a
+//! week, a day or what is coming, with the day chosen beside them and its events and
+//! reminders, kept in the files the clock's panel reads, and an editor for them that
+//! understands an event typed as a sentence. The grids are drawn by hand (`grid`), in the
+//! theme's own colours.
 //!
-//! `--date DAY` opens on a day, `--new [DAY]` opens the editor on one, `--event ID` opens an
+//! `--view day|week|month|agenda` opens on one of the views, `--date DAY` opens on a day, `--new [DAY]` opens the editor on one, `--event ID` opens an
 //! event in it, `--add SENTENCE` keeps an event typed as a sentence and `--draft SENTENCE`
 //! opens the editor with one typed.
+
+#[path = "calendar/grid.rs"]
+mod grid;
 
 use std::{cell::{Cell, RefCell}, rc::Rc};
 
 use adw::prelude::*;
 use calendar_data::{
     calendars::{self, color_of, CalendarInfo, HOLIDAYS},
-    date::{Date, Month, WEEKDAY_NAMES},
+    date::{Date, WEEKDAY_NAMES},
     event::{self, on_day, Event, Kind, Repeat},
     holidays, lunar, natural,
 };
@@ -22,6 +27,15 @@ use gtk::{gdk, gio, glib, pango};
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Calendar";
 const SEARCH_WIDTH: i32 = 400;
 const PAGE_WIDTH: i32 = 640;
+const SIDE_WIDTH: f64 = 340.0;
+const WINDOW_WIDTH: i32 = 1200;
+const WINDOW_HEIGHT: i32 = 760;
+const MONTH_MIN_HEIGHT: i32 = 420;
+const AGENDA_DAYS: i64 = 42;
+const FIRST_HOUR_SHOWN: f64 = 7.0;
+/// Within these hours the grid opens on the one before now; outside them, on the morning.
+const WORK_HOURS: (u32, u32) = (8, 19);
+const DAYS_IN_WEEK: i64 = 7;
 const EDITOR_WIDTH: i32 = 460;
 const EDITOR_HEIGHT: i32 = 640;
 const MARGIN: i32 = 12;
@@ -92,12 +106,46 @@ struct State {
     events: RefCell<Vec<Event>>,
     calendars: RefCell<Vec<CalendarInfo>>,
     query: RefCell<String>,
+    /// The day chosen, kept as a calendar that is not shown, for the dates it does.
     month: gtk::Calendar,
     list: gtk::ListBox,
     empty: adw::StatusPage,
-    day: adw::NavigationPage,
     toasts: adw::ToastOverlay,
     window: RefCell<Option<adw::ApplicationWindow>>,
+    view: Cell<View>,
+    heading: gtk::Label,
+    switcher: gtk::Box,
+    side_title: gtk::Label,
+    stack: gtk::Stack,
+    month_area: gtk::DrawingArea,
+    time_head: gtk::DrawingArea,
+    time_area: gtk::DrawingArea,
+    time_scroll: gtk::ScrolledWindow,
+    agenda: gtk::Box,
+    hits: RefCell<Vec<grid::Hit>>,
+    head_hits: RefCell<Vec<grid::Hit>>,
+}
+
+/// How the days are laid out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Day,
+    Week,
+    Month,
+    Agenda,
+}
+
+impl View {
+    const ALL: [(View, &'static str); 4] =
+        [(View::Day, "日"), (View::Week, "週"), (View::Month, "月"), (View::Agenda, "議程")];
+
+    fn page(self) -> &'static str {
+        match self {
+            View::Day | View::Week => "time",
+            View::Month => "month",
+            View::Agenda => "agenda",
+        }
+    }
 }
 
 impl State {
@@ -178,11 +226,11 @@ impl State {
         found
     }
 
-    /// Shows the chosen day's events, and marks the month's days that have any.
+    /// Shows the chosen day's events beside the days, and the days again as they are laid out.
     fn refresh(self: &Rc<Self>) {
         let chosen = self.chosen();
-        self.day.set_title(&day_text(chosen));
-        self.mark_month(chosen);
+        self.side_title.set_label(&format!("{} 月 {} 日 週{}", chosen.month, chosen.day, WEEKDAY_NAMES[chosen.weekday()]));
+        self.heading.set_label(&self.heading_text(chosen));
 
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
@@ -201,21 +249,190 @@ impl State {
         self.list.set_visible(has_rows);
         self.empty.set_visible(listed.is_empty());
         self.empty.set_title(if searching { "找不到行程" } else { "沒有行程" });
+
+        self.stack.set_visible_child_name(self.view.get().page());
+        match self.view.get() {
+            View::Month => self.month_area.queue_draw(),
+            View::Day | View::Week => {
+                self.time_head.set_content_height(grid::head_height(&self.time_days()) as i32);
+                self.time_head.queue_draw();
+                self.time_area.queue_draw();
+            }
+            View::Agenda => self.fill_agenda(chosen),
+        }
     }
 
-    fn mark_month(&self, chosen: Date) {
-        self.month.clear_marks();
-        let visible: Vec<Event> = self
-            .events
-            .borrow()
-            .iter()
-            .filter(|event| self.shown(event.calendar))
-            .cloned()
-            .collect();
-        let month = Month { year: chosen.year, month: chosen.month };
-        for (day, _) in event::days_with_events(&visible, month) {
-            self.month.mark_day(day.day);
+    fn heading_text(&self, chosen: Date) -> String {
+        match self.view.get() {
+            View::Month | View::Agenda => format!("{} 年 {} 月", chosen.year, chosen.month),
+            View::Day => format!("{} 年 {} 月 {} 日", chosen.year, chosen.month, chosen.day),
+            View::Week => {
+                let days = self.time_days();
+                let (first, last) = (days[0].date, days[days.len() - 1].date);
+                if first.month == last.month {
+                    format!("{} 年 {} 月 {} – {} 日", first.year, first.month, first.day, last.day)
+                } else {
+                    format!("{} 月 {} 日 – {} 月 {} 日", first.month, first.day, last.month, last.day)
+                }
+            }
         }
+    }
+
+    /// The days the time grid shows: the day chosen, or the week it is in.
+    fn time_days(&self) -> Vec<grid::Day> {
+        let chosen = self.chosen();
+        if self.view.get() == View::Day {
+            return vec![self.day_data(chosen)];
+        }
+        let first = chosen.plus_days(-(chosen.weekday() as i64));
+        (0..DAYS_IN_WEEK).map(|offset| self.day_data(first.plus_days(offset))).collect()
+    }
+
+    /// What is on a day as the grids draw it, and the line under its number.
+    fn day_data(&self, day: Date) -> grid::Day {
+        let events = self.events.borrow();
+        let calendars = self.calendars.borrow();
+        let items = on_day(&events, day)
+            .into_iter()
+            .filter(|found| self.shown(found.event.calendar))
+            .map(|found| grid::Item {
+                id: found.event.id.clone(),
+                date: day,
+                title: found.event.title.clone(),
+                color: color_of(&calendars, found.event.calendar),
+                start: found.event.start,
+                end: found.event.end,
+                done: found.event.done,
+            })
+            .collect();
+        let holiday = if self.shown(HOLIDAYS) { holidays::on(day).first().map(|found| found.name.to_string()) } else { None };
+        match holiday {
+            Some(name) => grid::Day { date: day, items, note: name, holiday: true },
+            None => {
+                let note = lunar::from_solar(day).map(|found| found.label()).unwrap_or_default();
+                grid::Day { date: day, items, note, holiday: false }
+            }
+        }
+    }
+
+    fn draw_month(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: i32, height: i32) {
+        let chosen = self.chosen();
+        let month = chosen.month_of();
+        let lead = month.first_day().weekday();
+        let weeks = (lead + month.length() as usize).div_ceil(7);
+        let days: Vec<grid::Day> = month.grid(0, weeks).into_iter().map(|day| self.day_data(day)).collect();
+        let layout = area.create_pango_layout(None);
+        grid::draw_month(
+            cr,
+            &layout,
+            (f64::from(width), f64::from(height)),
+            &days,
+            (chosen, Date::today(), month.month),
+            &grid::Look::of(area),
+            &mut self.hits.borrow_mut(),
+        );
+    }
+
+    fn draw_time(&self, (area, part): (&gtk::DrawingArea, grid::Part), cr: &gtk::cairo::Context, width: i32, height: i32) {
+        let days = self.time_days();
+        let hits = if part == grid::Part::Head { &self.head_hits } else { &self.hits };
+        let layout = area.create_pango_layout(None);
+        grid::draw_time(
+            cr,
+            &layout,
+            (f64::from(width), f64::from(height)),
+            (part, &days),
+            (self.chosen(), Date::today(), now_hour_minute()),
+            &grid::Look::of(area),
+            &mut hits.borrow_mut(),
+        );
+    }
+
+    /// What a click on a grid does: a day is chosen, and what is on it opens when it is clicked
+    /// twice, or once in the time grid, where it is big enough to be aimed at.
+    fn clicked(self: &Rc<Self>, hits: &RefCell<Vec<grid::Hit>>, (x, y): (f64, f64), presses: i32) {
+        let target = grid::hit_at(&hits.borrow(), x, y).cloned();
+        let single_opens = self.view.get() != View::Month;
+        match target {
+            Some(grid::Target::Day(day)) => {
+                self.choose(day);
+                if presses >= 2 {
+                    edit_event(self, None, day);
+                }
+            }
+            Some(grid::Target::Item(item)) => {
+                self.choose(item.date);
+                if presses >= 2 || single_opens {
+                    let found = self.events.borrow().iter().find(|event| event.id == item.id).cloned();
+                    if let Some(event) = found {
+                        edit_event(self, Some(event), item.date);
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// The agenda: the days from the one chosen on that have anything, each with its events.
+    fn fill_agenda(self: &Rc<Self>, from: Date) {
+        while let Some(child) = self.agenda.first_child() {
+            self.agenda.remove(&child);
+        }
+        let mut any = false;
+        for offset in 0..AGENDA_DAYS {
+            let day = from.plus_days(offset);
+            let found: Vec<Event> = {
+                let events = self.events.borrow();
+                on_day(&events, day)
+                    .into_iter()
+                    .filter(|found| self.shown(found.event.calendar))
+                    .map(|found| found.event.clone())
+                    .collect()
+            };
+            if found.is_empty() {
+                continue;
+            }
+            any = true;
+            let today = if day == Date::today() { " · 今天" } else { "" };
+            let title = gtk::Label::builder()
+                .label(format!("{} 月 {} 日 週{}{today}", day.month, day.day, WEEKDAY_NAMES[day.weekday()]))
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .margin_top(MARGIN)
+                .build();
+            self.agenda.append(&title);
+            let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+            for event in &found {
+                list.append(&self.event_row(event, day, false));
+            }
+            self.agenda.append(&list);
+        }
+        if !any {
+            self.agenda.append(&adw::StatusPage::builder().icon_name("x-office-calendar-symbolic").title("沒有行程").build());
+        }
+    }
+
+    /// Switches to a view as its button does.
+    fn show_view(&self, view: View) {
+        let at = View::ALL.iter().position(|(found, _)| *found == view).unwrap_or_default();
+        let mut child = self.switcher.first_child();
+        for _ in 0..at {
+            child = child.and_then(|child| child.next_sibling());
+        }
+        if let Some(button) = child.and_then(|child| child.downcast::<gtk::ToggleButton>().ok()) {
+            button.set_active(true);
+        }
+    }
+
+    /// Moves the day chosen by what the view shows at a time.
+    fn step(&self, direction: i32) {
+        let chosen = self.chosen();
+        let next = match self.view.get() {
+            View::Month => chosen.plus_months(direction),
+            View::Day => chosen.plus_days(i64::from(direction)),
+            View::Week | View::Agenda => chosen.plus_days(DAYS_IN_WEEK * i64::from(direction)),
+        };
+        self.choose(next);
     }
 
     /// The lunar date and holidays of the day, in a row that does nothing.
@@ -405,6 +622,10 @@ fn follow_arguments(state: &Rc<State>, arguments: &[String]) {
                     state.choose(day);
                 }
             }
+            ("--view", Some(name)) => match View::ALL.iter().find(|(_, label)| view_name(label) == name.as_str()) {
+                Some((view, _)) => state.show_view(*view),
+                None => eprintln!("nekoland-calendar: {name} is not a view"),
+            },
             ("--new", value) => {
                 let day = value.and_then(|text| read_day(text)).unwrap_or_else(|| state.chosen());
                 state.choose(day);
@@ -416,6 +637,16 @@ fn follow_arguments(state: &Rc<State>, arguments: &[String]) {
             (other, _) => eprintln!("nekoland-calendar: {other} is not understood"),
         }
         at += if value.is_some() { 2 } else { 1 };
+    }
+}
+
+/// How a view is named on the command line.
+fn view_name(label: &str) -> &'static str {
+    match label {
+        "日" => "day",
+        "週" => "week",
+        "月" => "month",
+        _ => "agenda",
     }
 }
 
@@ -456,32 +687,52 @@ fn build(app: &adw::Application) {
         events: RefCell::new(event::load()),
         calendars: RefCell::new(calendars::load()),
         query: RefCell::default(),
-        month: gtk::Calendar::builder().margin_start(MARGIN).margin_end(MARGIN).build(),
+        month: gtk::Calendar::new(),
         list: gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(["boxed-list"])
             .valign(gtk::Align::Start)
             .build(),
         empty: adw::StatusPage::builder().icon_name("x-office-calendar-symbolic").vexpand(true).build(),
-        day: adw::NavigationPage::builder().title("行事曆").build(),
         toasts: adw::ToastOverlay::new(),
         window: RefCell::new(None),
+        view: Cell::new(View::Month),
+        heading: gtk::Label::builder().css_classes(["title-3"]).build(),
+        switcher: gtk::Box::builder().css_classes(["linked"]).build(),
+        side_title: gtk::Label::builder().css_classes(["title-2"]).xalign(0.0).build(),
+        stack: gtk::Stack::builder().vexpand(true).hexpand(true).build(),
+        month_area: gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .content_height(MONTH_MIN_HEIGHT)
+            .margin_start(MARGIN)
+            .margin_end(MARGIN)
+            .margin_bottom(MARGIN)
+            .build(),
+        time_head: gtk::DrawingArea::builder().hexpand(true).build(),
+        time_area: gtk::DrawingArea::builder().hexpand(true).content_height(grid::body_height() as i32).build(),
+        time_scroll: gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).build(),
+        agenda: gtk::Box::builder().orientation(gtk::Orientation::Vertical).build(),
+        hits: RefCell::default(),
+        head_hits: RefCell::default(),
     });
 
+    build_views(&state);
     let (side_view, add) = build_side(&state);
-    let day_view = build_day(&state);
-    let split = adw::NavigationSplitView::builder()
-        .sidebar(&adw::NavigationPage::builder().title("行事曆").child(&side_view).build())
-        .content(&state.day)
-        .min_sidebar_width(300.0)
+    let split = adw::OverlaySplitView::builder()
+        .sidebar_position(gtk::PackType::End)
+        .content(&build_main(&state))
+        .sidebar(&side_view)
+        .min_sidebar_width(SIDE_WIDTH)
+        .max_sidebar_width(SIDE_WIDTH)
         .build();
-    state.day.set_child(Some(&day_view));
+    state.toasts.set_child(Some(&split));
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("行事曆")
-        .default_width(920)
-        .default_height(640)
-        .content(&split)
+        .default_width(WINDOW_WIDTH)
+        .default_height(WINDOW_HEIGHT)
+        .content(&state.toasts)
         .build();
     *state.window.borrow_mut() = Some(window.clone());
 
@@ -496,34 +747,97 @@ fn build(app: &adw::Application) {
     STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
 
     state.refresh();
+    scroll_to_hours(&state);
     window.present();
 }
 
-/// The side: the month, and the calendars, each shown or not, named and coloured.
-fn build_side(state: &Rc<State>) -> (adw::ToolbarView, gtk::Button) {
-    let group = adw::PreferencesGroup::builder()
-        .title("行事曆")
-        .margin_top(18)
+/// The pages of what is beside the side: the month, the hours, and what is coming.
+fn build_views(state: &Rc<State>) {
+    for (area, head) in [(&state.month_area, false), (&state.time_area, false), (&state.time_head, true)] {
+        let click = gtk::GestureClick::new();
+        click.connect_pressed(glib::clone!(
+            #[strong]
+            state,
+            move |_, presses, x, y| {
+                let hits = if head { &state.head_hits } else { &state.hits };
+                state.clicked(hits, (x, y), presses);
+            }
+        ));
+        area.add_controller(click);
+    }
+    state.month_area.set_draw_func(glib::clone!(
+        #[strong]
+        state,
+        move |area, cr, width, height| state.draw_month(area, cr, width, height)
+    ));
+    for (area, part) in [(&state.time_head, grid::Part::Head), (&state.time_area, grid::Part::Body)] {
+        area.set_draw_func(glib::clone!(
+            #[strong]
+            state,
+            move |area, cr, width, height| state.draw_time((area, part), cr, width, height)
+        ));
+    }
+    state.time_scroll.set_child(Some(&state.time_area));
+    state.time_scroll.set_vexpand(true);
+    let time_page = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+    time_page.append(&state.time_head);
+    time_page.append(&state.time_scroll);
+    let agenda = adw::Clamp::builder()
+        .maximum_size(PAGE_WIDTH)
+        .margin_top(MARGIN)
+        .margin_bottom(PAGE_MARGIN)
         .margin_start(MARGIN)
         .margin_end(MARGIN)
+        .child(&state.agenda)
         .build();
+    state.stack.add_named(&state.month_area, Some(View::Month.page()));
+    state.stack.add_named(&time_page, Some(View::Day.page()));
+    state.stack.add_named(
+        &gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&agenda).build(),
+        Some(View::Agenda.page()),
+    );
+}
+
+/// Puts the time grid where the day's work begins, or where it is now.
+fn scroll_to_hours(state: &Rc<State>) {
+    let state = state.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
+        let (hour, _) = now_hour_minute();
+        let wanted = if (WORK_HOURS.0..WORK_HOURS.1).contains(&hour) { f64::from(hour) - 1.0 } else { FIRST_HOUR_SHOWN };
+        state.time_scroll.vadjustment().set_value(grid::hour_y(wanted));
+    });
+}
+
+/// The side: the day chosen with its events, and the calendars, each shown or not, named and
+/// coloured.
+fn build_side(state: &Rc<State>) -> (adw::ToolbarView, gtk::Button) {
+    let group = adw::PreferencesGroup::builder().title("行事曆").build();
     let count = state.calendars.borrow().len();
     for index in 0..count {
         group.add(&calendar_row(state, index));
     }
-    let side = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
-    side.append(&state.month);
+    let add = gtk::Button::builder().label("新增行程").css_classes(["suggested-action", "pill"]).halign(gtk::Align::Center).build();
+    let side = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(MARGIN)
+        .margin_top(MARGIN)
+        .margin_bottom(MARGIN)
+        .margin_start(MARGIN)
+        .margin_end(MARGIN)
+        .build();
+    side.append(&state.side_title);
+    side.append(&state.list);
+    side.append(&state.empty);
     side.append(&group);
-    let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("新增行程").build();
-    let bar = adw::HeaderBar::new();
-    bar.pack_start(&add);
+    side.append(&add);
+    let bar = adw::HeaderBar::builder()
+        .show_start_title_buttons(false)
+        .title_widget(&gtk::Label::new(None))
+        .build();
     let view = adw::ToolbarView::new();
     view.add_top_bar(&bar);
     view.set_content(Some(
-        &gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&side)
-            .build(),
+        &gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&side).build(),
     ));
     (view, add)
 }
@@ -573,8 +887,9 @@ fn calendar_row(state: &Rc<State>, index: usize) -> adw::EntryRow {
     row
 }
 
-/// The day: its events, a search over all of them, and a menu.
-fn build_day(state: &Rc<State>) -> adw::ToolbarView {
+/// What is beside the side: how the days are laid out, a place to type an event as a
+/// sentence, a search over all of them, and a menu.
+fn build_main(state: &Rc<State>) -> adw::ToolbarView {
     let search = gtk::SearchEntry::builder().placeholder_text("搜尋行程").build();
     let search_bar = gtk::SearchBar::builder()
         .child(&adw::Clamp::builder().maximum_size(SEARCH_WIDTH).child(&search).build())
@@ -593,30 +908,93 @@ fn build_day(state: &Rc<State>) -> adw::ToolbarView {
     let menu = gio::Menu::new();
     menu.append(Some("今天"), Some("app.today"));
     menu.append(Some("刪除所有行程⋯"), Some("app.clear"));
-    let bar = adw::HeaderBar::new();
+
+    let previous = flat_button("go-previous-symbolic", "上一頁");
+    let next = flat_button("go-next-symbolic", "下一頁");
+    let today = gtk::Button::with_label("今天");
+    previous.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        move |_| state.step(-1)
+    ));
+    next.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        move |_| state.step(1)
+    ));
+    today.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        move |_| {
+            state.choose(Date::today());
+            state.refresh();
+        }
+    ));
+
+    let bar = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&view_switcher(state)).build();
+    bar.pack_start(&previous);
+    bar.pack_start(&next);
+    bar.pack_start(&today);
+    bar.pack_start(&state.heading);
     bar.pack_end(
         &gtk::MenuButton::builder().icon_name("open-menu-symbolic").tooltip_text("選單").menu_model(&menu).build(),
     );
     bar.pack_end(&find);
-    let events = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
-    events.append(&state.list);
-    events.append(&state.empty);
-    let page = adw::Clamp::builder()
-        .maximum_size(PAGE_WIDTH)
-        .margin_top(PAGE_MARGIN)
-        .margin_bottom(PAGE_MARGIN)
+
+    let quick = gtk::Entry::builder()
+        .placeholder_text("輸入一句話新增行程")
+        .primary_icon_name("list-add-symbolic")
+        .margin_top(MARGIN)
+        .margin_bottom(MARGIN)
         .margin_start(MARGIN)
         .margin_end(MARGIN)
-        .child(&events)
         .build();
-    state.toasts.set_child(Some(
-        &gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&page).build(),
+    quick.connect_activate(glib::clone!(
+        #[strong]
+        state,
+        move |entry| {
+            let sentence = entry.text().trim().to_string();
+            if !sentence.is_empty() {
+                add_sentence(&state, &sentence);
+                entry.set_text("");
+            }
+        }
     ));
+
     let view = adw::ToolbarView::new();
     view.add_top_bar(&bar);
     view.add_top_bar(&search_bar);
-    view.set_content(Some(&state.toasts));
+    view.add_top_bar(&quick);
+    view.set_content(Some(&state.stack));
     view
+}
+
+/// The days, the week, the month or what is coming, one at a time.
+fn view_switcher(state: &Rc<State>) -> gtk::Box {
+    let switcher = state.switcher.clone();
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (view, label) in View::ALL {
+        let button = gtk::ToggleButton::builder().label(label).active(view == state.view.get()).build();
+        match &first {
+            Some(first) => button.set_group(Some(first)),
+            None => first = Some(button.clone()),
+        }
+        button.connect_toggled(glib::clone!(
+            #[strong]
+            state,
+            move |button| {
+                if button.is_active() {
+                    state.view.set(view);
+                    state.refresh();
+                    if matches!(view, View::Day | View::Week) {
+                        scroll_to_hours(&state);
+                    }
+                }
+            }
+        ));
+        switcher.append(&button);
+    }
+    switcher
 }
 
 fn connect_month(state: &Rc<State>) {
@@ -625,20 +1003,6 @@ fn connect_month(state: &Rc<State>) {
         state,
         move |_| state.refresh()
     ));
-    for signal in ["next-month", "prev-month", "next-year", "prev-year"] {
-        state.month.connect_local(
-            signal,
-            false,
-            glib::clone!(
-                #[strong]
-                state,
-                move |_| {
-                    state.refresh();
-                    None
-                }
-            ),
-        );
-    }
 }
 
 fn add_actions(app: &adw::Application, state: &Rc<State>, window: &adw::ApplicationWindow) {
