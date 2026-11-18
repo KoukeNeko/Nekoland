@@ -8,7 +8,7 @@ use smithay::{
     delegate_xwayland_shell,
     desktop::Window,
     input::pointer::{Focus, GrabStartData},
-    reexports::calloop::LoopHandle,
+    reexports::{calloop::LoopHandle, wayland_server::Resource},
     utils::{Logical, Rectangle, SERIAL_COUNTER},
     wayland::{
         selection::{
