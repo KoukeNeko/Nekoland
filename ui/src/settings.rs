@@ -4022,7 +4022,12 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
         .title("減少動態效果")
         .active(interface_setting("enable-animations") == "false")
         .build();
-    motion.connect_active_notify(|row| set_interface("enable-animations", &(!row.is_active()).to_string()));
+    // GTK's own motion and the compositor's go together.
+    motion.connect_active_notify(|row| {
+        let animated = !row.is_active();
+        set_interface("enable-animations", &animated.to_string());
+        set(&format!("animations = {animated}"));
+    });
     seeing.add(&motion);
     if glib::find_program_in_path("orca").is_some() {
         seeing.add(&screen_reader_row());

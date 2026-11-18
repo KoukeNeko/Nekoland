@@ -91,6 +91,16 @@ pub fn init_winit(
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
 
+    let snapping = backend.clone();
+    state.snapshooter = Some(Box::new(move |window, scale| {
+        // Not while a frame is being drawn with it; the window then goes without its picture.
+        let mut backend = snapping.try_borrow_mut().ok()?;
+        crate::motion::snapshot(backend.renderer(), window, scale)
+            .inspect_err(|err| tracing::warn!("window snapshot: {err}"))
+            .ok()
+            .flatten()
+    }));
+
     // The host gives a frame at once whenever one is asked for; frames come at this pace instead.
     let ticking = backend.clone();
     event_loop
@@ -134,6 +144,7 @@ pub fn init_winit(
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
                 state.tick_overview();
+                state.tick_motion();
                 state.refresh_menu_bar();
                 state.dock_ids();
                 state.refresh_dock();

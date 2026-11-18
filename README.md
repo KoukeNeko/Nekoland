@@ -108,6 +108,7 @@ wallpaper and an input method. Every key is optional:
 | `focus_follows_pointer` | Whether the keyboard goes to the window the pointer moves into, without raising it, instead of the one clicked; off unless set |
 | `edge_tiling` | Whether a window dragged to the display's edge fills the part that edge stands for, shown under it while it is held there: a side its half, a corner its quarter, the top all of it, the bottom the third the pointer is over; on unless set |
 | `window_gap` | Points left between windows put side by side, and around them, up to 64; none unless set |
+| `animations` | Whether windows, desktops and menus move to where they go, as under Motion below, rather than jump there; on unless set |
 | `hot_corner_top_left`, `hot_corner_top_right`, `hot_corner_bottom_left`, `hot_corner_bottom_right` | What pointing into that corner of a display does: `none` (the default), `overview`, `apps` or `lock` |
 
 The Settings application changes most of these while Nekoland runs (see below);
@@ -154,7 +155,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   cursor themes, the display as the Mac's Displays (its name from its EDID, the sizes it can look like, its brightness, refresh rate, rotation, a frame counter, a colour profile, and Night Shift with its sunset schedule), the
   fonts, the keyboard, the mouse and touchpad, the sound, the power, which sandboxed applications, as
   Flatpak's, may use the camera, the microphone and the location, through the portals'
-  permission store, the cursor size, high contrast and reduced motion, the applications
+  permission store, the cursor size, high contrast and reduced motion (GTK's and, as `animations`, Nekoland's), the applications
   that open links and each kind of file, through GIO's defaults, and the terminal,
   whether GTK pastes with the middle button, blinks its text cursor and remembers recent
   files, what starts at login, and whether other computers may come in over RDP and
@@ -329,6 +330,27 @@ turns the page. A folder opens over the grid; its applications are reordered the
 dragged out, and a click on its name changes it. The arrangement is kept in
 `app-grid.toml` beside `config.toml`.
 
+## Motion
+
+What is on screen moves to where it goes on springs, as iOS moves what it shows, and it is
+Nekoland that moves it, so a program has it whatever drew its window: GTK, Qt or X11.
+
+- An application's first window opens out of its icon in the Dock. Any other window, a
+  dialog, and one brought back from being minimized other than from the Dock, grows a
+  little as it fades in.
+- A window that closes leaves its picture where it was for a moment, shrinking as it fades.
+- A window maximized, made fullscreen, put in a half or another part of the display, or
+  put back, glides from where it was to where it goes, stretched until its program has
+  drawn it at the new size.
+- Going to another desktop slides the one left out to the side as the other slides in.
+- A menu or a popover, an application's own among them, grows out of what it was opened
+  from, and its glass with it.
+
+A window minimized is drawn into the Dock as before, and the overview spreads the windows
+apart. Inside GTK programs, Nekoland's look gives what is pressed its own spring; see GTK
+applications. `animations = false`, or 減少動態效果 in Settings' 協助工具, which also sets
+GNOME's `enable-animations` for what GTK moves itself, puts everything where it goes at once.
+
 ## Glass
 
 Nekoland's glass is called Catseye（貓眼）. The menu bar and its menus, the Dock,
@@ -438,7 +460,7 @@ style, as a Mac's controls change when the system does, without changing the app
 `shell/gtk/nekoland.css` sets libadwaita's colours to Nekoland's paper and ink, with what
 is selected in solid ink, light and dark, and windows to 14px corners; draws GTK's
 buttons, switches, sliders, fields, segmented controls, menus, calendars, tabs, sidebar
-selection, dialogs, toasts and tooltips as the design language has them; and leaves sidebars see-through, on the glass Nekoland
+selection, dialogs, toasts and tooltips as the design language has them; has what is pressed give and spring back, buttons, switches, sliders, cards and the tiles of a grid; and leaves sidebars see-through, on the glass Nekoland
 draws behind every window. Settings' 設計語言 page shows all of it, after the design,
 in this look whether or not it is turned on. Settings' 外觀 page
 turns it on: it puts the file in `~/.config/gtk-4.0/nekoland/` and imports it from

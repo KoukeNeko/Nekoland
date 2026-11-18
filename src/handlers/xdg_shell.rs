@@ -22,7 +22,7 @@ use smithay::{
     },
     utils::{Rectangle, Serial, SERIAL_COUNTER},
     wayland::{
-        compositor::with_states,
+        compositor::{add_destruction_hook, with_states},
         shell::xdg::{
             PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
@@ -82,6 +82,14 @@ impl XdgShellHandler for Nekoland {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Off to the side of a panel for now; it is centered once its size is known.
         let origin = self.usable_area().map(|area| area.loc).unwrap_or_default();
+        // A program that ends without closing its windows has their surfaces destroyed
+        // before them, and what a surface showed is let go of with it: the picture the
+        // window leaves as it closes is taken then, by a hook set before the renderer's own.
+        add_destruction_hook(surface.wl_surface(), |state: &mut Nekoland, surface| {
+            if let Some(window) = state.window_for_surface(surface) {
+                state.motion_close(&window);
+            }
+        });
         self.space
             .map_element(Window::new_wayland_window(surface), origin, false);
     }
@@ -129,6 +137,7 @@ impl XdgShellHandler for Nekoland {
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
+        crate::motion::popup_created(surface.wl_surface());
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 

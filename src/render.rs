@@ -27,6 +27,7 @@ use crate::{
     dock::Frame,
     glass::{Glass, Pane, Tier},
     menubar::Overlay,
+    motion::{self, GhostElement, Pose},
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
@@ -50,6 +51,7 @@ render_elements! {
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     Solid=SolidColorRenderElement,
+    Ghost=GhostElement,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -122,8 +124,9 @@ pub fn scene_elements(
             .unwrap_or_default());
     }
     let Some(overview) = &state.overview else {
-        // A fullscreen window is all there is to see, under the overlay layer.
-        if let Some(window) = state.fullscreen_window() {
+        // A fullscreen window is all there is to see, under the overlay layer, once it has
+        // grown to fill the output: on its way there the others still show around it.
+        if let Some(window) = state.fullscreen_window().filter(|window| !state.motion_moves(window)) {
             let output_loc = state
                 .space
                 .output_geometry(output)
@@ -152,7 +155,19 @@ pub fn scene_elements(
             .filter(|window| !floating.contains(window) && !state.dock_draws(window))
             .cloned()
             .collect();
-        let under = windows_on_glass(state, renderer, output, glass.as_deref_mut(), &windows);
+        // The desktop just left slides out under the windows of the one gone to.
+        let posed: Vec<(Window, Pose)> = windows
+            .iter()
+            .filter_map(|window| Some((window.clone(), state.window_pose(window)?)))
+            .chain(state.leaving_windows().into_iter().rev())
+            .collect();
+        // What a closed window leaves fades over the windows it was among.
+        let mut under: Vec<SceneElement> = state
+            .ghost_elements(output_geometry.loc, scale)
+            .into_iter()
+            .map(SceneElement::Ghost)
+            .collect();
+        under.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed));
         let mut overlays = state.fps_overlays();
         overlays.extend(state.hover_overlays());
         overlays.extend(state.menu_bar_overlays());
@@ -700,29 +715,49 @@ fn floating_elements(
             .get(&window_names(window).1)
             .copied()
             .unwrap_or_default();
-        if let Some(area) = window_area(state, window, output_loc, scale) {
+        if let Some(pose) = state.window_pose(window) {
+            let area = pose_area(pose, output_loc, scale);
             elements.extend(
                 glass
                     .as_deref_mut()
                     .and_then(|glass| glass.pane_with(window_glass_id(window), Tier::Menu, area, pixels(radius)))
-                    .map(SceneElement::Glass),
+                    .map(|pane| SceneElement::Glass(pane.faded(pose.alpha))),
             );
         }
     }
     for (popup, origin) in &popups {
-        elements.extend(
-            render_elements_from_surface_tree(
-                renderer,
-                popup.wl_surface(),
-                (*origin - popup.geometry().loc).to_physical_precise_round(scale),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            )
-            .into_iter()
-            .map(SceneElement::Surface),
+        // A menu grows out of what it was opened from, its glass with it.
+        let pop = state
+            .config
+            .animations
+            .then(|| motion::popup_pop(popup.wl_surface()))
+            .flatten();
+        let alpha = pop.map_or(1.0, |(_, alpha)| alpha);
+        let pivot = popup_pivot(popup, Rectangle::new(*origin, popup.geometry().size));
+        let surfaces: Vec<SurfaceElement> = render_elements_from_surface_tree(
+            renderer,
+            popup.wl_surface(),
+            (*origin - popup.geometry().loc).to_physical_precise_round(scale),
+            scale,
+            alpha,
+            Kind::Unspecified,
         );
+        match pop {
+            Some((factor, _)) => {
+                let about: Point<i32, Physical> = pivot.to_physical_precise_round(scale);
+                elements.extend(surfaces.into_iter().map(|surface| {
+                    let scaled = RescaleRenderElement::from_element(surface, about, factor);
+                    SceneElement::Thumbnail(RelocateRenderElement::from_element(
+                        scaled,
+                        Point::default(),
+                        Relocate::Relative,
+                    ))
+                }));
+            }
+            None => elements.extend(surfaces.into_iter().map(SceneElement::Surface)),
+        }
         if let Some(area) = popup_glass_area(popup, *origin) {
+            let area = pop.map_or(area, |(factor, _)| motion::scaled_about(area, pivot, factor));
             elements.extend(
                 glass
                     .as_deref_mut()
@@ -734,7 +769,7 @@ fn floating_elements(
                             pixels(POPUP_RADIUS),
                         )
                     })
-                    .map(SceneElement::Glass),
+                    .map(|pane| SceneElement::Glass(pane.faded(alpha))),
             );
         }
     }
@@ -776,7 +811,7 @@ fn floating_elements(
     elements
 }
 
-/// A window's surfaces, with its popups, where it is on the output.
+/// A window's surfaces, with its popups, where it is drawn on the output.
 fn window_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
@@ -784,42 +819,59 @@ fn window_elements(
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Vec<SceneElement> {
-    let location = state.space.element_location(window).unwrap_or_default();
-    AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
-        window,
-        renderer,
-        (location - window.geometry().loc - output_loc).to_physical_precise_round(scale),
-        Scale::from(scale),
-        1.0,
-    )
-    .into_iter()
-    .map(SceneElement::Surface)
-    .collect()
+    state
+        .window_pose(window)
+        .map(|pose| posed_elements(renderer, window, pose, output_loc, scale, true))
+        .unwrap_or_default()
 }
 
-/// A window's own surfaces, without its popups, which go over the windows on glass.
-fn window_body_elements(
-    state: &Nekoland,
+/// A window's surfaces where `pose` draws it: stretched from where the window is to there,
+/// and as much there to see. Without its popups, they are left to go over the windows on
+/// glass.
+fn posed_elements(
     renderer: &mut GlesRenderer,
     window: &Window,
+    pose: Pose,
     output_loc: Point<i32, Logical>,
     scale: f64,
+    with_popups: bool,
 ) -> Vec<SceneElement> {
-    let Some(toplevel) = window.toplevel() else {
-        return window_elements(state, renderer, window, output_loc, scale);
+    let natural: Point<i32, Physical> =
+        (pose.actual.loc - window.geometry().loc - output_loc).to_physical_precise_round(scale);
+    let surfaces: Vec<SurfaceElement> = match window.toplevel().filter(|_| !with_popups) {
+        Some(toplevel) => render_elements_from_surface_tree(
+            renderer,
+            toplevel.wl_surface(),
+            natural,
+            scale,
+            pose.alpha,
+            Kind::Unspecified,
+        ),
+        None => AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+            window,
+            renderer,
+            natural,
+            Scale::from(scale),
+            pose.alpha,
+        ),
     };
-    let location = state.space.element_location(window).unwrap_or_default();
-    render_elements_from_surface_tree(
-        renderer,
-        toplevel.wl_surface(),
-        (location - window.geometry().loc - output_loc).to_physical_precise_round(scale),
-        scale,
-        1.0,
-        Kind::Unspecified,
-    )
-    .into_iter()
-    .map(SceneElement::Surface)
-    .collect()
+    let (actual, shown) = (pose.actual, pose.shown);
+    if shown == actual || actual.size.w <= 0 || actual.size.h <= 0 {
+        return surfaces.into_iter().map(SceneElement::Surface).collect();
+    }
+    let origin: Point<i32, Physical> = (actual.loc - output_loc).to_physical_precise_round(scale);
+    let offset: Point<i32, Physical> = (shown.loc - actual.loc).to_physical_precise_round(scale);
+    let factor = Scale::from((
+        f64::from(shown.size.w) / f64::from(actual.size.w),
+        f64::from(shown.size.h) / f64::from(actual.size.h),
+    ));
+    surfaces
+        .into_iter()
+        .map(|surface| {
+            let scaled = RescaleRenderElement::from_element(surface, origin, factor);
+            SceneElement::Thumbnail(RelocateRenderElement::from_element(scaled, offset, Relocate::Relative))
+        })
+        .collect()
 }
 
 /// A window's popups, frontmost first, each with where its window geometry starts on the output.
@@ -852,24 +904,16 @@ fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<Re
     // shortcut: a popover with an arrow is known by GTK's input region, which is the arrow and
     // the rounded contents rather than one rectangle; other toolkits drawing arrows would need
     // a way to say where their glass goes.
-    let (shaped, placed) = with_states(xdg.wl_surface(), |states| {
-        let shaped = states
+    let shaped = with_states(xdg.wl_surface(), |states| {
+        states
             .cached_state
             .get::<SurfaceAttributes>()
             .current()
             .input_region
             .as_ref()
-            .is_some_and(|region| region.rects.len() > 1);
-        let placed = states
-            .data_map
-            .get::<XdgPopupSurfaceData>()
-            .map(|data| {
-                let current = data.lock().unwrap().current;
-                (current.geometry, current.positioner.anchor_rect)
-            });
-        (shaped, placed)
+            .is_some_and(|region| region.rects.len() > 1)
     });
-    if let (true, Some((geometry, anchor))) = (shaped, placed) {
+    if let (true, Some((geometry, anchor))) = (shaped, popup_placement(popup)) {
         if geometry.loc.y >= anchor.loc.y + anchor.size.h {
             area.loc.y += GTK_TAIL_HEIGHT;
             area.size.h -= GTK_TAIL_HEIGHT;
@@ -885,16 +929,45 @@ fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<Re
     (!area.is_empty()).then_some(area)
 }
 
+/// Where a menu was put and what it was opened from, both from where its parent's window
+/// geometry starts.
+fn popup_placement(popup: &PopupKind) -> Option<(Rectangle<i32, Logical>, Rectangle<i32, Logical>)> {
+    let PopupKind::Xdg(xdg) = popup else {
+        return None;
+    };
+    with_states(xdg.wl_surface(), |states| {
+        states.data_map.get::<XdgPopupSurfaceData>().map(|data| {
+            let current = data.lock().unwrap().current;
+            (current.geometry, current.positioner.anchor_rect)
+        })
+    })
+}
+
+/// The point of a menu, drawn over `rect`, nearest the middle of what it was opened from:
+/// where it grows out of. Its own middle, when it does not say what that was.
+fn popup_pivot(popup: &PopupKind, rect: Rectangle<i32, Logical>) -> Point<i32, Logical> {
+    let Some((geometry, anchor)) = popup_placement(popup) else {
+        return rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2));
+    };
+    let anchor_middle = anchor.loc + Point::from((anchor.size.w / 2, anchor.size.h / 2)) - geometry.loc;
+    rect.loc
+        + Point::from((
+            anchor_middle.x.clamp(0, rect.size.w.max(0)),
+            anchor_middle.y.clamp(0, rect.size.h.max(0)),
+        ))
+}
+
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
 const WINDOW_RADIUS: i32 = 14;
 
-/// `windows`, front to back, over the layers under them, each on glass of what is under it.
+/// `windows`, front to back, each where it is drawn, over the layers under them and on glass
+/// of what is under it.
 fn windows_on_glass(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
     mut glass: Option<&mut Glass>,
-    windows: &[Window],
+    windows: &[(Window, Pose)],
 ) -> Vec<SceneElement> {
     let output_loc = state
         .space
@@ -910,15 +983,15 @@ fn windows_on_glass(
     scene.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
     let mut kept = Vec::new();
     // From the bottom up, so the glass of each one shows those under it, theirs included.
-    for window in windows.iter().rev() {
+    for (window, pose) in windows.iter().rev() {
         // Where a window being dragged will go shows under it, over the rest.
         if let Some(target) = state.snap.target.as_ref().filter(|target| &target.window == window) {
             let mut preview = snap_preview(&state.snap.ids, target.rect, output_loc, scale);
             preview.append(&mut scene);
             scene = preview;
         }
-        let mut elements = window_body_elements(state, renderer, window, output_loc, scale);
-        let area = window_area(state, window, output_loc, scale);
+        let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
+        let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
         // These windows are mostly transparent shadow margin, which glass would blur: the
         // confirmation's, and an X11 program's menus and tooltips, which X11 gives no way to
         // tell their shadow from their body and which draw their own background anyway.
@@ -933,7 +1006,11 @@ fn windows_on_glass(
             } else {
                 (f64::from(WINDOW_RADIUS) * scale).round() as i32
             };
-            elements.extend(glass.window_pane(id.clone(), area, radius).map(SceneElement::Glass));
+            elements.extend(
+                glass
+                    .window_pane(id.clone(), area, radius)
+                    .map(|pane| SceneElement::Glass(pane.faded(pose.alpha))),
+            );
             kept.push(id);
         }
         elements.append(&mut scene);
@@ -994,15 +1071,18 @@ fn snap_preview(ids: &[Id; 5], rect: Rectangle<i32, Logical>, output_loc: Point<
     elements.push(solid(fill_id, rect, white(BAND_FILL_ALPHA)));
     elements
 }
-/// The part of the output a window covers, without its shadow.
+/// The part of the output a window is drawn over, without its shadow.
 fn window_area(
     state: &Nekoland,
     window: &Window,
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Option<Rectangle<i32, Physical>> {
-    let location = state.space.element_location(window)?;
-    Some(Rectangle::new(location - output_loc, window.geometry().size).to_physical_precise_round(scale))
+    state.window_pose(window).map(|pose| pose_area(pose, output_loc, scale))
+}
+
+fn pose_area(pose: Pose, output_loc: Point<i32, Logical>, scale: f64) -> Rectangle<i32, Physical> {
+    Rectangle::new(pose.shown.loc - output_loc, pose.shown.size).to_physical_precise_round(scale)
 }
 
 /// What a window's glass goes by from frame to frame: the window keeps it.

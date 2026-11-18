@@ -1,0 +1,682 @@
+//! Motion: how windows come, go and change place, on springs as iOS moves what it shows.
+//!
+//! All of it is the compositor's doing, so every program has it whatever drew its window:
+//! GTK, Qt or X11. A window opens out of its icon in the Dock, or grows a little as it fades
+//! in; one that closes leaves a picture of itself that shrinks and fades; one maximized,
+//! put in a half or put back glides there; the desktops slide past each other; and a menu
+//! grows out of what it was opened from. `animations` turns all of it off.
+//!
+//! Nothing here keeps a clock of its own: each animation remembers when it began, and a
+//! frame asks where it has got to by then.
+
+use std::{f64::consts::TAU, sync::Mutex, time::Instant};
+
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            damage::OutputDamageTracker,
+            element::{
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                Element, Id, Kind, RenderElement,
+            },
+            gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
+            utils::{CommitCounter, RendererSurfaceStateUserData},
+            Bind, Color32F, Offscreen, Texture,
+        },
+    },
+    desktop::Window,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Buffer, IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+    wayland::{compositor::with_states, seat::WaylandFocus},
+};
+
+use crate::{windows::is_managed, Nekoland};
+
+/// A spring from 0 to 1, named as SwiftUI names its own: `response` is how many seconds one
+/// swing would take with nothing to slow it, and `damping` how much of the slowing that
+/// would just keep it from swinging past: 1 settles without passing, less passes a little.
+#[derive(Clone, Copy, Debug)]
+pub struct Spring {
+    response: f64,
+    damping: f64,
+}
+
+/// How near its end a spring counts as there.
+const SETTLED: f64 = 0.001;
+/// What a spring that just does not swing past has decayed by, in radians of its own swing,
+/// when it is `SETTLED`: where (1 + x)e⁻ˣ comes down to it.
+const CRITICAL_SETTLE: f64 = 9.23;
+
+impl Spring {
+    pub const fn new(response: f64, damping: f64) -> Self {
+        Self { response, damping }
+    }
+
+    fn frequency(&self) -> f64 {
+        TAU / self.response
+    }
+
+    /// Where the spring is, `elapsed` seconds after it was let go at 0.
+    pub fn position(&self, elapsed: f64) -> f64 {
+        if elapsed <= 0.0 {
+            return 0.0;
+        }
+        let frequency = self.frequency();
+        if self.damping >= 1.0 {
+            let turned = frequency * elapsed;
+            return 1.0 - (-turned).exp() * (1.0 + turned);
+        }
+        let decay = (-self.damping * frequency * elapsed).exp();
+        let damped = frequency * (1.0 - self.damping * self.damping).sqrt();
+        let swing = (damped * elapsed).cos() + self.damping * frequency / damped * (damped * elapsed).sin();
+        1.0 - decay * swing
+    }
+
+    /// How many seconds it takes to come to rest.
+    pub fn duration(&self) -> f64 {
+        if self.damping >= 1.0 {
+            CRITICAL_SETTLE / self.frequency()
+        } else {
+            -SETTLED.ln() / (self.damping * self.frequency())
+        }
+    }
+
+    fn at(&self, started: Instant) -> f64 {
+        self.position(seconds_since(started))
+    }
+
+    fn is_over(&self, started: Instant) -> bool {
+        seconds_since(started) >= self.duration()
+    }
+}
+
+fn seconds_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64()
+}
+
+/// A window opening: lively, and a little past its size before it rests.
+const OPEN: Spring = Spring::new(0.40, 0.80);
+/// A window with no icon to come out of starts this much of its size.
+const OPEN_SCALE: f64 = 0.86;
+/// How long a window opening takes to be fully there to see.
+const OPEN_FADE: f64 = 0.12;
+/// A window going from one place and size to another.
+const MORPH: Spring = Spring::new(0.36, 0.86);
+/// A window closing shrinks to this much of its size as it fades, without swinging back.
+const CLOSE: Spring = Spring::new(0.24, 1.0);
+const CLOSE_SCALE: f64 = 0.9;
+/// One desktop sliding out as the next slides in.
+const SLIDE: Spring = Spring::new(0.42, 1.0);
+/// A menu growing out of what it was opened from.
+const POPUP: Spring = Spring::new(0.22, 0.85);
+const POPUP_SCALE: f64 = 0.92;
+const POPUP_FADE: f64 = 0.08;
+
+/// The rectangle `t` of the way from one to another; a spring's `t` may pass 1.
+pub fn lerp(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
+    let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
+    Rectangle::new(
+        Point::from((mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y))),
+        Size::from((mix(from.size.w, to.size.w), mix(from.size.h, to.size.h))),
+    )
+}
+
+/// `rect` made `factor` times its size, `pivot` staying where it is.
+pub fn scaled_about(
+    rect: Rectangle<i32, Logical>,
+    pivot: Point<i32, Logical>,
+    factor: f64,
+) -> Rectangle<i32, Logical> {
+    let from_pivot = |at: i32, pivot: i32| pivot + (f64::from(at - pivot) * factor).round() as i32;
+    let grown = |length: i32| (f64::from(length) * factor).round() as i32;
+    Rectangle::new(
+        Point::from((from_pivot(rect.loc.x, pivot.x), from_pivot(rect.loc.y, pivot.y))),
+        Size::from((grown(rect.size.w), grown(rect.size.h))),
+    )
+}
+
+fn center(rect: Rectangle<i32, Logical>) -> Point<i32, Logical> {
+    rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2))
+}
+
+/// Where a window is drawn in a frame: `shown`, in place of `actual`, where it is and
+/// where clicks reach it, and how much of it is there to see.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub actual: Rectangle<i32, Logical>,
+    pub shown: Rectangle<i32, Logical>,
+    pub alpha: f32,
+}
+
+impl Pose {
+    /// Whether the window is drawn just where it is.
+    pub fn is_still(&self) -> bool {
+        self.shown == self.actual && self.alpha >= 1.0
+    }
+}
+
+struct Opening {
+    window: Window,
+    /// Its icon in the Dock, when it comes out of it.
+    from: Option<Rectangle<i32, Logical>>,
+    started: Instant,
+}
+
+struct Morph {
+    window: Window,
+    /// Where it was drawn when it was sent off, and the size it had then, by which to tell
+    /// when its program has drawn it at the new one.
+    from: Rectangle<i32, Logical>,
+    before: Size<i32, Logical>,
+    /// The size it was asked to take.
+    to: Size<i32, Logical>,
+    started: Instant,
+}
+
+/// The picture a closed window leaves behind while it fades.
+struct Ghost {
+    id: Id,
+    texture: GlesTexture,
+    rect: Rectangle<i32, Logical>,
+    started: Instant,
+}
+
+struct Slide {
+    /// The windows of the desktop left, with where they were on it.
+    leaving: Vec<(Window, Point<i32, Logical>)>,
+    /// Whether the desktop gone to is after the one left, and so comes in from the right.
+    forward: bool,
+    started: Instant,
+}
+
+#[derive(Default)]
+pub struct Motion {
+    opening: Vec<Opening>,
+    morphing: Vec<Morph>,
+    ghosts: Vec<Ghost>,
+    slide: Option<Slide>,
+}
+
+/// A window as it was last drawn, with the part of it the picture covers, from where its
+/// surface starts.
+pub struct Snapshot {
+    texture: GlesTexture,
+    bbox: Rectangle<i32, Logical>,
+}
+
+/// Takes a window's picture at an output's scale; set by the backend, which has the renderer.
+pub type Snapshooter = Box<dyn FnMut(&Window, f64) -> Option<Snapshot>>;
+
+/// Draws a window as it is now into a texture of its own, which outlives its surface.
+pub fn snapshot(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    scale: f64,
+) -> Result<Option<Snapshot>, Box<dyn std::error::Error>> {
+    let Some(surface) = window.wl_surface() else {
+        return Ok(None);
+    };
+    let bbox = window.bbox();
+    let size: Size<i32, Physical> = bbox.size.to_physical_precise_round(scale);
+    if size.w <= 0 || size.h <= 0 {
+        return Ok(None);
+    }
+    let origin: Point<i32, Physical> =
+        Point::from((-bbox.loc.x, -bbox.loc.y)).to_physical_precise_round(scale);
+    let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(renderer, &surface, origin, scale, 1.0, Kind::Unspecified);
+    if elements.is_empty() {
+        elements.extend(lone_surface_element(renderer, &surface, origin, scale));
+    }
+    if elements.is_empty() {
+        return Ok(None);
+    }
+    let mut texture: GlesTexture = Offscreen::<GlesTexture>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        Size::<i32, Buffer>::from((size.w, size.h)),
+    )?;
+    {
+        let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+        let mut target = renderer.bind(&mut texture)?;
+        tracker
+            .render_output(renderer, &mut target, 0, &elements, Color32F::TRANSPARENT)
+            .map_err(|err| format!("{err:?}"))?;
+    }
+    Ok(Some(Snapshot { texture, bbox }))
+}
+
+/// A surface's own picture, without the surfaces under it. A program that ends without
+/// closing its windows has its surfaces destroyed before their windows: such a surface is
+/// no longer part of its tree, but what it last showed is still kept with it.
+fn lone_surface_element(
+    renderer: &mut GlesRenderer,
+    surface: &WlSurface,
+    origin: Point<i32, Physical>,
+    scale: f64,
+) -> Option<WaylandSurfaceRenderElement<GlesRenderer>> {
+    with_states(surface, |states| {
+        let offset = states
+            .data_map
+            .get::<RendererSurfaceStateUserData>()?
+            .lock()
+            .unwrap()
+            .view()?
+            .offset;
+        let location = origin.to_f64() + offset.to_f64().to_physical(scale);
+        WaylandSurfaceRenderElement::from_surface(renderer, surface, states, location, 1.0, Kind::Unspecified)
+            .inspect_err(|err| tracing::warn!("window snapshot: {err}"))
+            .ok()
+            .flatten()
+    })
+}
+
+/// A closed window's picture where it is drawn in a frame.
+pub struct GhostElement {
+    id: Id,
+    texture: GlesTexture,
+    dst: Rectangle<i32, Physical>,
+    alpha: f32,
+}
+
+impl Element for GhostElement {
+    fn id(&self) -> &Id {
+        &self.id
+    }
+
+    fn alpha(&self) -> f32 {
+        self.alpha
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        CommitCounter::default()
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        Rectangle::from_size(self.texture.size().to_f64())
+    }
+
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.dst
+    }
+
+    fn kind(&self) -> Kind {
+        Kind::Unspecified
+    }
+}
+
+impl RenderElement<GlesRenderer> for GhostElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        frame.render_texture_from_to(
+            &self.texture,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            Transform::Normal,
+            self.alpha,
+            None,
+            &[],
+        )
+    }
+}
+
+/// When a menu was first drawn, kept with its surface.
+#[derive(Default)]
+struct PopupShown(Mutex<Option<Instant>>);
+
+fn with_popup_shown<T>(surface: &WlSurface, then: impl FnOnce(&mut Option<Instant>) -> T) -> T {
+    with_states(surface, |states| {
+        states.data_map.insert_if_missing_threadsafe(PopupShown::default);
+        let shown = states.data_map.get::<PopupShown>().expect("inserted above");
+        let mut shown = shown.0.lock().unwrap();
+        then(&mut shown)
+    })
+}
+
+/// A menu was made on `surface`: it grows from the first frame that shows it, also on a
+/// surface a menu before it was on.
+pub fn popup_created(surface: &WlSurface) {
+    with_popup_shown(surface, |shown| *shown = None);
+}
+
+/// How much of its size a menu is drawn at in this frame and how much of it is there to see,
+/// while it still grows; it starts with the frame that first asks.
+pub fn popup_pop(surface: &WlSurface) -> Option<(f64, f32)> {
+    let started = with_popup_shown(surface, |shown| *shown.get_or_insert_with(Instant::now));
+    if POPUP.is_over(started) {
+        return None;
+    }
+    let factor = POPUP_SCALE + (1.0 - POPUP_SCALE) * POPUP.at(started);
+    let alpha = (seconds_since(started) / POPUP_FADE).min(1.0) as f32;
+    Some((factor, alpha))
+}
+
+impl Slide {
+    /// How far right of their places the windows come to and those left are drawn, on an
+    /// output `width` wide.
+    fn offsets(&self, width: i32) -> (i32, i32) {
+        slide_offsets(SLIDE.at(self.started), width, self.forward)
+    }
+}
+
+/// The same, `progress` of the way through the slide.
+fn slide_offsets(progress: f64, width: i32, forward: bool) -> (i32, i32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let direction = if forward { 1.0 } else { -1.0 };
+    let width = f64::from(width);
+    (
+        (direction * width * (1.0 - progress)).round() as i32,
+        (-direction * width * progress).round() as i32,
+    )
+}
+
+impl Nekoland {
+    /// Lets go of the animations that have come to rest, and of windows that went meanwhile;
+    /// called before each frame.
+    pub fn tick_motion(&mut self) {
+        let motion = &mut self.motion;
+        motion
+            .opening
+            .retain(|opening| opening.window.alive() && !OPEN.is_over(opening.started));
+        motion
+            .morphing
+            .retain(|morph| morph.window.alive() && !MORPH.is_over(morph.started));
+        motion.ghosts.retain(|ghost| !CLOSE.is_over(ghost.started));
+        if motion
+            .slide
+            .as_ref()
+            .is_some_and(|slide| SLIDE.is_over(slide.started))
+        {
+            motion.slide = None;
+        }
+    }
+
+    /// Whether a window is drawn somewhere other than where it is, or is about to be.
+    pub fn motion_moves(&self, window: &Window) -> bool {
+        let motion = &self.motion;
+        motion.slide.is_some()
+            || motion.opening.iter().any(|opening| &opening.window == window)
+            || motion.morphing.iter().any(|morph| &morph.window == window)
+    }
+
+    fn output_width(&self) -> i32 {
+        self.space
+            .outputs()
+            .next()
+            .and_then(|output| self.space.output_geometry(output))
+            .map_or(0, |geometry| geometry.size.w)
+    }
+
+    /// Where a window on screen is drawn now.
+    pub fn window_pose(&self, window: &Window) -> Option<Pose> {
+        let location = self.space.element_location(window)?;
+        let actual = Rectangle::new(location, window.geometry().size);
+        let mut shown = actual;
+        let mut alpha = 1.0;
+        if let Some(morph) = self.motion.morphing.iter().find(|morph| &morph.window == window) {
+            // Until its program draws it at the size asked for, it is stretched toward that.
+            let target = if actual.size == morph.before {
+                Rectangle::new(actual.loc, morph.to)
+            } else {
+                actual
+            };
+            shown = lerp(morph.from, target, MORPH.at(morph.started));
+        }
+        if let Some(opening) = self
+            .motion
+            .opening
+            .iter()
+            .find(|opening| &opening.window == window)
+        {
+            let progress = OPEN.at(opening.started);
+            shown = match opening.from {
+                Some(icon) => lerp(icon, shown, progress),
+                None => scaled_about(shown, center(shown), OPEN_SCALE + (1.0 - OPEN_SCALE) * progress),
+            };
+            alpha = (seconds_since(opening.started) / OPEN_FADE).min(1.0) as f32;
+        }
+        if let Some(slide) = &self.motion.slide {
+            shown.loc.x += slide.offsets(self.output_width()).0;
+        }
+        Some(Pose { actual, shown, alpha })
+    }
+
+    /// The windows of the desktop just left, bottom of the stack first, each where it is
+    /// drawn on its way out.
+    pub fn leaving_windows(&self) -> Vec<(Window, Pose)> {
+        let Some(slide) = &self.motion.slide else {
+            return Vec::new();
+        };
+        let offset = slide.offsets(self.output_width()).1;
+        slide
+            .leaving
+            .iter()
+            .filter(|(window, _)| window.alive())
+            .map(|(window, location)| {
+                let actual = Rectangle::new(*location, window.geometry().size);
+                let shown = Rectangle::new(actual.loc + Point::from((offset, 0)), actual.size);
+                (
+                    window.clone(),
+                    Pose {
+                        actual,
+                        shown,
+                        alpha: 1.0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The pictures of the windows closed a moment ago, each shrinking as it fades.
+    pub fn ghost_elements(&self, output_loc: Point<i32, Logical>, scale: f64) -> Vec<GhostElement> {
+        self.motion
+            .ghosts
+            .iter()
+            .map(|ghost| {
+                let progress = CLOSE.at(ghost.started).clamp(0.0, 1.0);
+                let rect = scaled_about(
+                    ghost.rect,
+                    center(ghost.rect),
+                    1.0 - (1.0 - CLOSE_SCALE) * progress,
+                );
+                GhostElement {
+                    id: ghost.id.clone(),
+                    texture: ghost.texture.clone(),
+                    dst: Rectangle::new(rect.loc - output_loc, rect.size).to_physical_precise_round(scale),
+                    alpha: (1.0 - progress) as f32,
+                }
+            })
+            .collect()
+    }
+
+    /// A window was shown for the first time: an application's first comes out of its icon
+    /// in the Dock, any other grows a little where it is.
+    pub fn motion_open(&mut self, window: &Window) {
+        if !self.config.animations {
+            return;
+        }
+        let from = self.dock_icon_to_open_from(window);
+        self.start_opening(window, from);
+    }
+
+    /// A window was brought back on screen other than out of the Dock.
+    pub fn motion_reappear(&mut self, window: &Window) {
+        if self.config.animations {
+            self.start_opening(window, None);
+        }
+    }
+
+    fn start_opening(&mut self, window: &Window, from: Option<Rectangle<i32, Logical>>) {
+        self.motion.opening.retain(|opening| &opening.window != window);
+        self.motion.opening.push(Opening {
+            window: window.clone(),
+            from,
+            started: Instant::now(),
+        });
+    }
+
+    /// A window on screen is about to be put at `to`: it glides there from where it is drawn.
+    pub fn motion_morph(&mut self, window: &Window, to: Rectangle<i32, Logical>) {
+        if !self.config.animations {
+            return;
+        }
+        let Some(pose) = self.window_pose(window) else {
+            return;
+        };
+        // A window not drawn yet has nowhere to come from.
+        if pose.actual.size.w <= 0 || pose.actual.size.h <= 0 || pose.shown == to {
+            return;
+        }
+        self.motion.morphing.retain(|morph| &morph.window != window);
+        self.motion.morphing.push(Morph {
+            window: window.clone(),
+            from: pose.shown,
+            before: pose.actual.size,
+            to: to.size,
+            started: Instant::now(),
+        });
+    }
+
+    /// A window on screen is going away: its picture is kept to fade where it was.
+    pub fn motion_close(&mut self, window: &Window) {
+        // In the overview windows are drawn small, elsewhere; under the lock, not at all. An
+        // X11 program's menus and tooltips come and go too often to leave pictures behind.
+        if !self.config.animations || self.overview.is_some() || self.lock.is_some() || !is_managed(window) {
+            return;
+        }
+        let Some(pose) = self.window_pose(window) else {
+            return;
+        };
+        let Some(scale) = self
+            .space
+            .outputs()
+            .next()
+            .map(|output| output.current_scale().fractional_scale())
+        else {
+            return;
+        };
+        let Some(Snapshot { texture, bbox }) = self.snapshooter.as_mut().and_then(|take| take(window, scale))
+        else {
+            return;
+        };
+        self.motion.opening.retain(|opening| &opening.window != window);
+        self.motion.morphing.retain(|morph| &morph.window != window);
+        self.motion.ghosts.push(Ghost {
+            id: Id::new(),
+            texture,
+            rect: Rectangle::new(pose.actual.loc - window.geometry().loc + bbox.loc, bbox.size),
+            started: Instant::now(),
+        });
+    }
+
+    /// The desktop shown changed: the windows `leaving` slide out as the others slide in,
+    /// from the right when the desktop gone to is `forward` of the one left.
+    pub fn motion_slide(&mut self, leaving: Vec<(Window, Point<i32, Logical>)>, forward: bool) {
+        if !self.config.animations || self.overview.is_some() {
+            return;
+        }
+        self.motion.slide = Some(Slide {
+            leaving,
+            forward,
+            started: Instant::now(),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    const SPRINGS: [Spring; 5] = [OPEN, MORPH, CLOSE, SLIDE, POPUP];
+
+    #[test]
+    fn a_spring_starts_at_rest_and_ends_where_it_was_sent() {
+        for spring in SPRINGS {
+            assert_eq!(spring.position(0.0), 0.0);
+            assert!(
+                (spring.position(spring.duration()) - 1.0).abs() <= SETTLED * 2.0,
+                "{spring:?}"
+            );
+            assert!(spring.duration() < 0.7, "{spring:?} takes too long for a window");
+        }
+    }
+
+    #[test]
+    fn only_a_spring_damped_less_than_fully_passes_its_end() {
+        let furthest = |spring: Spring| {
+            (0..1000)
+                .map(|step| spring.position(f64::from(step) / 1000.0))
+                .fold(0.0, f64::max)
+        };
+        assert!(furthest(OPEN) > 1.0);
+        assert!(
+            furthest(OPEN) < 1.05,
+            "a window should not swell past its size to notice"
+        );
+        assert!(furthest(SLIDE) <= 1.0);
+        assert!(furthest(CLOSE) <= 1.0);
+    }
+
+    #[test]
+    fn a_rectangle_scales_around_what_stays_put() {
+        let scaled = scaled_about(rect(100, 100, 200, 100), Point::from((200, 150)), 0.5);
+        assert_eq!(scaled, rect(150, 125, 100, 50));
+        // A menu grows down from the top edge it hangs from.
+        let menu = scaled_about(rect(100, 100, 200, 100), Point::from((200, 100)), 0.5);
+        assert_eq!(menu, rect(150, 100, 100, 50));
+    }
+
+    #[test]
+    fn a_rectangle_part_of_the_way_is_between_the_two() {
+        let (from, to) = (rect(0, 0, 100, 100), rect(100, 200, 300, 500));
+        assert_eq!(lerp(from, to, 0.0), from);
+        assert_eq!(lerp(from, to, 1.0), to);
+        assert_eq!(lerp(from, to, 0.5), rect(50, 100, 200, 300));
+    }
+
+    #[test]
+    fn desktops_slide_past_each_other_a_screen_apart() {
+        // Going on to the next, it comes in from the right as the one left goes out left.
+        assert_eq!(slide_offsets(0.0, 1920, true), (1920, 0));
+        assert_eq!(slide_offsets(0.25, 1920, true), (1440, -480));
+        assert_eq!(slide_offsets(1.0, 1920, true), (0, -1920));
+        // And the other way going back.
+        assert_eq!(slide_offsets(0.25, 1920, false), (-1440, 480));
+    }
+
+    #[test]
+    fn a_window_drawn_where_it_is_is_still() {
+        let actual = rect(10, 20, 300, 200);
+        assert!(Pose {
+            actual,
+            shown: actual,
+            alpha: 1.0
+        }
+        .is_still());
+        assert!(!Pose {
+            actual,
+            shown: actual,
+            alpha: 0.5
+        }
+        .is_still());
+        assert!(!Pose {
+            actual,
+            shown: rect(11, 20, 300, 200),
+            alpha: 1.0
+        }
+        .is_still());
+    }
+}

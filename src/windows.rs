@@ -355,6 +355,7 @@ impl Nekoland {
             self.space.map_element(window.clone(), (x, y), false);
         }
         self.focus_window(window);
+        self.motion_open(window);
     }
 
     fn remember_place(&self, window: &Window) {
@@ -367,6 +368,7 @@ impl Nekoland {
     }
 
     fn put_window(&mut self, window: &Window, rect: Rectangle<i32, Logical>, states: &[ToplevelState]) {
+        self.motion_morph(window, rect);
         match window.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 toplevel.with_pending_state(|pending| {
@@ -680,7 +682,11 @@ impl Nekoland {
             return false;
         };
         let (window, location) = self.minimized.remove(index);
-        self.space.map_element(window, location, true);
+        self.space.map_element(window.clone(), location, true);
+        // Out of the Dock, the Dock draws it growing from its tile.
+        if !self.dock_draws(&window) {
+            self.motion_reappear(&window);
+        }
         true
     }
 
@@ -713,6 +719,7 @@ impl Nekoland {
     /// Takes a window off the desktop, and passes the keyboard on if it had it.
     pub fn forget_window(&mut self, window: &Window) {
         let had_focus = self.focused_window().as_ref() == Some(window);
+        self.motion_close(window);
         self.minimized.retain(|(minimized, _)| minimized != window);
         self.workspaces.forget(window);
         self.space.unmap_elem(window);

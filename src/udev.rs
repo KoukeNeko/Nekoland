@@ -253,6 +253,15 @@ pub fn init_udev(
         state.dmabuf_import = Some(Box::new(move |dmabuf| {
             importer.borrow_mut().renderer.import_dmabuf(dmabuf, None).is_ok()
         }));
+        let snapping = udev.clone();
+        state.snapshooter = Some(Box::new(move |window, scale| {
+            // Not while a frame is being drawn with it; the window then goes without its picture.
+            let mut backend = snapping.try_borrow_mut().ok()?;
+            crate::motion::snapshot(&mut backend.renderer, window, scale)
+                .inspect_err(|err| warn!("window snapshot: {err}"))
+                .ok()
+                .flatten()
+        }));
     }
 
     let mut libinput =
@@ -339,6 +348,7 @@ fn render(
 ) {
     let state = &mut data.state;
     state.tick_overview();
+    state.tick_motion();
     state.refresh_menu_bar();
     state.dock_ids();
     state.refresh_dock();

@@ -22,6 +22,7 @@ mod input;
 mod ipc;
 mod lock;
 mod menubar;
+mod motion;
 mod nautilus;
 mod fps;
 mod night;

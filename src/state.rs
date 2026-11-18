@@ -95,6 +95,10 @@ pub struct Nekoland {
     /// Where the window being dragged goes if it is let go of now.
     pub snap: crate::windows::SnapPreview,
     pub overview: Option<Overview>,
+    /// Windows on their way somewhere, and the pictures of those just closed.
+    pub motion: crate::motion::Motion,
+    /// Takes a window's picture as it closes; set by the backend, which has the renderer.
+    pub snapshooter: Option<crate::motion::Snapshooter>,
     pub menu_bar: MenuBar,
     pub dock: Dock,
     pub desktop: crate::desktop::Desktop,
@@ -218,6 +222,8 @@ impl Nekoland {
             minimized: Vec::new(),
             snap: Default::default(),
             overview: None,
+            motion: Default::default(),
+            snapshooter: None,
             menu_bar: MenuBar::default(),
             dock: Dock::new(),
             desktop: Default::default(),

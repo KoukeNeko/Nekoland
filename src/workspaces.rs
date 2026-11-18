@@ -74,6 +74,7 @@ impl Nekoland {
         all.iter().for_each(|window| self.space.unmap_elem(window));
 
         let previous = std::mem::replace(&mut self.workspaces.active, index);
+        self.motion_slide(shown.clone(), index > previous);
         self.workspaces.parked[previous] = shown;
         for (window, location) in std::mem::take(&mut self.workspaces.parked[index]) {
             self.space.map_element(window, location, false);

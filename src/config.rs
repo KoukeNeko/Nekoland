@@ -72,6 +72,8 @@ pub struct Config {
     /// Whether a window dragged to the display's edge fills the part of it that edge stands
     /// for: a side its half, a corner its quarter, the top all of it, the bottom a third.
     pub edge_tiling: bool,
+    /// Whether windows, desktops and menus move to where they go, rather than jump there.
+    pub animations: bool,
     /// The points left between windows the window commands put side by side, and around
     /// them; up to 64.
     pub window_gap: u32,
@@ -542,6 +544,7 @@ impl Default for Config {
             notifications_off: Vec::new(),
             focus_follows_pointer: false,
             edge_tiling: true,
+            animations: true,
             window_gap: 0,
             night_shift: NightShift::Off,
             // The Mac's custom schedule.

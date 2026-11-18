@@ -13,6 +13,7 @@ use crate::{
     appgrid::AppGrid,
     glass::Tier,
     menubar::{Overlay, MENU_BAR_HEIGHT},
+    motion::lerp,
     text::{self, Picture},
     windows::{is_managed, window_names},
     Nekoland,
@@ -394,14 +395,6 @@ fn spread(
             Rectangle::new(loc, size)
         })
         .collect()
-}
-
-fn lerp(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
-    let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
-    Rectangle::new(
-        Point::from((mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y))),
-        Size::from((mix(from.size.w, to.size.w), mix(from.size.h, to.size.h))),
-    )
 }
 
 impl Nekoland {

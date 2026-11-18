@@ -566,6 +566,22 @@ popover.menu modelbutton {
   transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* What opens something gives under the pointer as an icon on a phone gives under a finger:
+ * a card that can be pressed, a tile in a grid. It settles back on the buttons' spring. */
+.card.activatable,
+gridview > child,
+flowbox > flowboxchild {
+  transition: transform 260ms cubic-bezier(0.2, 1.6, 0.4, 1),
+    background-color 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.card.activatable:active,
+gridview > child:active,
+flowbox > flowboxchild:active {
+  transform: scale(0.97);
+  transition-duration: 90ms, 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 /* Sidebars on glass: Nekoland draws the wallpaper blurred behind every window, so the
  * window's own background goes, everything in it but the split views gets it back, and
  * the sidebar is left see-through. libadwaita puts a window's content a few frames deep,

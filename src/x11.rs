@@ -133,6 +133,7 @@ impl XwmHandler for Nekoland {
         let window = Window::new_x11_window(surface);
         state.space.map_element(window.clone(), location, false);
         state.focus_window(&window);
+        state.motion_open(&window);
     }
 
     // Menus and tooltips place themselves, and never take the keyboard through us.
