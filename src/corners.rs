@@ -6,7 +6,8 @@ use crate::{config::HotCorner, state::Nekoland};
 
 impl Nekoland {
     /// Acts once as the pointer comes into a corner, and again only after it has left it,
-    /// which a jump straight from one corner to another does too.
+    /// which a jump straight from one corner to another does too. Not while a button is
+    /// held: a window dragged into a corner goes into that quarter of the display instead.
     pub fn corner_motion(&mut self, pos: Point<f64, Logical>) {
         let corner = self
             .space
@@ -32,6 +33,9 @@ impl Nekoland {
             return;
         }
         self.in_hot_corner = entered;
+        if self.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed()) {
+            return;
+        }
         match corner.map(|(_, action)| action) {
             Some(HotCorner::Overview) => self.toggle_overview(),
             Some(HotCorner::Apps) => self.show_apps(""),
