@@ -1811,12 +1811,8 @@ impl Nekoland {
                             let _ = cr.fill();
                         }
                     }
-                    // Behind the window's picture, which is drawn over it.
-                    Tile::Window { .. } => {
-                        text::rounded_rectangle(&cr, ax, ay, size, size, art * 0.15);
-                        cr.set_source_rgba(r, g, b, 0.10);
-                        let _ = cr.fill();
-                    }
+                    // Its picture is drawn over the Dock on its own, with nothing behind it.
+                    Tile::Window { .. } => {}
                     // An open folder's tile closes it, as the Mac's does: a chevron toward the
                     // Dock's edge, on the fan's pill.
                     Tile::Stack { path, .. } if drawn.opened.as_ref() == Some(path) => {
