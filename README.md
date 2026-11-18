@@ -104,7 +104,7 @@ wallpaper and an input method. Every key is optional:
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
 | `notification_previews` | Whether a notification's banner shows its text, or its title alone; its text unless set |
 | `quiet_scheduled`, `quiet_from`, `quiet_to` | Whether Do Not Disturb also holds each day from `quiet_from` to `quiet_to`, `22:00` to `07:00` unless set; off unless set |
-| `notifications_off` | The programs, by the name they send notifications under, whose banners never show; Settings' 通知 lists those that have sent one, kept in `~/.local/state/nekoland/notifiers` |
+| `notifications_off` | The programs, by the name they send notifications under, whose notifications never show, as banners or in the Notification Center; Settings' 通知 lists those that have sent one, kept in `~/.local/state/nekoland/notifiers` |
 | `focus_follows_pointer` | Whether the keyboard goes to the window the pointer moves into, without raising it, instead of the one clicked; off unless set |
 | `edge_tiling` | Whether a window dragged to the display's edge fills the part that edge stands for, shown under it while it is held there: a side its half, a corner its quarter, the top all of it, the bottom the third the pointer is over; on unless set |
 | `window_gap` | Points left between windows put side by side, and around them, up to 64; none unless set |
@@ -144,7 +144,16 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   Trash is emptied from its right-click menu after asking.
 - Notifications are shown by Nekoland, which serves `org.freedesktop.Notifications`:
   banners on glass under the menu bar, which go when their time is up unless pointed
-  at; a click does what the program offers for it.
+  at; a click does what the program offers for it. What is not transient is kept after
+  its banner for the Notification Center, the newest 50 of them, until Nekoland
+  restarts; one its program closes or replaces goes from there too.
+- The Notification Center, as the Mac's, opens from the clock in the menu bar, on the
+  menus' glass where the banners stand, and closes on a second click, a click outside it
+  or Escape. Each program's notifications are stacked under its newest, saying how many,
+  and spread out by a click; a notification shows its program's name, when it came, its
+  title and its text. A click on one does what its banner would and takes it away; the ×
+  on one or on a stack under the pointer, 清除 over a program's spread out and 清除全部
+  clear them. It scrolls when taller than the screen.
 - Settings, `nekoland-settings` from `ui/`, opened from the system menu, is a GTK and
   libadwaita application, as GNOME's settings are, so it looks as the system's GTK style
   says. Its desktop page has a group each for the applications, with their four ways to
@@ -238,12 +247,12 @@ Nekoland draws the bar along the top itself, as the Mac does:
   and the program's windows. The Help menu searches every other menu as you type.
 - On the right: the status items programs register as StatusNotifierItems, with their
   menus; the sound (through `wpctl`, when PipeWire runs) and the network; the control
-  center; the clock.
+  center; the clock, which opens the Notification Center.
 - The control center, as the Mac's, opens a panel on the menus' glass. At its top, what is
   recording, in the colours of the bar's dots. Then tiles: the network, whose list of
   Wi-Fi networks joins one or turns Wi-Fi on or off through `nmcli`; Bluetooth, whether
   there is an adapter (it lists no devices yet); Do Not Disturb, which keeps notifications
-  from coming up (they are not kept); dark, which sets the GSetting
+  from coming up (they are kept in the Notification Center); dark, which sets the GSetting
   `org.gnome.desktop.interface color-scheme`; Night Shift, warm gamma ramps on displays
   that take them (not in a window); and a screenshot of the whole screen into Pictures,
   through `grim`. Under them, the display's brightness, through `brightnessctl`, when
@@ -620,8 +629,8 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 
 ## From other programs
 
-`nekoland msg WORD` talks to the running compositor: `overview`, `lock`, `sleep`, `workspace-add`,
-`workspace-next`, `workspace-previous`, `quit`; `'window COMMAND'` arranges the active window
+`nekoland msg WORD` talks to the running compositor: `overview`, `notification-center`, `lock`,
+`sleep`, `workspace-add`, `workspace-next`, `workspace-previous`, `quit`; `'window COMMAND'` arranges the active window
 as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
 `first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
@@ -646,8 +655,8 @@ it in effect, or says why not; `'unset KEY'` puts one back at its default.
 - Screen capture copies through the CPU, not dmabufs, and the screen does not turn off
   when idle.
 - X11 windows have no title bars.
-- Notifications keep no history and show no buttons for
-  their actions.
+- Notifications show no buttons for their actions, and the Notification Center forgets
+  them when Nekoland restarts.
 
 ## Origin
 

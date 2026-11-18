@@ -234,7 +234,8 @@ impl Nekoland {
 
                 let pointer = self.seat.get_pointer().unwrap();
                 if !locked
-                    && (self.dock_scroll(pointer.current_location(), vertical_amount)
+                    && (self.notification_center_scroll(pointer.current_location(), vertical_amount)
+                        || self.dock_scroll(pointer.current_location(), vertical_amount)
                         || self.apps_scroll(vertical_amount + horizontal_amount))
                 {
                     return;
@@ -333,7 +334,7 @@ impl Nekoland {
         if self.hover_key(sym, typed) {
             return true;
         }
-        if self.menu_bar.control.is_some() && sym == Keysym::Escape {
+        if self.menu_bar_panel_open() && sym == Keysym::Escape {
             self.close_menu();
             return true;
         }

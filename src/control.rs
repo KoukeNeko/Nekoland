@@ -47,7 +47,8 @@ const BUTTON: i32 = 28;
 const ICON: i32 = 16;
 /// A slider's knob, its radius.
 const KNOB: i32 = 7;
-const OPEN_TIME: f64 = 0.16;
+/// How long the panel takes to fade in, as the Notification Center does too.
+pub(crate) const OPEN_TIME: f64 = 0.16;
 const EXPAND_TIME: f64 = 0.2;
 /// How much a tile shrinks while pressed.
 const PRESSED_SCALE: f64 = 0.97;
@@ -189,7 +190,7 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
     Rectangle::new((x, y).into(), (w, h).into())
 }
 
-fn ease_out(t: f64) -> f64 {
+pub(crate) fn ease_out(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
@@ -479,27 +480,10 @@ impl ControlCenter {
         let Ok(cr) = Context::new(&surface) else {
             return;
         };
-        text::rounded_rectangle(
-            &cr,
-            0.5,
-            0.5,
-            f64::from(WIDTH) - 1.0,
-            f64::from(layout.height) - 1.0,
-            f64::from(MENU_RADIUS),
-        );
-        let (r, g, b, a) = crate::glass::tint(shown.dark, Tier::Menu);
-        cr.set_source_rgba(r, g, b, a);
-        let _ = cr.fill_preserve();
-        cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
-        cr.set_line_width(1.0);
-        let _ = cr.stroke();
+        draw_panel(&cr, &colors, shown.dark, (WIDTH, layout.height));
 
-        let well = |cr: &Context, area: Rectangle<i32, Logical>, radius: f64| {
-            let (x, y, w, h) = to_f64(area);
-            text::rounded_rectangle(cr, x, y, w, h, radius);
-            cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.07);
-            let _ = cr.fill();
-        };
+        let well =
+            |cr: &Context, area: Rectangle<i32, Logical>, radius: f64| draw_well(cr, &colors, area, radius);
         let small = font("", 9.0);
         for (group, title) in &layout.groups {
             if group.size.h < 2 {
@@ -814,7 +798,34 @@ fn tile_face(
     }
 }
 
-fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
+/// A panel of the menus' glass, `size` in points from the context's origin: its tint on the
+/// menus' corners, and its edge.
+pub(crate) fn draw_panel(cr: &Context, colors: &Colors, dark: bool, (width, height): (i32, i32)) {
+    text::rounded_rectangle(
+        cr,
+        0.5,
+        0.5,
+        f64::from(width) - 1.0,
+        f64::from(height) - 1.0,
+        f64::from(MENU_RADIUS),
+    );
+    let (r, g, b, a) = crate::glass::tint(dark, Tier::Menu);
+    cr.set_source_rgba(r, g, b, a);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+}
+
+/// A well of a panel, a little ink over its glass, that a group of its parts sits in.
+pub(crate) fn draw_well(cr: &Context, colors: &Colors, area: Rectangle<i32, Logical>, radius: f64) {
+    let (x, y, w, h) = to_f64(area);
+    text::rounded_rectangle(cr, x, y, w, h, radius);
+    cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.07);
+    let _ = cr.fill();
+}
+
+pub(crate) fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
     (
         f64::from(area.loc.x),
         f64::from(area.loc.y),
@@ -824,7 +835,7 @@ fn to_f64(area: Rectangle<i32, Logical>) -> (f64, f64, f64, f64) {
 }
 
 /// One line of text, cut short with an ellipsis where it would pass `width`.
-fn show_line(
+pub(crate) fn show_line(
     cr: &Context,
     line: &str,
     font: &pango::FontDescription,
@@ -959,6 +970,7 @@ impl Nekoland {
     /// Opens the control center under its icon in the bar, or closes it.
     pub(crate) fn toggle_control_center(&mut self, anchor: Rectangle<i32, Logical>) {
         self.menu_bar.open = None;
+        self.menu_bar.notification_center = None;
         self.menu_bar.control = match self.menu_bar.control {
             Some(_) => None,
             None => {

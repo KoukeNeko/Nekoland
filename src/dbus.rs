@@ -171,6 +171,8 @@ pub struct Notification {
     /// Action keys and their labels, in pairs.
     pub actions: Vec<String>,
     pub timeout: Expiry,
+    /// Whether the program asked for it to be shown and not kept, with the `transient` hint.
+    pub transient: bool,
 }
 
 /// How long a notification is shown.
@@ -357,7 +359,8 @@ struct Notifications {
 #[interface(name = "org.freedesktop.Notifications")]
 impl Notifications {
     fn get_capabilities(&self) -> Vec<&'static str> {
-        vec!["body", "actions", "icon-static"]
+        // Persistence: what is not transient stays in the Notification Center after its banner.
+        vec!["body", "actions", "icon-static", "persistence"]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -399,6 +402,10 @@ impl Notifications {
             }
             _ => Expiry::AsSet,
         };
+        let transient = hints
+            .get("transient")
+            .and_then(|value| bool::try_from(value.clone()).ok())
+            .unwrap_or(false);
         let _ = self.events.send(Event::Notify(Notification {
             id,
             app_name,
@@ -408,6 +415,7 @@ impl Notifications {
             body: plain_text(&body),
             actions,
             timeout,
+            transient,
         }));
         id
     }

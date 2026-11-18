@@ -7,6 +7,9 @@
 //! exports and what Nekoland can do for any window, as the Mac gives every application an
 //! Edit and a Window menu. The Help menu searches all the others.
 //!
+//! The clock opens the Notification Center, as the control center's icon opens the control
+//! center.
+//!
 //! A click opens a menu; after that the menus follow the pointer across the bar until one
 //! is chosen or dismissed. A press dragged onto an entry and let go chooses it in one move.
 //! Submenus open to the side, and a pointer on its way into one does not close it. The
@@ -38,6 +41,7 @@ use crate::{
     desktop::DesktopCommand,
     dock::DockCommand,
     glass::Tier,
+    notification_center::NotificationCenter,
     system::{self, Battery, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
@@ -63,7 +67,10 @@ pub(crate) const MENU_RADIUS: i32 = 12;
 const CHECK_COLUMN: i32 = 22;
 /// Where a label starts in a menu with no check marks or icons, as in GTK's.
 const LABEL_INSET: i32 = 12;
-const GAP_BELOW_BAR: i32 = 4;
+pub(crate) const GAP_BELOW_BAR: i32 = 4;
+/// The room either side of the clock that its highlight takes while the Notification Center
+/// is open.
+const CLOCK_PADDING: i32 = 6;
 /// How far a submenu tucks under the menu it opens from.
 const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
@@ -246,6 +253,7 @@ enum Source {
     Network,
     Battery,
     Control,
+    Clock,
 }
 
 struct Title {
@@ -282,6 +290,7 @@ pub(crate) struct Drawn {
     menus: u64,
     open: Option<usize>,
     control: bool,
+    notification_center: bool,
     dark: bool,
     background: bool,
     minute: i64,
@@ -310,6 +319,7 @@ pub struct MenuBar {
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
     pub(crate) control: Option<ControlCenter>,
+    pub(crate) notification_center: Option<NotificationCenter>,
     picture: Option<Picture>,
     pub(crate) drawn: Option<Drawn>,
     /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
@@ -340,6 +350,7 @@ impl Default for MenuBar {
             titles: Vec::new(),
             open: None,
             control: None,
+            notification_center: None,
             picture: None,
             drawn: None,
             wallpaper_dark: None,
@@ -474,7 +485,7 @@ fn text_layout(cr: &Context, text: &str, font: &pango::FontDescription) -> pango
     layout
 }
 
-fn text_size(text: &str, font: &pango::FontDescription) -> (i32, i32) {
+pub(crate) fn text_size(text: &str, font: &pango::FontDescription) -> (i32, i32) {
     let Ok(surface) = ImageSurface::create(Format::ARgb32, 1, 1) else {
         return (0, 0);
     };
@@ -739,7 +750,20 @@ impl MenuBar {
         let clock_font = font("Medium", 10.0);
         let clock_width = text_size(clock, &clock_font).0;
         let mut right = width - 12 - clock_width;
-        show_text(&cr, clock, &clock_font, f64::from(right), center, colors.ink);
+        let clock_rect = Rectangle::new(
+            (right - CLOCK_PADDING, 0).into(),
+            (clock_width + CLOCK_PADDING * 2, MENU_BAR_HEIGHT).into(),
+        );
+        let clock_lit = self.notification_center.is_some();
+        if clock_lit {
+            highlight(&cr, clock_rect);
+        }
+        let clock_color = if clock_lit { colors.on_ink } else { colors.ink };
+        show_text(&cr, clock, &clock_font, f64::from(right), center, clock_color);
+        self.titles.push(Title {
+            rect: clock_rect,
+            source: Source::Clock,
+        });
         right -= 8;
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
@@ -1082,7 +1106,12 @@ impl Nekoland {
         };
         self.menu_bar.open.is_some()
             || (self.menu_bar_shown()
-                && (self.menu_bar.control.is_some() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
+                && (self.menu_bar_panel_open() || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
+    }
+
+    /// Whether the control center or the Notification Center is open.
+    pub(crate) fn menu_bar_panel_open(&self) -> bool {
+        self.menu_bar.control.is_some() || self.menu_bar.notification_center.is_some()
     }
 
     /// The titles of the bar's left side for the active application.
@@ -1196,6 +1225,7 @@ impl Nekoland {
             menus: self.menu_bar.menus_revision,
             open: self.menu_bar.open.as_ref().and_then(|open| open.title),
             control: self.menu_bar.control.is_some(),
+            notification_center: self.menu_bar.notification_center.is_some(),
             dark,
             background,
             minute,
@@ -1230,6 +1260,7 @@ impl Nekoland {
             }
         }
         self.refresh_control_center();
+        self.refresh_notification_center();
     }
 
     /// What the bar and its open menus put on screen, front first.
@@ -1257,6 +1288,7 @@ impl Nekoland {
             return overlays;
         }
         overlays.extend(self.control_center_overlay());
+        overlays.extend(self.notification_center_overlay());
         if let Some(picture) = &bar.picture {
             overlays.push(Overlay {
                 fade: 1.0,
@@ -1336,7 +1368,7 @@ impl Nekoland {
                 bar.open = None;
             }
             Event::Dark(dark) => bar.dark = dark,
-            // Banners, which the notices take.
+            // Banners and the Notification Center's list, which the notices take.
             Event::Notify(_) | Event::CloseNotification(_) => {}
             // What is typed into the applications' search field.
             Event::Ime(event) => self.ime_event(event),
@@ -1382,7 +1414,7 @@ impl Nekoland {
         }
     }
 
-    fn local(&self, pos: Point<f64, Logical>) -> Option<Point<i32, Logical>> {
+    pub(crate) fn local(&self, pos: Point<f64, Logical>) -> Option<Point<i32, Logical>> {
         let output = self.output_area()?;
         Some(pos.to_i32_floor() - output.loc)
     }
@@ -1415,6 +1447,7 @@ impl Nekoland {
     pub fn close_menu(&mut self) {
         self.menu_bar.open = None;
         self.menu_bar.control = None;
+        self.menu_bar.notification_center = None;
     }
 
     pub(crate) fn output_size(&self) -> Size<i32, Logical> {
@@ -1427,8 +1460,13 @@ impl Nekoland {
             return;
         };
         self.menu_bar.control = None;
+        self.menu_bar.notification_center = None;
         if source == Source::Control {
             self.toggle_control_center(self.menu_bar.titles[title].rect);
+            return;
+        }
+        if source == Source::Clock {
+            self.toggle_notification_center();
             return;
         }
         let help = match &source {
@@ -1856,7 +1894,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
-            Source::Control => Vec::new(),
+            Source::Control | Source::Clock => Vec::new(),
         }
     }
 
@@ -1869,9 +1907,12 @@ impl Nekoland {
             return false;
         };
         if let Some(title) = self.title_at(local) {
-            let control = self.menu_bar.control.is_some()
-                && self.menu_bar.titles.get(title).is_some_and(|title| title.source == Source::Control);
-            if control
+            let panel_open = self.menu_bar.titles.get(title).is_some_and(|title| match title.source {
+                Source::Control => self.menu_bar.control.is_some(),
+                Source::Clock => self.menu_bar.notification_center.is_some(),
+                _ => false,
+            });
+            if panel_open
                 || self
                     .menu_bar
                     .open
@@ -1886,6 +1927,12 @@ impl Nekoland {
         }
         if self.menu_bar.control.is_some() {
             if !self.control_press(local) {
+                self.close_menu();
+            }
+            return true;
+        }
+        if self.menu_bar.notification_center.is_some() {
+            if !self.notification_center_press(local) {
                 self.close_menu();
             }
             return true;
@@ -1911,6 +1958,18 @@ impl Nekoland {
                     self.open_menu(title, false)
                 }
                 _ => self.control_motion(local),
+            }
+            return;
+        }
+        if self.menu_bar.notification_center.is_some() && self.menu_bar_shown() {
+            let Some(local) = self.local(pos) else {
+                return;
+            };
+            match self.title_at(local) {
+                Some(title) if self.menu_bar.titles[title].source != Source::Clock => {
+                    self.open_menu(title, false)
+                }
+                _ => self.notification_center_motion(local),
             }
             return;
         }
@@ -1971,6 +2030,12 @@ impl Nekoland {
         if self.menu_bar.control.is_some() {
             if let Some(local) = self.local(pos) {
                 self.control_release(local);
+            }
+            return;
+        }
+        if self.menu_bar.notification_center.is_some() {
+            if let Some(local) = self.local(pos) {
+                self.notification_center_release(local);
             }
             return;
         }

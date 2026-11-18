@@ -27,6 +27,7 @@ mod nautilus;
 mod fps;
 mod night;
 mod notices;
+mod notification_center;
 mod overview;
 mod power;
 mod privacy;
