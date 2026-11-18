@@ -21,7 +21,7 @@ use crate::{
 const WIDTH: i32 = 360;
 const PADDING: i32 = 12;
 const ICON: i32 = 36;
-const GAP: i32 = 10;
+const GAP: i32 = 8;
 const RADIUS: i32 = 14;
 const MARGIN: i32 = 12;
 const MAX_SHOWN: usize = 4;

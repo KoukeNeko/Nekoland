@@ -65,7 +65,7 @@ const EDGE_TIME: f64 = 0.6;
 const EDGE: f64 = 28.0;
 /// Within this of an icon's middle, a dragged application goes onto it, not beside it.
 const ONTO: f64 = 30.0;
-const FOLDER_PADDING: i32 = 20;
+const FOLDER_PADDING: i32 = 24;
 const FOLDER_TITLE: i32 = 48;
 const FOLDER_COLUMNS: usize = 5;
 const FOLDER_ROWS: usize = 4;
@@ -1653,7 +1653,7 @@ const CANDIDATES_RADIUS: i32 = 10;
 /// The input method's candidates in a row, each after the number that picks it, the lit
 /// one on solid ink; then its note, such as the page.
 pub(crate) fn draw_candidates((candidates, lit, note): &crate::ime::Candidates) -> Option<Picture> {
-    const PAD: f64 = 6.0;
+    const PAD: f64 = 8.0;
     const HEIGHT: i32 = 36;
     let measure = ImageSurface::create(Format::ARgb32, 1, 1).ok()?;
     let labels: Vec<String> = candidates

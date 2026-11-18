@@ -248,10 +248,10 @@ const LIST_MAX: usize = 30;
 const FADE_OUT_TIME: f64 = 0.2;
 
 const CARD_WIDTH: i32 = 220;
-const CARD_PADDING: i32 = 6;
+const CARD_PADDING: i32 = 8;
 const CARD_HEADER: i32 = 24;
 const SHOT_HEIGHT: i32 = 132;
-const PREVIEW_PADDING: i32 = 6;
+const PREVIEW_PADDING: i32 = 8;
 const CARD_GAP: i32 = 4;
 const PREVIEW_RADIUS: i32 = 12;
 const CLOSE: i32 = 20;

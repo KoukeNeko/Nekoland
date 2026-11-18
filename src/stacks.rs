@@ -30,7 +30,7 @@ const FAN_STEP: f64 = 56.0;
 const FAN_CURVE: f64 = 1.3;
 const FAN_TURN: f64 = 0.024;
 const PILL_HEIGHT: f64 = 26.0;
-const PILL_GAP: f64 = 10.0;
+const PILL_GAP: f64 = 8.0;
 /// How many items a fan shows at most, before the one that opens the folder.
 pub const FAN_MAX: usize = 15;
 /// Up to how many items Auto opens as a fan rather than a grid.

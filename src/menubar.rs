@@ -47,7 +47,7 @@ use crate::{
 };
 
 pub const MENU_BAR_HEIGHT: i32 = 30;
-const TITLE_PADDING: i32 = 10;
+const TITLE_PADDING: i32 = 8;
 const TITLE_HIGHLIGHT_HEIGHT: i32 = 22;
 /// How far the clock's highlight goes past its text, each side.
 const CLOCK_PADDING: i32 = 8;
@@ -62,7 +62,7 @@ const ROW_HEIGHT: i32 = 32;
 const SEARCH_HEIGHT: i32 = FIELD_HEIGHT + 6;
 const SEPARATOR_HEIGHT: i32 = 12;
 const MENU_POINTS: f64 = 11.0;
-const MENU_PADDING: i32 = 6;
+const MENU_PADDING: i32 = 8;
 const MENU_MIN_WIDTH: i32 = 220;
 pub(crate) const MENU_RADIUS: i32 = 12;
 /// Room on the left of an entry for its check mark.

@@ -35,14 +35,14 @@ use crate::{
     text::{self, Picture},
 };
 
-const PADDING: f64 = 14.0;
+const PADDING: f64 = 12.0;
 const RADIUS: i32 = 14;
 const ICON: i32 = 36;
 /// Room between sections, above and below the line between them.
-const GAP: f64 = 10.0;
+const GAP: f64 = 8.0;
 /// The tighter padding, room and icon of compact mode.
-const COMPACT_PADDING: f64 = 10.0;
-const COMPACT_GAP: f64 = 6.0;
+const COMPACT_PADDING: f64 = 8.0;
+const COMPACT_GAP: f64 = 4.0;
 const COMPACT_ICON: f64 = 28.0;
 /// The text size the panel is laid out at; `hover_font_size` scales it.
 const FONT_POINTS: f64 = 11.0;

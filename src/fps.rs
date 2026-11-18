@@ -19,7 +19,7 @@ const HEIGHT: i32 = 28;
 const MARGIN: i32 = 12;
 const RADIUS: i32 = 8;
 const POINTS: f64 = 13.0;
-const PADDING: f64 = 10.0;
+const PADDING: f64 = 12.0;
 
 pub struct FpsMeter {
     frames: u32,
