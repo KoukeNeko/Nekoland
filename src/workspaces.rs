@@ -59,6 +59,12 @@ impl Nekoland {
     }
 
     pub fn switch_workspace(&mut self, index: usize) {
+        self.show_workspace(index, true);
+    }
+
+    /// Shows another desktop: sliding past the one shown, or, picked in the overview, at
+    /// once, as the overview closing over it is the way there.
+    pub fn show_workspace(&mut self, index: usize, sliding: bool) {
         if index >= self.workspaces.count() || index == self.workspaces.active {
             return;
         }
@@ -74,7 +80,9 @@ impl Nekoland {
         all.iter().for_each(|window| self.space.unmap_elem(window));
 
         let previous = std::mem::replace(&mut self.workspaces.active, index);
-        self.motion_slide(shown.clone(), index > previous);
+        if sliding {
+            self.motion_slide(shown.clone(), index > previous);
+        }
         self.workspaces.parked[previous] = shown;
         for (window, location) in std::mem::take(&mut self.workspaces.parked[index]) {
             self.space.map_element(window, location, false);

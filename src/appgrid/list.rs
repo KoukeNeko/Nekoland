@@ -102,6 +102,7 @@ pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>, dock_space:
             grid,
             columns,
             rows: 0,
+            stride: area.size.w,
             sidebar: Some(sidebar),
         };
     }
@@ -115,6 +116,7 @@ pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>, dock_space:
         grid: Rectangle::new((left, top).into(), (width, bottom - top).into()),
         columns,
         rows: 0,
+        stride: area.size.w,
         sidebar: None,
     }
 }
@@ -387,12 +389,7 @@ impl Nekoland {
         };
         if let Some((Pressed::App(app), start)) = apps.press {
             if (pos.x - start.x).hypot(pos.y - start.y) > DRAG_THRESHOLD {
-                let half = f64::from(HELD_SIZE) / 2.0;
-                apps.held = Some(Held {
-                    entry: Entry::App(app),
-                    from: Source::Grid,
-                    grab: Point::from((half, half)),
-                });
+                apps.held = Some(Held::new(Entry::App(app), Source::Grid, pos));
                 apps.press = None;
                 apps.held_picture = None;
             }

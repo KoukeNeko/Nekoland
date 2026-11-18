@@ -331,7 +331,9 @@ Super, or the overview's key, spreads the desktop's windows apart where they are
 named under it, as Mission Control does. Where the menu bar was, a strip of the same
 glass names the desktops, the current one marked, with a button at the right end that
 adds one. Pointing at the strip grows it down, and the windows move down to make room:
-each desktop is shown small, wallpaper and windows as they are. A click on a desktop
+each desktop is shown small, wallpaper and windows as they are, and the add button is a
+smaller one of the wallpaper alone, under a plus. A desktop added comes out of that
+button to the end of the row as the others move over for it. A click on a desktop
 goes to it and leaves the overview. A window dragged onto a desktop goes there, onto the
 add button to a new desktop; the bar opens up for it. A desktop pointed at shows a button at its corner
 that takes it away, its windows going to the desktop before it.
@@ -339,10 +341,12 @@ that takes it away, its windows going to the desktop before it.
 Super+A, the Dock's first button, or typing in the overview shows the applications in
 place of the windows, as GNOME does: the desktops' bar stays open above them, a search
 field under it, and every application a page at a time, turned with the wheel, the
-arrows or the dots. Typing narrows them down by name, keyword or command, and Return
+arrows or the dots. Nekoland's own programs are not among them, nor those that run in a
+terminal, as the ones a system comes with do. Typing narrows them down by name, keyword or command, and Return
 starts the first. A click starts one on the desktop shown; one dragged onto a desktop
 starts there, onto the add button on a new desktop, and onto the Dock is kept in it,
-where the Dock makes room for it.
+where the Dock makes room for it. The windows stay where they are behind the
+applications, blurred by the glass these are on.
 
 The search field and a folder's name take an input method: with Fcitx5 running, what
 is being composed shows underlined in the field and its candidates in a row under it,
@@ -369,6 +373,14 @@ Nekoland that moves it, so a program has it whatever drew its window: GTK, Qt or
 
 - The applications, however `apps_view` shows them, come in from a little larger than
   they are, as a phone's icons come home, and leave the way they came.
+- On their pages each icon is a picture the GPU keeps, so that none of this is drawn
+  again as it moves: an icon grows under the pointer and gives under a press; a dragged
+  one comes to the pointer from its place and flies home from where it is let go; the
+  others glide apart for it and close up behind it; the pages slide a screen apart; and
+  the icons shake, each turned a little, while they are arranged. The icons are drawn
+  ahead of time, a few a frame while nothing is shown, so showing them waits for none.
+- A desktop picked in the overview is gone to as the overview closes, without the
+  desktops sliding past each other as well.
 - A new window grows a little as it fades in, as the Mac's do, and so does one brought
   back from being minimized other than from the Dock. One whose application was started
   from its icon among the applications opens out of that icon.
@@ -674,7 +686,7 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 
 ## From other programs
 
-`nekoland msg WORD` talks to the running compositor: `overview`, `notification-center`, `lock`,
+`nekoland msg WORD` talks to the running compositor: `overview`, `apps`, `notification-center`, `lock`,
 `sleep`, `workspace-add`, `workspace-next`, `workspace-previous`, `quit`; `'window COMMAND'` arranges the active window
 as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
 `first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,

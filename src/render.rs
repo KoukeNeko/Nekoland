@@ -26,7 +26,9 @@ use crate::{
     config::{DockPosition, MinimizeEffect},
     dock::Frame,
     glass::{Glass, Pane, Tier},
+    appgrid::{Backdrop, Layer as AppsLayer},
     menubar::Overlay,
+    sprite::Placed,
     motion::{self, GhostElement, Pose},
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
@@ -54,6 +56,7 @@ render_elements! {
     Ghost=GhostElement,
     ZoomedPicture=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Sprite=crate::sprite::SpriteElement,
 }
 
 render_elements! {
@@ -185,6 +188,8 @@ pub fn scene_elements(
         overlays.extend(state.dock_overlays());
         let on_top = OnTop {
             overlays: &overlays,
+            sprites: &[],
+            backdrop: None,
             windows: &floating,
             popups_of: &windows,
             without_top_panel: false,
@@ -298,7 +303,8 @@ pub fn scene_elements(
         }
     }
 
-    for slot in resting().filter(|_| !apps) {
+    // Under the applications too, whose glass shows them blurred where they are.
+    for slot in resting() {
         elements.extend(window_thumbnail(renderer, slot));
     }
 
@@ -311,15 +317,23 @@ pub fn scene_elements(
     )));
     elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
     // The applications in front of the desktops' bar, on glass behind everything else.
-    let (apps, backdrop) = state.apps_overlays();
+    let apps = state.apps_scene();
     // A menu a right click opened here, over it all.
     let mut overlays = state.menu_bar_overlays();
-    overlays.extend(apps);
+    // Each group of sprites goes in front of the overlay that follows it.
+    let mut sprites = Vec::new();
+    for layer in apps.front {
+        match layer {
+            AppsLayer::Overlay(overlay) => overlays.push(overlay),
+            AppsLayer::Sprites(group) => sprites.push((overlays.len(), group)),
+        }
+    }
     overlays.extend(state.overview_overlays());
     overlays.extend(state.dock_overlays());
-    overlays.extend(backdrop);
     let on_top = OnTop {
         overlays: &overlays,
+        sprites: &sprites,
+        backdrop: apps.backdrop.as_ref(),
         windows: &[],
         popups_of: &[],
         without_top_panel: true,
@@ -332,6 +346,26 @@ pub fn scene_elements(
         state
             .overview_close_button()
             .and_then(|(rect, button)| picture(renderer, button, rect.loc)),
+    );
+    scene.extend(
+        state
+            .overview_add_button()
+            .filter(|_| state.overview_expansion() > 0.0)
+            .and_then(|(rect, plus)| {
+                let within = state.overview_panel()?.intersection(rect)?;
+                let cut = Rectangle::from_size(within.size).to_f64();
+                MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    to_output(rect.loc),
+                    &plus.buffer,
+                    Some(state.overview_expansion() as f32),
+                    Some(cut),
+                    Some(within.size),
+                    Kind::Unspecified,
+                )
+                .ok()
+                .map(SceneElement::Picture)
+            }),
     );
     scene.extend(desktop_thumbnails(state, renderer, output, output_geometry.loc));
     scene.extend(dock_front(state, renderer, output_geometry.loc, scale));
@@ -360,12 +394,21 @@ fn desktop_thumbnails(
         .map_or(1, |geometry| geometry.size.w.max(1));
     let map = layer_map_for_output(output);
     let mut elements = Vec::new();
-    for (index, rect) in state.overview_thumbnails() {
+    // The add button is a desktop with no windows yet: the wallpaper alone.
+    let add = state.overview_add_button().map(|(rect, _)| (None, rect));
+    let desktops = state.overview_thumbnails().into_iter().map(|(index, rect)| (Some(index), rect));
+    for (index, rect) in desktops.chain(add) {
         let factor = f64::from(rect.size.w) / f64::from(output_width);
         let offset = (rect.loc - output_loc).to_physical_precise_round(scale);
+        // Each is cut to its own picture as well as to the bar.
+        let Some(crop) = crop.intersection(Rectangle::new(rect.loc - output_loc, rect.size).to_physical_precise_round(scale))
+        else {
+            continue;
+        };
         let mut surfaces: Vec<SurfaceElement> = Vec::new();
         // Front to back: the windows, top of the stack first, then the wallpaper.
-        for (window, location) in state.desktop_windows(index).into_iter().rev() {
+        let windows = index.map(|index| state.desktop_windows(index)).unwrap_or_default();
+        for (window, location) in windows.into_iter().rev() {
             surfaces.extend(
                 AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
                     &window,
@@ -602,6 +645,10 @@ fn window_fitted(
 /// layers above the windows, less a top panel where the overview's bar takes its place.
 struct OnTop<'a> {
     overlays: &'a [Overlay<'a>],
+    /// Sprites, each group in front of the overlay at the place it names.
+    sprites: &'a [(usize, Vec<Placed<'a>>)],
+    /// The applications' glass, behind every overlay.
+    backdrop: Option<&'a Backdrop<'a>>,
     windows: &'a [Window],
     /// Windows drawn under the glass, whose menus and other popups go over it.
     popups_of: &'a [Window],
@@ -620,6 +667,8 @@ fn floating_elements(
 ) -> Vec<SceneElement> {
     let OnTop {
         overlays,
+        sprites,
+        backdrop,
         windows,
         popups_of,
         without_top_panel,
@@ -656,6 +705,10 @@ fn floating_elements(
             let rect = Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size);
             Some((tier, rect.to_physical_precise_round(scale)))
         })
+        .chain(backdrop.map(|backdrop| {
+            let rect = Rectangle::new(backdrop.rect.loc - output_loc, backdrop.rect.size);
+            (Tier::Menu, rect.to_physical_precise_round(scale))
+        }))
         .chain(
             surfaces
                 .iter()
@@ -687,7 +740,15 @@ fn floating_elements(
     }
 
     let mut elements = Vec::new();
-    for overlay in overlays {
+    for (index, overlay) in overlays.iter().enumerate() {
+        for (_, group) in sprites.iter().filter(|(before, _)| *before == index) {
+            elements.extend(
+                group
+                    .iter()
+                    .filter_map(|sprite| sprite.element(renderer, output_loc, scale))
+                    .map(SceneElement::Sprite),
+            );
+        }
         let rect =
             Rectangle::new(overlay.rect.loc - output_loc, overlay.rect.size).to_physical_precise_round(scale);
         // An overlay smaller than its picture shows as much of it as fits, from the top left.
@@ -720,6 +781,24 @@ fn floating_elements(
                 .zip(overlay.glass)
                 .and_then(|(glass, (tier, radius))| glass.pane_with(overlay.id.clone(), tier, rect, pixels(radius)))
                 .map(|pane| SceneElement::Glass(pane.faded(overlay.fade))),
+        );
+    }
+    if let Some(backdrop) = backdrop {
+        let rect = Rectangle::new(backdrop.rect.loc - output_loc, backdrop.rect.size);
+        elements.push(SceneElement::Solid(SolidColorRenderElement::from_buffer(
+            backdrop.tint,
+            rect.loc.to_physical_precise_round(scale),
+            scale,
+            backdrop.fade,
+            Kind::Unspecified,
+        )));
+        elements.extend(
+            glass
+                .as_deref_mut()
+                .and_then(|glass| {
+                    glass.pane_with(backdrop.id.clone(), Tier::Menu, rect.to_physical_precise_round(scale), 0)
+                })
+                .map(|pane| SceneElement::Glass(pane.faded(backdrop.fade))),
         );
     }
     for window in windows {

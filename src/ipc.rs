@@ -272,6 +272,8 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
         }
         "overview" => state.toggle_overview(),
+        // As Super+A: the applications, or away with them.
+        "apps" => state.show_apps(""),
         // As a click on the menu bar's clock: opens the Notification Center, or closes it.
         "notification-center" => state.toggle_notification_center(),
         "lock" => state.lock_screen(),
