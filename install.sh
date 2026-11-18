@@ -23,7 +23,7 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
 # What it runs with: Mesa to draw, Xwayland, the wallpaper, terminal, portals, the network,
 # sound, printing, languages, clipboard, fonts and icons, the input method, and the applications the example
 # configuration keeps in the Dock.
-run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland swaylock swaybg foot grim
+run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     network-manager wpasupplicant network-manager-openvpn bluez cups locales rsync
@@ -112,6 +112,9 @@ sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/actions "$src"/s
 # draws are its own theme, the one used until the person picks another.
 sudo install -Dm 644 -t /usr/local/share/icons/hicolor/scalable/apps "$src"/shell/icons/apps/io.github.koukeneko.Nekoland.*.svg
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland "$src/shell/icons/Nekoland/index.theme"
+# The look's theme for GTK 3 programs, light and dark.
+sudo install -Dm 644 -t /usr/local/share/themes/Nekoland "$src/shell/gtk3/Nekoland/index.theme"
+sudo install -Dm 644 -t /usr/local/share/themes/Nekoland/gtk-3.0 "$src"/shell/gtk3/Nekoland/gtk-3.0/*.css
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network

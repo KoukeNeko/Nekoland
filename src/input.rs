@@ -283,6 +283,8 @@ impl Nekoland {
             self.focus_layer(&layer);
         } else if self.overview.is_some() {
             self.overview_click(pos);
+        } else if self.frame_press(pos, button, serial) {
+            // A title bar or grip of an X11 window.
         } else if let Some((window, location)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
             self.focus_window(&window);
 

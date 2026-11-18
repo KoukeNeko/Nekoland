@@ -62,15 +62,21 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
     if let ("gsettings", ["set" | "reset", schema, key, ..]) = (program, args) {
         WROTE.with_borrow_mut(|wrote| wrote.insert(format!("{schema} {key}")));
     }
-    let output = Command::new(program)
+    let result = Command::new(program)
         .args(args)
         .output()
         .inspect_err(|err| eprintln!("{program}: {err}"))
         .ok()?;
-    output
+    // GNOME's desktop settings are what X11 programs are given, by the compositor.
+    if let ("gsettings", ["set" | "reset", schema, ..]) = (program, args) {
+        if schema.starts_with("org.gnome.desktop.") && result.status.success() {
+            output("nekoland", &["msg", "xsettings"]);
+        }
+    }
+    result
         .status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .then(|| String::from_utf8_lossy(&result.stdout).into_owned())
 }
 
 fn run(program: &str, args: &[&str]) {
@@ -295,6 +301,7 @@ fn build(app: &adw::Application) {
             eprintln!("GTK look: {err}");
         }
         set_window_buttons(true);
+        set_gtk3_theme(true);
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
     // GTK reads its user stylesheet as an application starts: other applications take the
@@ -3622,6 +3629,7 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
             return;
         }
         set_window_buttons(on);
+        set_gtk3_theme(on);
         let display = row.display();
         if on {
             gtk::style_context_add_provider_for_display(
@@ -3944,6 +3952,23 @@ const BUTTON_LAYOUT: [&str; 2] = ["org.gnome.desktop.wm.preferences", "button-la
 const LOOK_BUTTONS: &str = "':minimize,maximize,close'";
 /// The layout from before the look was turned on, beside the look, to put back after.
 const SAVED_BUTTONS_FILE: &str = "nekoland/button-layout";
+
+/// The GTK 3 theme of the look, which install.sh puts in /usr/local/share/themes, is
+/// GNOME's `gtk-theme` while the look is on: GTK 3 programs read it on Wayland, and the
+/// compositor gives it to X11 ones as XSettings. Off, it is put back to the default, unless
+/// another was chosen.
+fn set_gtk3_theme(on: bool) {
+    let current = interface_setting("gtk-theme");
+    if on {
+        if current != GTK3_THEME {
+            set_interface("gtk-theme", &format!("'{GTK3_THEME}'"));
+        }
+    } else if current == GTK3_THEME {
+        run("gsettings", &["reset", INTERFACE, "gtk-theme"]);
+    }
+}
+
+const GTK3_THEME: &str = "Nekoland";
 
 /// Gives windows the design language's title bar buttons with the look, and puts back the
 /// ones they had when it is turned off.
@@ -8342,6 +8367,23 @@ mod tests {
                 dark.contains(&format!("--nekoland-{token}: {dark_value};")),
                 "dark {token}"
             );
+        }
+    }
+
+    /// The GTK 3 theme names the same colours as the GTK 4 look, light and dark.
+    #[test]
+    fn the_gtk3_theme_has_the_gtk4_tokens() {
+        let light = include_str!("../../shell/gtk3/Nekoland/gtk-3.0/gtk.css");
+        let dark = include_str!("../../shell/gtk3/Nekoland/gtk-3.0/gtk-dark.css");
+        for token in TOKENS
+            .map(|(token, ..)| token)
+            .into_iter()
+            .chain(["on-ink", "on-danger"])
+        {
+            for (theme, is_dark) in [(light, false), (dark, true)] {
+                let define = format!("@define-color nekoland_{} {};", token.replace('-', "_"), token_value(token, is_dark));
+                assert!(theme.contains(&define), "{define}");
+            }
         }
     }
 }

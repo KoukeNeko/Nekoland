@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=X-GNOME-Metatheme
+Name=Nekoland
+Comment=Nekoland's design language for GTK 3 applications
+Encoding=UTF-8
+
+[X-GNOME-Metatheme]
+GtkTheme=Nekoland

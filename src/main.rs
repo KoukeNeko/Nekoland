@@ -14,6 +14,7 @@ mod desktop;
 mod dock;
 mod fileinfo;
 mod focus;
+mod frame;
 mod glass;
 mod handlers;
 mod hover;
@@ -45,6 +46,7 @@ mod windows;
 mod winit;
 mod workspaces;
 mod x11;
+mod xsettings;
 
 use smithay::reexports::{
     calloop::EventLoop,

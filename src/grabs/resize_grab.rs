@@ -1,6 +1,6 @@
 use crate::Nekoland;
 use smithay::{
-    desktop::{Space, Window},
+    desktop::{Space, Window, WindowSurface},
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
         GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -12,6 +12,7 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle, Size},
     wayland::{compositor, shell::xdg::SurfaceCachedState},
+    xwayland::xwm,
 };
 use std::cell::RefCell;
 
@@ -38,6 +39,23 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     }
 }
 
+impl From<xwm::ResizeEdge> for ResizeEdge {
+    fn from(edge: xwm::ResizeEdge) -> Self {
+        match edge {
+            xwm::ResizeEdge::Top => Self::TOP,
+            xwm::ResizeEdge::Bottom => Self::BOTTOM,
+            xwm::ResizeEdge::Left => Self::LEFT,
+            xwm::ResizeEdge::TopLeft => Self::TOP_LEFT,
+            xwm::ResizeEdge::BottomLeft => Self::BOTTOM_LEFT,
+            xwm::ResizeEdge::Right => Self::RIGHT,
+            xwm::ResizeEdge::TopRight => Self::TOP_RIGHT,
+            xwm::ResizeEdge::BottomRight => Self::BOTTOM_RIGHT,
+        }
+    }
+}
+
+/// Resizes a window, an X11 one too, which is configured as it moves rather than when its
+/// program next draws.
 pub struct ResizeSurfaceGrab {
     start_data: PointerGrabStartData<Nekoland>,
     window: Window,
@@ -57,9 +75,11 @@ impl ResizeSurfaceGrab {
     ) -> Self {
         let initial_rect = initial_window_rect;
 
-        ResizeSurfaceState::with(window.toplevel().unwrap().wl_surface(), |state| {
-            *state = ResizeSurfaceState::Resizing { edges, initial_rect };
-        });
+        if let Some(toplevel) = window.toplevel() {
+            ResizeSurfaceState::with(toplevel.wl_surface(), |state| {
+                *state = ResizeSurfaceState::Resizing { edges, initial_rect };
+            });
+        }
 
         Self {
             start_data,
@@ -103,12 +123,17 @@ impl PointerGrab<Nekoland> for ResizeSurfaceGrab {
             new_window_height = (self.initial_rect.size.h as f64 + delta.y) as i32;
         }
 
-        let (min_size, max_size) =
-            compositor::with_states(self.window.toplevel().unwrap().wl_surface(), |states| {
+        let (min_size, max_size) = match self.window.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => compositor::with_states(toplevel.wl_surface(), |states| {
                 let mut guard = states.cached_state.get::<SurfaceCachedState>();
                 let data = guard.current();
                 (data.min_size, data.max_size)
-            });
+            }),
+            WindowSurface::X11(surface) => (
+                surface.min_size().unwrap_or_default(),
+                surface.max_size().unwrap_or_default(),
+            ),
+        };
 
         let min_width = min_size.w.max(1);
         let min_height = min_size.h.max(1);
@@ -121,13 +146,28 @@ impl PointerGrab<Nekoland> for ResizeSurfaceGrab {
             new_window_height.max(min_height).min(max_height),
         ));
 
-        let xdg = self.window.toplevel().unwrap();
-        xdg.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Resizing);
-            state.size = Some(self.last_window_size);
-        });
+        match self.window.underlying_surface() {
+            WindowSurface::Wayland(xdg) => {
+                xdg.with_pending_state(|state| {
+                    state.states.set(xdg_toplevel::State::Resizing);
+                    state.size = Some(self.last_window_size);
+                });
 
-        xdg.send_pending_configure();
+                xdg.send_pending_configure();
+            }
+            WindowSurface::X11(surface) => {
+                // Its top or left edge, held, stays under the pointer as the far side moves.
+                let mut location = self.initial_rect.loc;
+                if self.edges.intersects(ResizeEdge::LEFT) {
+                    location.x += self.initial_rect.size.w - self.last_window_size.w;
+                }
+                if self.edges.intersects(ResizeEdge::TOP) {
+                    location.y += self.initial_rect.size.h - self.last_window_size.h;
+                }
+                let _ = surface.configure(Rectangle::new(location, self.last_window_size));
+                data.space.map_element(self.window.clone(), location, false);
+            }
+        }
     }
 
     fn relative_motion(
@@ -156,20 +196,21 @@ impl PointerGrab<Nekoland> for ResizeSurfaceGrab {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
 
-            let xdg = self.window.toplevel().unwrap();
-            xdg.with_pending_state(|state| {
-                state.states.unset(xdg_toplevel::State::Resizing);
-                state.size = Some(self.last_window_size);
-            });
+            if let Some(xdg) = self.window.toplevel() {
+                xdg.with_pending_state(|state| {
+                    state.states.unset(xdg_toplevel::State::Resizing);
+                    state.size = Some(self.last_window_size);
+                });
 
-            xdg.send_pending_configure();
+                xdg.send_pending_configure();
 
-            ResizeSurfaceState::with(xdg.wl_surface(), |state| {
-                *state = ResizeSurfaceState::WaitingForLastCommit {
-                    edges: self.edges,
-                    initial_rect: self.initial_rect,
-                };
-            });
+                ResizeSurfaceState::with(xdg.wl_surface(), |state| {
+                    *state = ResizeSurfaceState::WaitingForLastCommit {
+                        edges: self.edges,
+                        initial_rect: self.initial_rect,
+                    };
+                });
+            }
         }
     }
 

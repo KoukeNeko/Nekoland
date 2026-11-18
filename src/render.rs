@@ -731,6 +731,9 @@ fn floating_elements(
             .copied()
             .unwrap_or_default();
         if let Some(pose) = state.window_pose(window) {
+            if pose.is_still() {
+                elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
+            }
             let area = pose_area(pose, output_loc, scale);
             elements.extend(
                 glass
@@ -1006,6 +1009,9 @@ fn windows_on_glass(
             scene = preview;
         }
         let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
+        if pose.is_still() {
+            elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
+        }
         let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
         // These windows are mostly transparent shadow margin, which glass would blur: the
         // confirmation's, and an X11 program's menus and tooltips, which X11 gives no way to

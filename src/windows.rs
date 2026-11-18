@@ -362,12 +362,19 @@ impl Nekoland {
         let mut restore = data(window).restore.borrow_mut();
         if restore.is_none() {
             if let Some(location) = self.space.element_location(window) {
-                *restore = Some(Rectangle::new(location, window.geometry().size));
+                *restore = Some(self.with_title(window, Rectangle::new(location, window.geometry().size)));
             }
         }
     }
 
+    /// Puts a window in `rect`, which holds the title bar that goes over an X11 window, but
+    /// not over one made fullscreen.
     fn put_window(&mut self, window: &Window, rect: Rectangle<i32, Logical>, states: &[ToplevelState]) {
+        let rect = if states.contains(&ToplevelState::Fullscreen) {
+            rect
+        } else {
+            self.without_title(window, rect)
+        };
         self.motion_morph(window, rect);
         match window.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
@@ -408,7 +415,7 @@ impl Nekoland {
             .and_then(|toplevel| toplevel.with_pending_state(|pending| pending.size))
             .filter(|size| size.w > 0 && size.h > 0);
         let size = asked.unwrap_or_else(|| window.geometry().size);
-        Some(Rectangle::new(self.space.element_location(window)?, size))
+        Some(self.with_title(window, Rectangle::new(self.space.element_location(window)?, size)))
     }
 
     /// The points left between windows put side by side, and around them.
@@ -558,7 +565,7 @@ impl Nekoland {
                     let Some(location) = self.space.element_location(window) else {
                         continue;
                     };
-                    let rect = Rectangle::new(location, window.geometry().size);
+                    let rect = self.with_title(window, Rectangle::new(location, window.geometry().size));
                     let inside = keep_inside(rect, area);
                     if inside != rect {
                         self.put_window(window, inside, &[]);

@@ -179,6 +179,8 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                 None => return Some(format!("not a date: {text}\n")),
             }
         }
+        // GNOME's settings changed, which X11 programs are given.
+        "xsettings" => crate::xsettings::sync(),
         // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ.
         "modes" => {
             let output = state.space.outputs().next()?;

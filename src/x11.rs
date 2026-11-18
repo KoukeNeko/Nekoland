@@ -1,7 +1,6 @@
 //! X11 programs, through XWayland: this is their window manager.
 //!
-//! shortcut: X11 windows are resized from their own edges only by programs that do it
-//! themselves.
+//! A program that leaves its decoration to us gets a title bar and grips; see `frame`.
 
 use std::{os::fd::OwnedFd, process::Stdio};
 
@@ -31,7 +30,12 @@ use smithay::{
     },
 };
 
-use crate::{focus::KeyFocus, grabs::MoveSurfaceGrab, CalloopData, Nekoland};
+use crate::{
+    focus::KeyFocus,
+    frame,
+    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
+    CalloopData, Nekoland,
+};
 
 /// Starts XWayland, and calls `then` once programs can be told where it is, or once
 /// it is clear that it will not come up.
@@ -68,6 +72,7 @@ pub fn start(
                 Ok(wm) => {
                     data.state.xwm = Some(wm);
                     std::env::set_var("DISPLAY", format!(":{display_number}"));
+                    crate::xsettings::start();
                 }
                 Err(err) => tracing::warn!("could not manage X11 windows: {err}"),
             },
@@ -83,6 +88,19 @@ pub fn start(
 }
 
 impl Nekoland {
+    /// The grab a button held down on this program's own window began, which its request to
+    /// move or resize it needs: without one, a program could take the pointer whenever it
+    /// liked.
+    fn pressed_on(&self, surface: &X11Surface) -> Option<GrabStartData<Nekoland>> {
+        let pointer = self.seat.get_pointer()?;
+        if !pointer.is_grabbed() {
+            return None;
+        }
+        let start = pointer.grab_start_data()?;
+        let (focus, _) = start.focus.as_ref()?;
+        focus.id().same_client_as(&surface.wl_surface()?.id()).then_some(start)
+    }
+
     fn x11_window(&self, surface: &X11Surface) -> Option<Window> {
         self.all_windows()
             .find(|window| window.x11_surface() == Some(surface))
@@ -118,12 +136,14 @@ impl XwmHandler for Nekoland {
             return;
         }
         let size = surface.geometry().size;
+        // A window with a title bar of ours is centred with it, and below the top.
+        let bar = if frame::needs_title(&surface) { frame::TITLE_HEIGHT } else { 0 };
         let location = state
             .usable_area()
             .map(|area| {
                 (
                     area.loc.x + (area.size.w - size.w).max(0) / 2,
-                    area.loc.y + (area.size.h - size.h).max(0) / 2,
+                    area.loc.y + (area.size.h - size.h - bar).max(0) / 2 + bar,
                 )
                     .into()
             })
@@ -224,9 +244,24 @@ impl XwmHandler for Nekoland {
         }
     }
 
-    fn resize_request(&mut self, _xwm: XwmId, _surface: X11Surface, _button: u32, _edge: ResizeEdge) {}
+    fn resize_request(&mut self, _xwm: XwmId, surface: X11Surface, _button: u32, edge: ResizeEdge) {
+        let state = self;
+        let Some(window) = state.x11_window(&surface) else {
+            return;
+        };
+        let (Some(pointer), Some(location)) = (state.seat.get_pointer(), state.space.element_location(&window))
+        else {
+            return;
+        };
+        let Some(start_data) = state.pressed_on(&surface) else {
+            return;
+        };
+        let rect = Rectangle::new(location, window.geometry().size);
+        let grab = ResizeSurfaceGrab::start(start_data, window, edge.into(), rect);
+        pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+    }
 
-    fn move_request(&mut self, _xwm: XwmId, surface: X11Surface, button: u32) {
+    fn move_request(&mut self, _xwm: XwmId, surface: X11Surface, _button: u32) {
         let state = self;
         let Some(window) = state.x11_window(&surface) else {
             return;
@@ -236,10 +271,8 @@ impl XwmHandler for Nekoland {
         else {
             return;
         };
-        let start_data = GrabStartData {
-            focus: None,
-            button,
-            location: pointer.current_location(),
+        let Some(start_data) = state.pressed_on(&surface) else {
+            return;
         };
         let grab = MoveSurfaceGrab::new(start_data, window, initial_window_location);
         pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);

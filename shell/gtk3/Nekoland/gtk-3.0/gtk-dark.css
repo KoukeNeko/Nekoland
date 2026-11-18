@@ -1,0 +1,32 @@
+/* Nekoland for GTK 3, dark. See nekoland.css. */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");
+@import url("nekoland.css");
+
+@define-color nekoland_paper #1b1b1e;
+@define-color nekoland_sheet #222226;
+@define-color nekoland_ink #f1efea;
+@define-color nekoland_ink_2 #a9a7ab;
+@define-color nekoland_ink_3 #939197;
+@define-color nekoland_line #323237;
+@define-color nekoland_fill #2c2c31;
+@define-color nekoland_on_ink #17171a;
+@define-color nekoland_danger #ff6b5f;
+@define-color nekoland_on_danger #17171a;
+
+@define-color theme_bg_color @nekoland_paper;
+@define-color theme_fg_color @nekoland_ink;
+@define-color theme_base_color @nekoland_sheet;
+@define-color theme_text_color @nekoland_ink;
+@define-color theme_selected_bg_color @nekoland_ink;
+@define-color theme_selected_fg_color @nekoland_on_ink;
+@define-color theme_unfocused_bg_color @nekoland_paper;
+@define-color theme_unfocused_fg_color @nekoland_ink;
+@define-color theme_unfocused_base_color @nekoland_sheet;
+@define-color theme_unfocused_text_color @nekoland_ink;
+@define-color theme_unfocused_selected_bg_color @nekoland_ink;
+@define-color theme_unfocused_selected_fg_color @nekoland_on_ink;
+@define-color insensitive_fg_color @nekoland_ink_3;
+@define-color borders @nekoland_line;
+@define-color unfocused_borders @nekoland_line;
+@define-color error_color @nekoland_danger;
+@define-color link_color @nekoland_ink;

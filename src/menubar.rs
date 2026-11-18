@@ -1423,7 +1423,11 @@ impl Nekoland {
                 bar.items_revision += 1;
                 bar.open = None;
             }
-            Event::Dark(dark) => bar.dark = dark,
+            Event::Dark(dark) => {
+                bar.dark = dark;
+                // X11 programs are told to be dark too.
+                crate::xsettings::sync();
+            }
             // Banners and the Notification Center's list, which the notices take.
             Event::Notify(_) | Event::CloseNotification(_) => {}
             // What is typed into the applications' search field.

@@ -506,6 +506,21 @@ that file as an application starts, so others take the change when opened again;
 Settings shows it at once, and turned off it opens again without it. It needs GTK 4.20
 or later, the first to read CSS variables and `prefers-color-scheme` in a stylesheet.
 
+GTK 3 programs get the same look as a theme, `Nekoland`, which install.sh puts in
+`/usr/local/share/themes`: `shell/gtk3/Nekoland/` holds its light and dark variants, on
+Adwaita's, with the colours of `shell/gtk/nekoland.css`. Turning the look on in Settings
+makes it GNOME's `gtk-theme`, which GTK 3 programs on Wayland read, and turning it off puts
+the default back. X11 programs are given that setting, the icon and cursor themes, the
+font, the buttons of the title bar and whether to be dark by `xsettingsd`, which the
+compositor starts with XWayland and writes the file of, in `$XDG_RUNTIME_DIR`, again as
+Settings or the dark switches change them. Qt, Wine and programs that draw their own
+controls keep their own look.
+
+X11 programs that do not draw their own title bar get one from Nekoland: the window's title,
+and minimize, maximize and close at its right, above the window. Its edges and the bar's top
+resize it, as an X11 program's own request to do so does. Maximized, it sits under the menu
+bar; fullscreen, it is not drawn.
+
 `nekoland-calendar`, from `ui/`, is a small calendar of GTK's and libadwaita's own widgets
 with no styling of its own: a month, the chosen day's events, kept in
 `~/.local/share/nekoland/calendar.tsv`, a search, a menu and a dialog to add one. It is

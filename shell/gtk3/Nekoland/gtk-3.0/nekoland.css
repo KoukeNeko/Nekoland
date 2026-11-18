@@ -1,0 +1,331 @@
+/* Nekoland's design language for GTK 3 applications, the rules both its variants share.
+ *
+ * GTK 3 has no media query to tell dark from light, and no variables: gtk.css and
+ * gtk-dark.css each import Adwaita's own theme, import this, and name the colours it uses;
+ * GTK reads gtk-dark.css when the application asks for the dark theme, which Nekoland
+ * does through XSettings. The colours are the tokens of ../../gtk/nekoland.css, which a
+ * test in ui/src/settings.rs keeps them alike to.
+ *
+ * Rules name only what they change from Adwaita; its own colour names are set from the
+ * tokens in each variant, so that what it draws follows them. */
+
+/* Adwaita's own rules carry their colours as values, not names, so what it paints is
+ * painted again here, in each state it has one for. */
+* {
+  -gtk-outline-radius: 8px;
+}
+
+window,
+window:backdrop,
+.background,
+.background:backdrop,
+dialog,
+messagedialog .titlebar {
+  background-color: @nekoland_paper;
+  color: @nekoland_ink;
+}
+
+.view,
+.view:backdrop,
+iconview,
+textview text,
+treeview.view,
+list,
+list row,
+calendar,
+.entry-completion {
+  background-color: @nekoland_sheet;
+  color: @nekoland_ink;
+}
+
+label,
+label:backdrop {
+  color: inherit;
+}
+*:disabled,
+*:disabled label {
+  color: @nekoland_ink_3;
+}
+.dim-label,
+.subtitle {
+  color: @nekoland_ink_2;
+}
+
+separator,
+.sidebar {
+  background-color: @nekoland_line;
+  border-color: @nekoland_line;
+}
+frame > border,
+scrolledwindow > overshoot,
+.frame {
+  border-color: @nekoland_line;
+}
+
+/* Buttons are filled, and the one pressed or on is ink. */
+button,
+button:backdrop,
+button.flat:hover {
+  background-image: none;
+  background-color: @nekoland_fill;
+  color: @nekoland_ink;
+  border-color: transparent;
+}
+button.flat,
+button.flat:backdrop {
+  background-color: transparent;
+}
+button:hover,
+button.flat:hover {
+  background-color: mix(@nekoland_fill, @nekoland_ink, 0.1);
+}
+button:checked,
+button:active,
+button:checked:hover,
+button:active:hover,
+button:checked:backdrop,
+button:active:backdrop {
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+}
+button:disabled {
+  color: @nekoland_ink_3;
+  background-color: @nekoland_fill;
+}
+
+headerbar,
+.titlebar {
+  background-image: none;
+  background-color: @nekoland_paper;
+  color: @nekoland_ink;
+  border-bottom: 1px solid @nekoland_line;
+  box-shadow: none;
+}
+headerbar:backdrop,
+.titlebar:backdrop {
+  background-color: @nekoland_paper;
+}
+
+headerbar button,
+headerbar button:backdrop {
+  background-image: none;
+  background-color: transparent;
+  color: @nekoland_ink;
+  border-color: transparent;
+}
+headerbar button:hover {
+  background-color: mix(@nekoland_paper, @nekoland_ink, 0.1);
+}
+headerbar button:checked,
+headerbar button:active,
+headerbar button:checked:backdrop,
+headerbar button:active:backdrop {
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+}
+
+/* Buttons with words: 8px corners; the one red is solid. */
+button {
+  border-radius: 8px;
+  box-shadow: none;
+  text-shadow: none;
+}
+button.destructive-action {
+  background-image: none;
+  background-color: @nekoland_danger;
+  color: @nekoland_on_danger;
+  border-color: transparent;
+}
+button.suggested-action {
+  background-image: none;
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+  border-color: transparent;
+}
+
+/* Fields are filled, and take an ink line when typed into. */
+entry,
+spinbutton {
+  min-height: 36px;
+  border-radius: 8px;
+  border-color: transparent;
+  background-image: none;
+  background-color: @nekoland_fill;
+  color: @nekoland_ink;
+  box-shadow: none;
+}
+entry:focus,
+spinbutton:focus {
+  background-color: @nekoland_sheet;
+  border-color: @nekoland_ink;
+  box-shadow: inset 0 0 0 1px @nekoland_ink;
+}
+entry.error {
+  background-color: @nekoland_sheet;
+  border-color: @nekoland_danger;
+  box-shadow: inset 0 0 0 1px @nekoland_danger;
+}
+
+/* A switch: a line-coloured track that turns ink, its knob the paper. */
+switch {
+  border-radius: 999px;
+  background-image: none;
+  background-color: @nekoland_line;
+  border-color: transparent;
+  box-shadow: none;
+  text-shadow: none;
+  color: transparent;
+}
+switch:checked {
+  background-color: @nekoland_ink;
+}
+switch slider {
+  min-width: 18px;
+  min-height: 18px;
+  margin: 3px;
+  border-radius: 999px;
+  border: none;
+  background-image: none;
+  background-color: @nekoland_sheet;
+  box-shadow: none;
+}
+switch:checked slider {
+  background-color: @nekoland_on_ink;
+}
+
+check,
+check:hover,
+check:backdrop,
+radio,
+radio:hover,
+radio:backdrop {
+  background-image: none;
+  background-color: transparent;
+  border: 1.5px solid @nekoland_ink_3;
+  box-shadow: none;
+  -gtk-icon-shadow: none;
+}
+check {
+  border-radius: 5px;
+}
+check:checked,
+check:checked:hover,
+check:checked:active,
+check:checked:backdrop,
+check:indeterminate,
+check:indeterminate:hover,
+check:indeterminate:backdrop,
+radio:checked,
+radio:checked:hover,
+radio:checked:active,
+radio:checked:backdrop,
+radio:indeterminate,
+radio:indeterminate:backdrop {
+  background-image: none;
+  background-color: @nekoland_ink;
+  border-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+  box-shadow: none;
+}
+
+/* Selected is solid ink: colour belongs to what the windows show. */
+selection,
+*:selected,
+row:selected,
+treeview.view:selected,
+.view:selected,
+menuitem:hover,
+modelbutton:hover {
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+}
+
+menu,
+.popup,
+popover.background,
+popover > .background {
+  background-color: @nekoland_sheet;
+  border: 1px solid @nekoland_line;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+menuitem {
+  background-color: transparent;
+  color: @nekoland_ink;
+  border-radius: 6px;
+}
+
+tooltip,
+tooltip.background {
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+  border-radius: 8px;
+}
+
+scale trough,
+scale trough:backdrop,
+progressbar trough,
+progressbar trough:backdrop {
+  background-image: none;
+  background-color: @nekoland_line;
+  border-radius: 999px;
+}
+scale highlight,
+scale highlight:backdrop,
+progressbar progress,
+progressbar progress:backdrop {
+  background-image: none;
+  background-color: @nekoland_ink;
+  border-color: @nekoland_ink;
+  border-radius: 999px;
+}
+scale slider,
+scale slider:hover,
+scale slider:backdrop {
+  background-image: none;
+  background-color: @nekoland_sheet;
+  border: 1.5px solid @nekoland_ink;
+  border-radius: 999px;
+}
+
+notebook > header {
+  background-color: @nekoland_paper;
+  border-color: @nekoland_line;
+}
+notebook > header.top > tabs > tab:checked,
+notebook > header.top > tabs > tab:checked:backdrop {
+  box-shadow: inset 0 -2px @nekoland_ink;
+}
+notebook > header.bottom > tabs > tab:checked,
+notebook > header.bottom > tabs > tab:checked:backdrop {
+  box-shadow: inset 0 2px @nekoland_ink;
+}
+notebook > header.left > tabs > tab:checked,
+notebook > header.left > tabs > tab:checked:backdrop {
+  box-shadow: inset -2px 0 @nekoland_ink;
+}
+notebook > header.right > tabs > tab:checked,
+notebook > header.right > tabs > tab:checked:backdrop {
+  box-shadow: inset 2px 0 @nekoland_ink;
+}
+notebook > header.top > tabs > tab:hover,
+notebook > header.bottom > tabs > tab:hover,
+notebook > header.left > tabs > tab:hover,
+notebook > header.right > tabs > tab:hover {
+  box-shadow: none;
+}
+
+*:link,
+button:link,
+button:visited,
+button:link > label,
+button:visited > label {
+  color: @nekoland_ink;
+  text-decoration: underline;
+}
+
+scrollbar slider {
+  background-color: @nekoland_ink_3;
+  border-radius: 999px;
+}
