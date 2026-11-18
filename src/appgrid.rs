@@ -403,11 +403,7 @@ fn installed() -> Vec<GridApp> {
             ]
             .join(" ")
             .to_lowercase();
-            let icons = info
-                .icon()
-                .and_then(|icon| icon.downcast::<gio::ThemedIcon>().ok())
-                .map(|icon| icon.names().iter().map(|name| name.to_string()).collect())
-                .unwrap_or_default();
+            let icons = info.icon().map(crate::text::gio_icon_names).unwrap_or_default();
             Some(GridApp {
                 id,
                 name,

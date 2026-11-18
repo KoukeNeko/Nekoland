@@ -9,8 +9,12 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
         wayland_server::{protocol::wl_surface::WlSurface, Resource},
     },
-    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::{compositor::{get_parent, with_states}, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
+    utils::{IsAlive, Logical, Point, Rectangle, Size, SERIAL_COUNTER},
+    wayland::{
+        compositor::{get_parent, with_states},
+        seat::WaylandFocus,
+        shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData},
+    },
 };
 
 use crate::{
@@ -38,6 +42,35 @@ pub fn has_square_corners(window: &Window) -> bool {
         }
         WindowSurface::X11(_) => true,
     }
+}
+
+/// Whether a window is an X11 one that draws its own decoration: its rounded corners and
+/// shadow are its own, and X11 says nothing of where its body is, so glass, which is square
+/// behind an X11 window, would show past its corners.
+pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
+    matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_decorated())
+}
+
+/// The smallest and largest size a window says it can be; 0 is no limit.
+pub fn size_limits(window: &Window) -> (Size<i32, Logical>, Size<i32, Logical>) {
+    match window.underlying_surface() {
+        WindowSurface::Wayland(toplevel) => with_states(toplevel.wl_surface(), |states| {
+            let mut cached = states.cached_state.get::<SurfaceCachedState>();
+            let limits = cached.current();
+            (limits.min_size, limits.max_size)
+        }),
+        WindowSurface::X11(surface) => (
+            surface.min_size().unwrap_or_default(),
+            surface.max_size().unwrap_or_default(),
+        ),
+    }
+}
+
+/// Whether a window has one size only, as a program's welcome or about window may: it is
+/// left at that size, as macOS and GNOME leave it, not maximized, tiled or filled.
+fn has_fixed_size(window: &Window) -> bool {
+    let (min, max) = size_limits(window);
+    max.w > 0 && max.h > 0 && min == max
 }
 
 /// The states that say where a window was put, as opposed to what it is doing.
@@ -399,7 +432,7 @@ impl Nekoland {
     }
 
     pub fn maximize(&mut self, window: &Window) {
-        let Some(area) = self.usable_area() else {
+        let Some(area) = self.usable_area().filter(|_| !has_fixed_size(window)) else {
             return;
         };
         self.remember_place(window);
@@ -454,6 +487,10 @@ impl Nekoland {
             return;
         };
         let inner = arrange::inset(area, self.window_gap());
+        let resizes = !matches!(arrangement, Arrangement::Center | Arrangement::Move(_));
+        if resizes && has_fixed_size(window) {
+            return;
+        }
         match arrangement {
             Arrangement::Maximize => self.maximize(window),
             Arrangement::Part(part) => {
@@ -470,6 +507,9 @@ impl Nekoland {
 
     /// Puts a window in a part of `area`, as `command` at its `step` named it.
     fn put_in_part(&mut self, window: &Window, area: Rectangle<i32, Logical>, command: &str, part: Part, step: usize) {
+        if has_fixed_size(window) {
+            return;
+        }
         let rect = arrange::part_rect(area, part, self.window_gap());
         // Without gaps, the sides it is against are tiled, which GTK draws square.
         let states = if self.window_gap() == 0 {
@@ -539,6 +579,7 @@ impl Nekoland {
             .outputs()
             .next()
             .and_then(|output| self.space.output_geometry(output))
+            .filter(|_| !has_fixed_size(window))
         else {
             return;
         };

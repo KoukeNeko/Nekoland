@@ -141,8 +141,7 @@ pub fn icon_names(path: &Path) -> Vec<String> {
         )
         .ok()
         .and_then(|info| info.icon())
-        .and_then(|icon| icon.downcast::<gio::ThemedIcon>().ok())
-        .map(|icon| icon.names().iter().map(|name| name.to_string()).collect())
+        .map(crate::text::gio_icon_names)
         .unwrap_or_default()
 }
 

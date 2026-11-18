@@ -10,7 +10,7 @@ use std::{
 };
 
 use cairo::{Context, Format, ImageSurface};
-use gio::glib;
+use gio::{glib, prelude::*};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::{Logical, Size, Transform},
@@ -396,6 +396,17 @@ pub(crate) fn pixbuf_surface(
     Some(surface)
 }
 
+/// The names GIO gives an icon, most specific first: a theme's names, or the path of a
+/// file, as a desktop entry's `Icon=` may give one; `find_named_icon` takes either.
+pub fn gio_icon_names(icon: gio::Icon) -> Vec<String> {
+    if let Some(file) = icon.downcast_ref::<gio::FileIcon>() {
+        return file.file().path().map(|path| path.display().to_string()).into_iter().collect();
+    }
+    icon.downcast::<gio::ThemedIcon>()
+        .map(|icon| icon.names().iter().map(|name| name.to_string()).collect())
+        .unwrap_or_default()
+}
+
 /// Any icon of that name, SVG or PNG, in any size or context of the themes.
 fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
     let path = Path::new(name);
@@ -599,6 +610,20 @@ fn desktop_entry(dirs: &[PathBuf], app_id: &str) -> Option<String> {
 mod tests {
     use super::*;
     use pango::prelude::*;
+
+    /// A desktop entry's `Icon=` may be a file's path, which GIO gives as a file icon.
+    #[test]
+    fn a_file_icon_goes_by_its_path() {
+        let icon = gio::FileIcon::new(&gio::File::for_path("/snap/blip/current/meta/gui/icon.png"));
+        assert_eq!(gio_icon_names(icon.upcast()), ["/snap/blip/current/meta/gui/icon.png"]);
+    }
+
+    #[test]
+    fn a_themed_icon_goes_by_its_names() {
+        let icon = gio::ThemedIcon::from_names(&["org.gnome.Calculator", "accessories-calculator"]);
+        // GIO adds their symbolic forms after them.
+        assert!(gio_icon_names(icon.upcast()).starts_with(&["org.gnome.Calculator".into(), "accessories-calculator".into()]));
+    }
 
     /// Calendar's icon is drawn from its template with the day written in ink on its page.
     #[test]

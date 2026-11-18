@@ -11,7 +11,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_surface::WlSurface,
     },
     utils::{Logical, Point, Rectangle, Size},
-    wayland::{compositor, shell::xdg::SurfaceCachedState},
+    wayland::compositor,
     xwayland::xwm,
 };
 use std::cell::RefCell;
@@ -123,17 +123,7 @@ impl PointerGrab<Nekoland> for ResizeSurfaceGrab {
             new_window_height = (self.initial_rect.size.h as f64 + delta.y) as i32;
         }
 
-        let (min_size, max_size) = match self.window.underlying_surface() {
-            WindowSurface::Wayland(toplevel) => compositor::with_states(toplevel.wl_surface(), |states| {
-                let mut guard = states.cached_state.get::<SurfaceCachedState>();
-                let data = guard.current();
-                (data.min_size, data.max_size)
-            }),
-            WindowSurface::X11(surface) => (
-                surface.min_size().unwrap_or_default(),
-                surface.max_size().unwrap_or_default(),
-            ),
-        };
+        let (min_size, max_size) = crate::windows::size_limits(&self.window);
 
         let min_width = min_size.w.max(1);
         let min_height = min_size.h.max(1);
