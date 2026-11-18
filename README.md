@@ -500,9 +500,9 @@ in this look whether or not it is turned on. Settings' 外觀 page
 turns it on: it puts the file in `~/.config/gtk-4.0/nekoland/` and imports it from
 `~/.config/gtk-4.0/gtk.css`, keeping what else that file has, and keeps it up to date with Settings.
 It sets their text in Ubuntu Sans and Noto Sans CJK TC, as Nekoland's own is set.
-It also gives windows minimize, maximize and close at the right of the title bar, through
-GNOME's `button-layout`, and puts back the buttons they had when it is turned off. GTK reads
-that file as an application starts, so others take the change when opened again;
+Windows have minimize, maximize and close at the right of the title bar with the look or
+without it: install.sh makes that GNOME's `button-layout` default in a Nekoland session, and
+a layout chosen by the user is kept. GTK reads that file as an application starts, so others take the change when opened again;
 Settings shows it at once, and turned off it opens again without it. It needs GTK 4.20
 or later, the first to read CSS variables and `prefers-color-scheme` in a stylesheet.
 

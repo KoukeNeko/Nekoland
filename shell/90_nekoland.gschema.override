@@ -1,0 +1,5 @@
+# GNOME's defaults inside a Nekoland session only (XDG_CURRENT_DESKTOP=Nekoland):
+# windows get minimize, maximize and close at the right of their title bar, where
+# GNOME's own default leaves close alone. A layout the user chose is kept.
+[org.gnome.desktop.wm.preferences:Nekoland]
+button-layout=':minimize,maximize,close'

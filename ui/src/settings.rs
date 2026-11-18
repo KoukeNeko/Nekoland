@@ -300,7 +300,6 @@ fn build(app: &adw::Application) {
         if let Err(err) = set_gtk_look(true) {
             eprintln!("GTK look: {err}");
         }
-        set_window_buttons(true);
         set_gtk3_theme(true);
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
@@ -3628,7 +3627,6 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
             eprintln!("GTK look: {err}");
             return;
         }
-        set_window_buttons(on);
         set_gtk3_theme(on);
         let display = row.display();
         if on {
@@ -3946,13 +3944,6 @@ fn set_gtk_look(on: bool) -> std::io::Result<()> {
     write_atomic(&user, &(lines.join("\n") + "\n"))
 }
 
-/// GNOME's setting for the buttons GTK puts in a window's title bar.
-const BUTTON_LAYOUT: [&str; 2] = ["org.gnome.desktop.wm.preferences", "button-layout"];
-/// The design language's title bar: minimize, maximize and close, at its right.
-const LOOK_BUTTONS: &str = "':minimize,maximize,close'";
-/// The layout from before the look was turned on, beside the look, to put back after.
-const SAVED_BUTTONS_FILE: &str = "nekoland/button-layout";
-
 /// The GTK 3 theme of the look, which install.sh puts in /usr/local/share/themes, is
 /// GNOME's `gtk-theme` while the look is on: GTK 3 programs read it on Wayland, and the
 /// compositor gives it to X11 ones as XSettings. Off, it is put back to the default, unless
@@ -3969,31 +3960,6 @@ fn set_gtk3_theme(on: bool) {
 }
 
 const GTK3_THEME: &str = "Nekoland";
-
-/// Gives windows the design language's title bar buttons with the look, and puts back the
-/// ones they had when it is turned off.
-fn set_window_buttons(on: bool) {
-    let [schema, key] = BUTTON_LAYOUT;
-    let saved = gtk_dir().join(SAVED_BUTTONS_FILE);
-    if on {
-        if !saved.exists() {
-            // Without the layout kept, it could not be put back: it is left as it is.
-            let Some(before) = output("gsettings", &["get", schema, key]) else {
-                return;
-            };
-            if let Err(err) = std::fs::write(&saved, before.trim()) {
-                eprintln!("{}: {err}", saved.display());
-                return;
-            }
-        }
-        run("gsettings", &["set", schema, key, LOOK_BUTTONS]);
-    } else if let Ok(before) = std::fs::read_to_string(&saved) {
-        run("gsettings", &["set", schema, key, before.trim()]);
-        if let Err(err) = std::fs::remove_file(&saved) {
-            eprintln!("{}: {err}", saved.display());
-        }
-    }
-}
 
 const XKB_LIST: &str = "/usr/share/X11/xkb/rules/base.lst";
 

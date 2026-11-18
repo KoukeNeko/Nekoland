@@ -125,6 +125,9 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
 sudo install -Dm 644 "$src/shell/nekoland-lock.pam" /etc/pam.d/nekoland-lock
+# An override changes only the schemas compiled beside it, and GNOME's are in /usr/share.
+sudo install -Dm 644 -t /usr/share/glib-2.0/schemas "$src/shell/90_nekoland.gschema.override"
+sudo glib-compile-schemas /usr/share/glib-2.0/schemas
 
 # The boot menu in Nekoland's look, where GRUB is what boots the computer; a board that boots
 # some other way has no /etc/default/grub and is left as it is.
