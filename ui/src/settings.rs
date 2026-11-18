@@ -300,6 +300,20 @@ fn main() -> glib::ExitCode {
     code
 }
 
+/// Scrolls the page a setting is on to it, and focuses it.
+fn bring_into_view(target: &gtk::Widget) {
+    if let Some(viewport) = target.ancestor(gtk::Viewport::static_type()) {
+        let scroll = viewport.parent().and_downcast::<gtk::ScrolledWindow>();
+        let content = viewport.downcast_ref::<gtk::Viewport>().and_then(|v| v.child());
+        if let (Some(scroll), Some(content)) = (scroll, content) {
+            if let Some(bounds) = target.compute_bounds(&content) {
+                scroll.vadjustment().set_value((f64::from(bounds.y()) - 24.0).max(0.0));
+            }
+        }
+    }
+    target.grab_focus();
+}
+
 /// The title of each setting on a page, with the row that shows it.
 fn setting_rows(widget: &gtk::Widget, found: &mut Vec<(String, gtk::Widget)>) {
     if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
@@ -626,11 +640,14 @@ fn build(app: &adw::Application) {
             sidebar.select_row(sidebar.row_at_index(at as i32).as_ref());
             split.set_show_content(true);
             if let Some(target) = target {
-                glib::idle_add_local_once(move || {
-                    if !target.grab_focus() {
-                        target.child_focus(gtk::DirectionType::TabForward);
-                    }
-                });
+                // The page is laid out once it is shown, so the row is brought into view
+                // again as it settles.
+                for wait in [100, 400] {
+                    let target = target.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(wait), move || {
+                        bring_into_view(&target)
+                    });
+                }
             }
         }
     ));
