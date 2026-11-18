@@ -35,6 +35,8 @@ use crate::{
 const CELL_WIDTH: i32 = 132;
 const CELL_HEIGHT: i32 = 128;
 const ICON: i32 = 66;
+/// How much the icon under the pointer grows, as on the iPad, its name staying as it is.
+const HOVER_LIFT: f64 = 1.08;
 const SEARCH_WIDTH: i32 = 360;
 /// Room under the grid for the dots that tell the pages.
 const DOTS: i32 = 40;
@@ -1594,22 +1596,36 @@ fn paint_folder(cr: &Context, x: f64, y: f64, size: f64, minis: &[Option<ImageSu
     }
 }
 
-/// An application's icon or a folder's square at the top of a place, its name under it.
-fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile) -> Option<()> {
-    paint_tile_in(cr, x, y, tile, CELL_WIDTH, ICON)
+/// An application's icon or a folder's square at the top of a place, its name under it; the
+/// icon a little bigger while the pointer is on it.
+fn paint_tile(cr: &Context, x: f64, y: f64, tile: &Tile, hovered: bool) -> Option<()> {
+    let lift = if hovered { HOVER_LIFT } else { 1.0 };
+    paint_tile_in(cr, x, y, tile, CELL_WIDTH, ICON, lift)
 }
 
-/// The same in a place `width` wide, with icons of `icon`.
-fn paint_tile_in(cr: &Context, x: f64, y: f64, tile: &Tile, width: i32, icon_size: i32) -> Option<()> {
-    let left = x + f64::from(width - icon_size) / 2.0;
+/// The same in a place `width` wide, with icons of `icon` grown `lift` times about their
+/// middle.
+fn paint_tile_in(
+    cr: &Context,
+    x: f64,
+    y: f64,
+    tile: &Tile,
+    width: i32,
+    icon_size: i32,
+    lift: f64,
+) -> Option<()> {
+    let size = f64::from(icon_size) * lift;
+    let grown = (size - f64::from(icon_size)) / 2.0;
+    let left = x + f64::from(width - icon_size) / 2.0 - grown;
+    let top = y + 12.0 - grown;
     match &tile.icon {
         Some(icon) => {
             cr.save().ok()?;
-            cr.translate(left, y + 12.0);
-            crate::stacks::paint_fitted(cr, icon, f64::from(icon_size), 1.0);
+            cr.translate(left, top);
+            crate::stacks::paint_fitted(cr, icon, size, 1.0);
             cr.restore().ok()?;
         }
-        None if !tile.minis.is_empty() => paint_folder(cr, left, y + 12.0, f64::from(icon_size), &tile.minis),
+        None if !tile.minis.is_empty() => paint_folder(cr, left, top, size, &tile.minis),
         None => {}
     }
     let label = text_layout(cr, &tile.name, if icon_size < ICON { 9.0 } else { 10.0 });
@@ -1625,8 +1641,8 @@ fn paint_tile_in(cr: &Context, x: f64, y: f64, tile: &Tile, width: i32, icon_siz
     Some(())
 }
 
-/// The grid: each page's places, the pointed-at one shaded and the one a dragged icon is
-/// aimed onto ringed, sliding as the pages turn; and the dots under it.
+/// The grid: each page's places, the pointed-at one's icon grown and the one a dragged icon is
+/// aimed onto shaded, sliding as the pages turn; and the dots under it.
 fn draw_grid(
     layout: &Layout,
     shown: f64,
@@ -1648,7 +1664,7 @@ fn draw_grid(
             let x = (*page as f64 - shown) * f64::from(width) + f64::from(column as i32 * CELL_WIDTH);
             let y = f64::from(row as i32 * CELL_HEIGHT);
             let index = page * per_page + slot;
-            if hovered == Some(index) || aimed == Some(index) {
+            if aimed == Some(index) {
                 text::rounded_rectangle(
                     &cr,
                     x + 4.0,
@@ -1657,11 +1673,11 @@ fn draw_grid(
                     f64::from(CELL_HEIGHT) - 6.0,
                     14.0,
                 );
-                cr.set_source_rgba(1.0, 1.0, 1.0, if aimed == Some(index) { 0.22 } else { 0.10 });
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.22);
                 cr.fill().ok()?;
             }
             if let Some(tile) = tile {
-                paint_tile(&cr, x, y, tile)?;
+                paint_tile(&cr, x, y, tile, hovered == Some(index))?;
             }
         }
         cr.reset_clip();
@@ -1739,20 +1755,8 @@ fn draw_folder(
                 f64::from(grid.x + column as i32 * CELL_WIDTH),
                 f64::from(grid.y + row as i32 * CELL_HEIGHT),
             );
-            if hovered == Some(index) {
-                text::rounded_rectangle(
-                    &cr,
-                    x + 4.0,
-                    y + 2.0,
-                    f64::from(CELL_WIDTH) - 8.0,
-                    f64::from(CELL_HEIGHT) - 6.0,
-                    14.0,
-                );
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.10);
-                cr.fill().ok()?;
-            }
             if let Some(tile) = tile {
-                paint_tile(&cr, x, y, tile)?;
+                paint_tile(&cr, x, y, tile, hovered == Some(index))?;
             }
             place += 1;
         }

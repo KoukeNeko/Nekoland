@@ -587,7 +587,7 @@ fn draw_list(
                             }
                         }
                         if let Some(tile) = tiles.get(app) {
-                            paint_tile_in(&cr, x, top, tile, cell.0, icon(style))?;
+                            paint_tile_in(&cr, x, top, tile, cell.0, icon(style), 1.0)?;
                         }
                     }
                 }
