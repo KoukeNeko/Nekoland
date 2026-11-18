@@ -559,6 +559,11 @@ impl AppGrid {
         self.style
     }
 
+    /// How long the view has been coming in, once its first page is there to come in with.
+    pub fn shown_for(&self) -> Option<std::time::Duration> {
+        self.arrived.then(|| self.opened.elapsed())
+    }
+
     fn new(query: &str, style: AppsView) -> Self {
         let apps = installed();
         let kept: Arrangement = config::config_file(ARRANGEMENT)

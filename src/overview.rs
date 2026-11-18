@@ -39,8 +39,14 @@ const ADD_SIZE: f64 = 0.62;
 const ADD_DIM: f64 = 0.45;
 /// Around a desktop's picture on its frame, for the ring of the one shown.
 const FRAME_MARGIN: i32 = 6;
-/// How long the bar takes to open up or close.
-const EXPAND_DURATION: Duration = Duration::from_millis(180);
+/// How fast the bar opens up and closes, as springs' rates: it gets out of the way quicker
+/// than it comes.
+const BAR_OPEN_RATE: f64 = 30.0;
+const BAR_CLOSE_RATE: f64 = 45.0;
+/// How long the applications come in before the bar starts to open up over them.
+const BAR_AFTER_APPS: Duration = Duration::from_millis(150);
+/// How long the bar closes before the applications start to leave, by when most of it has.
+const APPS_AFTER_BAR: Duration = Duration::from_millis(80);
 const CLOSE_SIZE: i32 = 22;
 /// How far the pointer moves with a button down before a click becomes a drag.
 const DRAG_THRESHOLD: f64 = 6.0;
@@ -95,7 +101,11 @@ struct Drag {
 /// of them. And where things are on each.
 #[derive(Default)]
 struct SpacesBar {
+    /// The screen the bar is on.
+    area: Rectangle<i32, Logical>,
+    /// The names, without the glass under them.
     strip: Option<Picture>,
+    /// The glass's tint, as tall as the bar opened up and shown as far as it has come.
     expanded: Option<Picture>,
     strip_items: Vec<BarItem>,
     expanded_items: Vec<BarItem>,
@@ -122,24 +132,20 @@ impl BarColors {
             Self {
                 ink: (0.945, 0.937, 0.918),
                 on_ink: (0.090, 0.090, 0.102),
-                tint: crate::glass::tint(dark, Tier::Menu),
+                tint: crate::glass::tint(dark, Tier::Bar),
             }
         } else {
             Self {
                 ink: (0.090, 0.090, 0.102),
                 on_ink: (0.984, 0.980, 0.973),
-                tint: crate::glass::tint(dark, Tier::Menu),
+                tint: crate::glass::tint(dark, Tier::Bar),
             }
         }
     }
 
-    fn paint_glass(&self, cr: &cairo::Context, width: i32, height: i32) {
+    fn paint_glass(&self, cr: &cairo::Context) {
         cr.set_source_rgba(self.tint.0, self.tint.1, self.tint.2, self.tint.3);
         let _ = cr.paint();
-        // A hairline along the bottom edge, where the bar ends.
-        cr.set_source_rgba(self.ink.0, self.ink.1, self.ink.2, 0.10);
-        cr.rectangle(0.0, f64::from(height) - 1.0, f64::from(width), 1.0);
-        let _ = cr.fill();
     }
 
     fn fill_pill(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>) {
@@ -214,11 +220,6 @@ pub(crate) fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
     MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + LABEL_HEIGHT
 }
 
-fn ease(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 fn text_width(text: &str, font: &pango::FontDescription) -> i32 {
     let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) else {
         return 0;
@@ -268,8 +269,9 @@ pub struct Overview {
     pub slots: Vec<Slot>,
     pub dim: SolidColorBuffer,
     bar: SpacesBar,
-    /// How far the desktops' bar is opened up, 0 to 1, and whether it is opening.
+    /// How far the desktops' bar is opened up, 0 to 1, how fast, and whether it is opening.
     expansion: f64,
+    expansion_speed: f64,
     expanding: bool,
     last_tick: Instant,
     strip_id: Id,
@@ -449,6 +451,7 @@ impl Nekoland {
             dim: SolidColorBuffer::new(output.size, [0.0, 0.0, 0.0, 0.0]),
             bar: SpacesBar::default(),
             expansion: 0.0,
+            expansion_speed: 0.0,
             expanding: false,
             last_tick: Instant::now(),
             strip_id: Id::new(),
@@ -571,7 +574,6 @@ impl Nekoland {
         let row: i32 = widths.iter().sum::<i32>() + NAME_GAP * (count as i32 - 1).max(0);
         let mut strip_items = Vec::with_capacity(count + 1);
         let strip = draw(output.size.w, MENU_BAR_HEIGHT, |cr| {
-            colors.paint_glass(cr, output.size.w, MENU_BAR_HEIGHT);
             let mut x = (output.size.w - row) / 2;
             for (index, (name, width)) in names.iter().zip(&widths).enumerate() {
                 let pill = Rectangle::new(
@@ -610,7 +612,7 @@ impl Nekoland {
         let mut expanded_items = Vec::with_capacity(count + 1);
         let mut frames = Vec::with_capacity(count);
         let expanded = draw(output.size.w, expanded_height, |cr| {
-            colors.paint_glass(cr, output.size.w, expanded_height);
+            colors.paint_glass(cr);
         });
         let mut x = (output.size.w - row) / 2;
         for (index, name) in names.iter().enumerate() {
@@ -684,6 +686,7 @@ impl Nekoland {
         });
 
         SpacesBar {
+            area: output,
             strip,
             expanded,
             strip_items,
@@ -696,28 +699,35 @@ impl Nekoland {
         }
     }
 
-    /// How far the desktops' bar is opened up, 0 to 1, eased.
+    /// How far the desktops' bar is opened up, 0 to 1.
     pub fn overview_expansion(&self) -> f64 {
-        self.overview
-            .as_ref()
-            .map_or(0.0, |overview| ease(overview.expansion))
+        self.overview.as_ref().map_or(0.0, |overview| overview.expansion)
     }
 
-    /// Where each desktop's live picture is in the opened-up bar, on its way to its place.
+    /// Where each desktop's live picture is in the opened-up bar, on its way to its place:
+    /// along the bar as desktops come and go, and down from above the screen as it opens up.
     pub fn overview_thumbnails(&self) -> Vec<(usize, Rectangle<i32, Logical>)> {
         self.overview.as_ref().map_or_else(Vec::new, |overview| {
+            let away = 1.0 - overview.expansion;
             (overview.bar.thumbnails.iter().zip(&overview.glides).enumerate())
                 .map(|(index, (place, (x, ..)))| {
-                    (index, Rectangle::new(Point::from((x.round() as i32, place.loc.y)), place.size))
+                    let above = place.loc.y + place.size.h + LABEL_HEIGHT + FRAME_MARGIN - overview.bar.area.loc.y;
+                    let y = place.loc.y - (f64::from(above) * away).round() as i32;
+                    (index, Rectangle::new(Point::from((x.round() as i32, y)), place.size))
                 })
                 .collect()
         })
     }
 
-    /// Where the add button shows the wallpaper, and the plus that goes over it.
+    /// Where the add button shows the wallpaper, coming in from the right as the bar opens
+    /// up, and the plus that goes over it.
     pub fn overview_add_button(&self) -> Option<(Rectangle<i32, Logical>, &Picture)> {
-        let bar = &self.overview.as_ref()?.bar;
-        Some((bar.add, bar.plus.as_ref()?))
+        let overview = self.overview.as_ref()?;
+        let bar = &overview.bar;
+        let right = bar.area.loc.x + bar.area.size.w;
+        let away = f64::from(right - bar.add.loc.x) * (1.0 - overview.expansion);
+        let rect = Rectangle::new(bar.add.loc + Point::from((away.round() as i32, 0)), bar.add.size);
+        Some((rect, bar.plus.as_ref()?))
     }
 
     /// The close button on the desktop the pointer is on, and where it is.
@@ -741,15 +751,15 @@ impl Nekoland {
             .outputs()
             .next()
             .and_then(|output| self.space.output_geometry(output))?;
-        let grown = f64::from(expanded_height(output) - MENU_BAR_HEIGHT) * ease(overview.expansion);
+        let grown = f64::from(expanded_height(output) - MENU_BAR_HEIGHT) * overview.expansion;
         Some(Rectangle::new(
             output.loc,
             Size::from((output.size.w, MENU_BAR_HEIGHT + grown.round() as i32)),
         ))
     }
 
-    /// The desktops' bar: one pane of glass, the strip fading out on it as it grows down
-    /// and the opened-up bar fading in, shown as far as the glass has come.
+    /// The desktops' bar: the menu bar's pane of glass grown down, the names fading out on
+    /// it, and the desktops' frames coming down with their pictures.
     pub fn overview_overlays(&self) -> Vec<Overlay<'_>> {
         let (Some(overview), Some(panel)) = (&self.overview, self.overview_panel()) else {
             return Vec::new();
@@ -762,7 +772,7 @@ impl Nekoland {
         {
             return Vec::new();
         }
-        let expansion = ease(overview.expansion);
+        let expansion = overview.expansion;
         let mut overlays = Vec::new();
         // Each desktop's ring and name, where its picture is, cut off where the bar ends.
         let shown = panel.loc.y + panel.size.h;
@@ -782,23 +792,23 @@ impl Nekoland {
                 });
             }
         }
-        if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| expansion > 0.0) {
-            overlays.push(Overlay {
-                fade: 1.0,
-                id: &overview.expanded_id,
-                rect: panel,
-                glass: None,
-                alpha: expansion as f32,
-                picture,
-            });
-        }
-        if let Some(picture) = &overview.bar.strip {
+        if let Some(picture) = overview.bar.strip.as_ref().filter(|_| expansion < 1.0) {
             overlays.push(Overlay {
                 fade: 1.0,
                 id: &overview.strip_id,
                 rect: panel,
-                glass: Some((Tier::Menu, 0)),
+                glass: None,
                 alpha: (1.0 - expansion) as f32,
+                picture,
+            });
+        }
+        if let Some(picture) = &overview.bar.expanded {
+            overlays.push(Overlay {
+                fade: 1.0,
+                id: &overview.expanded_id,
+                rect: panel,
+                glass: Some((Tier::Bar, 0)),
+                alpha: 1.0,
                 picture,
             });
         }
@@ -826,6 +836,12 @@ impl Nekoland {
         }
         overview.closing = true;
         overview.started = Instant::now();
+        // The bar over the applications gets out of the way first, and they leave as it
+        // nearly has: until then the overview is held where it is.
+        let under_bar = (overview.apps.as_ref()).is_some_and(|apps| apps.style() == crate::config::AppsView::Overview);
+        if under_bar && self.config.animations {
+            overview.started += APPS_AFTER_BAR;
+        }
         overview.hovered = None;
 
         match selected {
@@ -882,25 +898,35 @@ impl Nekoland {
             let y = pos.y - f64::from(output.loc.y);
             // With the applications shown in the overview, the bar stays open over them; shown
             // any other way, it is not there.
-            let apps = overview.apps.as_ref().map(|apps| apps.style());
-            if apps.is_some_and(|style| style != crate::config::AppsView::Overview) {
+            let apps = overview.apps.as_ref();
+            if overview.closing || apps.is_some_and(|apps| apps.style() != crate::config::AppsView::Overview) {
                 overview.expanding = false;
-            } else if dragging || apps.is_some() || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
+            } else if dragging || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
                 overview.expanding = true;
+            } else if let Some(apps) = apps {
+                // Over the applications it opens up once they have mostly come in.
+                overview.expanding = apps.shown_for().is_some_and(|shown| shown >= BAR_AFTER_APPS);
             } else if y > f64::from(expanded_height(output) + 8) || !settled {
                 overview.expanding = false;
             }
         }
         let now = Instant::now();
-        let step = now.duration_since(overview.last_tick).as_secs_f64() / EXPAND_DURATION.as_secs_f64();
+        let seconds = now.duration_since(overview.last_tick).as_secs_f64();
         overview.last_tick = now;
-        overview.expansion = if overview.expanding {
-            (overview.expansion + step).min(1.0)
+        let (goal, rate) = if overview.expanding {
+            (1.0, BAR_OPEN_RATE)
         } else {
-            (overview.expansion - step).max(0.0)
+            (0.0, BAR_CLOSE_RATE)
         };
+        if self.config.animations {
+            // A frame late by much is taken in small steps, not as a jump.
+            crate::motion::settle(&mut overview.expansion, &mut overview.expansion_speed, goal, rate, seconds.min(0.05));
+        }
+        if !self.config.animations || ((overview.expansion - goal).abs() < 0.002 && overview.expansion_speed.abs() < 0.05) {
+            (overview.expansion, overview.expansion_speed) = (goal, 0.0);
+        }
+        overview.expansion = overview.expansion.clamp(0.0, 1.0);
 
-        let seconds = step * EXPAND_DURATION.as_secs_f64();
         for ((x, speed, _), place) in overview.glides.iter_mut().zip(&overview.bar.thumbnails) {
             let goal = f64::from(place.loc.x);
             if self.config.animations && seconds < 0.1 {
@@ -913,7 +939,7 @@ impl Nekoland {
 
         // The windows make room as the bar opens up; under the applications, whose glass
         // they show through blurred, they stay where they are.
-        let open = ease(overview.expansion);
+        let open = overview.expansion;
         let spread = if overview.under_apps { 0.0 } else { progress };
         for slot in &mut overview.slots {
             let target = lerp(slot.to, slot.to_open, open);
@@ -984,7 +1010,7 @@ impl Nekoland {
                 return;
             }
         }
-        let items = if ease(overview.expansion) >= 0.5 {
+        let items = if overview.expansion >= 0.5 {
             &overview.bar.expanded_items
         } else {
             &overview.bar.strip_items
