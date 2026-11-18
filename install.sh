@@ -20,10 +20,11 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
     libadwaita-1-dev libfontconfig-dev libfreetype-dev libpam0g-dev"
-# What it runs with: Mesa to draw, Xwayland, the wallpaper, terminal, portals, the network,
-# sound, printing, languages, clipboard, fonts and icons, the input method, and the applications the example
-# configuration keeps in the Dock.
-run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
+# What it runs with: Mesa to draw, with Vulkan and video decoding on the GPU, Xwayland, the
+# wallpaper, terminal, portals, the network, sound, printing, languages, clipboard, fonts and
+# icons, the input method, and the applications the example configuration keeps in the Dock.
+run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-drivers
+    libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
     network-manager wpasupplicant network-manager-openvpn bluez cups locales rsync
@@ -32,6 +33,8 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 libseat1 libinput10 xwayland 
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common"
+# Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
+[ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 
 say "Installing packages"
 sudo true
