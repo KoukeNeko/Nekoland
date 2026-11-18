@@ -3091,23 +3091,6 @@ impl Nekoland {
             .any(|(restoring, ..)| restoring == window)
     }
 
-    /// The icon a window opens out of: its application's in the Dock, for the first window
-    /// of one that has an icon there to see. A dialog belongs to its window, not the icon.
-    pub fn dock_icon_to_open_from(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
-        if !self.dock_shown() || window.toplevel().is_some_and(|toplevel| toplevel.parent().is_some()) {
-            return None;
-        }
-        let app_id = window_names(window).1;
-        let has_another = self
-            .all_windows()
-            .any(|other| other != window && window_names(other).1.eq_ignore_ascii_case(&app_id));
-        if has_another {
-            return None;
-        }
-        let tile = self.tile_rect(self.minimized_tile(window)?)?;
-        Some(fit_window(window, tile))
-    }
-
     /// An application was started elsewhere; its icon breathes until its window shows.
     pub(crate) fn dock_launching(&mut self, app_id: &str) {
         self.dock.launching.retain(|(id, _)| id != app_id);

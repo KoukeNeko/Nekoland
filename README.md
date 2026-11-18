@@ -337,10 +337,9 @@ Nekoland that moves it, so a program has it whatever drew its window: GTK, Qt or
 
 - The applications, however `apps_view` shows them, come in from a little larger than
   they are, as a phone's icons come home, and leave the way they came.
-- A window opens out of the icon its application was started from among the applications;
-  otherwise an application's first window opens out of its icon in the Dock. Any other
-  window, a dialog, and one brought back from being minimized other than from the Dock,
-  grows a little as it fades in.
+- A new window grows a little as it fades in, as the Mac's do, and so does one brought
+  back from being minimized other than from the Dock. One whose application was started
+  from its icon among the applications opens out of that icon.
 - A window that closes leaves its picture where it was for a moment, shrinking as it fades.
 - A window maximized, made fullscreen, put in a half or another part of the display, or
   put back, glides from where it was to where it goes, stretched until its program has

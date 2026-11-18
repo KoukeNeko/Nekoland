@@ -1,10 +1,11 @@
 //! Motion: how windows come, go and change place, on springs as iOS moves what it shows.
 //!
 //! All of it is the compositor's doing, so every program has it whatever drew its window:
-//! GTK, Qt or X11. A window opens out of its icon in the Dock, or grows a little as it fades
-//! in; one that closes leaves a picture of itself that shrinks and fades; one maximized,
-//! put in a half or put back glides there; the desktops slide past each other; and a menu
-//! grows out of what it was opened from. `animations` turns all of it off.
+//! GTK, Qt or X11. A window grows a little as it fades in, or opens out of the icon it was
+//! started from among the applications; one that closes leaves a picture of itself that
+//! shrinks and fades; one maximized, put in a half or put back glides there; the desktops
+//! slide past each other; and a menu grows out of what it was opened from. `animations`
+//! turns all of it off.
 //!
 //! Nothing here keeps a clock of its own: each animation remembers when it began, and a
 //! frame asks where it has got to by then.
@@ -177,7 +178,7 @@ impl Pose {
 
 struct Opening {
     window: Window,
-    /// Its icon in the Dock, when it comes out of it.
+    /// The icon it was started from among the applications, when it comes out of one.
     from: Option<Rectangle<i32, Logical>>,
     started: Instant,
 }
@@ -562,15 +563,13 @@ impl Nekoland {
     }
 
     /// A window was shown for the first time: one started from an icon among the
-    /// applications comes out of that icon, an application's first otherwise out of its icon
-    /// in the Dock, and any other grows a little where it is.
+    /// applications comes out of that icon, any other grows a little where it is, as the
+    /// Mac's do wherever they were started from.
     pub fn motion_open(&mut self, window: &Window) {
         if !self.config.animations {
             return;
         }
-        let from = self
-            .icon_launched_from(window)
-            .or_else(|| self.dock_icon_to_open_from(window));
+        let from = self.icon_launched_from(window);
         self.start_opening(window, from);
     }
 
