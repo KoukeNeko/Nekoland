@@ -250,6 +250,8 @@ impl Nekoland {
 }
 
 // evdev's BTN_LEFT
+/// What Super+` runs: shows or hides the terminal's drop-down window, as Win+` does Nekominal's.
+const DROP_DOWN_TERMINAL: &str = "nekoland-terminal drop-down";
 const BUTTON_LEFT: u32 = 0x110;
 const BUTTON_RIGHT: u32 = 0x111;
 
@@ -388,6 +390,7 @@ impl Nekoland {
             Keysym::BackSpace if ctrl && alt => self.loop_signal.stop(),
             Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
             Keysym::Return if logo => config::spawn(&self.config.terminal),
+            Keysym::grave if logo => config::spawn(DROP_DOWN_TERMINAL),
             Keysym::a if logo => self.show_apps(""),
             // As Raycast opens: Alt+Space, which closes it again.
             Keysym::space if alt && !(ctrl || logo || shift) => {

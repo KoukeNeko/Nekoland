@@ -19,7 +19,7 @@ command -v apt-get >/dev/null || die "it needs Ubuntu's apt-get"
 build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
-    libadwaita-1-dev libfontconfig-dev libfreetype-dev libpam0g-dev"
+    libadwaita-1-dev libvte-2.91-gtk4-dev libfontconfig-dev libfreetype-dev libpam0g-dev"
 # What it runs with: Mesa to draw, with Vulkan and video decoding on the GPU, Xwayland, the
 # wallpaper, terminal, portals, the network, sound, printing, languages, clipboard, fonts and
 # icons, the input method, and the applications the example configuration keeps in the Dock.
@@ -32,7 +32,8 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     grub-common python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
-    libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common"
+    libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
+    libvte-2.91-gtk4-0 fonts-jetbrains-mono"
 # Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
 [ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 

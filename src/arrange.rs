@@ -38,6 +38,8 @@ pub enum Direction {
 
 const THIRD: f64 = 1.0 / 3.0;
 const TWO_THIRDS: f64 = 2.0 / 3.0;
+/// How much of the height the terminal's drop-down window takes.
+const DROP_DOWN_SHARE: f64 = 0.45;
 
 /// How far Rectangle's 「Make Larger」 and 「Make Smaller」 move each edge.
 const RESIZE_STEP: i32 = 30;
@@ -79,6 +81,8 @@ pub fn arrangement(command: &str) -> Option<Arrangement> {
         "bottom-center-sixth" => part([THIRD, 0.5, TWO_THIRDS, 1.0]),
         "bottom-right-sixth" => part([TWO_THIRDS, 0.5, 1.0, 1.0]),
         "almost-maximize" => part([0.05, 0.05, 0.95, 0.95]),
+        // The terminal's drop-down window, as Nekominal's: across the top, under half the height.
+        "drop-down" => part([0.0, 0.0, 1.0, DROP_DOWN_SHARE]),
         "maximize" => Some(Arrangement::Maximize),
         "maximize-height" => Some(Arrangement::MaximizeHeight),
         "center" => Some(Arrangement::Center),
@@ -334,6 +338,7 @@ mod tests {
             "top-center-sixth",
             "bottom-right-sixth",
             "almost-maximize",
+            "drop-down",
         ] {
             let Some(Arrangement::Part(part)) = arrangement(command) else {
                 panic!("{command} is not a part");

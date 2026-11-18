@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Name[zh_TW]=終端機
+Comment=Run shells and coding agents, and see which one is waiting for you
+Comment[zh_TW]=執行 shell 與程式代理，看出哪一個在等你
+Exec=nekoland-terminal
+Icon=utilities-terminal
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;agent;claude;codex;
+StartupNotify=true
