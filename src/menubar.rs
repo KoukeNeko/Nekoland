@@ -1109,6 +1109,11 @@ impl Nekoland {
         self.menu_bar.dark
     }
 
+    /// The bar as it was last drawn, for the overview to slide its content away.
+    pub fn menu_bar_picture(&self) -> Option<&Picture> {
+        self.menu_bar.picture.as_ref()
+    }
+
     /// Whether the bar is there to see: not in the overview, nor over a fullscreen window.
     pub fn menu_bar_shown(&self) -> bool {
         self.overview.is_none() && self.fullscreen_window().is_none()

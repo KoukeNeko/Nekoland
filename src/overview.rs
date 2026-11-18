@@ -45,6 +45,9 @@ const BAR_OPEN_RATE: f64 = 30.0;
 const BAR_CLOSE_RATE: f64 = 45.0;
 /// How long the applications come in before the bar starts to open up over them.
 const BAR_AFTER_APPS: Duration = Duration::from_millis(150);
+/// How long the menu bar's content takes to slide up off the screen as the overview opens;
+/// the desktops' names come in over its second half.
+const MENU_SLIDE: Duration = Duration::from_millis(160);
 /// How long the bar closes before the applications start to leave, by when most of it has.
 const APPS_AFTER_BAR: Duration = Duration::from_millis(80);
 const CLOSE_SIZE: i32 = 22;
@@ -107,6 +110,9 @@ struct SpacesBar {
     strip: Option<Picture>,
     /// The glass's tint, as tall as the bar opened up and shown as far as it has come.
     expanded: Option<Picture>,
+    /// Nothing, to put the bar's glass under: its tint is drawn apart from it, short of
+    /// the menu bar's content while that is still sliding away with a tint of its own.
+    clear: Option<Picture>,
     strip_items: Vec<BarItem>,
     expanded_items: Vec<BarItem>,
     /// Where each desktop's live picture goes when the bar is opened up.
@@ -279,6 +285,7 @@ pub struct Overview {
     last_tick: Instant,
     strip_id: Id,
     expanded_id: Id,
+    glass_id: Id,
     /// Where each desktop is along the opened-up bar on its way to its place, how fast,
     /// and what names its frame from one frame to the next.
     glides: Vec<(f64, f64, Id)>,
@@ -460,6 +467,7 @@ impl Nekoland {
             last_tick: Instant::now(),
             strip_id: Id::new(),
             expanded_id: Id::new(),
+            glass_id: Id::new(),
             glides: Vec::new(),
             drag: None,
             hovered_desktop: None,
@@ -691,6 +699,7 @@ impl Nekoland {
 
         SpacesBar {
             area: output,
+            clear: draw(1, 1, |_| {}),
             strip,
             expanded,
             strip_items,
@@ -762,6 +771,22 @@ impl Nekoland {
         ))
     }
 
+    /// How far the menu bar's content has gone up off the screen, 0 to 1: away as the
+    /// overview opens, and back as it ends, once the desktops' names have gone.
+    pub fn overview_menu_away(&self) -> f64 {
+        let Some(overview) = &self.overview else {
+            return 0.0;
+        };
+        if !self.config.animations {
+            return 1.0;
+        }
+        if overview.closing {
+            return (overview.progress() * 2.0).min(1.0);
+        }
+        let t = (overview.started.elapsed().as_secs_f64() / MENU_SLIDE.as_secs_f64()).min(1.0);
+        t * (2.0 - t)
+    }
+
     /// The desktops' bar: the menu bar's pane of glass grown down, the names fading out on
     /// it, and the desktops' frames coming down with their pictures.
     pub fn overview_overlays(&self) -> Vec<Overlay<'_>> {
@@ -800,9 +825,13 @@ impl Nekoland {
         let names = if overview.apps.is_some() {
             0.0
         } else if overview.closing {
-            overview.names_at_close * overview.progress()
+            // Gone by halfway, when the menu bar's content starts back.
+            overview.names_at_close * (overview.progress() * 2.0 - 1.0).max(0.0)
         } else {
-            1.0 - expansion
+            // In once the menu bar's content is halfway gone.
+            let shown = overview.started.elapsed().as_secs_f64() / MENU_SLIDE.as_secs_f64() * 2.0 - 1.0;
+            let shown = if self.config.animations { shown.clamp(0.0, 1.0) } else { 1.0 };
+            (1.0 - expansion) * shown
         };
         if let Some(picture) = overview.bar.strip.as_ref().filter(|_| names > 0.0) {
             overlays.push(Overlay {
@@ -814,10 +843,26 @@ impl Nekoland {
                 picture,
             });
         }
-        if let Some(picture) = &overview.bar.expanded {
+        // The menu bar's content brings its own tint while it is there.
+        let menu = if self.config.menu_bar_background {
+            (f64::from(MENU_BAR_HEIGHT) * (1.0 - self.overview_menu_away())).round() as i32
+        } else {
+            0
+        };
+        if let Some(picture) = overview.bar.expanded.as_ref().filter(|_| panel.size.h > menu) {
             overlays.push(Overlay {
                 fade: 1.0,
                 id: &overview.expanded_id,
+                rect: Rectangle::new(panel.loc + Point::from((0, menu)), panel.size - Size::from((0, menu))),
+                glass: None,
+                alpha: 1.0,
+                picture,
+            });
+        }
+        if let Some(picture) = &overview.bar.clear {
+            overlays.push(Overlay {
+                fade: 1.0,
+                id: &overview.glass_id,
                 rect: panel,
                 glass: Some((Tier::Bar, 0)),
                 alpha: 1.0,
