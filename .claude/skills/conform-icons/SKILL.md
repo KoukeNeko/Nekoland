@@ -8,6 +8,8 @@ ones in `shell/icons/apps` (installed to `/usr/local/share/icons/Nekoland`), and
 the ones `shell/conform-icons.py` makes from other apps' own icons, in the
 person's `~/.local/share/icons/Nekoland/scalable/apps`. The compositor looks in
 it before Yaru; Settings › 外觀 has the switch and the list of both halves.
+While the switch is on, the compositor runs the tool again (`--refresh`) whenever a
+folder of desktop entries changes, so a newly installed app is restyled by itself.
 Folders and other places come from Yaru as they are.
 
 ## The rules every icon follows

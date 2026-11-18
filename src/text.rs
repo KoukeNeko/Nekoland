@@ -478,6 +478,40 @@ fn data_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Has the icons of applications installed while Nekoland runs drawn on its tile as the
+/// others were: when a folder of desktop entries changes, the tool makes them again and
+/// the compositor looks its icons up anew. The tool leaves a person who had its icons
+/// removed without them.
+pub fn watch_applications() {
+    let changed = || -> Vec<Option<std::time::SystemTime>> {
+        data_dirs()
+            .iter()
+            .map(|dir| std::fs::metadata(dir.join("applications")).and_then(|meta| meta.modified()).ok())
+            .collect()
+    };
+    std::thread::spawn(move || {
+        let mut seen = changed();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if changed() == seen {
+                continue;
+            }
+            // A package puts its entry down before its icons: wait for the rest of it.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            seen = changed();
+            match std::process::Command::new("nekoland-conform-icons").arg("--refresh").status() {
+                Ok(status) if status.success() => {
+                    if let Err(err) = crate::ipc::send("reload") {
+                        tracing::warn!("reload after new icons: {err}");
+                    }
+                }
+                Ok(status) => tracing::warn!("nekoland-conform-icons: {status}"),
+                Err(err) => tracing::warn!("nekoland-conform-icons: {err}"),
+            }
+        }
+    });
+}
+
 fn lookup(app_id: &str) -> AppInfo {
     let dirs = data_dirs();
     let Some(entry) = desktop_entry(&dirs, app_id) else {

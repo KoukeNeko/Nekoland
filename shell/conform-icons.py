@@ -342,13 +342,17 @@ def main():
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--sheet")
     parser.add_argument("--remove", action="store_true", help="delete the icons this tool wrote")
+    parser.add_argument("--refresh", action="store_true",
+                        help="do nothing unless this tool's icons are there: not for a person who had them removed")
     args = parser.parse_args()
     OUT_DIR = os.path.abspath(args.out)
     os.makedirs(OUT_DIR, exist_ok=True)
+    ours = [path for path in glob.glob(f"{OUT_DIR}/*.svg") if MARK in open(path).read(200)]
     if args.remove:
-        for path in glob.glob(f"{OUT_DIR}/*.svg"):
-            if MARK in open(path).read(200):
-                os.remove(path)
+        for path in ours:
+            os.remove(path)
+        return
+    if args.refresh and not ours:
         return
     if OUT_DIR == OUT and not os.path.exists(f"{THEME}/index.theme") and os.path.exists(INDEX):
         # GTK reads a theme's index from the first folder it finds the theme in.

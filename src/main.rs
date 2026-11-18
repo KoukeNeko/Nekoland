@@ -168,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("no control socket: {err}");
     }
     lock::watch_idle(&event_loop.handle());
+    text::watch_applications();
     // So that what is started from here finds `nekoland msg`.
     if let Some(directory) = std::env::current_exe()
         .ok()
