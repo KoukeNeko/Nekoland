@@ -341,8 +341,7 @@ that takes it away, its windows going to the desktop before it.
 Super+A, the Dock's first button, or typing in the overview shows the applications in
 place of the windows, as GNOME does: the desktops' bar stays open above them, a search
 field under it, and every application a page at a time, turned with the wheel, the
-arrows or the dots. Nekoland's own programs are not among them, nor those that run in a
-terminal, as the ones a system comes with do. Typing narrows them down by name, keyword or command, and Return
+arrows or the dots. Typing narrows them down by name, keyword or command, and Return
 starts the first. A click starts one on the desktop shown; one dragged onto a desktop
 starts there, onto the add button on a new desktop, and onto the Dock is kept in it,
 where the Dock makes room for it. The windows stay where they are behind the
@@ -364,7 +363,9 @@ between others goes there, the others making room; onto another, the two make a 
 named after its kind; onto a folder, it goes in. A dragged icon held at the grid's side
 turns the page. A folder opens over the grid; its applications are reordered there or
 dragged out, and a click on its name changes it. The arrangement is kept in
-`app-grid.toml` beside `config.toml`.
+`app-grid.toml` beside `config.toml`. A right click on the grid opens a menu to arrange
+it or put it back as it was, except on an application that came with the system:
+Nekoland's own, or one that runs in a terminal.
 
 ## Motion
 

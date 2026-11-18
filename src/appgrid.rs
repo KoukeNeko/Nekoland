@@ -97,6 +97,8 @@ struct GridApp {
     icons: Vec<String>,
     /// What a folder made with it is called.
     category: &'static str,
+    /// Whether it came with the system, as Nekoland's own programs do.
+    built_in: bool,
     info: gio::DesktopAppInfo,
 }
 
@@ -451,20 +453,18 @@ fn category(info: &gio::DesktopAppInfo) -> &'static str {
 /// What the desktop IDs of Nekoland's own programs begin with.
 const OWN_APPS: &str = "io.github.koukeneko.Nekoland.";
 
-/// Whether an application is one to show here: not Nekoland's own, which the Dock and the
-/// menus open, and not one that runs in a terminal, as those a system comes with do, which
-/// is started from one.
-fn is_listed(id: &str, in_terminal: bool) -> bool {
-    !id.starts_with(OWN_APPS) && !in_terminal
+/// Whether an application came with the system rather than being put there by its user:
+/// Nekoland's own, or one that runs in a terminal. A right click on one opens no menu.
+fn is_built_in(id: &str, in_terminal: bool) -> bool {
+    id.starts_with(OWN_APPS) || in_terminal
 }
 
-/// Every application shown here, A to Z by name.
+/// Every application the desktop shows, A to Z by name.
 fn installed() -> Vec<GridApp> {
     let mut apps: Vec<GridApp> = gio::AppInfo::all()
         .into_iter()
         .filter(|app| app.should_show())
         .filter_map(|app| app.downcast::<gio::DesktopAppInfo>().ok())
-        .filter(|info| info.id().is_some_and(|id| is_listed(&id, info.boolean("Terminal"))))
         .filter_map(|info| {
             let id = info.id()?.trim_end_matches(".desktop").to_string();
             let name = info.display_name().to_string();
@@ -486,6 +486,7 @@ fn installed() -> Vec<GridApp> {
             .to_lowercase();
             let icons = info.icon().map(crate::text::gio_icon_names).unwrap_or_default();
             Some(GridApp {
+                built_in: is_built_in(&id, info.boolean("Terminal")),
                 id,
                 name,
                 words,
@@ -1499,6 +1500,14 @@ impl Nekoland {
         if apps.style.is_list() || !apps.query.is_empty() || !below_bar {
             return false;
         }
+        // On an application that came with the system the click is taken, and opens nothing.
+        let under = apps.layout.and_then(|layout| layout.cell_at(pos)).and_then(|(cell, _)| {
+            let per_page = apps.layout.map_or(1, |layout| layout.per_page());
+            apps.cells.get(apps.page * per_page + cell).copied()
+        });
+        if matches!(under, Some(Cell::Entry(Entry::App(app))) if apps.apps[app].built_in) {
+            return true;
+        }
         let edit = if apps.editing.is_some() { "完成" } else { "編輯" };
         let command = |command| crate::menubar::Command::Apps(command);
         self.open_menu_at(
@@ -2174,10 +2183,10 @@ mod tests {
     }
 
     #[test]
-    fn nekolands_own_programs_and_those_of_a_terminal_are_left_out() {
-        assert!(is_listed("org.mozilla.firefox.desktop", false));
-        assert!(!is_listed("io.github.koukeneko.Nekoland.Settings.desktop", false));
-        assert!(!is_listed("vim.desktop", true));
+    fn nekolands_own_programs_and_those_of_a_terminal_came_with_the_system() {
+        assert!(!is_built_in("org.mozilla.firefox", false));
+        assert!(is_built_in("io.github.koukeneko.Nekoland.Settings", false));
+        assert!(is_built_in("vim", true));
     }
 
     #[test]
