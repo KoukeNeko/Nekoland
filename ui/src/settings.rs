@@ -669,6 +669,25 @@ fn build(app: &adw::Application) {
         .height_request(480)
         .content(&split)
         .build();
+    let find = gtk::ShortcutController::new();
+    find.set_scope(gtk::ShortcutScope::Global);
+    find.add_shortcut(gtk::Shortcut::new(
+        gtk::ShortcutTrigger::parse_string("<Control>f"),
+        Some(gtk::CallbackAction::new(glib::clone!(
+            #[weak]
+            search,
+            #[weak]
+            split,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, _| {
+                split.set_show_content(false);
+                search.grab_focus();
+                glib::Propagation::Stop
+            }
+        ))),
+    ));
+    window.add_controller(find);
     // Settings changed elsewhere show on the pages: looked for as the window comes and goes,
     // and every few seconds while it is in front. Its own changes rebuild nothing.
     let seen = RefCell::new(outside_settings());
