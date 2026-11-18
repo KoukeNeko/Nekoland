@@ -3225,6 +3225,7 @@ dependencies = [
  "smithay-client-toolkit",
  "toml 0.8.23",
  "wayland-client",
+ "zbus",
 ]
 
 [[package]]

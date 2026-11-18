@@ -201,6 +201,14 @@ impl Nekoland {
             }
             Event::Notify(notification) => {
                 remember_notifier(&notification.app_name);
+                if self.lock.is_some() {
+                    let said = match (notification.summary.as_str(), notification.body.as_str()) {
+                        (summary, "") => summary.to_string(),
+                        ("", body) => body.to_string(),
+                        (summary, body) => format!("{summary}：{body}"),
+                    };
+                    crate::lock::tell_locker(&notification.app_name, &said);
+                }
                 let deadline = match notification.timeout {
                     Expiry::UntilDismissed => None,
                     Expiry::After(timeout) => Some(Instant::now() + timeout),

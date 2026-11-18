@@ -92,6 +92,11 @@ wallpaper and an input method. Every key is optional:
 | `keyboard_layout`, `keyboard_variant`, `keyboard_options` | The XKB layout, variant and options keys are read with, as setxkbmap takes them; `us` and none unless set |
 | `key_repeat`, `repeat_delay`, `repeat_rate` | Whether a held key repeats, how many milliseconds it waits before it does, and how many times a second it then repeats; on, 200 and 25 unless set |
 | `lock_wallpaper`, `lock_blur` | Whether the lock shows the wallpaper rather than dark paper, and blurs it; both on unless set |
+| `lock_style` | The lock's layout: `quiet` (the time in the middle, a row of widgets under it), `poster` (the hours over the minutes, bold, on the left) or `dial` (a clock with hands, its widgets on its face); `quiet` unless set |
+| `lock_clock_color`, `lock_clock_weight` | The lock's clock as `#rrggbb`, else a colour of the wallpaper's where the style has one; and `light`, `regular` or `bold`, else the style's |
+| `lock_widgets` | What the lock shows beside the time, of `battery` and `playing` (an MPRIS player's title); both unless set |
+| `lock_notices` | The notifications that came in while locked: `hidden`, `count` (how many from each program) or `full`; `count` unless set |
+| `lock_message`, `lock_show_name` | Words the lock shows, such as whom to call; and whether it shows the user's name and picture (`~/.face`), on unless set |
 | `screen_off_after`, `sleep_after` | Seconds without input after which the displays turn off, and after which the computer sleeps, unless a program keeps the screen awake; never unless set |
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
@@ -367,7 +372,12 @@ terminals and quitting. A locker that goes away leaves the screen locked, and a 
 starts it again.
 
 `nekoland-lock` shows the wallpaper a little nearer and blurred, under ink, with the time,
-the date, the user's name and a field for the password, which PAM checks through the
+the date, the user's name and a field for the password, in one of three styles — 靜, 海報
+and 錶面 — with the clock's colour and weight, the widgets (the battery and what plays),
+the notifications that came in while locked and a message as Settings' 鎖定畫面 makes
+them, over a preview `nekoland-lock --preview FILE WIDTH HEIGHT` draws. The compositor
+keeps those notifications in `$XDG_RUNTIME_DIR/nekoland-lock-notices` for it, emptied as
+the screen locks. PAM checks the password through the
 `nekoland-lock` service, `shell/nekoland-lock.pam` in `/etc/pam.d`. Enter checks it,
 Escape clears it; a wrong one shakes the field red. The right one lifts the ink off the
 wallpaper before the desktop shows.

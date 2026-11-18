@@ -5,7 +5,7 @@ edition = "2021"
 description = "Nekoland's screen lock: the wallpaper under ink, the time, and a field for the password"
 
 [dependencies]
-cairo-rs = "0.20"
+cairo-rs = { version = "0.20", features = ["png"] }
 gdk-pixbuf = "0.20"
 libc = "0.2"
 pango = "0.20"
@@ -13,3 +13,4 @@ pangocairo = "0.20"
 smithay-client-toolkit = "0.19"
 toml = "0.8"
 wayland-client = "0.31"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }

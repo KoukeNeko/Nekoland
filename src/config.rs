@@ -40,6 +40,14 @@ pub struct Config {
     /// Whether nekoland-lock shows the wallpaper, and blurs it, rather than the paper alone.
     pub lock_wallpaper: bool,
     pub lock_blur: bool,
+    /// How nekoland-lock looks, read by it alone; see lock/src/main.rs.
+    pub lock_style: String,
+    pub lock_clock_color: String,
+    pub lock_clock_weight: String,
+    pub lock_widgets: Vec<String>,
+    pub lock_notices: String,
+    pub lock_message: String,
+    pub lock_show_name: bool,
     /// Seconds without input after which the displays go dark, and after which the
     /// computer sleeps; 0 for never.
     pub screen_off_after: u64,
@@ -464,6 +472,13 @@ impl Default for Config {
             lock_after: 0,
             lock_wallpaper: true,
             lock_blur: true,
+            lock_style: "quiet".into(),
+            lock_clock_color: String::new(),
+            lock_clock_weight: String::new(),
+            lock_widgets: vec!["battery".into(), "playing".into()],
+            lock_notices: "count".into(),
+            lock_message: String::new(),
+            lock_show_name: true,
             screen_off_after: 0,
             sleep_after: 0,
             // logind's own: it powers off, which Nekoland asks about first.

@@ -53,6 +53,28 @@ impl Lock {
     }
 }
 
+/// Where the notifications that came in while locked are kept for nekoland-lock to show, one
+/// to a line: the program, a tab, what it says. Only in the user's own runtime directory: a
+/// shared one such as /tmp would let others read them or plant a link in their place.
+fn locker_notices() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-notices"))
+}
+
+pub fn tell_locker(app: &str, said: &str) {
+    use std::io::Write;
+    let plain = |words: &str| words.replace(['\t', '\n', '\r'], " ");
+    let Some(path) = locker_notices() else { return };
+    let line = format!("{}\t{}\n", plain(app), plain(said));
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(line.as_bytes()));
+    if let Err(err) = written {
+        tracing::warn!("{}: {err}", path.display());
+    }
+}
+
 impl Nekoland {
     /// Starts the locker, unless one holds the screen already. swaylock is given the
     /// wallpaper, as the desktop has it; nekoland-lock reads it itself.
@@ -63,6 +85,13 @@ impl Nekoland {
             return;
         }
         self.locker_started = Some(Instant::now());
+        if let Some(path) = locker_notices() {
+            if let Err(err) = std::fs::remove_file(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("{}: {err}", path.display());
+                }
+            }
+        }
         let mut command = self.config.lock.clone();
         if let Some(wallpaper) = self.config.wallpaper.as_ref().filter(|_| command.starts_with("swaylock")) {
             let home = std::env::var("HOME").unwrap_or_default();

@@ -1060,29 +1060,322 @@ fn write_in(label: &gtk::Label, font: &gtk::pango::FontDescription) {
 }
 
 /// How nekoland-lock looks, and when the screen locks by itself.
+const LOCK_STYLES: [&str; 3] = ["quiet", "poster", "dial"];
+const LOCK_NOTICES: [&str; 3] = ["hidden", "count", "full"];
+const LOCK_WEIGHTS: [&str; 3] = ["light", "regular", "bold"];
+/// The clock's colours to pick from, after the style's own: white, and colours that read on
+/// ink as the wallpaper's would.
+const LOCK_CLOCK_COLOURS: [&str; 6] = ["#f1efea", "#f2b28a", "#9cc4e6", "#a8d8b9", "#ff8f6b", "#c3b1e1"];
+/// How large the lock is drawn for its preview: the first display's points, as the lock
+/// lays itself out by them.
+fn lock_preview_size() -> (i32, i32) {
+    gdk::Display::default()
+        .and_then(|display| display.monitors().item(0))
+        .and_then(|monitor| monitor.downcast::<gdk::Monitor>().ok())
+        .map(|monitor| monitor.geometry())
+        .map_or((1440, 900), |area| (area.width(), area.height()))
+}
+
+/// The lock as it looks now, or as `style` would look picked, drawn by nekoland-lock into a
+/// picture, and drawn again with `refresh` once a setting changed.
+fn lock_preview(style: Option<&'static str>, height: i32) -> (gtk::Picture, Rc<dyn Fn()>) {
+    let picture = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Contain)
+        .height_request(height)
+        .build();
+    let name = style.map_or_else(|| "lock-preview.png".to_string(), |style| format!("lock-preview-{style}.png"));
+    let file = glib::user_cache_dir().join("nekoland").join(name);
+    if let Some(dir) = file.parent() {
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            eprintln!("{}: {err}", dir.display());
+        }
+    }
+    let refresh = Rc::new(glib::clone!(
+        #[weak]
+        picture,
+        move || {
+            let program = nekoland_program("nekoland-lock");
+            let (width, height) = lock_preview_size();
+            let (width, height) = (width.to_string(), height.to_string());
+            let mut argv = vec![program.as_os_str(), "--preview".as_ref(), file.as_os_str(), width.as_ref(), height.as_ref()];
+            argv.extend(style.map(std::ffi::OsStr::new));
+            let child = match gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+                Ok(child) => child,
+                Err(err) => return eprintln!("nekoland-lock --preview: {err}"),
+            };
+            let file = file.clone();
+            child.wait_check_async(gio::Cancellable::NONE, glib::clone!(
+                #[weak]
+                picture,
+                move |result| match result {
+                    // Read anew: the same file name would show what was drawn before.
+                    Ok(()) => match gdk::Texture::from_filename(&file) {
+                        Ok(texture) => picture.set_paintable(Some(&texture)),
+                        Err(err) => eprintln!("{}: {err}", file.display()),
+                    },
+                    Err(err) => eprintln!("nekoland-lock --preview: {err}"),
+                }
+            ));
+        }
+    ));
+    refresh();
+    (picture, refresh)
+}
+
+/// When the screen locks and how the lock looks, as the person makes it their own.
 fn lock_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
+    let (preview, refresh_preview) = lock_preview(None, 280);
+    preview.add_css_class("card");
+    let shown = group("");
+    shown.add(&preview);
+    page.add(&shown);
 
-    let when = group("鎖定");
+    // Each style, drawn small as it would look picked: the way to pick one.
+    let styles = gtk::Box::builder().spacing(12).homogeneous(true).build();
+    let mut buttons: Vec<gtk::ToggleButton> = Vec::new();
+    let mut refreshes = vec![refresh_preview];
+    for (name, label) in LOCK_STYLES.into_iter().zip(["靜", "海報", "錶面"]) {
+        let (thumbnail, refresh_thumbnail) = lock_preview(Some(name), 110);
+        refreshes.push(refresh_thumbnail);
+        let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+        content.append(&thumbnail);
+        content.append(&gtk::Label::new(Some(label)));
+        let button = gtk::ToggleButton::builder().child(&content).css_classes(["flat"]).build();
+        if let Some(first) = buttons.first() {
+            button.set_group(Some(first));
+        }
+        styles.append(&button);
+        buttons.push(button);
+    }
+    // One change can write several settings at once, as a style does; they are drawn once,
+    // after the last, so no two drawings write the same file.
+    let refreshes = Rc::new(refreshes);
+    let waiting: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let refresh: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(source) = waiting.take() {
+            source.remove();
+        }
+        let (refreshes, waiting_then) = (refreshes.clone(), waiting.clone());
+        let source = glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+            waiting_then.take();
+            refreshes.iter().for_each(|refresh| refresh());
+        });
+        *waiting.borrow_mut() = Some(source);
+    });
+
+    let when = group("");
     when.add(&idle_row(config, "閒置後鎖定", "lock_after"));
+    when.add(&idle_row(config, "閒置後關閉螢幕", "screen_off_after"));
     page.add(&when);
 
-    // Both on unless set, unlike the switches switch_row makes.
-    let on_unless_set = |title: &str, key: &'static str| {
-        let row = adw::SwitchRow::builder()
-            .title(title)
-            .active(config.0.get(key).and_then(toml::Value::as_bool).unwrap_or(true))
-            .build();
-        row.connect_active_notify(move |row| set(&format!("{key} = {}", row.is_active())));
-        row
+    // Each change is drawn into the preview once it is written.
+    let changed = |line: String, refresh: &Rc<dyn Fn()>| {
+        set(&line);
+        refresh();
     };
-    let background = group("背景");
-    let wallpaper = on_unless_set("顯示桌布", "lock_wallpaper");
-    let blur = on_unless_set("模糊桌布", "lock_blur");
-    wallpaper
-        .bind_property("active", &blur, "sensitive")
-        .sync_create()
+
+    // A group shows its rows before anything else, so the pictures get one of their own.
+    let picker = group("樣式");
+    picker.add(&styles);
+    page.add(&picker);
+    let look = group("");
+    let selected = config.choice(&LOCK_STYLES, "lock_style");
+    let weight = adw::ComboRow::builder()
+        .title("時鐘粗細")
+        .model(&gtk::StringList::new(&["細", "標準", "粗"]))
         .build();
+    // Unset, the clock is as thick as its style sets it: thin, but the poster's bold.
+    let style_weight = |style: u32| if style == 1 { 2 } else { 0 };
+    let chosen_weight = LOCK_WEIGHTS.iter().position(|name| *name == config.word("lock_clock_weight"));
+    weight.set_selected(chosen_weight.map_or(style_weight(selected), |at| at as u32));
+    // The dial has hands, not figures.
+    weight.set_visible(selected != 2);
+    let blur = adw::SwitchRow::builder()
+        .title("模糊桌布")
+        .active(config.0.get("lock_blur").and_then(toml::Value::as_bool).unwrap_or(true))
+        .build();
+    buttons[selected as usize].set_active(true);
+    for (at, button) in (0..).zip(&buttons) {
+        button.connect_toggled(glib::clone!(
+            #[weak]
+            weight,
+            #[weak]
+            blur,
+            #[strong]
+            refresh,
+            move |button| {
+                if !button.is_active() {
+                    return;
+                }
+                let name = LOCK_STYLES[at as usize];
+                set(&format!("lock_style = {name:?}"));
+                // A style comes with its own clock and wallpaper, as One UI's do; changed
+                // after, they stay as changed.
+                weight.set_selected(style_weight(at));
+                weight.set_visible(at != 2);
+                blur.set_active(name != "poster");
+                refresh();
+            }
+        ));
+    }
+    weight.connect_selected_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| {
+            if let Some(name) = LOCK_WEIGHTS.get(row.selected() as usize) {
+                changed(format!("lock_clock_weight = {name:?}"), &refresh);
+            }
+        }
+    ));
+
+    let colours = adw::ActionRow::builder().title("時鐘顏色").build();
+    let css = gtk::CssProvider::new();
+    css.load_from_string(
+        &LOCK_CLOCK_COLOURS
+            .iter()
+            .enumerate()
+            .map(|(i, colour)| format!(".nk-clock-{i} {{ background: {colour}; min-width: 24px; min-height: 24px; padding: 0; }}"))
+            .collect::<String>(),
+    );
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+    let current = config.word("lock_clock_color").to_string();
+    let automatic = gtk::ToggleButton::builder()
+        .label("自動")
+        .valign(gtk::Align::Center)
+        .tooltip_text("取自桌布")
+        .active(!LOCK_CLOCK_COLOURS.contains(&current.as_str()))
+        .build();
+    automatic.connect_toggled(glib::clone!(
+        #[strong]
+        refresh,
+        move |button| {
+            if button.is_active() {
+                unset("lock_clock_color");
+                refresh();
+            }
+        }
+    ));
+    let swatches = gtk::Box::builder().spacing(8).valign(gtk::Align::Center).build();
+    swatches.append(&automatic);
+    for (i, colour) in LOCK_CLOCK_COLOURS.iter().enumerate() {
+        let swatch = gtk::ToggleButton::builder()
+            .group(&automatic)
+            .active(current == *colour)
+            .valign(gtk::Align::Center)
+            .css_classes(["circular", &format!("nk-clock-{i}")])
+            .tooltip_text(*colour)
+            .build();
+        swatch.connect_toggled(glib::clone!(
+            #[strong]
+            refresh,
+            move |button| {
+                if button.is_active() {
+                    changed(format!("lock_clock_color = {colour:?}"), &refresh);
+                }
+            }
+        ));
+        swatches.append(&swatch);
+    }
+    colours.add_suffix(&swatches);
+    look.add(&colours);
+    look.add(&weight);
+    page.add(&look);
+
+    let widgets = group("小工具");
+    let listed: Vec<String> = config
+        .0
+        .get("lock_widgets")
+        .and_then(toml::Value::as_array)
+        .map_or_else(|| vec!["battery".into(), "playing".into()], |listed| {
+            listed.iter().filter_map(toml::Value::as_str).map(String::from).collect()
+        });
+    let battery = adw::SwitchRow::builder().title("電池").active(listed.iter().any(|name| name == "battery")).build();
+    let playing = adw::SwitchRow::builder().title("正在播放").active(listed.iter().any(|name| name == "playing")).build();
+    for row in [&battery, &playing] {
+        row.connect_active_notify(glib::clone!(
+            #[weak]
+            battery,
+            #[weak]
+            playing,
+            #[strong]
+            refresh,
+            move |_| {
+                let names: Vec<&str> = [(&battery, "battery"), (&playing, "playing")]
+                    .into_iter()
+                    .filter(|(row, _)| row.is_active())
+                    .map(|(_, name)| name)
+                    .collect();
+                changed(format!("lock_widgets = {names:?}"), &refresh);
+            }
+        ));
+    }
+    widgets.add(&battery);
+    widgets.add(&playing);
+    page.add(&widgets);
+
+    let locked = group("鎖定時");
+    let notices = adw::ComboRow::builder()
+        .title("通知")
+        .model(&gtk::StringList::new(&["不顯示", "只顯示數量", "顯示內容"]))
+        .selected(LOCK_NOTICES.iter().position(|name| *name == config.word("lock_notices")).unwrap_or(1) as u32)
+        .build();
+    notices.connect_selected_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| {
+            if let Some(name) = LOCK_NOTICES.get(row.selected() as usize) {
+                changed(format!("lock_notices = {name:?}"), &refresh);
+            }
+        }
+    ));
+    let name = adw::SwitchRow::builder()
+        .title("顯示使用者名稱與照片")
+        .active(config.0.get("lock_show_name").and_then(toml::Value::as_bool).unwrap_or(true))
+        .build();
+    name.connect_active_notify(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| changed(format!("lock_show_name = {}", row.is_active()), &refresh)
+    ));
+    let message = adw::EntryRow::builder()
+        .title("鎖定時顯示的訊息")
+        .text(config.word("lock_message"))
+        .show_apply_button(true)
+        .build();
+    message.connect_apply(glib::clone!(
+        #[strong]
+        refresh,
+        move |row| {
+            let words = row.text().replace(['\n', '\r'], " ");
+            if words.trim().is_empty() {
+                unset("lock_message");
+                refresh();
+            } else {
+                changed(format!("lock_message = {}", toml::Value::String(words.trim().to_string())), &refresh);
+            }
+        }
+    ));
+    locked.add(&notices);
+    locked.add(&name);
+    locked.add(&message);
+    page.add(&locked);
+
+    let background = group("背景");
+    let wallpaper = adw::SwitchRow::builder()
+        .title("顯示桌布")
+        .active(config.0.get("lock_wallpaper").and_then(toml::Value::as_bool).unwrap_or(true))
+        .build();
+    wallpaper.bind_property("active", &blur, "sensitive").sync_create().build();
+    for (row, key) in [(&wallpaper, "lock_wallpaper"), (&blur, "lock_blur")] {
+        row.connect_active_notify(glib::clone!(
+            #[strong]
+            refresh,
+            move |row| changed(format!("{key} = {}", row.is_active()), &refresh)
+        ));
+    }
     background.add(&wallpaper);
     background.add(&blur);
     page.add(&background);
