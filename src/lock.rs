@@ -53,6 +53,10 @@ pub struct Lock {
     /// The lock's shortcut opened without the password: its windows, and only they, stand
     /// above the lock until they close.
     guest: Option<String>,
+    /// The windows open as the shortcut was asked for, which are not its: a window open
+    /// before the lock would show what the lock hides, and a program can name itself as any
+    /// other.
+    before_guest: Vec<Window>,
     /// Whether it has shown a window yet: once its last one closes, it is let go.
     guest_shown: bool,
     /// When it locked, which the displays' going dark while locked counts from.
@@ -128,11 +132,15 @@ impl Nekoland {
 
     /// The windows of the shortcut opened over the lock, back to front.
     pub fn lock_guests(&self) -> Vec<Window> {
-        let Some(guest) = self.lock.as_ref().and_then(|lock| lock.guest.as_deref()) else {
+        let Some(lock) = self.lock.as_ref() else {
+            return Vec::new();
+        };
+        let Some(guest) = lock.guest.as_deref() else {
             return Vec::new();
         };
         self.space
             .elements()
+            .filter(|window| !lock.before_guest.contains(window))
             .filter(|window| window_names(window).1.eq_ignore_ascii_case(guest))
             .cloned()
             .collect()
@@ -151,6 +159,7 @@ impl Nekoland {
             }
             lock.guest = Some(app_id.to_string());
             lock.guest_shown = false;
+            lock.before_guest = self.space.elements().cloned().collect();
         }
         self.launch_app(app_id);
     }
@@ -270,7 +279,7 @@ impl SessionLockHandler for Nekoland {
         }
         let lock = confirmation.ext_session_lock().clone();
         let surfaces = self.lock.take().map(|lock| lock.surfaces).unwrap_or_default();
-        self.lock = Some(Lock { lock, surfaces, guest: None, guest_shown: false, since: Instant::now() });
+        self.lock = Some(Lock { lock, surfaces, guest: None, before_guest: Vec::new(), guest_shown: false, since: Instant::now() });
         self.focus_lock();
         // The pointer leaves what it was over as well, so that a click or scroll without
         // moving it first reaches nothing behind the lock.
@@ -311,6 +320,12 @@ impl SessionLockHandler for Nekoland {
         let Some(lock) = self.lock.as_mut() else {
             return;
         };
+        // A refused locker's surface would take the held lock's place, and the password typed
+        // into it.
+        let owner = |resource: Option<smithay::reexports::wayland_server::Client>| resource.map(|client| client.id());
+        if owner(lock.lock.client()) != owner(surface.wl_surface().client()) {
+            return;
+        }
         surface.with_pending_state(|state| {
             state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into());
         });

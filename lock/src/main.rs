@@ -1366,6 +1366,9 @@ mod tests {
     }
 }
 
+/// How many unknown fingers the lock takes before it wants the password.
+const FINGER_TRIES: u32 = 5;
+
 /// What the fingerprint reader says, from its thread.
 enum Finger {
     /// It waits for a finger.
@@ -1408,6 +1411,7 @@ fn verify_finger(user: &str, sender: &channel::Sender<Finger>) -> zbus::Result<(
     device.call::<_, _, ()>("Claim", &(user,))?;
     device.call::<_, _, ()>("VerifyStart", &("any",))?;
     let _ = sender.send(Finger::Ready);
+    let mut misses = 0;
     for status in statuses {
         let (result, done): (String, bool) = status.body().deserialize()?;
         let said = match result.as_str() {
@@ -1419,7 +1423,18 @@ fn verify_finger(user: &str, sender: &channel::Sender<Finger>) -> zbus::Result<(
             "verify-disconnected" | "verify-unknown-error" => return Err(zbus::Error::Failure(result)),
             _ => Finger::Again,
         };
+        let wrong = matches!(said, Finger::Wrong);
         let _ = sender.send(said);
+        if wrong {
+            misses += 1;
+            // Fingers can be tried without end, which a password through PAM cannot: after
+            // a few, only the password unlocks.
+            if misses == FINGER_TRIES {
+                device.call::<_, _, ()>("VerifyStop", &())?;
+                device.call::<_, _, ()>("Release", &())?;
+                return Ok(());
+            }
+        }
         if done {
             // fprintd ends verifying after a finger it does not know; it is asked again.
             device.call::<_, _, ()>("VerifyStop", &())?;
