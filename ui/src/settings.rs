@@ -4,10 +4,14 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod alert;
+mod backup;
 mod bluetooth;
 mod focus;
 mod network;
+mod printers;
+mod region;
 mod themes;
+mod users;
 mod web;
 mod wifi;
 
@@ -231,6 +235,12 @@ impl Config {
     }
 }
 
+const A11Y_APPLICATIONS: &str = "org.gnome.desktop.a11y.applications";
+
+/// unattended-upgrades, which installs security updates by itself, and apt's switch for it.
+const UNATTENDED: &str = "/usr/bin/unattended-upgrade";
+const AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+
 /// The page a restarted Settings opens on.
 const PAGE_ENV: &str = "NEKOLAND_SETTINGS_PAGE";
 
@@ -248,6 +258,10 @@ thread_local! {
 }
 
 fn main() -> glib::ExitCode {
+    // The backup timer's service runs this, with no window.
+    if std::env::args().nth(1).as_deref() == Some(backup::BACKUP_FLAG) {
+        return backup::back_up_now();
+    }
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build);
     let code = app.run();
@@ -310,15 +324,21 @@ fn build(app: &adw::Application) {
                 "視窗" => windows_page(config).upcast(),
                 "鎖定畫面" => lock_page(config).upcast(),
                 "懸停資訊" => hover_page(config).upcast(),
+                "通知" => notifications_page(config).upcast(),
                 "顯示" => display_page(config).upcast(),
                 "電源" => power_page(config).upcast(),
                 "聲音" => sound_page().upcast(),
                 "鍵盤" => keyboard_page(config).upcast(),
                 "滑鼠與觸控板" => mouse_page(config).upcast(),
+                "使用者" => users::users_page().upcast(),
+                "語言與地區" => region::region_page().upcast(),
+                "印表機" => printers::printers_page().upcast(),
+                "軟體更新" => updates_page().upcast(),
+                "備份" => backup::backup_page().upcast(),
                 "日期與時間" => date_time_page().upcast(),
                 "預設應用程式" => default_apps_page(config).upcast(),
                 "啟動項目" => startup_page(&autostart).upcast(),
-                "遠端桌面" => remote_page().upcast(),
+                "共享" => sharing_page().upcast(),
                 "關於" => about_page().upcast(),
                 "設計語言" => design_page().upcast(),
                 _ => unreachable!("no page named {name}"),
@@ -345,6 +365,7 @@ fn build(app: &adw::Application) {
             ("視窗", "preferences-desktop-multitasking-symbolic"),
             ("鎖定畫面", "system-lock-screen-symbolic"),
             ("懸停資訊", "document-properties-symbolic"),
+            ("通知", "preferences-system-notifications-symbolic"),
             ("顯示", "video-display-symbolic"),
             ("電源", "battery-level-100-symbolic"),
         ],
@@ -352,12 +373,17 @@ fn build(app: &adw::Application) {
             ("聲音", "audio-speakers-symbolic"),
             ("鍵盤", "input-keyboard-symbolic"),
             ("滑鼠與觸控板", "input-mouse-symbolic"),
+            ("印表機", "printer-symbolic"),
         ],
         vec![
+            ("使用者", "system-users-symbolic"),
+            ("語言與地區", "preferences-desktop-locale-symbolic"),
             ("日期與時間", "preferences-system-time-symbolic"),
             ("預設應用程式", "preferences-desktop-apps-symbolic"),
             ("啟動項目", "system-run-symbolic"),
-            ("遠端桌面", "preferences-desktop-remote-desktop-symbolic"),
+            ("共享", "preferences-desktop-remote-desktop-symbolic"),
+            ("軟體更新", "software-update-available-symbolic"),
+            ("備份", "document-save-symbolic"),
             ("關於", "help-about-symbolic"),
         ],
         vec![("設計語言", "applications-graphics-symbolic")],
@@ -530,7 +556,7 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 14] = [
+const REBUILT_PAGES: [&str; 15] = [
     "外觀",
     "字型",
     "協助工具",
@@ -539,6 +565,7 @@ const REBUILT_PAGES: [&str; 14] = [
     "視窗",
     "鎖定畫面",
     "懸停資訊",
+    "通知",
     "顯示",
     "電源",
     "鍵盤",
@@ -814,23 +841,11 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     bar.add(&switch_row(config, "閃爍時間分隔符號", "clock_flash"));
     bar.add(&switch_row(config, "網路", "menu_bar_network"));
     bar.add(&switch_row(config, "音量", "menu_bar_sound"));
+    if !batteries().is_empty() {
+        bar.add(&switch_row(config, "電池", "menu_bar_battery"));
+        bar.add(&switch_row(config, "電池百分比", "menu_bar_battery_percent"));
+    }
     page.add(&bar);
-
-    let notices = group("通知");
-    let current = config.0.get("notification_seconds").and_then(toml::Value::as_integer).unwrap_or(5);
-    let banner = adw::ComboRow::builder()
-        .title("橫幅顯示時間")
-        .model(&gtk::StringList::new(&["3 秒", "5 秒", "10 秒", "20 秒"]))
-        .selected(NOTIFICATION_SECONDS.iter().position(|seconds| *seconds == current).unwrap_or(1) as u32)
-        .build();
-    banner.connect_selected_notify(|row| {
-        if let Some(seconds) = NOTIFICATION_SECONDS.get(row.selected() as usize) {
-            set(&format!("notification_seconds = {seconds}"));
-        }
-    });
-    notices.add(&banner);
-    notices.add(&switch_row(config, "顯示預覽", "notification_previews"));
-    page.add(&notices);
 
     let corners = group("熱點");
     for (title, key) in [
@@ -1088,6 +1103,37 @@ const ARRANGE_SHORTCUTS: [(&str, &str); 10] = [
     ("回到先前的大小", "Super ↓"),
 ];
 
+/// The compositor's own shortcuts, as src/input.rs takes them, by what they do; the window
+/// arrangement's are on 視窗.
+const SYSTEM_SHORTCUTS: [(&str, &str); 15] = [
+    ("啟動器", "Alt Space"),
+    ("所有應用程式", "Super A"),
+    ("終端機", "Super Enter"),
+    ("切換視窗", "Alt Tab"),
+    ("關閉視窗", "Super Q"),
+    ("最小化視窗", "Super H"),
+    ("全螢幕", "F11"),
+    ("所有視窗", "Ctrl Alt ↑"),
+    ("切換桌面", "Ctrl Alt ← →"),
+    ("選單列", "Ctrl F2"),
+    ("Dock", "Ctrl F3"),
+    ("鎖定螢幕", "Super L"),
+    ("登出", "Ctrl Alt Backspace"),
+    ("放大螢幕", "Super Ctrl ="),
+    ("縮小螢幕", "Super Ctrl -"),
+];
+
+/// A group of shortcuts, by what they do, with their keys beside.
+fn shortcuts_group(title: &str, shortcuts: &[(&str, &str)]) -> adw::PreferencesGroup {
+    let shown = group(title);
+    for (title, keys) in shortcuts {
+        let row = adw::ActionRow::builder().title(*title).build();
+        row.add_suffix(&gtk::Label::builder().label(*keys).css_classes(["dim-label"]).build());
+        shown.add(&row);
+    }
+    shown
+}
+
 fn windows_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
 
@@ -1128,13 +1174,7 @@ fn windows_page(config: &Config) -> adw::PreferencesPage {
     focus.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
     page.add(&focus);
 
-    let shortcuts = group("鍵盤快速鍵");
-    for (title, keys) in ARRANGE_SHORTCUTS {
-        let row = adw::ActionRow::builder().title(title).build();
-        row.add_suffix(&gtk::Label::builder().label(keys).css_classes(["dim-label"]).build());
-        shortcuts.add(&row);
-    }
-    page.add(&shortcuts);
+    page.add(&shortcuts_group("鍵盤快速鍵", &ARRANGE_SHORTCUTS));
     page
 }
 
@@ -2560,6 +2600,7 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     blink.bind_property("active", &blink_time, "visible").sync_create().build();
     typing.add(&blink_time);
     page.add(&typing);
+    page.add(&shortcuts_group("鍵盤快速鍵", &SYSTEM_SHORTCUTS));
     page
 }
 
@@ -3646,6 +3687,26 @@ fn parse_audio_nodes(dump: &str) -> Vec<AudioDevice> {
 const CURSOR_SIZES: [i64; 5] = [24, 32, 48, 64, 96];
 const A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
 
+/// Orca, which reads aloud what GTK programs show; GNOME's setting says whether it runs, and
+/// the compositor starts it at login when it does.
+fn screen_reader_row() -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title("螢幕閱讀器")
+        .active(output("gsettings", &["get", A11Y_APPLICATIONS, "screen-reader-enabled"]).is_some_and(|value| value.trim() == "true"))
+        .build();
+    row.connect_active_notify(|row| {
+        run("gsettings", &["set", A11Y_APPLICATIONS, "screen-reader-enabled", &row.is_active().to_string()]);
+        if row.is_active() {
+            if let Err(err) = Command::new("orca").arg("--replace").spawn() {
+                eprintln!("orca: {err}");
+            }
+        } else if let Err(err) = Command::new("pkill").args(["-x", "orca"]).status() {
+            eprintln!("pkill orca: {err}");
+        }
+    });
+    row
+}
+
 fn accessibility_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let seeing = group("");
@@ -3669,6 +3730,17 @@ fn accessibility_page(config: &Config) -> adw::PreferencesPage {
         .build();
     motion.connect_active_notify(|row| set_interface("enable-animations", &(!row.is_active()).to_string()));
     seeing.add(&motion);
+    if glib::find_program_in_path("orca").is_some() {
+        seeing.add(&screen_reader_row());
+    }
+    // Shares its limits with the compositor's Super Ctrl = and -.
+    seeing.add(&scale_row(
+        "螢幕縮放",
+        config.number("zoom", 1.0),
+        (1.0, 8.0, 0.5),
+        |zoom| if zoom <= 1.0 { "關閉".into() } else { format!("{zoom:.1}×") },
+        |zoom| set(&format!("zoom = {zoom:.1}")),
+    ));
     page.add(&seeing);
     page
 }
@@ -4130,8 +4202,8 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
 
     let night = adw::PreferencesGroup::new();
     let shift = choice_row(config, "夜覽", "night_shift", &NIGHT_SHIFT, &["關閉", "開啟", "排程"]);
-    let from = time_row(config, "開始", "night_shift_from");
-    let to = time_row(config, "結束", "night_shift_to");
+    let from = time_row(config, "開始", "night_shift_from", "22:00");
+    let to = time_row(config, "結束", "night_shift_to", "07:00");
     night.add(&shift);
     night.add(&from);
     night.add(&to);
@@ -4155,11 +4227,11 @@ fn display_page(config: &Config) -> adw::PreferencesPage {
 
 const NIGHT_SHIFT: [&str; 3] = ["off", "on", "scheduled"];
 
-/// A row choosing an hour of the day for a setting kept as `HH:MM`; a time of the file's own
-/// is kept among the choices.
-fn time_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
+/// A row choosing an hour of the day for a setting kept as `HH:MM`, `default` until it is set,
+/// as the compositor has it; a time of the file's own is kept among the choices.
+fn time_row(config: &Config, title: &str, key: &'static str, default: &str) -> adw::ComboRow {
     let mut times: Vec<String> = (0..24).map(|hour| format!("{hour:02}:00")).collect();
-    let current = config.word(key).to_string();
+    let current = Some(config.word(key)).filter(|word| !word.is_empty()).unwrap_or(default).to_string();
     if !current.is_empty() && !times.contains(&current) {
         times.push(current.clone());
         times.sort();
@@ -4178,6 +4250,49 @@ fn time_row(config: &Config, title: &str, key: &'static str) -> adw::ComboRow {
     row
 }
 
+/// power-profiles-daemon's profiles, from saving the battery to the most speed, and their names.
+const POWER_MODES: [(&str, &str); 3] = [("power-saver", "省電"), ("balanced", "平衡"), ("performance", "效能")];
+
+/// The profiles `powerprofilesctl list` offers, and the one in use, marked with "*".
+fn power_modes(listed: &str) -> (Vec<&'static str>, Option<&'static str>) {
+    let mut offered = Vec::new();
+    let mut current = None;
+    for line in listed.lines().filter(|line| line.trim_end().ends_with(':')) {
+        let name = line.trim().trim_start_matches('*').trim().trim_end_matches(':');
+        if let Some((known, _)) = POWER_MODES.iter().find(|(known, _)| *known == name) {
+            offered.push(*known);
+            if line.trim_start().starts_with('*') {
+                current = Some(*known);
+            }
+        }
+    }
+    offered.sort_by_key(|name| POWER_MODES.iter().position(|(known, _)| known == name));
+    (offered, current)
+}
+
+/// 電源模式, where power-profiles-daemon runs.
+fn power_mode_row() -> Option<adw::ComboRow> {
+    let (offered, current) = power_modes(&output("powerprofilesctl", &["list"])?);
+    if offered.len() < 2 {
+        return None;
+    }
+    let labels: Vec<&str> = offered
+        .iter()
+        .filter_map(|name| POWER_MODES.iter().find(|(known, _)| known == name).map(|(_, label)| *label))
+        .collect();
+    let row = adw::ComboRow::builder()
+        .title("電源模式")
+        .model(&gtk::StringList::new(&labels))
+        .selected(current.and_then(|current| offered.iter().position(|name| *name == current)).unwrap_or(0) as u32)
+        .build();
+    row.connect_selected_notify(move |row| {
+        if let Some(name) = offered.get(row.selected() as usize) {
+            run("powerprofilesctl", &["set", name]);
+        }
+    });
+    Some(row)
+}
+
 const POWER_BUTTON: [&str; 3] = ["shutdown", "sleep", "ignore"];
 const LID_CLOSE: [&str; 3] = ["sleep", "lock", "ignore"];
 
@@ -4188,6 +4303,9 @@ fn power_page(config: &Config) -> adw::PreferencesPage {
     let idle = group("");
     idle.add(&idle_row(config, "閒置後關閉螢幕", "screen_off_after"));
     idle.add(&idle_row(config, "閒置後睡眠", "sleep_after"));
+    if let Some(mode) = power_mode_row() {
+        idle.add(&mode);
+    }
     page.add(&idle);
 
     let batteries = batteries();
@@ -4232,8 +4350,9 @@ const XSESSION_HEAD: &str = "# Written by Nekoland's Settings, for xrdp sessions
 const XRDP_INI: &str = "/etc/xrdp/xrdp.ini";
 const RDP_PORT: u16 = 3389;
 
-/// xrdp, which lets other computers in over RDP, and the session they get.
-fn remote_page() -> adw::PreferencesPage {
+/// What other computers may reach here: the desktop over RDP, through xrdp, with the session
+/// they get, and a shell over SSH.
+fn sharing_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let rows = group("");
     let service = adw::SwitchRow::builder().title("遠端桌面").build();
@@ -4310,7 +4429,65 @@ fn remote_page() -> adw::PreferencesPage {
             eprintln!("~/.xsession: {err}");
         }
     });
+    if let Some(ssh) = ssh_units() {
+        page.add(&remote_login_group(ssh));
+    }
     page
+}
+
+/// The units that start OpenSSH's server: a socket where it is started on demand, as Ubuntu
+/// has it, else the service; None without it.
+fn ssh_units() -> Option<&'static str> {
+    let loaded = |unit: &str| {
+        output("systemctl", &["show", unit, "--property=LoadState"])
+            .is_some_and(|shown| field(&shown, "LoadState", '=').as_deref() == Some("loaded"))
+    };
+    if loaded("ssh.socket") {
+        Some("ssh.socket")
+    } else {
+        loaded("ssh.service").then_some("ssh.service")
+    }
+}
+
+/// 遠端登入, the Mac's name for letting others in over SSH.
+fn remote_login_group(unit: &'static str) -> adw::PreferencesGroup {
+    let login = group("");
+    // `systemctl is-active` fails when any is not, so its lines are read rather than its status.
+    let running = || {
+        let states = Command::new("systemctl").args(["is-active", "ssh.socket", "ssh.service"]).output();
+        states.is_ok_and(|states| String::from_utf8_lossy(&states.stdout).lines().any(|state| state == "active"))
+    };
+    let service = adw::SwitchRow::builder().title("遠端登入").active(running()).build();
+    // What to type on the other computer, while it can be typed.
+    let user = std::env::var("USER").unwrap_or_default();
+    service
+        .bind_property("active", &service, "subtitle")
+        .transform_to(move |_, on: bool| Some(if on { format!("ssh {user}@{}", remote_address()) } else { String::new() }))
+        .sync_create()
+        .build();
+    // Set while the switch is put back to what the service is.
+    let showing = Rc::new(Cell::new(false));
+    service.connect_active_notify(move |row| {
+        if showing.get() {
+            return;
+        }
+        let args: &[&str] = if row.is_active() {
+            &["systemctl", "enable", "--now", unit]
+        } else {
+            &["systemctl", "disable", "--now", "ssh.socket", "ssh.service"]
+        };
+        let reason = if row.is_active() { "開啟遠端登入" } else { "關閉遠端登入" };
+        row.set_sensitive(false);
+        let (row, showing) = (row.clone(), showing.clone());
+        as_root(reason, args, None, move |_| {
+            showing.set(true);
+            row.set_active(running());
+            showing.set(false);
+            row.set_sensitive(true);
+        });
+    });
+    login.add(&service);
+    login
 }
 
 /// What `timedatectl show` says: the time zone, and whether the clock is set over the network
@@ -4490,6 +4667,36 @@ fn sudo(reason: &str, args: &[&str], flags: gio::SubprocessFlags) -> Result<gio:
     launcher.setenv("NEKOLAND_ASKPASS_REASON", reason, true);
     let argv: Vec<&std::ffi::OsStr> = ["sudo", "-A", "--"].iter().chain(args).map(std::ffi::OsStr::new).collect();
     launcher.spawn(&argv)
+}
+
+/// Runs `args` as root, asking for the password with `reason`, and feeds it `input`; `then`
+/// learns whether it worked. What it said when it did not is logged.
+fn as_root(reason: &str, args: &[&str], input: Option<String>, then: impl FnOnce(bool) + 'static) {
+    let what = args.first().copied().unwrap_or_default().to_string();
+    let flags = gio::SubprocessFlags::STDERR_PIPE
+        | if input.is_some() { gio::SubprocessFlags::STDIN_PIPE } else { gio::SubprocessFlags::NONE };
+    let child = match sudo(reason, args, flags) {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("sudo {what}: {err}");
+            return then(false);
+        }
+    };
+    let waited = child.clone();
+    child.communicate_utf8_async(input, gio::Cancellable::NONE, move |result| {
+        let worked = match result {
+            Ok((_, said)) if !waited.is_successful() => {
+                eprintln!("sudo {what}: {}", said.unwrap_or_default().trim());
+                false
+            }
+            Ok(_) => true,
+            Err(err) => {
+                eprintln!("sudo {what}: {err}");
+                false
+            }
+        };
+        then(worked);
+    });
 }
 
 /// The absolute path of one of Nekoland's programs, installed beside Settings; sudo takes
@@ -4736,11 +4943,183 @@ fn with_allowed(table: &str, permissions: &[String], on: bool) -> Vec<String> {
     std::iter::once(first.to_string()).chain(permissions.iter().skip(1).cloned()).collect()
 }
 
+/// The computer's name, as the network and the prompt show it, changed through systemd.
+fn computer_name_row(name: &str) -> adw::EntryRow {
+    let row = adw::EntryRow::builder().title("電腦名稱").text(name).show_apply_button(true).build();
+    let saved = Rc::new(RefCell::new(name.to_string()));
+    row.connect_apply(move |row| {
+        let typed = row.text().trim().to_string();
+        // A hostname is letters, digits and hyphens, not starting or ending with one.
+        let valid = !typed.is_empty()
+            && typed.len() <= 63
+            && typed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !typed.starts_with('-')
+            && !typed.ends_with('-');
+        if !valid {
+            row.set_text(&saved.borrow());
+            return alert::notice(row, "無法使用這個名稱", Some("請只用英文字母、數字和連字號，且不以連字號開頭或結尾。"));
+        }
+        let (row, saved) = (row.clone(), saved.clone());
+        let name = typed.clone();
+        as_root("變更電腦名稱", &["hostnamectl", "set-hostname", &typed], None, move |worked| {
+            if worked {
+                saved.replace(name);
+            } else {
+                row.set_text(&saved.borrow());
+                alert::notice(&row, "無法變更電腦名稱", Some("請確認密碼正確後再試一次。"));
+            }
+        });
+    });
+    row
+}
+
+/// The software updates there are, counted by apt, which Market installs, and whether the
+/// system installs security updates by itself.
+fn updates_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let updates = group("");
+    let available = adw::ActionRow::builder().title("可用的更新").subtitle("正在檢查").build();
+    let open = gtk::Button::builder().label("在 Market 中更新").valign(gtk::Align::Center).build();
+    open.connect_clicked(|_| {
+        if let Err(err) = Command::new("nekoland-store").env("NEKOLAND_STORE_PAGE", "updates").spawn() {
+            eprintln!("nekoland-store: {err}");
+        }
+    });
+    available.add_suffix(&open);
+    updates.add(&available);
+    match gio::Subprocess::newv(
+        &["apt".as_ref(), "list".as_ref(), "--upgradable".as_ref()],
+        gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_SILENCE,
+    ) {
+        Ok(apt) => apt.communicate_utf8_async(None, gio::Cancellable::NONE, glib::clone!(
+            #[weak]
+            available,
+            move |result| {
+                let count = result.ok().and_then(|(listed, _)| listed).map_or(0, |listed| upgradable(&listed));
+                available.set_subtitle(&if count == 0 { "已是最新版本".to_string() } else { format!("{count} 個套件") });
+            }
+        )),
+        Err(err) => {
+            eprintln!("apt: {err}");
+            available.set_subtitle("無法檢查");
+        }
+    }
+
+    if Path::new(UNATTENDED).exists() {
+        let automatic = adw::SwitchRow::builder()
+            .title("自動安裝安全性更新")
+            .active(
+                std::fs::read_to_string(AUTO_UPGRADES)
+                    .is_ok_and(|text| text.contains("Unattended-Upgrade \"1\"")),
+            )
+            .build();
+        automatic.connect_active_notify(|row| {
+            let on = if row.is_active() { "1" } else { "0" };
+            let script = format!(
+                "printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"%s\";\\n' \"$1\" > {AUTO_UPGRADES}"
+            );
+            row.set_sensitive(false);
+            let row = row.clone();
+            as_root("變更自動更新", &["sh", "-c", &script, "sh", on], None, move |worked| {
+                row.set_sensitive(true);
+                if !worked {
+                    alert::notice(&row, "無法變更自動更新", Some("請確認密碼正確後再試一次。"));
+                }
+            });
+        });
+        updates.add(&automatic);
+    }
+    page.add(&updates);
+    page
+}
+
+/// How many packages `apt list --upgradable` lists, past its "Listing..." line.
+fn upgradable(listed: &str) -> usize {
+    listed.lines().filter(|line| line.contains("[upgradable from")).count()
+}
+
+/// When banners show, how long and with what, and which programs may show them.
+fn notifications_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+
+    let quiet = group("勿擾");
+    let scheduled = switch_row(config, "排程", "quiet_scheduled");
+    let from = time_row(config, "開始", "quiet_from", "22:00");
+    let to = time_row(config, "結束", "quiet_to", "07:00");
+    scheduled.bind_property("active", &from, "visible").sync_create().build();
+    scheduled.bind_property("active", &to, "visible").sync_create().build();
+    quiet.add(&scheduled);
+    quiet.add(&from);
+    quiet.add(&to);
+    page.add(&quiet);
+
+    let notices = group("橫幅");
+    let current = config.0.get("notification_seconds").and_then(toml::Value::as_integer).unwrap_or(5);
+    let banner = adw::ComboRow::builder()
+        .title("橫幅顯示時間")
+        .model(&gtk::StringList::new(&["3 秒", "5 秒", "10 秒", "20 秒"]))
+        .selected(NOTIFICATION_SECONDS.iter().position(|seconds| *seconds == current).unwrap_or(1) as u32)
+        .build();
+    banner.connect_selected_notify(|row| {
+        if let Some(seconds) = NOTIFICATION_SECONDS.get(row.selected() as usize) {
+            set(&format!("notification_seconds = {seconds}"));
+        }
+    });
+    notices.add(&banner);
+    notices.add(&switch_row(config, "顯示預覽", "notification_previews"));
+    page.add(&notices);
+
+    let apps = group("應用程式");
+    let off: Vec<String> = config
+        .0
+        .get("notifications_off")
+        .and_then(toml::Value::as_array)
+        .map(|names| names.iter().filter_map(|name| name.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let off = Rc::new(RefCell::new(off));
+    // Where the compositor writes the names programs send notifications under.
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".local/state"))
+        .join("nekoland/notifiers");
+    let mut notifiers: Vec<String> =
+        std::fs::read_to_string(&state).unwrap_or_default().lines().map(str::to_string).collect();
+    notifiers.sort_by_key(|name| name.to_lowercase());
+    notifiers.dedup();
+    if notifiers.is_empty() {
+        apps.add(&adw::ActionRow::builder().title("沒有應用程式").css_classes(["dim-label"]).build());
+    }
+    for name in notifiers {
+        let row = adw::SwitchRow::builder()
+            .title(name.as_str())
+            .use_markup(false)
+            .active(!off.borrow().contains(&name))
+            .build();
+        let off = off.clone();
+        row.connect_active_notify(move |row| {
+            let mut off = off.borrow_mut();
+            off.retain(|other| *other != name);
+            if !row.is_active() {
+                off.push(name.clone());
+            }
+            let quoted: Vec<String> = off.iter().map(|name| format!("{name:?}")).collect();
+            set(&format!("notifications_off = [{}]", quoted.join(", ")));
+        });
+        apps.add(&row);
+    }
+    page.add(&apps);
+    page
+}
+
 fn about_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let computer = group("");
     for (title, value) in facts() {
-        computer.add(&fact_row(title, &value));
+        if title == "電腦名稱" {
+            computer.add(&computer_name_row(&value));
+        } else {
+            computer.add(&fact_row(title, &value));
+        }
     }
     page.add(&computer);
     if let Some(storage) = storage_group() {
@@ -5890,6 +6269,12 @@ fn save_autostart(autostart: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_modes_are_read() {
+        let listed = "  performance:\n    CpuDriver:\tintel_pstate\n\n* balanced:\n    CpuDriver:\tintel_pstate\n\n  power-saver:\n    Degraded:   no\n";
+        assert_eq!(power_modes(listed), (vec!["power-saver", "balanced", "performance"], Some("balanced")));
+    }
 
     #[test]
     fn a_profile_is_named_by_its_description() {

@@ -38,7 +38,7 @@ use crate::{
     desktop::DesktopCommand,
     dock::DockCommand,
     glass::Tier,
-    system::{self, Network, Volume},
+    system::{self, Battery, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
     Nekoland,
@@ -86,6 +86,8 @@ const KEY_V: u32 = 55;
 #[derive(Clone, PartialEq)]
 pub enum Command {
     Settings,
+    /// Settings, opened on the page named.
+    SettingsPage(&'static str),
     Sleep,
     Restart,
     ShutDown,
@@ -240,6 +242,7 @@ enum Source {
     Status(String),
     Sound,
     Network,
+    Battery,
     Control,
 }
 
@@ -299,6 +302,7 @@ pub struct MenuBar {
     pub(crate) sound: Option<Volume>,
     pub(crate) in_use: crate::privacy::InUse,
     pub(crate) network: Option<Network>,
+    pub(crate) battery: Option<Battery>,
     network_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
     titles: Vec<Title>,
@@ -328,6 +332,7 @@ impl Default for MenuBar {
             sound: None,
             in_use: Default::default(),
             network: None,
+            battery: None,
             network_read: None,
             icons: HashMap::new(),
             titles: Vec::new(),
@@ -570,6 +575,18 @@ pub(crate) fn sound_icon(volume: Volume) -> &'static str {
     }
 }
 
+/// The symbolic battery icon for its charge, in the tenths Adwaita draws.
+fn battery_icon(battery: Battery) -> String {
+    let level = (u32::from(battery.percent) + 5) / 10 * 10;
+    if battery.plugged_full && level == 100 {
+        "battery-level-100-charged-symbolic".into()
+    } else if battery.charging {
+        format!("battery-level-{level}-charging-symbolic")
+    } else {
+        format!("battery-level-{level}-symbolic")
+    }
+}
+
 pub(crate) fn network_icon(network: &Network) -> &'static str {
     match (network.connected, network.wireless) {
         (false, _) => "network-offline-symbolic",
@@ -726,6 +743,9 @@ impl MenuBar {
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
         let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
+        if let Some(battery) = self.battery.filter(|_| config.menu_bar_battery) {
+            icons.push((Source::Battery, "battery".into(), battery_icon(battery), String::new(), None));
+        }
         if let Some(network) = self.network.as_ref().filter(|_| config.menu_bar_network) {
             icons.push((
                 Source::Network,
@@ -755,15 +775,26 @@ impl MenuBar {
             )
         }));
         for (source, key, name, theme_path, pixmap) in icons {
+            // The battery's percentage, when shown, goes before its icon, in the clock's type.
+            let percent = self
+                .battery
+                .filter(|_| source == Source::Battery && config.menu_bar_battery_percent)
+                .map(|battery| format!("{}%", battery.percent));
+            let label_width = percent.as_ref().map_or(0, |percent| text_size(percent, &clock_font).0 + 4);
+            let base = STATUS_ICON + TITLE_PADDING * 2 - 8;
             let rect = Rectangle::new(
-                (right - STATUS_ICON - TITLE_PADDING * 2 + 8, 0).into(),
-                (STATUS_ICON + TITLE_PADDING * 2 - 8, MENU_BAR_HEIGHT).into(),
+                (right - base - label_width, 0).into(),
+                (base + label_width, MENU_BAR_HEIGHT).into(),
             );
             let lit = open == Some(self.titles.len()) || (source == Source::Control && self.control.is_some());
             if lit {
                 highlight(&cr, rect);
             }
             let tint = if lit { colors.on_ink } else { colors.ink };
+            if let Some(percent) = &percent {
+                let at = f64::from(rect.loc.x + (base - STATUS_ICON) / 2);
+                show_text(&cr, percent, &clock_font, at, center, tint);
+            }
             if source == Source::Control {
                 let at = |side| f64::from(side - STATUS_ICON) / 2.0;
                 control::draw_bar_icon(&cr, f64::from(rect.loc.x) + at(rect.size.w), at(MENU_BAR_HEIGHT), f64::from(STATUS_ICON), tint);
@@ -772,7 +803,7 @@ impl MenuBar {
                 let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);
                 cr.save().ok();
                 cr.translate(
-                    f64::from(rect.loc.x + (rect.size.w - STATUS_ICON) / 2),
+                    f64::from(rect.loc.x + label_width + (base - STATUS_ICON) / 2),
                     f64::from((MENU_BAR_HEIGHT - STATUS_ICON) / 2),
                 );
                 cr.scale(scale, scale);
@@ -1139,6 +1170,11 @@ impl Nekoland {
             let network = system::read_network();
             if network != self.menu_bar.network {
                 self.menu_bar.network = network;
+                self.menu_bar.items_revision += 1;
+            }
+            let battery = system::read_battery();
+            if battery != self.menu_bar.battery {
+                self.menu_bar.battery = battery;
                 self.menu_bar.items_revision += 1;
             }
         }
@@ -1795,6 +1831,24 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
+            Source::Battery => match self.menu_bar.battery {
+                Some(battery) => {
+                    let state = if battery.charging {
+                        "充電中"
+                    } else if battery.plugged_full {
+                        "已接上電源"
+                    } else {
+                        "使用電池"
+                    };
+                    vec![
+                        Entry::note(format!("電池 {}%", battery.percent)),
+                        Entry::note(state.to_string()),
+                        Entry::separator(),
+                        Entry::item("電源設定⋯", Command::SettingsPage("電源")),
+                    ]
+                }
+                None => Vec::new(),
+            },
             Source::Control => Vec::new(),
         }
     }
@@ -2186,6 +2240,7 @@ impl Nekoland {
             Command::Lock => self.lock_screen(),
             // Asked first, in a dialog of its own: these lose what is not saved.
             Command::Settings => config::spawn("nekoland-settings"),
+            Command::SettingsPage(page) => config::spawn(&format!("NEKOLAND_SETTINGS_PAGE={page} nekoland-settings")),
             Command::Restart => config::spawn("nekoland-confirm restart"),
             Command::ShutDown => config::spawn("nekoland-confirm shutdown"),
             Command::LogOut => config::spawn("nekoland-confirm logout"),
@@ -2354,6 +2409,15 @@ fn menu_side(point: i32, length: i32, start: i32, end: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_battery_icon_follows_the_charge() {
+        let battery = |percent, charging, plugged_full| Battery { percent, charging, plugged_full };
+        assert_eq!(battery_icon(battery(57, false, false)), "battery-level-60-symbolic");
+        assert_eq!(battery_icon(battery(4, true, false)), "battery-level-0-charging-symbolic");
+        assert_eq!(battery_icon(battery(100, false, true)), "battery-level-100-charged-symbolic");
+        assert_eq!(battery_icon(battery(80, false, true)), "battery-level-80-symbolic");
+    }
 
     #[test]
     fn a_menu_turns_to_keep_its_corner_at_the_pointer() {

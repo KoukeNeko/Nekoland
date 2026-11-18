@@ -28,7 +28,7 @@ impl Nekoland {
 }
 
 /// Whether `minute` is from `from` up to `to`, through midnight when `to` is earlier.
-fn in_window(minute: u16, from: TimeOfDay, to: TimeOfDay) -> bool {
+pub fn in_window(minute: u16, from: TimeOfDay, to: TimeOfDay) -> bool {
     if from.0 <= to.0 {
         (from.0..to.0).contains(&minute)
     } else {
@@ -36,7 +36,7 @@ fn in_window(minute: u16, from: TimeOfDay, to: TimeOfDay) -> bool {
     }
 }
 
-fn minute_of_day() -> u16 {
+pub fn minute_of_day() -> u16 {
     // SAFETY: localtime_r only writes the tm it is given.
     let tm = unsafe {
         let now = libc::time(std::ptr::null_mut());

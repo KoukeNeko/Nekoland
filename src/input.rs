@@ -393,6 +393,9 @@ impl Nekoland {
             Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
             Keysym::Page_Up if logo => self.switch_workspace_by(-1),
             Keysym::Page_Down if logo => self.switch_workspace_by(1),
+            // Screen zoom; Super Alt, as the Mac's Option Command, resizes windows here.
+            Keysym::equal | Keysym::plus if logo && ctrl => self.zoom_by(crate::render::ZOOM_STEP),
+            Keysym::minus if logo && ctrl => self.zoom_by(-crate::render::ZOOM_STEP),
             Keysym::h if logo => {
                 if let Some(window) = focused {
                     self.minimize(&window);

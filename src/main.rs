@@ -223,6 +223,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // The launcher's clipboard history; it ends with the display it watches.
         config::spawn("wl-paste --type text --watch nekoland-launcher --remember-clipboard");
+        // The screen reader, when Settings' 協助工具 turned it on, as GNOME starts it.
+        config::spawn(
+            "[ \"$(gsettings get org.gnome.desktop.a11y.applications screen-reader-enabled 2>/dev/null)\" = true ] && exec orca",
+        );
         // Nekoland comes with no web browser: Market asks for one until there is one or the
         // person skips it, and otherwise ends at once.
         config::spawn("nekoland-store --choose-browser");

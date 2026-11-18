@@ -53,6 +53,28 @@ render_elements! {
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
+render_elements! {
+    pub OutputElement<=GlesRenderer>;
+    Scene=SceneElement,
+    Zoomed=RescaleRenderElement<SceneElement>,
+}
+
+/// The most the screen is magnified, and the step its shortcuts change it by.
+pub const ZOOM_MOST: f64 = 8.0;
+pub const ZOOM_STEP: f64 = 0.5;
+
+/// The screen as the Mac's zoom shows it: magnified around the pointer, which so stays over
+/// what it was over, and is where clicks land without being moved.
+pub fn zoomed(elements: Vec<SceneElement>, around: Point<i32, Physical>, zoom: f64) -> Vec<OutputElement> {
+    if zoom <= 1.0 {
+        return elements.into_iter().map(OutputElement::Scene).collect();
+    }
+    elements
+        .into_iter()
+        .map(|element| OutputElement::Zoomed(RescaleRenderElement::from_element(element, around, zoom)))
+        .collect()
+}
+
 /// What a client drags, under the pointer and over everything else.
 pub fn dnd_icon_elements(
     state: &Nekoland,

@@ -57,7 +57,7 @@ use crate::{
     config::Config,
     cursor::Cursors,
     glass::Glass,
-    render::{dnd_icon_elements, scene_elements, SceneElement, CLEAR_COLOR},
+    render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
     CalloopData, Nekoland,
 };
 
@@ -528,11 +528,13 @@ fn draw(
         .to_physical(scale)
         .to_i32_round();
 
-    // Front to back: the cursor is above everything else.
-    let mut elements = cursor_elements(state, renderer, cursors, pointer, scale);
-    elements.extend(dnd_icon_elements(state, renderer, output));
-    let cursor = elements.len();
-    elements.extend(scene_elements(state, renderer, output, glass)?);
+    // Front to back: the cursor is above everything else, and keeps its size when zoomed.
+    let mut elements: Vec<OutputElement> =
+        cursor_elements(state, renderer, cursors, pointer, scale).into_iter().map(OutputElement::Scene).collect();
+    let mut scene = dnd_icon_elements(state, renderer, output);
+    let cursor = elements.len() + scene.len();
+    scene.extend(scene_elements(state, renderer, output, glass)?);
+    elements.extend(zoomed(scene, pointer, state.config.zoom));
 
     let frame = surface
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)

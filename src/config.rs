@@ -48,6 +48,12 @@ pub struct Config {
     pub notification_seconds: u64,
     /// Whether a notification's banner shows its text, or its title alone.
     pub notification_previews: bool,
+    /// Whether Do Not Disturb also holds from `quiet_from` to `quiet_to` each day.
+    pub quiet_scheduled: bool,
+    pub quiet_from: TimeOfDay,
+    pub quiet_to: TimeOfDay,
+    /// The programs, by the name they send notifications under, whose banners never show.
+    pub notifications_off: Vec<String>,
     /// Whether the keyboard goes to the window the pointer moves into, as GNOME's sloppy
     /// focus, instead of the one clicked.
     pub focus_follows_pointer: bool,
@@ -116,6 +122,9 @@ pub struct Config {
     /// Whether the menu bar shows the network's and the sound's icons.
     pub menu_bar_network: bool,
     pub menu_bar_sound: bool,
+    /// The battery in the menu bar, where there is one, and its percentage beside it.
+    pub menu_bar_battery: bool,
+    pub menu_bar_battery_percent: bool,
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
@@ -158,6 +167,8 @@ pub struct Config {
     pub scroll_speed: f64,
     /// How many points across the cursor is drawn.
     pub cursor_size: i32,
+    /// How many times the whole screen is magnified around the pointer; 1 is not at all.
+    pub zoom: f64,
     /// The cursor theme and icon theme Nekoland draws with, by folder name; its own choice
     /// of common ones when empty.
     pub cursor_theme: String,
@@ -464,6 +475,10 @@ impl Default for Config {
             hot_corner_bottom_right: HotCorner::None,
             notification_seconds: 5,
             notification_previews: true,
+            quiet_scheduled: false,
+            quiet_from: TimeOfDay(22 * 60),
+            quiet_to: TimeOfDay(7 * 60),
+            notifications_off: Vec::new(),
             focus_follows_pointer: false,
             edge_tiling: true,
             window_gap: 0,
@@ -513,6 +528,8 @@ impl Default for Config {
             clock_flash: false,
             menu_bar_network: true,
             menu_bar_sound: true,
+            menu_bar_battery: true,
+            menu_bar_battery_percent: false,
             clock_date: true,
             menu_bar_background: true,
             dock_glass: true,
@@ -535,6 +552,7 @@ impl Default for Config {
             pointer_speed: 0.0,
             scroll_speed: 1.0,
             cursor_size: 24,
+            zoom: 1.0,
             cursor_theme: String::new(),
             icon_theme: String::new(),
             pointer_acceleration: true,

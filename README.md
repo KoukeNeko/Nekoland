@@ -72,6 +72,7 @@ wallpaper and an input method. Every key is optional:
 | `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `clock_flash` | Whether the colon between the clock's hours and minutes flashes each second; off unless set |
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
+| `menu_bar_battery`, `menu_bar_battery_percent` | Whether the menu bar shows the computer's battery, where it has one, and its percentage beside it; the battery without its percentage unless set |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `bar_opacity`, `bar_blur`, `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar and the Dock themselves, and of all other glass, menus, notifications, the Dock's popups, the overview, and behind windows, as GTK's menus and sidebars show it. 0.5 and 0.8, each blurred 0.5, unless set |
@@ -84,6 +85,7 @@ wallpaper and an input method. Every key is optional:
 | `natural_scroll`, `tap_to_click`, `pointer_speed` | For mice and touchpads: off, on, and 0, from -1 to 1, unless set |
 | `scroll_speed` | How far scrolling goes, times what the mouse or touchpad sends: 1 unless set |
 | `cursor_size` | How many points across Nekoland draws the cursor: 24 unless set |
+| `zoom` | How many times the screen is magnified around the pointer, up to 8; 1 (off) unless set. Super Ctrl = and Super Ctrl - change it by 0.5 |
 | `cursor_theme`, `icon_theme` | The cursor and icon themes Nekoland draws with, by folder name; a common one, as `$XCURSOR_THEME`, Adwaita or Yaru, unless set. Icons already drawn change when drawn again |
 | `pointer_acceleration`, `left_handed`, `disable_while_typing` | Whether the pointer goes further the faster it moves, the buttons are swapped for the left hand, and a touchpad ignores touches while typing: on, off and on unless set |
 | `font` | The family of Nekoland's own text, and of GTK's in Nekoland's look, with Noto Sans CJK TC for what it lacks; `Ubuntu Sans` unless set |
@@ -94,6 +96,8 @@ wallpaper and an input method. Every key is optional:
 | `power_button`, `lid_close` | What the power button and closing the lid do: `shutdown`, which asks first, `sleep`, `lock` or `ignore`; `shutdown` and `sleep` unless set |
 | `notification_seconds` | How many seconds a notification's banner stays when its program leaves that to Nekoland: 5 unless set |
 | `notification_previews` | Whether a notification's banner shows its text, or its title alone; its text unless set |
+| `quiet_scheduled`, `quiet_from`, `quiet_to` | Whether Do Not Disturb also holds each day from `quiet_from` to `quiet_to`, `22:00` to `07:00` unless set; off unless set |
+| `notifications_off` | The programs, by the name they send notifications under, whose banners never show; Settings' 通知 lists those that have sent one, kept in `~/.local/state/nekoland/notifiers` |
 | `focus_follows_pointer` | Whether the keyboard goes to the window the pointer moves into, without raising it, instead of the one clicked; off unless set |
 | `edge_tiling` | Whether a window dragged to the display's edge fills the part that edge stands for, shown under it while it is held there: a side its half, a corner its quarter, the top all of it, the bottom the third the pointer is over; on unless set |
 | `window_gap` | Points left between windows put side by side, and around them, up to 64; none unless set |
@@ -166,7 +170,22 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   outputs chosen at once, as the Mac's does, through PipeWire's combine stream in
   `~/.config/pipewire/pipewire.conf.d/`, which restarts PipeWire; and lets PipeWire run at
   the sample rate of what plays, from 44.1 to 192 kHz, instead of always at 48. Its
-  裝置模式 group sets each card's profile, as stereo, surround, Pro Audio or off. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  裝置模式 group sets each card's profile, as stereo, surround, Pro Audio or off.
+  What is the system's, not Nekoland's, Settings changes as root through `sudo -A`, asking
+  for the password with Nekoland's askpass: 使用者 changes the full name (`usermod`), the
+  password (`chpasswd`) and the picture (`~/.face`), whether the first console logs in by
+  itself (a getty drop-in), and adds, makes administrators of and removes other people;
+  語言與地區 sets the language and the formats through `localectl`, shows a date, a time, a
+  number and the currency as they then read, and adds a language with `locale-gen`; 印表機
+  lists CUPS's printers, network ones it finds among them, sets the person's default with
+  `lpoptions`, prints a test page, cancels jobs, and adds a printer by its address as IPP
+  Everywhere; 軟體更新 counts what apt can update, opens Market's 更新, and turns
+  unattended-upgrades on and off; 關於 renames the computer through `hostnamectl`. 通知 sets
+  Do Not Disturb's daily hours, how long banners stay, and turns each program's off; the
+  power page sets power-profiles-daemon's 電源模式, and 協助工具 turns Orca on and sets 螢幕縮放. 備份 copies the
+  home folder with rsync to a folder elsewhere, a dated folder each time with unchanged files
+  hard-linked to the last, now or daily through a systemd user timer
+  (`nekoland-settings --backup`). Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's
@@ -374,11 +393,13 @@ manager protocol, other programs' windows, screen capture and the lock.
 
 Other computers come in over RDP through xrdp and xorgxrdp, whose X server Nekoland
 covers as a window without a frame, following its size as the client's window changes.
-Settings' 遠端桌面 page turns the `xrdp` service on and off, through `sudo -A` and
+Settings' 共享 page turns the `xrdp` service on and off, through `sudo -A` and
 `nekoland-askpass` (not from inside an xrdp session, which would end it), shows the
 address and port to connect to, and gives xrdp sessions Nekoland by writing `~/.xsession`, which
 xrdp's session script runs; one already there is kept in `~/.config/nekoland/xsession`
 and put back when the session is set to the system's again.
+The same page has 遠端登入, which turns OpenSSH's server on and off (`ssh.socket` where
+there is one) and shows the `ssh` command to reach this computer with.
 
 Nekoland knows the session by xrdp's `XRDP_SESSION` and, as on a console, names itself
 to the portals and to the services D-Bus starts. Sleep, from the menu, the power button

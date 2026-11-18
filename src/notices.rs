@@ -196,8 +196,11 @@ impl Nekoland {
         match event {
             // shortcut: what comes in while quiet is not kept; keep it once there is a list of
             // past notifications to show it in.
-            Event::Notify(_) if self.notices.quiet => {}
+            Event::Notify(notification) if self.is_quiet_for(&notification.app_name) => {
+                remember_notifier(&notification.app_name);
+            }
             Event::Notify(notification) => {
+                remember_notifier(&notification.app_name);
                 let deadline = match notification.timeout {
                     Expiry::UntilDismissed => None,
                     Expiry::After(timeout) => Some(Instant::now() + timeout),
@@ -231,6 +234,16 @@ impl Nekoland {
             Event::CloseNotification(id) => self.dismiss_notice(*id, CLOSED),
             _ => {}
         }
+    }
+
+    /// Whether `app`'s banners stay away now: Do Not Disturb, from the control center or by
+    /// its schedule, or Settings turning that program's off.
+    fn is_quiet_for(&self, app: &str) -> bool {
+        let config = &self.config;
+        self.notices.quiet
+            || config.notifications_off.iter().any(|off| off == app)
+            || (config.quiet_scheduled
+                && crate::night::in_window(crate::night::minute_of_day(), config.quiet_from, config.quiet_to))
     }
 
     fn dismiss_notice(&mut self, id: u32, reason: u32) {
@@ -375,5 +388,33 @@ impl Nekoland {
         self.notices.hovered = None;
         self.dismiss_notice(id, DISMISSED);
         true
+    }
+}
+
+/// Where the names programs send notifications under are kept, one a line, for Settings to
+/// list them to turn off.
+fn notifiers_path() -> Option<std::path::PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".local/state")))?;
+    Some(state.join("nekoland/notifiers"))
+}
+
+fn remember_notifier(app: &str) {
+    let Some(path) = notifiers_path() else { return };
+    if app.is_empty() || app.contains('\n') {
+        return;
+    }
+    let known = std::fs::read_to_string(&path).unwrap_or_default();
+    if known.lines().any(|line| line == app) {
+        return;
+    }
+    let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "{app}")
+    });
+    if let Err(err) = written {
+        tracing::warn!("{}: {err}", path.display());
     }
 }

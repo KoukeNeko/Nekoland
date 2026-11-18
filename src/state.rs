@@ -461,6 +461,19 @@ impl Nekoland {
         }
     }
 
+    /// Magnifies the screen more or less, and keeps the level for next time, without reading
+    /// the rest of the configuration again.
+    pub fn zoom_by(&mut self, step: f64) {
+        let zoom = (self.config.zoom + step).clamp(1.0, crate::render::ZOOM_MOST);
+        if zoom == self.config.zoom {
+            return;
+        }
+        self.config.zoom = zoom;
+        if let Err(err) = crate::config::set(&format!("zoom = {zoom:?}")) {
+            tracing::warn!("zoom: {err}");
+        }
+    }
+
     pub fn stop_old_wallpaper(&mut self) {
         if let Some(mut swaybg) = self.old_wallpaper.take() {
             if let Err(err) = swaybg.kill().and_then(|()| swaybg.wait().map(|_| ())) {

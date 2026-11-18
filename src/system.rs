@@ -17,6 +17,42 @@ pub struct Volume {
     pub muted: bool,
 }
 
+/// The computer's own battery, as the kernel tells it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Battery {
+    pub percent: u8,
+    pub charging: bool,
+    /// Plugged in and full, or held below full to spare it.
+    pub plugged_full: bool,
+}
+
+/// A battery from its `type`, `scope`, `capacity` and `status` files; a mouse's or a
+/// keyboard's, whose scope is "Device", is not the computer's.
+fn battery_from(kind: &str, scope: &str, capacity: &str, status: &str) -> Option<Battery> {
+    if kind.trim() != "Battery" || scope.trim() == "Device" {
+        return None;
+    }
+    let status = status.trim();
+    Some(Battery {
+        percent: capacity.trim().parse::<u8>().ok()?.min(100),
+        charging: status == "Charging",
+        plugged_full: status == "Full" || status == "Not charging",
+    })
+}
+
+/// The first of the computer's batteries.
+// shortcut: a second battery, as some ThinkPads have, is left out; weigh them by their energy
+// once one is seen.
+pub fn read_battery() -> Option<Battery> {
+    let read = |path: &std::path::Path, name: &str| std::fs::read_to_string(path.join(name)).unwrap_or_default();
+    let mut supplies: Vec<std::path::PathBuf> =
+        std::fs::read_dir("/sys/class/power_supply").ok()?.flatten().map(|entry| entry.path()).collect();
+    supplies.sort();
+    supplies.iter().find_map(|path| {
+        battery_from(&read(path, "type"), &read(path, "scope"), &read(path, "capacity"), &read(path, "status"))
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Network {
     pub wireless: bool,
@@ -437,6 +473,20 @@ fn ipv4_address(interface: &str) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_computers_battery_is_read() {
+        assert_eq!(
+            battery_from("Battery\n", "", "57\n", "Charging\n"),
+            Some(Battery { percent: 57, charging: true, plugged_full: false })
+        );
+        assert_eq!(
+            battery_from("Battery", "System", "100", "Full"),
+            Some(Battery { percent: 100, charging: false, plugged_full: true })
+        );
+        assert_eq!(battery_from("Battery", "Device", "80", "Discharging"), None);
+        assert_eq!(battery_from("Mains", "", "", ""), None);
+    }
 
     #[test]
     fn audio_devices_are_read_from_pw_dump() {
