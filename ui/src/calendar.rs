@@ -931,7 +931,7 @@ fn build_main(state: &Rc<State>) -> adw::ToolbarView {
         }
     ));
 
-    let bar = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&view_switcher(state)).build();
+    let bar = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&gtk::Label::new(None)).build();
     bar.pack_start(&previous);
     bar.pack_start(&next);
     bar.pack_start(&today);
@@ -940,6 +940,7 @@ fn build_main(state: &Rc<State>) -> adw::ToolbarView {
         &gtk::MenuButton::builder().icon_name("open-menu-symbolic").tooltip_text("選單").menu_model(&menu).build(),
     );
     bar.pack_end(&find);
+    bar.pack_end(&view_switcher(state));
 
     let quick = gtk::Entry::builder()
         .placeholder_text("輸入一句話新增行程")
