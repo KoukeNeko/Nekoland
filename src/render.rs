@@ -942,10 +942,12 @@ fn windows_on_glass(
     scene
 }
 
-/// How thick the line around a snap preview is, and how strongly it and its inside are tinted.
-const PREVIEW_OUTLINE: i32 = 2;
-const PREVIEW_OUTLINE_ALPHA: f32 = 0.85;
-const PREVIEW_FILL_ALPHA: f32 = 0.18;
+/// How opaque the white of the box choosing desktop items is, inside and at its edge; a
+/// snap preview is drawn the same. The design page in Settings shows them as `.nk-band`.
+pub(crate) const BAND_FILL_ALPHA: f32 = 0.15;
+pub(crate) const BAND_EDGE_ALPHA: f32 = 0.6;
+/// How thick the line around a snap preview is, as the desktop's box.
+const PREVIEW_OUTLINE: i32 = 1;
 
 /// The four sides of a line width thick just inside outer: top, bottom, left, right.
 fn outline_sides(outer: Rectangle<i32, Logical>, width: i32) -> [Rectangle<i32, Logical>; 4] {
@@ -963,10 +965,9 @@ fn outline_sides(outer: Rectangle<i32, Logical>, width: i32) -> [Rectangle<i32, 
     ]
 }
 
-/// The accent colour at lpha, premultiplied as the renderer blends it.
-fn accent(alpha: f32) -> [f32; 4] {
-    let [red, green, blue, _] = OUTLINE_COLOR;
-    [red * alpha, green * alpha, blue * alpha, alpha]
+/// White at `alpha`, premultiplied as the renderer blends it.
+fn white(alpha: f32) -> [f32; 4] {
+    [alpha; 4]
 }
 
 /// Where a dragged window goes if let go of now: a tinted area, outlined, front first.
@@ -985,9 +986,9 @@ fn snap_preview(ids: &[Id; 5], rect: Rectangle<i32, Logical>, output_loc: Point<
     let mut elements: Vec<SceneElement> = side_ids
         .iter()
         .zip(outline_sides(rect, PREVIEW_OUTLINE))
-        .map(|(id, side)| solid(id, side, accent(PREVIEW_OUTLINE_ALPHA)))
+        .map(|(id, side)| solid(id, side, white(BAND_EDGE_ALPHA)))
         .collect();
-    elements.push(solid(fill_id, rect, accent(PREVIEW_FILL_ALPHA)));
+    elements.push(solid(fill_id, rect, white(BAND_FILL_ALPHA)));
     elements
 }
 /// The part of the output a window covers, without its shadow.

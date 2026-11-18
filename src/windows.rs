@@ -7,7 +7,7 @@ use smithay::{
     desktop::{find_popup_root_surface, layer_map_for_output, Window, WindowSurface},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
-        wayland_server::protocol::wl_surface::WlSurface,
+        wayland_server::{protocol::wl_surface::WlSurface, Resource},
     },
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{compositor::{get_parent, with_states}, seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
@@ -581,6 +581,35 @@ impl Nekoland {
         mark(window, None, false);
     }
 
+    /// Takes a window out of a part of the display or the whole of it, as its program asks
+    /// to be no longer maximized or fullscreen. GTK asks as a drag of the title bar begins,
+    /// just before asking to move the window: then it comes out at its earlier size under
+    /// the pointer, as a drag by Nekoland does.
+    pub fn restore_on_request(&mut self, window: &Window) {
+        let lifted = self
+            .drag_start_on(window)
+            .and_then(|pressed| self.lift_dragged(window, pressed));
+        if lifted.is_none() {
+            self.restore(window);
+        }
+    }
+
+    /// Where the button held on `window` went down, once the pointer has gone far enough
+    /// from there to be dragging it rather than clicking.
+    fn drag_start_on(&self, window: &Window) -> Option<Point<f64, Logical>> {
+        let pointer = self.seat.get_pointer()?;
+        if !pointer.is_grabbed() {
+            return None;
+        }
+        let start = pointer.grab_start_data()?;
+        let (pressed_on, _) = start.focus.as_ref()?;
+        if !pressed_on.id().same_client_as(&window.wl_surface()?.id()) {
+            return None;
+        }
+        let moved = pointer.current_location() - start.location;
+        (moved.x.hypot(moved.y) >= DRAG_START_DISTANCE).then_some(start.location)
+    }
+
     /// Brings a window dragged out of a half, or out of the whole display, back to the size
     /// it had before, still under the pointer that started the drag at `grabbed`. Returns
     /// where it is now, if it changed.
@@ -693,6 +722,10 @@ impl Nekoland {
     }
 }
 
+
+/// How far the pointer goes from where a button went down on a window before what its
+/// program asks counts as the start of a drag, not a double-click.
+const DRAG_START_DISTANCE: f64 = 4.0;
 
 /// What a window command does besides putting the window in a part of the display.
 const OTHER_COMMANDS: [&str; 4] = ["restore", "minimize", "fullscreen", "close"];

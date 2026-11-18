@@ -201,7 +201,7 @@ impl XwmHandler for Nekoland {
 
     fn unmaximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         if let Some(window) = self.x11_window(&surface) {
-            self.restore(&window);
+            self.restore_on_request(&window);
         }
     }
 
@@ -213,7 +213,7 @@ impl XwmHandler for Nekoland {
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         if let Some(window) = self.x11_window(&surface) {
-            self.restore(&window);
+            self.restore_on_request(&window);
         }
     }
 

@@ -102,7 +102,7 @@ impl XdgShellHandler for Nekoland {
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
-            self.restore(&window);
+            self.restore_on_request(&window);
         }
     }
 
@@ -117,7 +117,7 @@ impl XdgShellHandler for Nekoland {
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
-            self.restore(&window);
+            self.restore_on_request(&window);
         }
     }
 

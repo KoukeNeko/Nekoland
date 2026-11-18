@@ -37,7 +37,7 @@ use crate::{
     dock::{ask_file_manager, drop_into, move_into, open_path, reveal_path, uri_paths},
     ime::Candidates,
     menubar::{self, Command, Entry, MENU_BAR_HEIGHT},
-    render::{SceneElement, OUTLINE_COLOR},
+    render::{SceneElement, BAND_EDGE_ALPHA, BAND_FILL_ALPHA, OUTLINE_COLOR},
     stacks::{self, Item},
     state::Nekoland,
     text::{self, Picture},
@@ -1399,9 +1399,9 @@ fn draw_band(size: Size<i32, Logical>) -> Option<Picture> {
     let surface = text::canvas(size.w.max(1), size.h.max(1)).ok()?;
     let cr = cairo::Context::new(&surface).ok()?;
     cr.rectangle(0.5, 0.5, f64::from(size.w) - 1.0, f64::from(size.h) - 1.0);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.15);
+    cr.set_source_rgba(1.0, 1.0, 1.0, f64::from(BAND_FILL_ALPHA));
     let _ = cr.fill_preserve();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
+    cr.set_source_rgba(1.0, 1.0, 1.0, f64::from(BAND_EDGE_ALPHA));
     cr.set_line_width(1.0);
     let _ = cr.stroke();
     drop(cr);

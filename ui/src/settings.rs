@@ -5472,6 +5472,8 @@ const DESIGN_CSS: &str = r#"
 .nk-toast { padding: 10px 10px 10px 16px; border-radius: 12px; background-color: var(--nekoland-ink); color: var(--nekoland-on-ink); box-shadow: 0 12px 30px -10px rgb(0 0 0 / 40%); }
 .nk-design .nk-toast button { min-height: 28px; background-color: color-mix(in srgb, var(--nekoland-on-ink) 14%, transparent); color: var(--nekoland-on-ink); }
 .nk-stage { border-radius: 12px; background: linear-gradient(140deg, #f3b47a, #d4577b 42%, #4b3f8f 78%, #1f2a5c); }
+/* As the compositor draws it, by render.rs's BAND_FILL_ALPHA and BAND_EDGE_ALPHA. */
+.nk-band { background-color: rgb(255 255 255 / 15%); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 60%); }
 .nk-glass { background-color: color-mix(in srgb, var(--nekoland-sheet) 50%, transparent); color: var(--nekoland-ink); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 20%), 0 10px 30px -10px rgb(0 0 0 / 45%); }
 .nk-bar { min-height: 30px; padding: 0 10px; border-radius: 12px 12px 0 0; box-shadow: none; font-size: 13px; }
 .nk-bar .title { font-weight: 600; }
@@ -6209,6 +6211,12 @@ fn design_page() -> gtk::ScrolledWindow {
         &[desktop_glass().upcast_ref()],
     ));
 
+    page.append(&section(
+        "框選與並排預覽",
+        "在桌面框選項目、把視窗拖到螢幕邊緣並排時，都畫同一種框：白色填色 15%，1 px 白邊 60%，直角。",
+        &[desktop_bands().upcast_ref()],
+    ));
+
     let window = |title: &str, active: bool| {
         let control = |icon: &str, label: &str| {
             gtk::Button::builder()
@@ -6355,6 +6363,32 @@ fn design_page() -> gtk::ScrolledWindow {
         .css_classes(["nk-design"])
         .child(&clamp)
         .build()
+}
+
+/// The box the desktop draws to choose items, and the same box where a dragged window will
+/// go, each over a wallpaper.
+fn desktop_bands() -> gtk::FlowBox {
+    let stage = |name: &str, bands: &[&gtk::Widget]| {
+        let stage = gtk::Box::builder()
+            .css_classes(["nk-stage"])
+            .height_request(160)
+            .homogeneous(true)
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        for band in bands {
+            stage.append(*band);
+        }
+        column(8, &[stage.upcast_ref(), text(name, &["nk-note"]).upcast_ref()]).upcast::<gtk::Widget>()
+    };
+    let choosing = shape(&["nk-band"]);
+    choosing.set_size_request(120, 72);
+    choosing.set_halign(gtk::Align::Start);
+    choosing.set_valign(gtk::Align::Start);
+    choosing.set_margin_start(36);
+    choosing.set_margin_top(28);
+    // The left half, the other half left empty.
+    let preview = stage("並排預覽",&[shape(&["nk-band"]).upcast_ref(), shape(&[]).upcast_ref()]);
+    cards(240, 2, &[&stage("框選", &[choosing.upcast_ref()]), &preview])
 }
 
 /// What floats over the desktop, as Nekoland draws it: the menu bar across the top with a
