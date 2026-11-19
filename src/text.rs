@@ -353,11 +353,58 @@ pub fn named_icon(name: &str, extra_dir: &str, size: i32, tint: (f64, f64, f64))
         return Some(surface);
     }
     let path = find_named_icon(name, extra_dir)?;
-    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size * scale, size * scale).ok()?;
     let symbolic = name.ends_with("-symbolic") || path.to_string_lossy().contains("symbolic");
-    let surface = pixbuf_surface(&pixbuf, symbolic.then_some(tint))?;
-    surface.set_device_scale(f64::from(scale), f64::from(scale));
+    let load = || {
+        let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size * scale, size * scale).ok()?;
+        let surface = pixbuf_surface(&pixbuf, symbolic.then_some(tint))?;
+        surface.set_device_scale(f64::from(scale), f64::from(scale));
+        Some(surface)
+    };
+    if size * scale > KEPT_ICON_PIXELS {
+        return load();
+    }
+    // A small one is kept: menus, the control center and notices ask for theirs every time
+    // they are drawn, and a file's decoding, done by a program started for it, takes tens
+    // of milliseconds. The file as it is now: a theme's change or a redrawn icon is another.
+    let changed = std::fs::metadata(&path).and_then(|file| file.modified()).ok();
+    let tinted = symbolic.then(|| [tint.0.to_bits(), tint.1.to_bits(), tint.2.to_bits()]);
+    let key = (path.clone(), changed, size * scale, tinted);
+    if let Some(kept) = KEPT_ICONS.with_borrow(|kept| kept.get(&key).and_then(copy_of)) {
+        return Some(kept);
+    }
+    let surface = load()?;
+    KEPT_ICONS.with_borrow_mut(|kept| {
+        // shortcut: forgets them all once there are many, rather than the oldest.
+        if kept.len() >= 512 {
+            kept.clear();
+        }
+        kept.extend(copy_of(&surface).map(|copy| (key, copy)));
+    });
     Some(surface)
+}
+
+/// The largest icon kept once decoded, in pixels across: larger ones are kept by what asks
+/// for them, the Dock and the applications' grid, as they draw them.
+const KEPT_ICON_PIXELS: i32 = 128;
+
+type KeptIcon = (PathBuf, Option<std::time::SystemTime>, i32, Option<[u64; 3]>);
+
+thread_local! {
+    static KEPT_ICONS: std::cell::RefCell<HashMap<KeptIcon, ImageSurface>> = std::cell::RefCell::default();
+}
+
+/// The same picture on a surface of its own, which whoever has it may draw on.
+fn copy_of(surface: &ImageSurface) -> Option<ImageSurface> {
+    let copy = ImageSurface::create(Format::ARgb32, surface.width(), surface.height()).ok()?;
+    let (x, y) = surface.device_scale();
+    copy.set_device_scale(x, y);
+    {
+        let cr = Context::new(&copy).ok()?;
+        cr.set_operator(cairo::Operator::Source);
+        cr.set_source_surface(surface, 0.0, 0.0).ok()?;
+        cr.paint().ok()?;
+    }
+    Some(copy)
 }
 
 /// How big a surface is drawn, in points: its pixels over its device scale.
