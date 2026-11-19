@@ -33,6 +33,7 @@ pub const MENUS: &[(&str, &[&[Entry]])] = &[
                 entry("另存新檔⋯", "win.save-as", &["<Control><Shift><Alt>s"]),
                 entry("重新命名⋯", "win.rename", &[]),
                 entry("搬移至⋯", "win.move-to", &[]),
+                entry("鎖定", "win.lock", &[]),
                 entry("回復到上次儲存的版本", "win.revert-saved", &[]),
                 entry("瀏覽所有版本⋯", "win.browse-versions", &[]),
             ],
@@ -103,10 +104,11 @@ pub const MENUS: &[(&str, &[&[Entry]])] = &[
                 entry("雙頁", "win.layout::two", &["<Control>3"]),
             ],
             &[
-                entry("實際大小", "win.zoom-actual", &["<Control>0"]),
-                entry("符合視窗大小", "win.zoom-fit", &["<Control>9"]),
-                entry("放大", "win.zoom-in", &["<Control>plus", "<Control>equal"]),
-                entry("縮小", "win.zoom-out", &["<Control>minus"]),
+                // The window's pictures share one zoom, so ⌥'s 全部 keys do the same.
+                entry("實際大小", "win.zoom-actual", &["<Control>0", "<Control><Alt>0"]),
+                entry("符合視窗大小", "win.zoom-fit", &["<Control>9", "<Control><Alt>9"]),
+                entry("放大", "win.zoom-in", &["<Control>plus", "<Control>equal", "<Control><Alt>plus", "<Control><Alt>equal"]),
+                entry("縮小", "win.zoom-out", &["<Control>minus", "<Control><Alt>minus"]),
                 entry("縮放至選取範圍", "win.zoom-selection", &["<Control>asterisk", "<Control><Shift>8"]),
             ],
             &[

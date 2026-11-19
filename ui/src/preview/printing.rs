@@ -34,8 +34,13 @@ struct Job {
     collate: bool,
     fit: bool,
     rotate: bool,
+    /// Pages printed on each sheet.
+    per_sheet: i32,
     setup: gtk::PageSetup,
 }
+
+/// How many pages a sheet can take.
+const PER_SHEET: [i32; 6] = [1, 2, 4, 6, 9, 16];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Range {
@@ -65,6 +70,40 @@ fn place(cr: &cairo::Context, (width, height): (f64, f64), units_per_point: f64,
         cr.rotate(std::f64::consts::FRAC_PI_2);
     }
     draw(cr);
+}
+
+/// The columns and rows `per_sheet` pages take on a sheet, more of them across a wide one.
+fn grid(per_sheet: usize, wide: bool) -> (usize, usize) {
+    let (across, down) = match per_sheet {
+        2 => (1, 2),
+        6 => (2, 3),
+        n => {
+            let side = (n as f64).sqrt().ceil() as usize;
+            (side, side)
+        }
+    };
+    if wide { (down, across) } else { (across, down) }
+}
+
+/// Draws `pages` on a sheet `size` units wide and high, across then down a row at a time,
+/// each fitted to its share of the sheet when there is more than one.
+fn place_sheet(cr: &cairo::Context, size: (f64, f64), units_per_point: f64, pages: &[Page], per_sheet: usize, fit: bool, rotate: bool) {
+    if per_sheet <= 1 {
+        if let Some(page) = pages.first() {
+            place(cr, size, units_per_point, page.size, fit, rotate, &*page.draw);
+        }
+        return;
+    }
+    let (across, down) = grid(per_sheet, size.0 > size.1);
+    let cell = (size.0 / across as f64, size.1 / down as f64);
+    for (at, page) in pages.iter().enumerate().take(per_sheet) {
+        cr.save().ok();
+        cr.translate((at % across) as f64 * cell.0, (at / across) as f64 * cell.1);
+        cr.rectangle(0.0, 0.0, cell.0, cell.1);
+        cr.clip();
+        place(cr, cell, units_per_point, page.size, true, rotate, &*page.draw);
+        cr.restore().ok();
+    }
 }
 
 /// The pages `text` names, as "1-3, 5" does, 0-based and in that order; none if it names one
@@ -164,11 +203,12 @@ pub fn show(window: &gtk::Window, source: Source) {
     let shown = Rc::new(Cell::new(source.current.min(count.saturating_sub(1))));
     let fit = Rc::new(Cell::new(true));
     let rotate = Rc::new(Cell::new(true));
+    let per_sheet = Rc::new(Cell::new(1_usize));
 
-    // The page as it will be printed.
+    // The sheet the page shown is on, as it will be printed.
     let preview = gtk::DrawingArea::builder().hexpand(true).vexpand(true).content_width(240).content_height(320).build();
     preview.set_draw_func({
-        let (source, setup, shown, fit, rotate) = (source.clone(), setup.clone(), shown.clone(), fit.clone(), rotate.clone());
+        let (source, setup, shown, fit, rotate, per_sheet) = (source.clone(), setup.clone(), shown.clone(), fit.clone(), rotate.clone(), per_sheet.clone());
         move |_, cr, width, height| {
             let setup = setup.borrow();
             let (paper_w, paper_h) = (setup.paper_width(gtk::Unit::Points), setup.paper_height(gtk::Unit::Points));
@@ -186,9 +226,10 @@ pub fn show(window: &gtk::Window, source: Source) {
             cr.translate(setup.left_margin(gtk::Unit::Points), setup.top_margin(gtk::Unit::Points));
             cr.rectangle(0.0, 0.0, printable.0, printable.1);
             cr.clip();
-            if let Some(page) = (source.page)(shown.get()) {
-                place(cr, printable, 1.0, page.size, fit.get(), rotate.get(), &*page.draw);
-            }
+            let per_sheet = per_sheet.get();
+            let start = shown.get() / per_sheet * per_sheet;
+            let pages: Vec<Page> = (start..(start + per_sheet).min(count)).filter_map(|page| (source.page)(page)).collect();
+            place_sheet(cr, printable, 1.0, &pages, per_sheet, fit.get(), rotate.get());
         }
     });
     let previous = gtk::Button::builder().icon_name("go-previous-symbolic").css_classes(["flat"]).build();
@@ -274,11 +315,13 @@ pub fn show(window: &gtk::Window, source: Source) {
     let size_row = adw::ActionRow::builder().title("大小").build();
     size_row.add_suffix(&size_buttons_row);
     let rotate_row = adw::SwitchRow::builder().title("自動旋轉").active(true).build();
+    let per_sheet_row = adw::ComboRow::builder().title("每張紙的頁數").model(&gtk::StringList::new(&PER_SHEET.map(|count| count.to_string()).iter().map(String::as_str).collect::<Vec<_>>())).build();
     let setup_row = adw::ActionRow::builder().title("頁面設定").activatable(true).build();
     setup_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     let layout_group = adw::PreferencesGroup::builder().title("版面").build();
     layout_group.add(&size_row);
     layout_group.add(&rotate_row);
+    layout_group.add(&per_sheet_row);
     layout_group.add(&setup_row);
 
     let settings_page = adw::PreferencesPage::new();
@@ -363,6 +406,13 @@ pub fn show(window: &gtk::Window, source: Source) {
             update();
         }
     });
+    per_sheet_row.connect_selected_notify({
+        let (per_sheet, update) = (per_sheet.clone(), update.clone());
+        move |row| {
+            per_sheet.set(PER_SHEET[row.selected() as usize] as usize);
+            update();
+        }
+    });
     rotate_row.connect_active_notify({
         let (rotate, update) = (rotate.clone(), update.clone());
         move |row| {
@@ -397,7 +447,7 @@ pub fn show(window: &gtk::Window, source: Source) {
     });
     print.connect_clicked({
         let (dialog, window, source, setup) = (dialog.clone(), window.clone(), source.clone(), setup.clone());
-        let (fit, rotate, collate_row, reverse_row, copies_row, list) = (fit.clone(), rotate.clone(), collate_row.clone(), reverse_row.clone(), copies_row.clone(), list.clone());
+        let (fit, rotate, collate_row, reverse_row, copies_row, list, per_sheet_row) = (fit.clone(), rotate.clone(), collate_row.clone(), reverse_row.clone(), copies_row.clone(), list.clone(), per_sheet_row.clone());
         move |_| {
             let (Some(mut pages), Some(index)) = (chosen_pages(), list.selected_row().map(|row| row.index() as usize)) else { return };
             if reverse_row.is_active() {
@@ -411,6 +461,7 @@ pub fn show(window: &gtk::Window, source: Source) {
                 collate: collate_row.is_active(),
                 fit: fit.get(),
                 rotate: rotate.get(),
+                per_sheet: PER_SHEET[per_sheet_row.selected() as usize],
                 setup: setup.borrow().clone(),
             };
             dialog.close();
@@ -443,17 +494,20 @@ fn start(window: &gtk::Window, source: Rc<Source>, job: Job) {
 fn run(window: &gtk::Window, source: Rc<Source>, job: Job, file: Option<PathBuf>) {
     let operation = gtk::PrintOperation::new();
     operation.set_job_name(&source.name);
-    operation.set_n_pages(job.pages.len() as i32);
     operation.set_default_page_setup(Some(&job.setup));
     let settings = gtk::PrintSettings::new();
     settings.set_printer(&job.printer);
     settings.set_n_copies(job.copies);
     settings.set_collate(job.collate);
     operation.set_print_settings(Some(&settings));
+    // GTK lays several pages on a sheet only for some printers, never in a file, so it is done here.
+    let per_sheet = job.per_sheet as usize;
+    operation.set_n_pages(job.pages.len().div_ceil(per_sheet) as i32);
     operation.connect_draw_page(move |_, context, index| {
-        let Some(page) = job.pages.get(index as usize).and_then(|&page| (source.page)(page)) else { return };
+        let start = index as usize * per_sheet;
+        let pages: Vec<Page> = job.pages.iter().skip(start).take(per_sheet).filter_map(|&page| (source.page)(page)).collect();
         let size = (context.width(), context.height());
-        place(&context.cairo_context(), size, context.dpi_x() / 72.0, page.size, job.fit, job.rotate, &*page.draw);
+        place_sheet(&context.cairo_context(), size, context.dpi_x() / 72.0, &pages, per_sheet, job.fit, job.rotate);
     });
     // Not blocking the window, nor anything else waiting on it, while it prints.
     operation.set_allow_async(true);
@@ -478,7 +532,19 @@ fn run(window: &gtk::Window, source: Rc<Source>, job: Job, file: Option<PathBuf>
 
 #[cfg(test)]
 mod tests {
-    use super::parse_pages;
+    use super::{grid, parse_pages};
+
+    #[test]
+    fn pages_on_a_sheet_lie_in_a_grid_turned_with_it() {
+        assert_eq!(grid(1, false), (1, 1));
+        assert_eq!(grid(2, false), (1, 2));
+        assert_eq!(grid(2, true), (2, 1));
+        assert_eq!(grid(4, false), (2, 2));
+        assert_eq!(grid(6, false), (2, 3));
+        assert_eq!(grid(6, true), (3, 2));
+        assert_eq!(grid(9, false), (3, 3));
+        assert_eq!(grid(16, false), (4, 4));
+    }
 
     #[test]
     fn pages_are_named_by_numbers_and_ranges() {

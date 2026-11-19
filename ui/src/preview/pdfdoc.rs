@@ -398,6 +398,25 @@ pub fn compact(path: &Path, password: Option<&str>, to: &Path, smaller: bool, li
     qpdf(args).map(drop)
 }
 
+/// Writes `path` to `to` in shades of grey, its text and drawing kept as they are, as
+/// 灰色調 does; Ghostscript does it.
+pub fn grayscale(path: &Path, to: &Path) -> Result<(), String> {
+    // Ghostscript reads a % in the file it writes as where to number the pages.
+    let out = to.to_string_lossy().replace('%', "%%");
+    let output = Command::new("gs")
+        .args(["-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite", "-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray"])
+        .arg(format!("-sOutputFile={out}"))
+        .arg("-f")
+        .arg(path)
+        .output()
+        .map_err(|_| String::from("灰色調需要 Ghostscript。"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
 /// What the PDF lets be done, as the 加密 inspector tells it.
 pub fn permissions(document: &poppler::Document) -> Permissions {
     let allowed = document.permissions();

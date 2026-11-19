@@ -332,6 +332,20 @@ impl Win {
         if item.untitled {
             return self.save_as();
         }
+        if is_locked(&item.path) {
+            let alert = adw::AlertDialog::new(Some(&format!("「{}」已鎖定", item.name())), Some("解鎖後才能儲存變更。"));
+            alert.add_responses(&[("cancel", "取消"), ("do", "解鎖")]);
+            alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
+            alert.set_default_response(Some("do"));
+            alert.set_close_response("cancel");
+            let weak = Rc::downgrade(self);
+            return alert.choose(&self.window, gio::Cancellable::NONE, move |response| {
+                if let Some(win) = weak.upgrade().filter(|_| response == "do") {
+                    win.set_locked(false);
+                    win.save();
+                }
+            });
+        }
         let result = match (item.page, self.pdf.borrow().clone()) {
             (Some(_), Some(pdf)) => {
                 if !self.redactions.borrow().is_empty() {
@@ -361,6 +375,22 @@ impl Win {
         if let Err(err) = result {
             alert::notice(&self.window, "無法儲存", Some(&format!("{}\n{err}", item.target().display())));
         }
+    }
+
+    /// 鎖定: the file shown made read-only, so it is not changed by mistake; or writable again.
+    pub fn set_locked(&self, locked: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(item) = self.item().filter(|item| !item.untitled) else { return };
+        let result = std::fs::metadata(&item.path).and_then(|meta| {
+            let mut permissions = meta.permissions();
+            let mode = permissions.mode();
+            permissions.set_mode(if locked { mode & !0o222 } else { mode | 0o200 });
+            std::fs::set_permissions(&item.path, permissions)
+        });
+        if let Err(err) = result {
+            alert::notice(&self.window, if locked { "無法鎖定" } else { "無法解鎖" }, Some(&err.to_string()));
+        }
+        self.update_title(&item);
     }
 
     /// 另存新檔: written somewhere else, which the window then shows.
@@ -607,6 +637,7 @@ impl Win {
         let alpha = adw::SwitchRow::builder().title("Alpha").active(true).build();
         let compression = adw::ComboRow::builder().title("壓縮").model(&gtk::StringList::new(&TIFF_COMPRESSIONS.map(|(name, _)| name))).selected(1).build();
         let resolution = adw::SpinRow::builder().title("解析度").subtitle("像素/英寸").adjustment(&gtk::Adjustment::new(150.0, 36.0, 1200.0, 1.0, 50.0, 0.0)).build();
+        let filter = adw::ComboRow::builder().title("濾鏡").model(&gtk::StringList::new(&["無", "灰色調"])).build();
         let smaller = adw::SwitchRow::builder().title("縮減檔案大小").build();
         let encrypt = adw::SwitchRow::builder().title("加密").build();
         let password = adw::PasswordEntryRow::builder().title("密碼").visible(false).build();
@@ -619,6 +650,7 @@ impl Win {
             alpha.upcast_ref(),
             compression.upcast_ref(),
             resolution.upcast_ref(),
+            filter.upcast_ref(),
             smaller.upcast_ref(),
             encrypt.upcast_ref(),
             password.upcast_ref(),
@@ -646,8 +678,8 @@ impl Win {
             })
         };
         let refresh = {
-            let (settings, quality_row, alpha, compression, resolution, smaller, encrypt, password, verify, size, picture, pdf) =
-                (settings.clone(), quality_row.clone(), alpha.clone(), compression.clone(), resolution.clone(), smaller.clone(), encrypt.clone(), password.clone(), verify.clone(), size.clone(), picture.clone(), pdf.clone());
+            let (settings, quality_row, alpha, compression, resolution, smaller, encrypt, password, verify, size, picture, pdf, filter) =
+                (settings.clone(), quality_row.clone(), alpha.clone(), compression.clone(), resolution.clone(), smaller.clone(), encrypt.clone(), password.clone(), verify.clone(), size.clone(), picture.clone(), pdf.clone(), filter.clone());
             Rc::new(move || {
                 let (extension, export) = settings();
                 let to_pdf = extension == "pdf";
@@ -655,6 +687,7 @@ impl Win {
                 alpha.set_visible(matches!(extension, "png" | "tiff" | "heic" | "jp2" | "exr"));
                 compression.set_visible(extension == "tiff");
                 resolution.set_visible(pdf.is_some() && !to_pdf);
+                filter.set_visible(to_pdf);
                 smaller.set_visible(to_pdf && pdf.is_some());
                 encrypt.set_visible(to_pdf);
                 password.set_visible(to_pdf && encrypt.is_active());
@@ -716,13 +749,16 @@ impl Win {
                 dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
             }
             let (weak, picture, pdf, item) = (Rc::downgrade(&win), picture.clone(), pdf.clone(), item.clone());
-            let (encrypting, secret, reduce) = (encrypt.is_active(), password.text().to_string(), smaller.is_active());
+            let (encrypting, secret, reduce, grey) = (encrypt.is_active(), password.text().to_string(), smaller.is_active(), filter.selected() == 1);
+            if grey && pdf.as_ref().is_some_and(|pdf| pdf.password.is_some()) {
+                return alert::notice(&win.window, "無法套用灰色調", Some("有密碼的 PDF 不能套用濾鏡。"));
+            }
             dialog.save(Some(&win.window), gio::Cancellable::NONE, move |chosen| {
                 let (Some(win), Ok(file)) = (weak.upgrade(), chosen) else { return };
                 let Some(path) = file.path() else { return };
                 let result = match (&pdf, extension) {
-                    (Some(pdf), "pdf") => win.save_pdf(pdf, &path).and_then(|()| finish_pdf(&path, reduce, encrypting.then_some(secret.as_str()))),
-                    (None, "pdf") => win.pixbuf_of(&item).ok_or_else(String::new).and_then(|pixbuf| export_pdf(&pixbuf, &path)).and_then(|()| finish_pdf(&path, false, encrypting.then_some(secret.as_str()))),
+                    (Some(pdf), "pdf") => win.save_pdf(pdf, &path).and_then(|()| finish_pdf(&path, grey, reduce, encrypting.then_some(secret.as_str()))),
+                    (None, "pdf") => win.pixbuf_of(&item).ok_or_else(String::new).and_then(|pixbuf| export_pdf(&pixbuf, &path)).and_then(|()| finish_pdf(&path, grey, false, encrypting.then_some(secret.as_str()))),
                     _ => match picture.borrow().clone() {
                         Some(pixbuf) => write_picture(&pixbuf, &path, &export),
                         None => Err(String::from("記憶體不足")),
@@ -1101,15 +1137,19 @@ impl Win {
     }
 }
 
-/// A PDF just written made smaller or given a password, as 輸出 asks.
-fn finish_pdf(path: &Path, smaller: bool, password: Option<&str>) -> Result<(), String> {
+/// A PDF just written turned grey, made smaller or given a password, as 輸出 asks.
+fn finish_pdf(path: &Path, grey: bool, smaller: bool, password: Option<&str>) -> Result<(), String> {
+    let new = path.with_extension("pdf.out");
+    if grey {
+        pdfdoc::grayscale(path, &new)?;
+        std::fs::rename(&new, path).map_err(|err| err.to_string())?;
+    }
     if !smaller && password.is_none() {
         return Ok(());
     }
     if !pdfdoc::has_qpdf() {
         return Err(String::from("縮減檔案大小和加密需要 qpdf。"));
     }
-    let new = path.with_extension("pdf.out");
     if smaller {
         pdfdoc::compact(path, None, &new, true, false)?;
         std::fs::rename(&new, path).map_err(|err| err.to_string())?;

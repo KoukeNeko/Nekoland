@@ -327,6 +327,26 @@ fn page_matches(page: &poppler::Page, text: &str) -> Vec<Place> {
         .collect()
 }
 
+/// Whether the file at `path` is locked, as 鎖定 leaves it: not writable.
+fn is_locked(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly())
+}
+
+/// Matches in reading order, each place once; by rank, the pages with the most come first.
+fn order_matches(mut found: Vec<(usize, Place)>, by_rank: bool) -> Vec<(usize, Place)> {
+    found.sort_by(|(a, (ax, ay, ..)), (b, (bx, by, ..))| a.cmp(b).then(ay.total_cmp(by)).then(ax.total_cmp(bx)));
+    found.dedup_by(|a, b| a == b);
+    if by_rank {
+        let mut counts = std::collections::HashMap::new();
+        for (page, _) in &found {
+            *counts.entry(*page).or_insert(0usize) += 1;
+        }
+        // Stable, so a page keeps its matches together and in order, and ties keep page order.
+        found.sort_by_key(|(page, _)| std::cmp::Reverse(counts[page]));
+    }
+    found
+}
+
 /// `page` drawn on white at `scale` pixels to the point.
 fn page_texture(page: &poppler::Page, scale: f64) -> Option<gdk::Texture> {
     use gtk::cairo::{Context, Format, ImageSurface};
@@ -869,9 +889,20 @@ impl Win {
             .build();
         let find_entry = gtk::SearchEntry::builder().placeholder_text("搜尋").width_chars(14).build();
         let find_count = gtk::Label::builder().css_classes(["dim-label", "numeric"]).visible(false).build();
+        let find_menu = gio::Menu::new();
+        let words = gio::Menu::new();
+        words.append(Some("完全符合"), Some("win.find-words::phrase"));
+        words.append(Some("任何符合"), Some("win.find-words::any"));
+        let order = gio::Menu::new();
+        order.append(Some("搜尋等級"), Some("win.find-order::rank"));
+        order.append(Some("頁面順序"), Some("win.find-order::page"));
+        find_menu.append_section(None, &words);
+        find_menu.append_section(None, &order);
+        let find_options = gtk::MenuButton::builder().icon_name("view-more-symbolic").tooltip_text("搜尋選項").menu_model(&find_menu).css_classes(["flat"]).build();
         let find_box = gtk::Box::builder().spacing(GAP).visible(false).build();
         find_box.append(&find_count);
         find_box.append(&find_entry);
+        find_box.append(&find_options);
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         header.pack_start(&sidebar_button);
         header.pack_end(&find_box);
@@ -1133,6 +1164,8 @@ impl Win {
             ("layout", layout_key(self.layout.get()).to_owned(), |win, key| win.set_layout(layout_from_key(key))),
             ("tool", String::new(), |win, key| win.set_tool(Tool::from_key(key))),
             ("line-width", format!("{}", self.width.get()), |win, width| win.set_width(width.parse().unwrap_or(2.0))),
+            ("find-words", String::from("phrase"), |win, _| win.find()),
+            ("find-order", String::from("page"), |win, _| win.find()),
         ];
         for (name, initial, run) in chosen {
             let run = *run;
@@ -1153,6 +1186,7 @@ impl Win {
             ("dark-pdf", |win, on| win.set_dark_pdf(on)),
             ("image-background", |win, on| win.set_checker(on)),
             ("fill-shapes", |win, on| win.filled.set(on)),
+            ("lock", |win, on| win.set_locked(on)),
         ];
         for &(name, run) in toggles {
             let name_owned = name.to_owned();
@@ -1850,6 +1884,13 @@ impl Win {
         if text.is_empty() {
             return;
         }
+        let chosen = |name: &str| self.window.action_state(name).and_then(|state| state.str().map(str::to_owned)).unwrap_or_default();
+        // 任何符合 finds each word on its own; 完全符合, the whole of it.
+        let terms: Vec<String> = match chosen("find-words").as_str() {
+            "any" => text.split_whitespace().map(str::to_owned).collect(),
+            _ => vec![text],
+        };
+        let by_rank = chosen("find-order") == "rank";
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let mut found = Vec::new();
@@ -1859,13 +1900,17 @@ impl Win {
                     return;
                 }
                 if let Some(page) = document.page(index as i32) {
-                    found.extend(page_matches(&page, &text).into_iter().map(|place| (index, place)));
+                    for term in &terms {
+                        found.extend(page_matches(&page, term).into_iter().map(|place| (index, place)));
+                    }
                 }
                 glib::timeout_future(std::time::Duration::ZERO).await;
             }
+            let found = order_matches(found, by_rank);
             let Some(win) = weak.upgrade().filter(|win| win.finding.get() == finding) else { return };
             let shown = win.item().and_then(|item| item.page).map_or(0, |page| page as usize - 1);
-            let at = found.iter().position(|(page, _)| *page >= shown).or((!found.is_empty()).then_some(0));
+            // 搜尋等級 starts from the page with the most; 頁面順序, from the page shown.
+            let at = if by_rank { None } else { found.iter().position(|(page, _)| *page >= shown) }.or((!found.is_empty()).then_some(0));
             *win.matches.borrow_mut() = found;
             win.match_at.set(at);
             win.show_match();
@@ -1991,7 +2036,15 @@ impl Win {
     }
 
     fn update_title(&self, item: &Item) {
-        let edited = if self.is_edited(item) { " — 已編輯" } else { "" };
+        let locked = !item.untitled && is_locked(&item.path);
+        self.set_action_state("lock", locked.to_variant());
+        let edited = if self.is_edited(item) {
+            " — 已編輯"
+        } else if locked {
+            " — 已鎖定"
+        } else {
+            ""
+        };
         self.title.set_title(&format!("{}{edited}", item.name()));
         let subtitle = match (item.page, self.shown.borrow().as_ref()) {
             (Some(page), _) => {
@@ -2483,6 +2536,15 @@ mod tests {
     }
 
     #[test]
+    fn matches_read_in_order_or_by_the_pages_with_most() {
+        let at = |page, y| (page, (0.0, y, 1.0, y + 1.0));
+        // Two words found apart, one place found by both.
+        let found = vec![at(2, 5.0), at(0, 9.0), at(2, 1.0), at(1, 3.0), at(2, 5.0), at(1, 1.0)];
+        assert_eq!(order_matches(found.clone(), false), vec![at(0, 9.0), at(1, 1.0), at(1, 3.0), at(2, 1.0), at(2, 5.0)]);
+        assert_eq!(order_matches(found, true), vec![at(1, 1.0), at(1, 3.0), at(2, 1.0), at(2, 5.0), at(0, 9.0)]);
+    }
+
+    #[test]
     fn formats_gdk_pixbuf_cannot_read_come_through_imagemagick() {
         if Command::new("magick").arg("-version").output().is_err() {
             return;
@@ -2657,6 +2719,37 @@ mod tests {
         std::fs::copy(&path, &other).unwrap();
         rebuild_pdf(&path, &[(path.clone(), 1), (other.clone(), 1), (path.clone(), 1)]).unwrap();
         assert_eq!(page_count(&path), Ok(3));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_grey_pdf_keeps_its_drawing_and_loses_its_colour() {
+        if Command::new("gs").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nekoland-preview-grey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (red, grey) = (dir.join("red.pdf"), dir.join("100% grey.pdf"));
+        let surface = gtk::cairo::PdfSurface::new(100.0, 100.0, &red).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+        cr.set_source_rgb(1.0, 0.0, 0.0);
+        cr.paint().unwrap();
+        drop(cr);
+        surface.finish();
+        pdfdoc::grayscale(&red, &grey).unwrap();
+        let page = poppler::Document::from_file(&glib::filename_to_uri(&grey, None).unwrap(), None).unwrap().page(0).unwrap();
+        let mut drawn = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, 10, 10).unwrap();
+        let cr = gtk::cairo::Context::new(&drawn).unwrap();
+        cr.scale(0.1, 0.1);
+        page.render(&cr);
+        drop(cr);
+        let data = drawn.data().unwrap();
+        let (b, g, r) = (data[0], data[1], data[2]);
+        assert!(r == g && g == b && r < 200, "{r} {g} {b}");
+        // Still drawn, not turned into a picture.
+        if let Ok(images) = Command::new("pdfimages").arg("-list").arg(&grey).output() {
+            assert_eq!(String::from_utf8_lossy(&images.stdout).lines().count(), 2);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
