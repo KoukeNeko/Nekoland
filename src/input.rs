@@ -104,7 +104,7 @@ impl Nekoland {
                             return FilterResult::Intercept(());
                         }
                         if locked {
-                            return state.locked_key(modifiers, keysym.modified_sym(), pressed);
+                            return state.locked_key(keysym.modified_sym(), pressed);
                         }
                         if state.ime_key(modifiers, &keysym, pressed, time) {
                             if pressed {

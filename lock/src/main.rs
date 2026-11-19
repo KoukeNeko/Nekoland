@@ -122,7 +122,7 @@ struct Locker {
     playing: Arc<Mutex<Option<Playing>>>,
     user: String,
     password: String,
-    /// The PINs given wrong during this lock.
+    /// The PINs given wrong during this lock, by this locker or one before it.
     pin_tries: Arc<AtomicU32>,
     caps_lock: bool,
     /// How many characters the password being checked has.
@@ -250,7 +250,7 @@ fn main() {
         look,
         user,
         password: String::new(),
-        pin_tries: Arc::default(),
+        pin_tries: Arc::new(AtomicU32::new(read_pin_tries())),
         caps_lock: false,
         checking: None,
         error: None,
@@ -746,6 +746,25 @@ fn read_playing() -> Option<Playing> {
     found.into_iter().next()
 }
 
+/// Where the wrong PINs of this lock are counted, so that a locker started again while the
+/// screen stays locked does not get fresh tries. The compositor takes it away on unlocking.
+fn pin_tries_file() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-pin-tries"))
+}
+
+/// The wrong PINs counted so far; a count that cannot be read is taken as all of them.
+fn read_pin_tries() -> u32 {
+    let Some(file) = pin_tries_file() else { return 0 };
+    match std::fs::read_to_string(&file) {
+        Ok(text) => text.trim().parse().unwrap_or(pin::TRIES),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(err) => {
+            eprintln!("nekoland-lock: {}: {err}", file.display());
+            pin::TRIES
+        }
+    }
+}
+
 /// The notifications the compositor kept for the lock since it locked.
 fn read_notices() -> Vec<(String, String)> {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else { return Vec::new() };
@@ -1226,7 +1245,12 @@ impl Locker {
                     let _ = sender.send(Ok(()));
                     return;
                 }
-                tries.fetch_add(1, Ordering::Relaxed);
+                let wrong = tries.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(file) = pin_tries_file() {
+                    if let Err(err) = std::fs::write(&file, wrong.to_string()) {
+                        eprintln!("nekoland-lock: {}: {err}", file.display());
+                    }
+                }
             }
             let _ = sender.send(pam::check(&user, &password));
         });

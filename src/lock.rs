@@ -10,7 +10,7 @@ use smithay::{
     delegate_idle_inhibit, delegate_session_lock,
     desktop::{Window, WindowSurfaceType},
     input::{
-        keyboard::{FilterResult, Keysym, ModifiersState},
+        keyboard::{FilterResult, Keysym},
         pointer::MotionEvent,
     },
     output::Output,
@@ -44,6 +44,9 @@ use crate::{
 const IDLE_CHECK: Duration = Duration::from_secs(5);
 /// How long a locker is given to lock the screen before another may be started.
 const LOCKER_START: Duration = Duration::from_secs(3);
+/// How long sleep waits for a locker to lock: one that locks later is not followed by sleep,
+/// which would come as a surprise then.
+const SLEEP_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 pub struct Lock {
     /// The locker's hold on the session.
@@ -66,7 +69,7 @@ pub struct Lock {
 impl Lock {
     /// False once the locker has gone without unlocking: the screen stays locked, and
     /// another locker may take over.
-    fn held(&self) -> bool {
+    pub fn held(&self) -> bool {
         self.lock.is_alive()
     }
 }
@@ -76,6 +79,12 @@ impl Lock {
 /// shared one such as /tmp would let others read them or plant a link in their place.
 fn locker_notices() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-notices"))
+}
+
+/// Where nekoland-lock counts the wrong PINs of a lock, so that a locker started again does
+/// not get fresh tries. Only an unlock clears it.
+fn locker_pin_tries() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-lock-pin-tries"))
 }
 
 /// The time since boot, as /proc/uptime has it.
@@ -267,16 +276,12 @@ impl Nekoland {
         }
     }
 
-    /// A key while locked goes to the locker, but for switching the virtual terminal and
-    /// quitting, which leave the session behind the lock. Any key brings back a locker that
-    /// went away.
-    pub fn locked_key(&mut self, modifiers: &ModifiersState, sym: Keysym, pressed: bool) -> FilterResult<()> {
+    /// A key while locked goes to the locker, but for switching the virtual terminal, which
+    /// leaves the session behind the lock. Quitting is not let through: with autologin it
+    /// would come back unlocked. Any key brings back a locker that went away.
+    pub fn locked_key(&mut self, sym: Keysym, pressed: bool) -> FilterResult<()> {
         if pressed {
             if self.vt_key(sym) {
-                return FilterResult::Intercept(());
-            }
-            if sym == Keysym::BackSpace && modifiers.ctrl && modifiers.alt {
-                self.loop_signal.stop();
                 return FilterResult::Intercept(());
             }
             // The Super key puts a shortcut opened over the lock back behind it, open, for
@@ -327,10 +332,21 @@ impl SessionLockHandler for Nekoland {
         // shortcut: confirmed before the next frame, the first without windows, is shown;
         // wait for that frame's presentation if a locker relies on it.
         confirmation.lock();
+        // Sleep waits for the lock, so that the computer never wakes unlocked.
+        if self.sleep_asked.take().is_some_and(|at| at.elapsed() < SLEEP_LOCK_WAIT) {
+            config::spawn("systemctl suspend");
+        }
     }
 
     fn unlock(&mut self) {
         self.lock = None;
+        if let Some(path) = locker_pin_tries() {
+            if let Err(err) = std::fs::remove_file(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("{}: {err}", path.display());
+                }
+            }
+        }
         match self.space.elements().last().cloned() {
             Some(window) => self.focus_window(&window),
             None => self.set_keyboard_focus(None),

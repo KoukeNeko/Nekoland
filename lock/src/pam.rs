@@ -41,6 +41,7 @@ extern "C" {
         handle: *mut *mut c_void,
     ) -> c_int;
     fn pam_authenticate(handle: *mut c_void, flags: c_int) -> c_int;
+    fn pam_acct_mgmt(handle: *mut c_void, flags: c_int) -> c_int;
     fn pam_setcred(handle: *mut c_void, flags: c_int) -> c_int;
     fn pam_end(handle: *mut c_void, status: c_int) -> c_int;
     fn pam_strerror(handle: *mut c_void, code: c_int) -> *const c_char;
@@ -99,22 +100,30 @@ pub fn check(user: &str, password: &str) -> Result<(), Failure> {
         if started != PAM_SUCCESS {
             return Err(unable(&format!("pam_start failed ({started})")));
         }
-        let status = pam_authenticate(handle, 0);
+        let said = |status: c_int| {
+            let text = pam_strerror(handle, status);
+            Failure::Unable(if text.is_null() {
+                format!("PAM error {status}")
+            } else {
+                std::ffi::CStr::from_ptr(text).to_string_lossy().into_owned()
+            })
+        };
+        let mut status = pam_authenticate(handle, 0);
         let result = match status {
             PAM_SUCCESS => {
-                // Renews Kerberos tickets and the like; failing to is no reason to stay locked.
-                pam_setcred(handle, PAM_REFRESH_CRED);
-                Ok(())
+                // The right password of an account that has expired or been locked does not
+                // unlock, as it would not log in.
+                status = pam_acct_mgmt(handle, 0);
+                if status == PAM_SUCCESS {
+                    // Renews Kerberos tickets and the like; failing to is no reason to stay locked.
+                    pam_setcred(handle, PAM_REFRESH_CRED);
+                    Ok(())
+                } else {
+                    Err(said(status))
+                }
             }
             PAM_AUTH_ERR => Err(Failure::Wrong),
-            _ => {
-                let text = pam_strerror(handle, status);
-                Err(Failure::Unable(if text.is_null() {
-                    format!("PAM error {status}")
-                } else {
-                    std::ffi::CStr::from_ptr(text).to_string_lossy().into_owned()
-                }))
-            }
+            _ => Err(said(status)),
         };
         pam_end(handle, status);
         result
