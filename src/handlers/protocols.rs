@@ -136,15 +136,33 @@ delegate_xdg_activation!(Nekoland);
 
 impl FractionalScaleHandler for Nekoland {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = self
-            .space
-            .outputs()
-            .next()
-            .map(|output| output.current_scale().fractional_scale())
-            .unwrap_or(1.0);
+        let scale = self.display_scale();
         with_states(&surface, |states| {
             with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale));
         });
+    }
+}
+
+impl Nekoland {
+    fn display_scale(&self) -> f64 {
+        (self.space.outputs().next()).map_or(1.0, |output| output.current_scale().fractional_scale())
+    }
+
+    /// Tells the windows and panels there are the display's scale, after it changed: one
+    /// that was open would go on drawing for the old one, and be shown stretched.
+    pub fn tell_surfaces_the_scale(&self) {
+        let scale = self.display_scale();
+        let tell = |_: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
+            with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale));
+        };
+        for window in self.all_windows() {
+            window.with_surfaces(tell);
+        }
+        for output in self.space.outputs() {
+            for layer in smithay::desktop::layer_map_for_output(output).layers() {
+                layer.with_surfaces(tell);
+            }
+        }
     }
 }
 delegate_fractional_scale!(Nekoland);

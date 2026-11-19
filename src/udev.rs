@@ -639,6 +639,7 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
         smithay::desktop::layer_map_for_output(output).arrange();
     }
     lay_out_outputs(state);
+    state.tell_surfaces_the_scale();
     state.dock.drawn = None;
     state.menu_bar.drawn = None;
     state.fit_windows_to_display();
