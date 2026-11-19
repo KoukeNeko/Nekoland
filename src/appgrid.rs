@@ -453,6 +453,8 @@ pub struct AppGrid {
     open: Option<OpenFolder>,
     /// The folder that was open, going back into its icon since it was closed.
     closed: Option<(OpenFolder, Instant)>,
+    /// An application was started from the open folder: the view leaves once that is shut.
+    leaving: bool,
     opened: Instant,
     last_tick: Instant,
     scrolled: f64,
@@ -686,6 +688,7 @@ impl AppGrid {
             edge: None,
             open: None,
             closed: None,
+            leaving: false,
             opened: Instant::now(),
             last_tick: Instant::now(),
             scrolled: 0.0,
@@ -861,6 +864,13 @@ impl AppGrid {
         if let Some(open) = self.open.take() {
             self.closed = Some((open, Instant::now()));
         }
+    }
+
+    /// Whether no folder is open or still closing.
+    fn folder_gone(&self) -> bool {
+        self.open.is_none()
+            && (self.closed.as_ref())
+                .is_none_or(|(open, closed)| crate::motion::folder_arrival(open.opened, Some(*closed)).is_none())
     }
 
     /// The folder to draw, open or on its way back in, and how far the pages have parted
@@ -1127,6 +1137,10 @@ impl Nekoland {
     /// Brings the view up to date before a frame: where a dragged icon is aimed, the page
     /// sliding into place, and what is drawn again when it changed.
     pub fn refresh_apps(&mut self) {
+        let apps = self.overview.as_ref().and_then(|overview| overview.apps.as_ref());
+        if apps.is_some_and(|apps| apps.leaving && apps.folder_gone()) {
+            self.close_overview(None);
+        }
         let layout = self.apps_layout();
         let animated = self.config.animations;
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
@@ -1365,8 +1379,11 @@ impl Nekoland {
         let animated = self.config.animations;
         let folder = (apps.folder_shown(&layout))
             .map(|(open, place, out)| (open, place, if animated { out.clamp(0.0, 1.0) } else { 1.0 }))
-            // It closes as the grid leaves.
-            .map(|(open, place, out)| (open, place, out * leaving.unwrap_or(1.0)));
+            // It closes as the grid leaves, shut by half way, while the icons are still there.
+            .map(|(open, place, out)| {
+                let left = leaving.map_or(1.0, |leaving| (leaving * 2.0 - 1.0).max(0.0));
+                (open, place, out * left)
+            });
         let folder_fade = folder.as_ref().map_or(0.0, |(.., out)| *out as f32);
         if let Some((open, place, out)) = &folder {
             // There to see well before the pages have parted all the way.
@@ -1905,7 +1922,15 @@ impl Nekoland {
             tracing::warn!("{id}: {err}");
         }
         self.dock_launching(&id);
-        self.close_overview(None);
+        // From an open folder, the folder shuts first, and the view leaves after it.
+        let apps = self.overview.as_mut().and_then(|overview| overview.apps.as_mut());
+        match apps.filter(|apps| apps.open.is_some() && self.config.animations) {
+            Some(apps) => {
+                apps.close_folder();
+                apps.leaving = true;
+            }
+            None => self.close_overview(None),
+        }
     }
 
     /// How many times its size the overlay named `id` is drawn, about its middle: the
