@@ -39,15 +39,19 @@ const TITLE_FONT: &str = "11";
 const GLYPH: f64 = 5.0;
 const BUTTON_LEFT: u32 = 0x110;
 
-/// Whether a program is to have a bar from the window manager: a window of its own that
-/// does not say it draws its own decoration.
-pub fn needs_title(surface: &X11Surface) -> bool {
+/// Whether a window is one of a program's own, not a menu or a tooltip.
+pub fn is_own_window(surface: &X11Surface) -> bool {
     !surface.is_override_redirect()
-        && !surface.is_decorated()
         && matches!(
             surface.window_type(),
             None | Some(WmWindowType::Normal | WmWindowType::Dialog | WmWindowType::Utility)
         )
+}
+
+/// Whether a program is to have a bar from the window manager: a window of its own that
+/// does not say it draws its own decoration.
+pub fn needs_title(surface: &X11Surface) -> bool {
+    is_own_window(surface) && !surface.is_decorated()
 }
 
 /// What a point on a window's bar or grips is.

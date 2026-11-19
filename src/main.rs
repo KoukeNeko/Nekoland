@@ -36,6 +36,7 @@ mod overview;
 mod power;
 mod privacy;
 mod render;
+mod rounded;
 mod screencopy;
 mod sprite;
 mod stacks;

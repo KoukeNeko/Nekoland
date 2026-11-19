@@ -51,6 +51,15 @@ pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
     matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_decorated())
 }
 
+/// Whether the compositor rounds the corners of a window: an X11 program's own, with a
+/// frame of its own, which it draws square, left where it was put. Maximized, fullscreen
+/// and arranged ones are square, as GTK's are.
+pub fn rounds_x11_corners(window: &Window) -> bool {
+    matches!(window.underlying_surface(), WindowSurface::X11(surface)
+        if surface.is_decorated() && crate::frame::is_own_window(surface))
+        && matches!(placement_of(window), Placement::Free)
+}
+
 /// The smallest and largest size a window says it can be; 0 is no limit.
 pub fn size_limits(window: &Window) -> (Size<i32, Logical>, Size<i32, Logical>) {
     match window.underlying_surface() {

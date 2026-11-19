@@ -33,7 +33,10 @@ use crate::{
     overview::ICON_SIZE,
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
-    windows::{has_square_corners, is_managed, is_x11_drawing_own_frame, window_names, CONFIRM_APP_ID},
+    windows::{
+        has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, window_names,
+        CONFIRM_APP_ID,
+    },
     Nekoland,
 };
 
@@ -49,6 +52,7 @@ type SurfaceElement = WaylandSurfaceRenderElement<GlesRenderer>;
 render_elements! {
     pub SceneElement<=GlesRenderer>;
     Surface=SurfaceElement,
+    Rounded=crate::rounded::RoundedSurface,
     Glass=Pane,
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
@@ -1105,6 +1109,10 @@ fn windows_on_glass(
             scene = preview;
         }
         let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
+        if rounds_x11_corners(window) {
+            let radius = (f64::from(WINDOW_RADIUS) * scale).round() as i32;
+            elements = crate::rounded::round(renderer, elements, radius);
+        }
         if pose.is_still() {
             elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
         }
