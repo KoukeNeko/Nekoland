@@ -397,6 +397,32 @@ fn opens_as_pdf(path: &Path) -> bool {
     is_pdf(path) || path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("ai"))
 }
 
+/// The ImageMagick decoder for `path`'s extension. ImageMagick picks a decoder by what a file
+/// holds, so a file named `.hdr` could be an MVG or SVG script; naming the decoder keeps it to
+/// the one the extension says, and only these are ever handed over.
+fn magick_coder(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_lowercase();
+    Some(match extension.as_str() {
+        "hdr" => "hdr",
+        "sgi" => "sgi",
+        "exr" => "exr",
+        "pict" | "pct" | "pic" => "pict",
+        "heic" => "heic",
+        "heif" => "heif",
+        "jp2" | "j2k" | "jpx" => "jp2",
+        "psd" => "psd",
+        "ico" => "ico",
+        "tga" => "tga",
+        "xbm" => "xbm",
+        "dng" => "dng",
+        "cr3" => "cr3",
+        "3fr" => "3fr",
+        "fff" => "fff",
+        "raw" => "dng",
+        _ => return None,
+    })
+}
+
 /// The picture in `path`: by gdk-pixbuf, or by ImageMagick as a PNG for the formats it
 /// cannot read (HDR, SGI, PICT, OpenEXR, camera RAW, and the like) when it is installed.
 fn load_picture(path: &Path) -> Result<Pixbuf, String> {
@@ -404,6 +430,7 @@ fn load_picture(path: &Path) -> Result<Pixbuf, String> {
         Ok(pixbuf) => return Ok(pixbuf),
         Err(err) => err.to_string(),
     };
+    let Some(coder) = magick_coder(path) else { return Err(first) };
     let dir = scratch_dir();
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     let png = dir.join("convert.png");
@@ -412,7 +439,8 @@ fn load_picture(path: &Path) -> Result<Pixbuf, String> {
     let png = png.with_file_name(format!("convert-{:x}.png", hasher.finish()));
     let converted = ["magick", "convert"].iter().any(|program| {
         // `[0]` takes the first frame of a file with several.
-        let mut source = path.as_os_str().to_owned();
+        let mut source = std::ffi::OsString::from(format!("{coder}:"));
+        source.push(path.as_os_str());
         source.push("[0]");
         Command::new(program).arg(source).arg(&png).output().is_ok_and(|output| output.status.success())
     });
@@ -1710,6 +1738,10 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("nekoland-preview-load-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        // A script that only says it is a picture is not read as one.
+        let script = dir.join("script.hdr");
+        std::fs::write(&script, "push graphic-context\nviewbox 0 0 20 10\nfill 'url(https://127.0.0.1/x)'\npop graphic-context\n").unwrap();
+        assert!(load_picture(&script).is_err());
         for extension in ["hdr", "sgi", "exr", "pict"] {
             let path = dir.join(format!("picture.{extension}"));
             let made = Command::new("magick").args(["-size", "20x10", "xc:red"]).arg(&path).output().unwrap();
