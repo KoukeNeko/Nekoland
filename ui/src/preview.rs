@@ -1,11 +1,13 @@
 //! `nekoland-preview`, 預覽程式: pictures and PDFs, one or several, in a window of their own.
 //! A sidebar of thumbnails goes through the files, or a PDF's pages; the picture fits the
 //! window or is zoomed (Ctrl+scroll, pinch, or the buttons) and dragged. A picture can be
-//! turned or flipped and saved. Every edge is `EDGE` and every gap `GAP`, as in Files.
+//! turned or flipped and saved. A PDF's pages are drawn by poppler, one under another, at
+//! whatever the zoom is; its text is selected by dragging over it and found with 搜尋.
+//! Every edge is `EDGE` and every gap `GAP`, as in Files.
 
 use std::{
     cell::{Cell, RefCell},
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
@@ -22,10 +24,6 @@ mod browse;
 use browse::{modified_label, EDGE, GAP};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Preview";
-/// The resolution a PDF page is drawn at; one PDF point is then `POINT_SCALE` of a pixel.
-const PDF_DPI: u32 = 144;
-const THUMB_DPI: u32 = 24;
-const POINT_SCALE: f64 = 72.0 / PDF_DPI as f64;
 const THUMB_SIZE: i32 = 160;
 const MIN_SCALE: f64 = 0.05;
 const MAX_SCALE: f64 = 16.0;
@@ -166,21 +164,134 @@ impl Item {
         self.page.is_some()
     }
 
-    /// The scale that shows it at its real size.
-    fn actual(&self) -> f64 {
-        if self.is_page() {
-            POINT_SCALE
-        } else {
-            1.0
-        }
-    }
-
     fn name(&self) -> String {
         self.path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+}
+
+/// The PDF the window shows: its pages one under another, drawn by poppler as the zoom asks.
+struct Pdf {
+    path: PathBuf,
+    document: poppler::Document,
+    pages: Vec<gtk::DrawingArea>,
+    /// Each page's size in points.
+    sizes: Vec<(f64, f64)>,
+    /// The screen pixels to a point the pages are laid out at; 0 before they are.
+    scale: Cell<f64>,
+    /// Pages left blank while out of view, to be drawn when scrolled to.
+    undrawn: RefCell<HashSet<usize>>,
+}
+
+impl Pdf {
+    /// How far down the column page `index` starts at `scale`, with an `EDGE` around the pages
+    /// and between them; past the last page, the column's whole height.
+    fn top(&self, index: usize, scale: f64) -> f64 {
+        let above: f64 = self.sizes[..index].iter().map(|&(_, height)| (height * scale).round() + f64::from(EDGE)).sum();
+        above + f64::from(EDGE)
+    }
+
+    fn height(&self, index: usize, scale: f64) -> f64 {
+        (self.sizes[index].1 * scale).round()
+    }
+
+    /// The page `y` down the column is on, or the one above the gap it is in.
+    fn page_at(&self, y: f64, scale: f64) -> usize {
+        let mut top = f64::from(EDGE);
+        for index in 0..self.sizes.len() {
+            top += self.height(index, scale) + f64::from(EDGE);
+            if y < top {
+                return index;
+            }
+        }
+        self.sizes.len().saturating_sub(1)
+    }
+}
+
+/// Text chosen in a PDF, from one place to another, each a page and a point on it from its
+/// top left; by the character, or the word or line a double or triple click is on.
+#[derive(Clone, Copy)]
+struct Selection {
+    from: (usize, f64, f64),
+    to: (usize, f64, f64),
+    style: poppler::SelectionStyle,
+}
+
+impl Selection {
+    fn pages(&self) -> std::ops::RangeInclusive<usize> {
+        self.from.0.min(self.to.0)..=self.from.0.max(self.to.0)
+    }
+
+    /// The part of page `index` chosen, as poppler takes it, when any is.
+    fn on(&self, index: usize, size: (f64, f64)) -> Option<poppler::Rectangle> {
+        let (first, last) = if self.from.0 <= self.to.0 { (self.from, self.to) } else { (self.to, self.from) };
+        if !self.pages().contains(&index) {
+            return None;
+        }
+        let (x1, y1) = if index == first.0 { (first.1, first.2) } else { (0.0, 0.0) };
+        let (x2, y2) = if index == last.0 { (last.1, last.2) } else { size };
+        Some(rectangle(x1, y1, x2, y2))
+    }
+}
+
+fn rectangle(x1: f64, y1: f64, x2: f64, y2: f64) -> poppler::Rectangle {
+    let mut rectangle = poppler::Rectangle::new();
+    rectangle.set_x1(x1);
+    rectangle.set_y1(y1);
+    rectangle.set_x2(x2);
+    rectangle.set_y2(y2);
+    rectangle
+}
+
+/// The text `selection` takes in `document`, a line break between pages.
+fn selected_text(document: &poppler::Document, selection: &Selection) -> String {
+    selection
+        .pages()
+        .filter_map(|index| {
+            let page = document.page(index as i32)?;
+            let mut area = selection.on(index, page.size())?;
+            Some(page.selected_text(selection.style, &mut area)?.to_string())
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A place on a page, its left, top, right and bottom from the page's top left, in points.
+type Place = (f64, f64, f64, f64);
+
+/// Where `text` is on `page`.
+fn page_matches(page: &poppler::Page, text: &str) -> Vec<Place> {
+    let height = page.size().1;
+    // poppler measures what it finds up from the foot of the page.
+    page.find_text_with_options(text, poppler::FindFlags::DEFAULT)
+        .iter()
+        .map(|found| (found.x1(), height - found.y2(), found.x2(), height - found.y1()))
+        .collect()
+}
+
+/// `page` drawn on white at `scale` pixels to the point.
+fn page_texture(page: &poppler::Page, scale: f64) -> Option<gdk::Texture> {
+    use gtk::cairo::{Context, Format, ImageSurface};
+    let (width, height) = page.size();
+    let (width, height) = (((width * scale).round() as i32).max(1), ((height * scale).round() as i32).max(1));
+    let mut surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.paint().ok()?;
+        cr.scale(scale, scale);
+        page.render(&cr);
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let bytes = glib::Bytes::from(&surface.data().ok()?[..]);
+    // Cairo's ARGB32 is a word to a pixel, which is BGRA in memory on the little-endian
+    // processors Nekoland runs on.
+    let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
+    Some(texture.upcast())
 }
 
 struct Win {
@@ -209,12 +320,33 @@ struct Win {
     thumbnails: RefCell<Vec<gtk::Picture>>,
     current: Cell<usize>,
     zoom: Cell<Zoom>,
+    /// The picture shown; a PDF's pages are in `pdf` instead.
     shown: RefCell<Option<Pixbuf>>,
-    /// Which showing is the latest, so a PDF page drawn late is not put over a newer one.
-    generation: Cell<u32>,
     syncing: Cell<bool>,
     discard_edits: Cell<bool>,
-    scratch: PathBuf,
+    pdf_scroll: gtk::ScrolledWindow,
+    pdf_column: gtk::Box,
+    pdf: RefCell<Option<Rc<Pdf>>>,
+    selection: Cell<Option<Selection>>,
+    /// Where to scroll once the column is laid out as tall as its pages: a page, how much of
+    /// its height down it, and how many pixels more.
+    pending: Cell<Option<(usize, f64, f64)>>,
+    /// Set while the window scrolls the column itself, which does not choose a page again.
+    jumping: Cell<bool>,
+    /// Set while the zoom waits to fit the window's new size.
+    fitting: Cell<bool>,
+    find_box: gtk::Box,
+    find_entry: gtk::SearchEntry,
+    find_count: gtk::Label,
+    /// What 搜尋 found: each a page and a place on it.
+    matches: RefCell<Vec<(usize, Place)>>,
+    match_at: Cell<Option<usize>>,
+    /// Which search is the latest, so one still going stops when the text changes.
+    finding: Cell<u32>,
+    /// Whether 搜尋 has the keyboard, which then takes the keys the window's actions would.
+    typing: Cell<bool>,
+    /// The passwords the PDFs that need one were opened with.
+    passwords: RefCell<HashMap<PathBuf, String>>,
 }
 
 /// In the user's own cache, not the shared temporary folder, where another user could have
@@ -223,43 +355,15 @@ fn scratch_dir() -> PathBuf {
     glib::user_cache_dir().join(format!("nekoland/preview-{}", std::process::id()))
 }
 
-/// How many pages a PDF has.
-fn page_count(path: &Path) -> Result<u32, String> {
-    let output = Command::new("pdfinfo")
-        .arg(path)
-        .output()
-        .map_err(|err| format!("pdfinfo: {err}"))?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("Pages:")?.trim().parse().ok())
-        .ok_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_owned())
+fn open_pdf(path: &Path, password: Option<&str>) -> Result<poppler::Document, glib::Error> {
+    poppler::Document::from_file(&gio::File::for_path(path).uri(), password)
 }
 
-/// Draws one page of a PDF to a PNG in `dir`, unless it is there already.
-fn render_page(path: &Path, page: u32, dpi: u32, dir: &Path) -> Result<PathBuf, String> {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    // A PDF written again must not show the pages it had.
-    if let Ok(meta) = std::fs::metadata(path) {
-        (meta.len(), meta.modified().ok()).hash(&mut hasher);
-    }
-    let prefix = dir.join(format!("{:x}-{page}-{dpi}", hasher.finish()));
-    let png = prefix.with_extension("png");
-    if png.exists() {
-        return Ok(png);
-    }
-    std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-    let output = Command::new("pdftoppm")
-        .args(["-png", "-singlefile", "-r", &dpi.to_string(), "-f", &page.to_string(), "-l", &page.to_string()])
-        .arg(path)
-        .arg(&prefix)
-        .output()
-        .map_err(|err| format!("pdftoppm: {err}"))?;
-    if output.status.success() && png.exists() {
-        Ok(png)
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
-    }
+/// How many pages a PDF has.
+fn page_count(path: &Path) -> Result<u32, String> {
+    open_pdf(path, None)
+        .map(|document| document.n_pages().max(0) as u32)
+        .map_err(|err| err.to_string())
 }
 
 /// The programs that write the formats Pixbuf cannot, by extension: each is tried in turn,
@@ -490,17 +594,28 @@ impl Win {
             .title("選擇要預覽的檔案")
             .child(&open_button)
             .build();
-        let busy = gtk::Spinner::builder()
-            .spinning(true)
-            .width_request(32)
-            .height_request(32)
+        // A PDF's pages, an `EDGE` around and between them.
+        let pdf_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(EDGE)
             .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
+            .margin_top(EDGE)
+            .margin_bottom(EDGE)
+            .margin_start(EDGE)
+            .margin_end(EDGE)
+            .focusable(true)
+            .build();
+        pdf_column.set_cursor_from_name(Some("text"));
+        let pdf_scroll = gtk::ScrolledWindow::builder()
+            .child(&pdf_column)
+            .hexpand(true)
+            .vexpand(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
         let stack = gtk::Stack::new();
         stack.add_named(&empty, Some("empty"));
-        stack.add_named(&busy, Some("busy"));
         stack.add_named(&scroll, Some("view"));
+        stack.add_named(&pdf_scroll, Some("pdf"));
 
         let list = gtk::ListBox::builder()
             .css_classes(["navigation-sidebar"])
@@ -545,6 +660,8 @@ impl Win {
         menu_model.append_section(None, &file);
         let edit = gio::Menu::new();
         edit.append(Some("拷貝"), Some("win.copy"));
+        edit.append(Some("全選"), Some("win.select-all"));
+        edit.append(Some("尋找"), Some("win.find"));
         edit.append(Some("向左旋轉"), Some("win.rotate-left"));
         edit.append(Some("向右旋轉"), Some("win.rotate-right"));
         edit.append(Some("水平翻轉"), Some("win.flip"));
@@ -568,9 +685,15 @@ impl Win {
             .icon_name("open-menu-symbolic")
             .menu_model(&menu_model)
             .build();
+        let find_entry = gtk::SearchEntry::builder().placeholder_text("搜尋").width_chars(14).build();
+        let find_count = gtk::Label::builder().css_classes(["dim-label", "numeric"]).visible(false).build();
+        let find_box = gtk::Box::builder().spacing(GAP).visible(false).build();
+        find_box.append(&find_count);
+        find_box.append(&find_entry);
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         header.pack_start(&sidebar_toggle);
         header.pack_end(&menu_button);
+        header.pack_end(&find_box);
         header.pack_end(&rotate);
         header.pack_end(&zoom_box);
 
@@ -662,10 +785,23 @@ impl Win {
             current: Cell::new(0),
             zoom: Cell::new(Zoom::Fit),
             shown: RefCell::new(None),
-            generation: Cell::new(0),
             syncing: Cell::new(false),
             discard_edits: Cell::new(false),
-            scratch: scratch_dir(),
+            pdf_scroll,
+            pdf_column,
+            pdf: RefCell::default(),
+            selection: Cell::new(None),
+            pending: Cell::new(None),
+            jumping: Cell::new(false),
+            fitting: Cell::new(false),
+            find_box,
+            find_entry,
+            find_count,
+            matches: RefCell::default(),
+            match_at: Cell::new(None),
+            finding: Cell::new(0),
+            typing: Cell::new(false),
+            passwords: RefCell::default(),
         });
         for (tool, button) in tool_buttons {
             let weak = Rc::downgrade(&win);
@@ -727,6 +863,12 @@ impl Win {
         add("delete-page", |win| win.delete_page());
         add("next", |win| win.step(1));
         add("previous", |win| win.step(-1));
+        add("find", |win| {
+            win.find_entry.grab_focus();
+        });
+        add("find-next", |win| win.step_match(1));
+        add("find-previous", |win| win.step_match(-1));
+        add("select-all", |win| win.select_all());
     }
 
     fn connect(self: &Rc<Self>) {
@@ -742,52 +884,182 @@ impl Win {
         });
 
         // Fit follows the window's size.
-        for adjustment in [self.scroll.hadjustment(), self.scroll.vadjustment()] {
+        for adjustment in [
+            self.scroll.hadjustment(),
+            self.scroll.vadjustment(),
+            self.pdf_scroll.hadjustment(),
+            self.pdf_scroll.vadjustment(),
+        ] {
             let weak = weak.clone();
             adjustment.connect_notify_local(Some("page-size"), move |_, _| {
-                if let Some(win) = weak.upgrade() {
+                let Some(win) = weak.upgrade().filter(|win| win.zoom.get() == Zoom::Fit && !win.fitting.replace(true)) else {
+                    return;
+                };
+                // The page size changes while the window is laid out, when sizes asked for
+                // again are not laid out; they are asked for once that is over.
+                glib::idle_add_local_once(move || {
+                    win.fitting.set(false);
                     if win.zoom.get() == Zoom::Fit {
                         win.apply_zoom();
                     }
-                }
+                });
             });
         }
-
-        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        wheel.connect_scroll({
+        let pages = self.pdf_scroll.vadjustment();
+        pages.connect_value_changed({
             let weak = weak.clone();
-            move |wheel, _, dy| {
-                let held = wheel.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
-                match (held, weak.upgrade()) {
-                    (true, Some(win)) => {
-                        win.zoom_by(ZOOM_STEP.powf(-dy));
-                        glib::Propagation::Stop
+            move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.scrolled();
+                }
+            }
+        });
+        // The column has grown or shrunk to the pages it was given. This is said while the
+        // window is laid out, when a scroll would not move what is shown, so it waits for
+        // that to be over.
+        pages.connect_changed({
+            let weak = weak.clone();
+            move |_| {
+                let weak = weak.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.apply_pending();
                     }
-                    _ => glib::Propagation::Proceed,
-                }
+                });
             }
         });
-        self.scroll.add_controller(wheel);
 
-        let pinch = gtk::GestureZoom::new();
-        let began_at = Rc::new(Cell::new(1.0));
-        pinch.connect_begin({
-            let (weak, began_at) = (weak.clone(), began_at.clone());
-            move |_, _| {
+        for scroll in [&self.scroll, &self.pdf_scroll] {
+            let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            wheel.connect_scroll({
+                let weak = weak.clone();
+                move |wheel, _, dy| {
+                    let held = wheel.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
+                    match (held, weak.upgrade()) {
+                        (true, Some(win)) => {
+                            win.zoom_by(ZOOM_STEP.powf(-dy));
+                            glib::Propagation::Stop
+                        }
+                        _ => glib::Propagation::Proceed,
+                    }
+                }
+            });
+            scroll.add_controller(wheel);
+
+            let pinch = gtk::GestureZoom::new();
+            let began_at = Rc::new(Cell::new(1.0));
+            pinch.connect_begin({
+                let (weak, began_at) = (weak.clone(), began_at.clone());
+                move |_, _| {
+                    if let Some(win) = weak.upgrade() {
+                        began_at.set(win.scale());
+                    }
+                }
+            });
+            pinch.connect_scale_changed({
+                let weak = weak.clone();
+                move |_, factor| {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_zoom(Zoom::Scale(began_at.get() * factor));
+                    }
+                }
+            });
+            scroll.add_controller(pinch);
+        }
+
+        // Dragging over a PDF's pages chooses its text, a double click a word and a triple
+        // click a line.
+        let choose = gtk::GestureDrag::new();
+        let anchor = Rc::new(Cell::new(None));
+        choose.connect_drag_begin({
+            let (weak, anchor) = (weak.clone(), anchor.clone());
+            move |_, x, y| {
                 if let Some(win) = weak.upgrade() {
-                    began_at.set(win.scale());
+                    anchor.set(win.hit(x, y));
                 }
             }
         });
-        pinch.connect_scale_changed({
+        choose.connect_drag_update({
             let weak = weak.clone();
-            move |_, factor| {
-                if let Some(win) = weak.upgrade() {
-                    win.set_zoom(Zoom::Scale(began_at.get() * factor));
+            move |drag, dx, dy| {
+                // Not the jitter of a click.
+                if dx.hypot(dy) < 3.0 {
+                    return;
+                }
+                let (Some(win), Some(from), Some((x, y))) = (weak.upgrade(), anchor.get(), drag.start_point()) else { return };
+                if let Some(to) = win.hit(x + dx, y + dy) {
+                    win.set_selection(Some(Selection { from, to, style: poppler::SelectionStyle::Glyph }));
                 }
             }
         });
-        self.scroll.add_controller(pinch);
+        self.pdf_column.add_controller(choose);
+        let clicks = gtk::GestureClick::new();
+        clicks.connect_pressed({
+            let weak = weak.clone();
+            move |_, presses, x, y| {
+                let Some(win) = weak.upgrade() else { return };
+                win.pdf_column.grab_focus();
+                let style = match presses {
+                    1 => return win.set_selection(None),
+                    2 => poppler::SelectionStyle::Word,
+                    _ => poppler::SelectionStyle::Line,
+                };
+                if let Some(at) = win.hit(x, y) {
+                    win.set_selection(Some(Selection { from: at, to: at, style }));
+                }
+            }
+        });
+        self.pdf_column.add_controller(clicks);
+
+        self.find_entry.connect_search_changed({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.find();
+                }
+            }
+        });
+        self.find_entry.connect_activate({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.step_match(1);
+                }
+            }
+        });
+        self.find_entry.connect_next_match({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.step_match(1);
+                }
+            }
+        });
+        self.find_entry.connect_previous_match({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.step_match(-1);
+                }
+            }
+        });
+        self.find_entry.connect_stop_search(|entry| entry.set_text(""));
+        let focus = gtk::EventControllerFocus::new();
+        for (signal_enters, typing) in [(true, true), (false, false)] {
+            let weak = weak.clone();
+            let then = move |_: &gtk::EventControllerFocus| {
+                if let Some(win) = weak.upgrade() {
+                    win.typing.set(typing);
+                    win.update_actions();
+                }
+            };
+            if signal_enters {
+                focus.connect_enter(then);
+            } else {
+                focus.connect_leave(then);
+            }
+        }
+        self.find_entry.add_controller(focus);
 
         let pan = gtk::GestureDrag::new();
         let origin = Rc::new(Cell::new((0.0, 0.0)));
@@ -975,17 +1247,26 @@ impl Win {
     fn open_files(self: &Rc<Self>, paths: Vec<PathBuf>) {
         let mut items = Vec::new();
         let mut failed = Vec::new();
-        for path in paths {
-            if opens_as_pdf(&path) {
-                match page_count(&path) {
-                    Ok(pages) => items.extend((1..=pages).map(|page| {
+        let mut locked = None;
+        for path in &paths {
+            if opens_as_pdf(path) {
+                let password = self.passwords.borrow().get(path).cloned();
+                match open_pdf(path, password.as_deref()) {
+                    Ok(document) => items.extend((1..=document.n_pages().max(0) as u32).map(|page| {
                         Rc::new(Item { path: path.clone(), page: Some(page), edited: RefCell::new(None), undo: RefCell::default() })
                     })),
+                    Err(err) if err.matches(poppler::Error::Encrypted) => {
+                        locked.get_or_insert_with(|| path.clone());
+                    }
                     Err(err) => failed.push(format!("{}: {err}", path.display())),
                 }
             } else {
-                items.push(Rc::new(Item { path, page: None, edited: RefCell::new(None), undo: RefCell::default() }));
+                items.push(Rc::new(Item { path: path.clone(), page: None, edited: RefCell::new(None), undo: RefCell::default() }));
             }
+        }
+        // All of them are opened again once the password is in, or asked for again when wrong.
+        if let Some(path) = locked {
+            return self.ask_password(path, paths);
         }
         if !failed.is_empty() {
             alert::notice(&self.window, "無法開啟", Some(&failed.join("\n")));
@@ -993,6 +1274,9 @@ impl Win {
         if items.is_empty() {
             return;
         }
+        // A PDF written again is read again.
+        *self.pdf.borrow_mut() = None;
+        self.selection.set(None);
         self.syncing.set(true);
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
@@ -1014,22 +1298,33 @@ impl Win {
     /// Fills the sidebar's thumbnails one at a time, so the window stays free between them.
     fn load_thumbnails(self: &Rc<Self>, thumbnails: Vec<(Rc<Item>, gtk::Picture)>) {
         let weak = Rc::downgrade(self);
-        let scratch = self.scratch.clone();
+        let passwords = self.passwords.borrow().clone();
+        let density = f64::from(self.window.scale_factor());
         glib::spawn_future_local(async move {
+            let mut documents: HashMap<PathBuf, Option<poppler::Document>> = HashMap::new();
             for (item, picture) in thumbnails {
                 if weak.upgrade().is_none() {
                     return;
                 }
-                let file = match item.page {
-                    Some(page) => {
-                        let (path, scratch) = (item.path.clone(), scratch.clone());
-                        gio::spawn_blocking(move || render_page(&path, page, THUMB_DPI, &scratch))
-                            .await
-                            .unwrap_or_else(|_| Err(String::new()))
-                            .ok()
+                if let Some(number) = item.page {
+                    let document = documents
+                        .entry(item.path.clone())
+                        .or_insert_with(|| open_pdf(&item.path, passwords.get(&item.path).map(String::as_str)).ok());
+                    let page = document.as_ref().and_then(|document| document.page(number as i32 - 1));
+                    // Drawn at the screen's density, shown at its size in the sidebar.
+                    let texture = page.and_then(|page| {
+                        let (width, height) = page.size();
+                        page_texture(&page, f64::from(THUMB_SIZE) / width.max(height) * density)
+                    });
+                    if let Some(texture) = texture {
+                        let size = |side: i32| ((f64::from(side) / density).round() as i32).max(1);
+                        picture.set_size_request(size(texture.width()), size(texture.height()));
+                        picture.set_paintable(Some(&texture));
                     }
-                    None => Some(item.path.clone()),
-                };
+                    glib::timeout_future(std::time::Duration::from_millis(1)).await;
+                    continue;
+                }
+                let file = Some(item.path.clone());
                 let pixbuf = file.and_then(|file| {
                     Pixbuf::from_file_at_scale(&file, THUMB_SIZE, THUMB_SIZE, true)
                         .ok()
@@ -1062,8 +1357,6 @@ impl Win {
             self.list.select_row(Some(&row));
         }
         self.syncing.set(false);
-        let generation = self.generation.get().wrapping_add(1);
-        self.generation.set(generation);
 
         if let Some(edited) = item.edited.borrow().clone() {
             return self.show(&item, edited);
@@ -1073,24 +1366,300 @@ impl Win {
                 Ok(pixbuf) => self.show(&item, pixbuf.apply_embedded_orientation().unwrap_or(pixbuf)),
                 Err(err) => self.fail(&item, &err),
             },
-            Some(page) => {
-                self.stack.set_visible_child_name("busy");
+            Some(page) => match self.show_pdf(&item.path) {
+                Ok(()) => {
+                    *self.shown.borrow_mut() = None;
+                    self.apply_zoom();
+                    self.update_title(&item);
+                    self.update_actions();
+                    // Just above the page, with the gap over it in view.
+                    self.pending.set(Some((page as usize - 1, 0.0, -f64::from(EDGE))));
+                    self.apply_pending();
+                }
+                Err(err) => self.fail(&item, &err),
+            },
+        }
+    }
+
+    /// Asks for the password of the PDF at `path`, then opens `paths` again with it.
+    fn ask_password(self: &Rc<Self>, path: PathBuf, paths: Vec<PathBuf>) {
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let weak = Rc::downgrade(self);
+        let entry = alert::prompt(&self.window, &format!("輸入「{name}」的密碼"), "", -1, "開啟", move |password| {
+            if let Some(win) = weak.upgrade() {
+                win.passwords.borrow_mut().insert(path, password);
+                win.open_files(paths);
+            }
+        });
+        entry.set_visibility(false);
+        entry.set_input_purpose(gtk::InputPurpose::Password);
+    }
+
+    /// Shows the PDF at `path` in the column of pages, read again only when it is not the one
+    /// shown already.
+    fn show_pdf(self: &Rc<Self>, path: &Path) -> Result<(), String> {
+        if self.pdf.borrow().as_ref().is_some_and(|pdf| pdf.path == path) {
+            self.stack.set_visible_child_name("pdf");
+            return Ok(());
+        }
+        let password = self.passwords.borrow().get(path).cloned();
+        let document = open_pdf(path, password.as_deref()).map_err(|err| err.to_string())?;
+        while let Some(child) = self.pdf_column.first_child() {
+            self.pdf_column.remove(&child);
+        }
+        let sizes: Vec<(f64, f64)> =
+            (0..document.n_pages()).map(|index| document.page(index).map_or((1.0, 1.0), |page| page.size())).collect();
+        let pages = (0..sizes.len())
+            .map(|index| {
+                let area = gtk::DrawingArea::builder().css_classes(["pv-sheet"]).halign(gtk::Align::Center).build();
                 let weak = Rc::downgrade(self);
-                let (path, scratch) = (item.path.clone(), self.scratch.clone());
-                glib::spawn_future_local(async move {
-                    let drawn = gio::spawn_blocking(move || render_page(&path, page, PDF_DPI, &scratch))
-                        .await
-                        .unwrap_or_else(|_| Err(String::new()));
-                    let Some(win) = weak.upgrade() else { return };
-                    if win.generation.get() != generation {
-                        return;
-                    }
-                    match drawn.and_then(|png| Pixbuf::from_file(png).map_err(|err| err.to_string())) {
-                        Ok(pixbuf) => win.show(&item, pixbuf),
-                        Err(err) => win.fail(&item, &err),
+                area.set_draw_func(move |_, cr, _, _| {
+                    if let Some(win) = weak.upgrade() {
+                        win.draw_page(index, cr);
                     }
                 });
+                self.pdf_column.append(&area);
+                area
+            })
+            .collect();
+        *self.pdf.borrow_mut() = Some(Rc::new(Pdf {
+            path: path.to_owned(),
+            document,
+            pages,
+            sizes,
+            scale: Cell::new(0.0),
+            undrawn: RefCell::default(),
+        }));
+        self.selection.set(None);
+        self.pending.set(None);
+        self.stack.set_visible_child_name("pdf");
+        self.find();
+        Ok(())
+    }
+
+    /// Draws page `index` with what is chosen and found on it; a page out of view is left
+    /// white until it is scrolled to.
+    fn draw_page(&self, index: usize, cr: &gtk::cairo::Context) {
+        let Some(pdf) = self.pdf.borrow().clone() else { return };
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        let _ = cr.paint();
+        if pdf.scale.get() == 0.0 || !self.page_in_view(&pdf, index) {
+            pdf.undrawn.borrow_mut().insert(index);
+            return;
+        }
+        let Some(page) = pdf.document.page(index as i32) else { return };
+        let scale = pdf.scale.get();
+        cr.scale(scale, scale);
+        page.render(cr);
+        if let Some(selection) = self.selection.get() {
+            if let Some(mut area) = selection.on(index, pdf.sizes[index]) {
+                let colour = |red: u16, green: u16, blue: u16| {
+                    let mut colour = poppler::Color::new();
+                    colour.set_red(red);
+                    colour.set_green(green);
+                    colour.set_blue(blue);
+                    colour
+                };
+                // The accent's blue, with the text over it in white.
+                let (mut glyph, mut background) = (colour(0xffff, 0xffff, 0xffff), colour(0x3535, 0x8484, 0xe4e4));
+                let mut before = poppler::Rectangle::new();
+                page.render_selection(cr, &mut area, &mut before, selection.style, &mut glyph, &mut background);
             }
+        }
+        let current = self.match_at.get();
+        for (at, (_, (x1, y1, x2, y2))) in self.matches.borrow().iter().enumerate().filter(|(_, (on, _))| *on == index) {
+            if Some(at) == current {
+                cr.set_source_rgba(1.0, 0.6, 0.0, 0.5);
+            } else {
+                cr.set_source_rgba(1.0, 0.85, 0.0, 0.35);
+            }
+            cr.rectangle(*x1, *y1, x2 - x1, y2 - y1);
+            let _ = cr.fill();
+        }
+    }
+
+    /// Whether page `index` is in the column's view, or a screen away from it.
+    fn page_in_view(&self, pdf: &Pdf, index: usize) -> bool {
+        let adjustment = self.pdf_scroll.vadjustment();
+        let scale = pdf.scale.get();
+        let (top, view) = (pdf.top(index, scale), adjustment.page_size());
+        top + pdf.height(index, scale) >= adjustment.value() - view && top <= adjustment.value() + 2.0 * view
+    }
+
+    /// The column was scrolled: the pages come into view are drawn, and the page most of the
+    /// view shows is the one chosen in the sidebar.
+    fn scrolled(&self) {
+        let Some(pdf) = self.pdf.borrow().clone() else { return };
+        let come: Vec<usize> = pdf.undrawn.borrow().iter().copied().filter(|&index| self.page_in_view(&pdf, index)).collect();
+        for index in come {
+            pdf.undrawn.borrow_mut().remove(&index);
+            pdf.pages[index].queue_draw();
+        }
+        if self.jumping.get() || pdf.scale.get() == 0.0 {
+            return;
+        }
+        let adjustment = self.pdf_scroll.vadjustment();
+        let (from, to) = (adjustment.value(), adjustment.value() + adjustment.page_size());
+        let scale = pdf.scale.get();
+        let (mut top, mut most, mut shown) = (f64::from(EDGE), 0, 0.0);
+        for index in 0..pdf.sizes.len() {
+            let bottom = top + pdf.height(index, scale);
+            let seen = bottom.min(to) - top.max(from);
+            if seen > shown {
+                (most, shown) = (index, seen);
+            }
+            if top > to {
+                break;
+            }
+            top = bottom + f64::from(EDGE);
+        }
+        self.list_page(&pdf, most);
+    }
+
+    /// Selects the sidebar row of a page of the PDF shown, without scrolling to it.
+    fn list_page(&self, pdf: &Pdf, page: usize) {
+        let Some(first) = self.items.borrow().iter().position(|item| item.path == pdf.path && item.page == Some(1)) else {
+            return;
+        };
+        let index = first + page;
+        if index == self.current.get() {
+            return;
+        }
+        self.current.set(index);
+        self.syncing.set(true);
+        if let Some(row) = self.list.row_at_index(index as i32) {
+            self.list.select_row(Some(&row));
+        }
+        self.syncing.set(false);
+        if let Some(item) = self.item() {
+            self.update_title(&item);
+        }
+        self.update_actions();
+    }
+
+    /// Scrolls the column to where `pending` says, once it is as tall as its pages.
+    fn apply_pending(&self) {
+        let (Some((index, down, more)), Some(pdf)) = (self.pending.get(), self.pdf.borrow().clone()) else { return };
+        let scale = pdf.scale.get();
+        let adjustment = self.pdf_scroll.vadjustment();
+        if scale == 0.0 || index >= pdf.sizes.len() || adjustment.upper() + 0.5 < pdf.top(pdf.sizes.len(), scale) {
+            return;
+        }
+        self.pending.set(None);
+        self.jumping.set(true);
+        adjustment.set_value(pdf.top(index, scale) + down * pdf.height(index, scale) + more);
+        self.jumping.set(false);
+    }
+
+    /// The place the column is scrolled to, as `pending` keeps it, to be kept through a zoom.
+    fn scrolled_to(&self, pdf: &Pdf) -> (usize, f64, f64) {
+        let scale = pdf.scale.get();
+        let value = self.pdf_scroll.vadjustment().value();
+        let index = pdf.page_at(value, scale);
+        let into = value - pdf.top(index, scale);
+        if into < 0.0 {
+            (index, 0.0, into)
+        } else {
+            (index, into / pdf.height(index, scale).max(1.0), 0.0)
+        }
+    }
+
+    /// Where `(x, y)` over the column is: a page, and a point on it in points. A point between
+    /// pages is the end of the one above.
+    fn hit(&self, x: f64, y: f64) -> Option<(usize, f64, f64)> {
+        let pdf = self.pdf.borrow().clone()?;
+        let scale = pdf.scale.get();
+        let index = pdf.page_at(y, scale);
+        let point = self.pdf_column.compute_point(&pdf.pages[index], &gtk::graphene::Point::new(x as f32, y as f32))?;
+        let (width, height) = pdf.sizes[index];
+        Some((index, (f64::from(point.x()) / scale).clamp(0.0, width), (f64::from(point.y()) / scale).clamp(0.0, height)))
+    }
+
+    fn set_selection(&self, selection: Option<Selection>) {
+        let before = self.selection.replace(selection);
+        if let Some(pdf) = self.pdf.borrow().clone() {
+            for index in before.iter().chain(selection.iter()).flat_map(Selection::pages) {
+                if let Some(page) = pdf.pages.get(index) {
+                    page.queue_draw();
+                }
+            }
+        }
+        self.update_actions();
+    }
+
+    fn select_all(&self) {
+        let Some(pdf) = self.pdf.borrow().clone() else { return };
+        let Some(&size) = pdf.sizes.last() else { return };
+        let last = pdf.sizes.len() - 1;
+        self.set_selection(Some(Selection { from: (0, 0.0, 0.0), to: (last, size.0, size.1), style: poppler::SelectionStyle::Glyph }));
+    }
+
+    /// Looks for 搜尋's text through the PDF shown, a page at a time so the window stays free;
+    /// the first match from the page shown on is then scrolled to.
+    fn find(self: &Rc<Self>) {
+        let text = self.find_entry.text().to_string();
+        let finding = self.finding.get().wrapping_add(1);
+        self.finding.set(finding);
+        self.matches.borrow_mut().clear();
+        self.match_at.set(None);
+        self.find_count.set_visible(false);
+        self.redraw_pages();
+        let Some(pdf) = self.pdf.borrow().clone() else { return };
+        if text.is_empty() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let mut found = Vec::new();
+            for index in 0..pdf.sizes.len() {
+                if weak.upgrade().is_none_or(|win| win.finding.get() != finding) {
+                    return;
+                }
+                if let Some(page) = pdf.document.page(index as i32) {
+                    found.extend(page_matches(&page, &text).into_iter().map(|place| (index, place)));
+                }
+                glib::timeout_future(std::time::Duration::ZERO).await;
+            }
+            let Some(win) = weak.upgrade().filter(|win| win.finding.get() == finding) else { return };
+            let shown = win.item().and_then(|item| item.page).map_or(0, |page| page as usize - 1);
+            let at = found.iter().position(|(page, _)| *page >= shown).or((!found.is_empty()).then_some(0));
+            *win.matches.borrow_mut() = found;
+            win.match_at.set(at);
+            win.show_match();
+        });
+    }
+
+    fn step_match(&self, by: i64) {
+        let count = self.matches.borrow().len() as i64;
+        if count == 0 {
+            return;
+        }
+        let at = self.match_at.get().map_or(0, |at| (at as i64 + by).rem_euclid(count));
+        self.match_at.set(Some(at as usize));
+        self.show_match();
+    }
+
+    /// Scrolls to the match chosen, a third of the way down the view, and says which it is.
+    fn show_match(&self) {
+        let count = self.matches.borrow().len();
+        self.find_count.set_label(&match self.match_at.get() {
+            Some(at) => format!("{} / {count}", at + 1),
+            None => String::from("找不到"),
+        });
+        self.find_count.set_visible(!self.find_entry.text().is_empty());
+        let found = self.match_at.get().and_then(|at| self.matches.borrow().get(at).copied());
+        if let (Some((page, (_, y1, _, _))), Some(pdf)) = (found, self.pdf.borrow().clone()) {
+            let view = self.pdf_scroll.vadjustment().page_size();
+            self.pending.set(Some((page, y1 / pdf.sizes[page].1, -view / 3.0)));
+            self.apply_pending();
+            self.list_page(&pdf, page);
+        }
+        self.redraw_pages();
+    }
+
+    fn redraw_pages(&self) {
+        if let Some(pdf) = self.pdf.borrow().clone() {
+            pdf.pages.iter().for_each(|page| page.queue_draw());
         }
     }
 
@@ -1130,7 +1699,7 @@ impl Win {
         let edited = if item.edited.borrow().is_some() { " — 已編輯" } else { "" };
         self.title.set_title(&format!("{}{edited}", item.name()));
         let subtitle = match (item.page, self.shown.borrow().as_ref()) {
-            (Some(page), _) => format!("第 {page} 頁，共 {} 頁", self.items.borrow().len()),
+            (Some(page), _) => format!("第 {page} 頁，共 {} 頁", self.pages_in(&item.path)),
             (None, Some(pixbuf)) => format!("{} × {}", pixbuf.width(), pixbuf.height()),
             (None, None) => String::new(),
         };
@@ -1138,17 +1707,34 @@ impl Win {
         self.window.set_title(Some(&item.name()));
     }
 
+    /// How many pages of the PDF at `path` the window has.
+    fn pages_in(&self, path: &Path) -> usize {
+        self.items.borrow().iter().filter(|item| item.is_page() && item.path == path).count()
+    }
+
     fn update_actions(&self) {
-        let item = self.item().filter(|_| self.shown.borrow().is_some());
+        let item = self.item().filter(|item| match item.page {
+            Some(_) => self.pdf.borrow().as_ref().is_some_and(|pdf| pdf.path == item.path),
+            None => self.shown.borrow().is_some(),
+        });
         let is_picture = item.as_ref().is_some_and(|item| !item.is_page());
         let is_page = item.as_ref().is_some_and(|item| item.is_page());
-        let is_pdf_file = item.as_ref().is_some_and(|item| is_pdf(&item.path));
+        // pdfseparate, which rewrites the pages, cannot open a PDF that needs a password.
+        let is_pdf_file = item
+            .as_ref()
+            .is_some_and(|item| is_pdf(&item.path) && !self.passwords.borrow().contains_key(&item.path));
         let edited = item.as_ref().is_some_and(|item| item.edited.borrow().is_some());
         let has_items = self.items.borrow().len() > 1;
+        let typing = self.typing.get();
+        self.find_box.set_visible(is_page);
         for (name, on) in [
             ("save", is_picture && edited),
             ("save-as", is_picture),
-            ("copy", item.is_some()),
+            ("copy", !typing && (is_picture || is_page && self.selection.get().is_some())),
+            ("select-all", !typing && is_page),
+            ("find", is_page),
+            ("find-next", is_page),
+            ("find-previous", is_page),
             ("rotate-left", is_picture),
             ("rotate-right", is_picture),
             ("flip", is_picture),
@@ -1170,8 +1756,8 @@ impl Win {
             ("zoom-fit", item.is_some()),
             ("zoom-actual", item.is_some()),
             ("zoom-toggle", item.is_some()),
-            ("next", has_items),
-            ("previous", has_items),
+            ("next", has_items && !typing),
+            ("previous", has_items && !typing),
         ] {
             if let Some(action) = self.window.lookup_action(name).and_downcast::<gio::SimpleAction>() {
                 action.set_enabled(on);
@@ -1180,38 +1766,61 @@ impl Win {
     }
 
     /// How many screen pixels each pixel of the picture takes now.
+    /// How many screen pixels a pixel of the picture, or a point of the PDF, takes now.
     fn scale(&self) -> f64 {
-        let (Some(item), Some(pixbuf)) = (self.item(), self.shown.borrow().clone()) else {
-            return 1.0;
-        };
-        match self.zoom.get() {
-            Zoom::Scale(scale) => scale,
-            Zoom::Fit => {
-                let across = self.scroll.hadjustment().page_size() - f64::from(2 * EDGE);
-                let down = self.scroll.vadjustment().page_size() - f64::from(2 * EDGE);
-                // A picture smaller than the window stays as it is.
-                (across / f64::from(pixbuf.width()))
-                    .min(down / f64::from(pixbuf.height()))
-                    .min(item.actual())
-                    .max(MIN_SCALE)
-            }
+        let Some(item) = self.item() else { return 1.0 };
+        if let Zoom::Scale(scale) = self.zoom.get() {
+            return scale;
         }
+        if item.is_page() {
+            let Some(pdf) = self.pdf.borrow().clone() else { return 1.0 };
+            // A PDF's widest page fills the window's width, to be read scrolling down.
+            let widest = pdf.sizes.iter().map(|&(width, _)| width).fold(1.0, f64::max);
+            let across = self.pdf_scroll.hadjustment().page_size() - f64::from(2 * EDGE);
+            return (across / widest).clamp(MIN_SCALE, MAX_SCALE);
+        }
+        let Some(pixbuf) = self.shown.borrow().clone() else { return 1.0 };
+        let across = self.scroll.hadjustment().page_size() - f64::from(2 * EDGE);
+        let down = self.scroll.vadjustment().page_size() - f64::from(2 * EDGE);
+        // A picture smaller than the window stays as it is.
+        (across / f64::from(pixbuf.width())).min(down / f64::from(pixbuf.height())).clamp(MIN_SCALE, 1.0)
     }
 
     fn apply_zoom(&self) {
-        let (Some(item), Some(pixbuf)) = (self.item(), self.shown.borrow().clone()) else {
-            return;
-        };
+        let Some(item) = self.item() else { return };
         let scale = self.scale();
-        let policy = if self.zoom.get() == Zoom::Fit { gtk::PolicyType::Never } else { gtk::PolicyType::Automatic };
+        let fit = self.zoom.get() == Zoom::Fit;
+        self.zoom_button.set_label(&format!("{}%", (scale * 100.0).round()));
+        self.zoom_button.set_tooltip_text(Some(if fit { "實際大小" } else { "適合視窗" }));
+        if item.is_page() {
+            let Some(pdf) = self.pdf.borrow().clone() else { return };
+            self.pdf_scroll.set_hscrollbar_policy(if fit { gtk::PolicyType::Never } else { gtk::PolicyType::Automatic });
+            // Before the window has a width there is nothing to fit, and pages laid out tiny
+            // would lose the place to scroll to.
+            let no_width = fit && self.pdf_scroll.hadjustment().page_size() <= 0.0;
+            if no_width || (pdf.scale.get() - scale).abs() < 1e-6 {
+                return;
+            }
+            // The place read stays in view through the zoom.
+            if pdf.scale.get() > 0.0 && self.pending.get().is_none() {
+                self.pending.set(Some(self.scrolled_to(&pdf)));
+            }
+            pdf.scale.set(scale);
+            for (page, &(width, height)) in pdf.pages.iter().zip(&pdf.sizes) {
+                page.set_size_request(((width * scale).round() as i32).max(1), ((height * scale).round() as i32).max(1));
+                page.queue_draw();
+            }
+            self.apply_pending();
+            return;
+        }
+        let Some(pixbuf) = self.shown.borrow().clone() else { return };
+        let policy = if fit { gtk::PolicyType::Never } else { gtk::PolicyType::Automatic };
         self.scroll.set_hscrollbar_policy(policy);
         self.scroll.set_vscrollbar_policy(policy);
         self.picture.set_size_request(
             ((f64::from(pixbuf.width()) * scale).round() as i32).max(1),
             ((f64::from(pixbuf.height()) * scale).round() as i32).max(1),
         );
-        self.zoom_button.set_label(&format!("{}%", (scale / item.actual() * 100.0).round()));
-        self.zoom_button.set_tooltip_text(Some(if self.zoom.get() == Zoom::Fit { "實際大小" } else { "適合視窗" }));
     }
 
     fn set_zoom(&self, zoom: Zoom) {
@@ -1226,10 +1835,9 @@ impl Win {
         self.set_zoom(Zoom::Scale(self.scale() * factor));
     }
 
+    /// A pixel of the picture, or a point of the PDF, to a pixel of the screen.
     fn set_actual(&self) {
-        if let Some(item) = self.item() {
-            self.set_zoom(Zoom::Scale(item.actual()));
-        }
+        self.set_zoom(Zoom::Scale(1.0));
     }
 
     fn choose_files(self: &Rc<Self>) {
@@ -1556,16 +2164,23 @@ impl Win {
         });
     }
 
+    /// The text chosen in a PDF, or the picture.
     fn copy(&self) {
+        let pdf = self.pdf.borrow().clone().filter(|_| self.item().is_some_and(|item| item.is_page()));
+        if let Some(pdf) = pdf {
+            let text = self.selection.get().map(|selection| selected_text(&pdf.document, &selection)).unwrap_or_default();
+            if !text.is_empty() {
+                self.window.clipboard().set_text(&text);
+            }
+            return;
+        }
         if let Some(pixbuf) = self.shown.borrow().as_ref() {
             self.window.clipboard().set_texture(&gdk::Texture::for_pixbuf(pixbuf));
         }
     }
 
     fn show_info(&self) {
-        let (Some(item), Some(pixbuf)) = (self.item(), self.shown.borrow().clone()) else {
-            return;
-        };
+        let Some(item) = self.item() else { return };
         let file = gio::File::for_path(&item.path);
         let info = file
             .query_info("standard::*,time::modified", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
@@ -1582,9 +2197,10 @@ impl Win {
             .unwrap_or_default();
         let size = info.as_ref().map(|info| glib::format_size(info.size() as u64).to_string()).unwrap_or_default();
         let mut rows = vec![("名稱", item.name()), ("種類", kind)];
-        match item.page {
-            Some(page) => rows.push(("頁數", format!("第 {page} 頁，共 {} 頁", self.items.borrow().len()))),
-            None => rows.push(("尺寸", format!("{} × {} 像素", pixbuf.width(), pixbuf.height()))),
+        match (item.page, self.shown.borrow().as_ref()) {
+            (Some(page), _) => rows.push(("頁數", format!("第 {page} 頁，共 {} 頁", self.pages_in(&item.path)))),
+            (None, Some(pixbuf)) => rows.push(("尺寸", format!("{} × {} 像素", pixbuf.width(), pixbuf.height()))),
+            (None, None) => {}
         }
         rows.push(("大小", size));
         rows.push(("修改日期", modified));
@@ -1686,6 +2302,10 @@ fn main() -> glib::ExitCode {
             ("win.crop-cancel", &["Escape"]),
             ("win.next", &["Right", "Page_Down"]),
             ("win.previous", &["Left", "Page_Up"]),
+            ("win.find", &["<Control>f"]),
+            ("win.find-next", &["<Control>g"]),
+            ("win.find-previous", &["<Control><Shift>g"]),
+            ("win.select-all", &["<Control>a"]),
         ] {
             app.set_accels_for_action(action, keys);
         }
@@ -1790,6 +2410,80 @@ mod tests {
             export_with_encoder(&blank, &path).unwrap_or_else(|err| panic!("{extension}: {err}"));
             assert!(std::fs::metadata(&path).unwrap().len() > 0, "{extension}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A PDF of 200 × 100 point pages, each with its text near the top left.
+    fn text_pdf(path: &Path, pages: &[&str]) {
+        let surface = gtk::cairo::PdfSurface::new(200.0, 100.0, path).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+        for text in pages {
+            let layout = pangocairo::functions::create_layout(&cr);
+            layout.set_font_description(Some(&pango::FontDescription::from_string("Sans 12")));
+            layout.set_text(text);
+            cr.move_to(10.0, 10.0);
+            pangocairo::functions::show_layout(&cr, &layout);
+            cr.show_page().unwrap();
+        }
+        drop(cr);
+        surface.finish();
+    }
+
+    #[test]
+    fn text_is_found_where_it_is_on_its_page_and_chosen_across_pages() {
+        let dir = std::env::temp_dir().join(format!("nekoland-preview-text-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("text.pdf");
+        text_pdf(&path, &["alpha", "beta gamma"]);
+        let document = open_pdf(&path, None).unwrap();
+        assert_eq!(page_count(&path), Ok(2));
+
+        let (first, second) = (document.page(0).unwrap(), document.page(1).unwrap());
+        assert!(page_matches(&first, "gamma").is_empty());
+        let found = page_matches(&second, "GAMMA");
+        assert_eq!(found.len(), 1);
+        let (x1, y1, x2, y2) = found[0];
+        // After "beta ", near the top of the page, measured down from it.
+        assert!(x1 > 30.0 && x2 > x1 && x2 < 200.0, "{found:?}");
+        assert!(y1 >= 5.0 && y2 > y1 && y2 < 50.0, "{found:?}");
+
+        let all = Selection { from: (0, 0.0, 0.0), to: (1, 200.0, 100.0), style: poppler::SelectionStyle::Glyph };
+        let text = selected_text(&document, &all);
+        assert!(text.contains("alpha") && text.contains("beta gamma") && text.find("alpha") < text.find("beta"), "{text:?}");
+        // Chosen backwards, from the end of the second page to the top of the first, it is the same.
+        let backwards = Selection { from: all.to, to: all.from, style: all.style };
+        assert_eq!(selected_text(&document, &backwards), text);
+        let word = Selection { from: (1, x1 + 1.0, y1 + 1.0), to: (1, x1 + 1.0, y1 + 1.0), style: poppler::SelectionStyle::Word };
+        assert_eq!(selected_text(&document, &word).trim(), "gamma");
+
+        let texture = page_texture(&first, 2.0).unwrap();
+        assert_eq!((texture.width(), texture.height()), (400, 200));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_column_of_pages_is_measured_from_its_top() {
+        let dir = std::env::temp_dir().join(format!("nekoland-preview-column-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("column.pdf");
+        text_pdf(&path, &["one", "two", "three"]);
+        let pdf = Pdf {
+            path: path.clone(),
+            document: open_pdf(&path, None).unwrap(),
+            pages: Vec::new(),
+            sizes: vec![(200.0, 100.0), (200.0, 300.0), (200.0, 100.0)],
+            scale: Cell::new(2.0),
+            undrawn: RefCell::default(),
+        };
+        let edge = f64::from(EDGE);
+        assert_eq!(pdf.top(0, 2.0), edge);
+        assert_eq!(pdf.top(1, 2.0), edge + 200.0 + edge);
+        assert_eq!(pdf.top(3, 2.0), edge + 200.0 + edge + 600.0 + edge + 200.0 + edge);
+        assert_eq!(pdf.page_at(0.0, 2.0), 0);
+        // The gap under a page goes with it.
+        assert_eq!(pdf.page_at(edge + 200.0 + 1.0, 2.0), 0);
+        assert_eq!(pdf.page_at(pdf.top(1, 2.0) + 1.0, 2.0), 1);
+        assert_eq!(pdf.page_at(1e9, 2.0), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

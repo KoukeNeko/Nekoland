@@ -643,10 +643,14 @@ each window's process, application and whether it answers, and `quit-app` and
 `force-quit-app`.
 
 `nekoland-preview`, from `ui/`, is 預覽程式: PDFs and pictures, as the Mac's Preview opens
-them, in a window with a sidebar of thumbnails, one for each file or each page of a PDF
-(drawn with `pdftoppm`). The picture fits the window or is zoomed with Ctrl+scroll, a pinch or
-the buttons (Ctrl+9 fits, Ctrl+0 shows it at its real size, a double click toggles) and is
-dragged to move. Pictures turn (Ctrl+L, Ctrl+R), flip, are cropped (Ctrl+K, drag the part to keep, Return) and resized, and are saved over the file (Ctrl+S) or
+them, in a window with a sidebar of thumbnails, one for each file or each page of a PDF.
+A PDF is drawn by poppler as one column of pages that scrolls through them all and stays
+sharp at any zoom; its text is chosen by dragging (a double click takes a word, a triple
+click a line, 全選 with Ctrl+A all of it) and copied with Ctrl+C, and 尋找 (Ctrl+F) marks
+each place the text is, Ctrl+G and Ctrl+Shift+G going to the next and the one before. A PDF
+with a password asks for it. The page or picture fits the window or is zoomed with
+Ctrl+scroll, a pinch or the buttons (Ctrl+9 fits, Ctrl+0 shows it at its real size, a double
+click on a picture toggles) and a picture is dragged to move. Pictures turn (Ctrl+L, Ctrl+R), flip, are cropped (Ctrl+K, drag the part to keep, Return) and resized, and are saved over the file (Ctrl+S) or
 as a PNG, JPEG, TIFF or BMP, or exported as a PDF, HEIC (`heif-enc`), JPEG 2000 (`opj_compress`) or OpenEXR (ImageMagick); 拷貝 puts the picture on the clipboard and 取得資訊 tells its
 kind, size and date. 標註 (Ctrl+M) draws with a pen, a highlighter, rectangles, ellipses, arrows and text in a chosen colour, and 還原 (Ctrl+Z) takes the last change back; 匯出為 PDF makes a PDF of a picture. 上移此頁, 下移此頁, 插入 PDF and 刪除此頁 write a PDF again with its pages so. A file opened with it, or dropped on it, replaces what is shown; HEIC,
 JPEG 2000, OpenEXR, HDR, SGI, PICT, camera RAW and the like, which gdk-pixbuf cannot read, are
