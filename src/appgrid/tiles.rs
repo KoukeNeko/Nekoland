@@ -16,7 +16,7 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-use super::{paint_folder, text_layout, Cell, Entry, Lifts, CELL_HEIGHT, CELL_WIDTH, HELD_SIZE, ICON, ICON_TOP};
+use super::{paint_folder, text_layout, Cell, Entry, Lifts, CELL_WIDTH, HELD_SIZE, ICON, ICON_TOP};
 use crate::{
     motion::settle,
     sprite::{Placed, Sprite},
@@ -165,14 +165,20 @@ pub(super) fn glide(
     }
 }
 
-/// Where the place at `index` of a board `columns` wide is, each page of `per_page`
-/// places `stride` further along.
-pub(super) fn place(index: usize, columns: usize, per_page: usize, stride: f64) -> Point<f64, Logical> {
+/// Where the place at `index` of a board `columns` wide is, its places `pitch` apart and
+/// each page of `per_page` places `stride` further along.
+pub(super) fn place(
+    index: usize,
+    pitch: smithay::utils::Size<i32, Logical>,
+    columns: usize,
+    per_page: usize,
+    stride: f64,
+) -> Point<f64, Logical> {
     let (page, slot) = (index / per_page.max(1), index % per_page.max(1));
     let (row, column) = (slot / columns.max(1), slot % columns.max(1));
     Point::from((
-        page as f64 * stride + column as f64 * f64::from(CELL_WIDTH),
-        row as f64 * f64::from(CELL_HEIGHT),
+        page as f64 * stride + column as f64 * f64::from(pitch.w),
+        row as f64 * f64::from(pitch.h),
     ))
 }
 
@@ -188,6 +194,8 @@ fn shaken(index: usize, shake: Option<f64>) -> f64 {
 pub(super) struct Board<'a> {
     /// Where the first place is on screen, the pages turned as far as they are.
     pub origin: Point<f64, Logical>,
+    /// How far each place is from the next, across and down.
+    pub pitch: smithay::utils::Size<i32, Logical>,
     /// What of the screen, from side to side, a place has to touch to be drawn.
     pub seen: (f64, f64),
     pub cells: &'a [Cell],
@@ -228,12 +236,12 @@ impl Stock {
                 continue;
             };
             let corner = board.origin + glide.at;
-            if corner.x + f64::from(CELL_WIDTH) < board.seen.0 || corner.x > board.seen.1 {
+            if corner.x + f64::from(board.pitch.w) < board.seen.0 || corner.x > board.seen.1 {
                 continue;
             }
             let wanted = wanted(*entry);
             let turn = shaken(index, board.shake);
-            let middle = corner + Point::from((f64::from(CELL_WIDTH) / 2.0, f64::from(ICON_TOP + ICON / 2)));
+            let middle = corner + Point::from((f64::from(board.pitch.w) / 2.0, f64::from(ICON_TOP + ICON / 2)));
             let pressed = if board.pressed == Some(index) { PRESSED_SIZE } else { 1.0 };
             let size = glide.size * board.lifts.of(index) * pressed;
             if let Some(Some(icon)) = self.icons.get(&wanted.icon_key()) {
@@ -254,7 +262,8 @@ impl Stock {
                     sprite: label,
                     id: &glide.label_id,
                     rect: smithay::utils::Rectangle::new(
-                        corner + Point::from((0.0, f64::from(LABEL_TOP))) + swung,
+                        // Its name's line, under the middle of its place.
+                        corner + Point::from((f64::from(board.pitch.w - CELL_WIDTH) / 2.0, f64::from(LABEL_TOP))) + swung,
                         label.size().to_f64(),
                     ),
                     alpha: board.alpha,
@@ -455,7 +464,7 @@ mod tests {
     #[test]
     fn entries_glide_to_new_places_and_new_ones_grow_in() {
         let mut glides = HashMap::new();
-        let at = |index| place(index, 4, 8, 1000.0);
+        let at = |index| place(index, smithay::utils::Size::from((CELL_WIDTH, CELL_WIDTH)), 4, 8, 1000.0);
         let both = [Cell::Entry(Entry::App(0)), Cell::Entry(Entry::App(1))];
         glide(&mut glides, &both, at, 0.016, Arrival::Gliding);
         assert_eq!(glides[&Entry::App(1)].at, at(1));
@@ -479,8 +488,9 @@ mod tests {
 
     #[test]
     fn a_place_is_on_its_page() {
-        assert_eq!(place(0, 4, 8, 1000.0), Point::from((0.0, 0.0)));
-        assert_eq!(place(5, 4, 8, 1000.0), Point::from((f64::from(CELL_WIDTH), f64::from(CELL_HEIGHT))));
-        assert_eq!(place(8, 4, 8, 1000.0), Point::from((1000.0, 0.0)));
+        let pitch = smithay::utils::Size::from((200, 180));
+        assert_eq!(place(0, pitch, 4, 8, 1000.0), Point::from((0.0, 0.0)));
+        assert_eq!(place(5, pitch, 4, 8, 1000.0), Point::from((200.0, 180.0)));
+        assert_eq!(place(8, pitch, 4, 8, 1000.0), Point::from((1000.0, 0.0)));
     }
 }

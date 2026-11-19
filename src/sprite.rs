@@ -145,6 +145,13 @@ impl Placed<'_> {
             pivot + Point::from((from_pivot.x * factor, from_pivot.y * factor)),
             Size::from((self.rect.size.w * factor, self.rect.size.h * factor)),
         );
+        self.clip = self.clip.map(|clip| {
+            let from_pivot = clip.loc - pivot;
+            Rectangle::new(
+                pivot + Point::from((from_pivot.x * factor, from_pivot.y * factor)),
+                Size::from((clip.size.w * factor, clip.size.h * factor)),
+            )
+        });
         self
     }
 

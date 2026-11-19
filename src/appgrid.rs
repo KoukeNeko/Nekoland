@@ -93,8 +93,6 @@ const FOLDER_TITLE: i32 = FOLDER_PADDING + 24;
 const NAME_END: i32 = ICON_TOP + ICON + 8 + 16;
 /// How far under the top of its row the pages part for an open folder.
 const FOLDER_SPLIT: i32 = NAME_END + FOLDER_PADDING;
-/// What a place has under its name, more than the padding: the strip ends that much short.
-const FOLDER_TRIM: i32 = CELL_HEIGHT - NAME_END - FOLDER_PADDING;
 /// The point an open folder's strip has up at its icon: how tall, and half as wide again.
 const FOLDER_NOTCH: i32 = 12;
 const ARRANGEMENT: &str = "app-grid.toml";
@@ -161,6 +159,14 @@ struct Layout {
     grid: Rectangle<i32, Logical>,
     columns: usize,
     rows: usize,
+    /// How far each place is from the next, across and down: the icons keep their size on
+    /// a larger output, and are further apart.
+    pitch: Size<i32, Logical>,
+    /// How many times its size the view is shown, about `pivot`, the output's corner: on
+    /// an output with room for more than eight by five, it is enlarged to fill it, as
+    /// Launchpad is. Everything else here is as it is before that.
+    zoom: f64,
+    pivot: Point<i32, Logical>,
     /// How far down an open folder may reach: its padding over the Dock.
     floor: i32,
     /// How far apart the pages are: the output's width, so that one leaves by a side of
@@ -171,20 +177,27 @@ struct Layout {
 }
 
 impl Layout {
+    /// Where a point of the screen is in the view, before it is enlarged.
+    fn within(&self, on_screen: Point<f64, Logical>) -> Point<f64, Logical> {
+        let pivot = self.pivot.to_f64();
+        pivot + (on_screen - pivot).downscale(self.zoom)
+    }
+
     fn per_page(&self) -> usize {
         self.columns * self.rows
     }
 
     /// Which place on the page a point is on, and how far from that place's icon middle.
     fn cell_at(&self, pos: Point<f64, Logical>) -> Option<(usize, f64)> {
-        cell_at(self.grid, self.columns, self.rows, pos)
+        cell_at(self.grid, self.pitch, self.columns, self.rows, pos)
     }
 }
 
-/// Which place of a grid of `columns` by `rows` at `grid` a point is on, and how far from
-/// that place's icon middle.
+/// Which place of a grid of `columns` by `rows` at `grid`, its places `pitch` apart, a
+/// point is on, and how far from that place's icon middle.
 fn cell_at(
     grid: Rectangle<i32, Logical>,
+    pitch: Size<i32, Logical>,
     columns: usize,
     rows: usize,
     pos: Point<f64, Logical>,
@@ -195,24 +208,29 @@ fn cell_at(
         return None;
     }
     let (column, row) = (
-        (x / f64::from(CELL_WIDTH)) as usize,
-        (y / f64::from(CELL_HEIGHT)) as usize,
+        (x / f64::from(pitch.w)) as usize,
+        (y / f64::from(pitch.h)) as usize,
     );
     if column >= columns || row >= rows {
         return None;
     }
     let middle = (
-        (column as f64 + 0.5) * f64::from(CELL_WIDTH),
-        row as f64 * f64::from(CELL_HEIGHT) + f64::from(ICON_TOP) + f64::from(ICON) / 2.0,
+        (column as f64 + 0.5) * f64::from(pitch.w),
+        row as f64 * f64::from(pitch.h) + f64::from(ICON_TOP) + f64::from(ICON) / 2.0,
     );
     Some((row * columns + column, (x - middle.0).hypot(y - middle.1)))
 }
 
 /// Where the icon of a grid's place is on screen.
-fn icon_rect(grid: Rectangle<i32, Logical>, columns: usize, cell: usize) -> Rectangle<i32, Logical> {
+fn icon_rect(
+    grid: Rectangle<i32, Logical>,
+    pitch: Size<i32, Logical>,
+    columns: usize,
+    cell: usize,
+) -> Rectangle<i32, Logical> {
     let (column, row) = ((cell % columns.max(1)) as i32, (cell / columns.max(1)) as i32);
     Rectangle::new(
-        grid.loc + Point::from((column * CELL_WIDTH + (CELL_WIDTH - ICON) / 2, row * CELL_HEIGHT + ICON_TOP)),
+        grid.loc + Point::from((column * pitch.w + (pitch.w - ICON) / 2, row * pitch.h + ICON_TOP)),
         Size::from((ICON, ICON)),
     )
 }
@@ -310,6 +328,7 @@ struct FolderPlace {
     grid: Rectangle<i32, Logical>,
     columns: usize,
     rows: usize,
+    pitch: Size<i32, Logical>,
     /// How far the rows down to its icon's go up for it; those below go down by the rest
     /// of its height.
     up: i32,
@@ -322,12 +341,15 @@ impl FolderPlace {
     /// as many rows of them as there is room for down to the Dock, the rows above going
     /// up to the search field at most.
     fn under(layout: &Layout, row: usize, count: usize, notch: Option<i32>) -> Self {
-        let split = layout.grid.loc.y + row as i32 * CELL_HEIGHT + FOLDER_SPLIT;
+        let pitch = layout.pitch;
+        let split = layout.grid.loc.y + row as i32 * pitch.h + FOLDER_SPLIT;
+        // What a place has under its name, more than the padding: it ends that much short.
+        let trim = pitch.h - NAME_END - FOLDER_PADDING;
         let bottom = layout.floor;
-        let room = bottom - (layout.search.loc.y + FOLDER_SPLIT) - FOLDER_TITLE + FOLDER_TRIM;
+        let room = bottom - (layout.search.loc.y + FOLDER_SPLIT) - FOLDER_TITLE + trim;
         let columns = layout.columns.max(1);
-        let rows = count.max(1).div_ceil(columns).min((room / CELL_HEIGHT).max(1) as usize);
-        let height = FOLDER_TITLE + rows as i32 * CELL_HEIGHT - FOLDER_TRIM;
+        let rows = count.max(1).div_ceil(columns).min((room / pitch.h).max(1) as usize);
+        let height = FOLDER_TITLE + rows as i32 * pitch.h - trim;
         let up = (split + height - bottom).max(0);
         let left = layout.grid.loc.x + layout.grid.size.w / 2 - layout.stride / 2;
         let panel = Rectangle::new((left, split - up).into(), (layout.stride, height).into());
@@ -335,10 +357,11 @@ impl FolderPlace {
             panel,
             grid: Rectangle::new(
                 (layout.grid.loc.x, panel.loc.y + FOLDER_TITLE).into(),
-                (columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT).into(),
+                (columns as i32 * pitch.w, rows as i32 * pitch.h).into(),
             ),
             columns,
             rows,
+            pitch,
             up,
             notch,
         }
@@ -356,17 +379,17 @@ impl FolderPlace {
 
     /// Which of a folder's applications a point is on, with its page `page` shown.
     fn cell_at(&self, page: usize, pos: Point<f64, Logical>) -> Option<usize> {
-        cell_at(self.grid, self.columns, self.rows, pos).map(|(cell, _)| page * self.per_page() + cell)
+        cell_at(self.grid, self.pitch, self.columns, self.rows, pos).map(|(cell, _)| page * self.per_page() + cell)
     }
 
     /// How far the rows under it go down for it: until their icons are the padding under it.
     fn down(&self) -> i32 {
-        self.panel.size.h - self.up - (CELL_HEIGHT - FOLDER_SPLIT + ICON_TOP - FOLDER_PADDING)
+        self.panel.size.h - self.up - (self.pitch.h - FOLDER_SPLIT + ICON_TOP - FOLDER_PADDING)
     }
 
     /// Where its name starts, along the strip: over the first icon's side.
     fn title_x(&self) -> i32 {
-        self.grid.loc.x - self.panel.loc.x + (CELL_WIDTH - ICON) / 2
+        self.grid.loc.x - self.panel.loc.x + (self.pitch.w - ICON) / 2
     }
 }
 
@@ -808,8 +831,8 @@ impl AppGrid {
     /// Where the middle of the icon in a place of the pages is on screen.
     fn icon_middle(&self, layout: &Layout, index: usize) -> Point<f64, Logical> {
         self.pages_origin(layout)
-            + tiles::place(index, layout.columns, layout.per_page(), f64::from(layout.stride))
-            + Point::from((f64::from(CELL_WIDTH) / 2.0, f64::from(ICON_TOP + ICON / 2)))
+            + tiles::place(index, layout.pitch, layout.columns, layout.per_page(), f64::from(layout.stride))
+            + Point::from((f64::from(layout.pitch.w) / 2.0, f64::from(ICON_TOP + ICON / 2)))
     }
 
     /// The open folder's applications in their places, room kept where a dragged one
@@ -928,7 +951,7 @@ impl AppGrid {
         let Some(layout) = self.layout else {
             return;
         };
-        let middle = Point::from((f64::from(CELL_WIDTH) / 2.0, f64::from(ICON_TOP + ICON / 2)));
+        let middle = Point::from((f64::from(layout.pitch.w) / 2.0, f64::from(ICON_TOP + ICON / 2)));
         let held_size = f64::from(HELD_SIZE) / f64::from(ICON);
         let in_folder = (self.open.as_ref())
             .is_some_and(|open| self.folders[open.folder].apps.iter().any(|&app| Entry::App(app) == entry));
@@ -1074,24 +1097,41 @@ impl Nekoland {
             AppsView::Launchpad => area.loc.y + 56,
             _ => area.loc.y + expanded_height(area) + 24,
         };
+        let dock = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size);
+        // With room for more than eight by five, all of it is enlarged to fill the room,
+        // and laid out here as on the smaller output that makes it.
+        let zoom = (f64::from(dock - top) / f64::from(FIELD_HEIGHT + 32 + 5 * CELL_HEIGHT + DOTS + 8))
+            .min(f64::from(area.size.w) / f64::from(8 * CELL_WIDTH + 160))
+            .max(1.0);
+        let before = |length: i32| (f64::from(length) / zoom).round() as i32;
+        let (top, dock) = (area.loc.y + before(top - area.loc.y), area.loc.y + before(dock - area.loc.y));
+        let width = before(area.size.w);
+        let bottom = dock - DOTS - 8;
+        let columns = ((width - 160) / CELL_WIDTH).clamp(4, 8) as usize;
+        let rows = ((bottom - top - FIELD_HEIGHT - 32) / CELL_HEIGHT).clamp(2, 5) as usize;
+        // On an output with room for more than its eight by five, the places are further
+        // apart to fill it, the icons as large as ever: no more than a quarter wider than
+        // they are high.
+        let high = if rows == 5 { (bottom - top - FIELD_HEIGHT - 32) / 5 } else { CELL_HEIGHT };
+        let wide = if columns == 8 { ((width - 160) / 8).min(high * 5 / 4) } else { CELL_WIDTH };
+        let pitch = Size::from((wide.max(CELL_WIDTH), high.max(CELL_HEIGHT)));
+        let size = Size::from((columns as i32 * pitch.w, rows as i32 * pitch.h));
         let search = Rectangle::new(
-            (area.loc.x + (area.size.w - SEARCH_WIDTH) / 2, top).into(),
+            (area.loc.x + (width - SEARCH_WIDTH) / 2, top).into(),
             (SEARCH_WIDTH, FIELD_HEIGHT).into(),
         );
         let grid_top = top + FIELD_HEIGHT + 32;
-        let dock = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size);
-        let bottom = dock - DOTS - 8;
-        let columns = ((area.size.w - 160) / CELL_WIDTH).clamp(4, 8) as usize;
-        let rows = ((bottom - grid_top) / CELL_HEIGHT).clamp(2, 5) as usize;
-        let size = Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT));
-        let grid = Rectangle::new((area.loc.x + (area.size.w - size.w) / 2, grid_top).into(), size);
+        let grid = Rectangle::new((area.loc.x + (width - size.w) / 2, grid_top).into(), size);
         Some(Layout {
             search,
             grid,
             columns,
             rows,
+            pitch,
+            zoom,
+            pivot: area.loc,
             floor: dock - FOLDER_PADDING,
-            stride: area.size.w,
+            stride: width,
             sidebar: None,
         })
     }
@@ -1137,6 +1177,8 @@ impl Nekoland {
     /// Brings the view up to date before a frame: where a dragged icon is aimed, the page
     /// sliding into place, and what is drawn again when it changed.
     pub fn refresh_apps(&mut self) {
+        // What is drawn here is shown enlarged: drawn that much denser, it stays sharp.
+        let _denser = text::Denser::new(self.apps_zoom().ceil() as i32);
         let apps = self.overview.as_ref().and_then(|overview| overview.apps.as_ref());
         if apps.is_some_and(|apps| apps.leaving && apps.folder_gone()) {
             self.close_overview(None);
@@ -1157,6 +1199,7 @@ impl Nekoland {
         let Some(layout) = layout else {
             return;
         };
+        let pointer = pointer.map(|pointer| layout.within(pointer));
         apps.layout = Some(layout);
         let now = Instant::now();
         let dt = now.duration_since(apps.last_tick).as_secs_f64().min(0.1);
@@ -1224,10 +1267,11 @@ impl Nekoland {
         };
         apps.glided_for = apps.query.clone();
         let (columns, per_page, stride) = (layout.columns, layout.per_page(), f64::from(layout.stride));
+        let pitch = layout.pitch;
         tiles::glide(
             &mut apps.glides,
             &cells,
-            |index| tiles::place(index, columns, per_page, stride),
+            |index| tiles::place(index, pitch, columns, per_page, stride),
             dt,
             arrival,
         );
@@ -1306,7 +1350,8 @@ impl Nekoland {
             &cells,
             // Its pages side by side, the one shown in the strip.
             |index| {
-                tiles::place(index, columns, columns * rows, stride) - Point::from((page as f64 * stride, 0.0))
+                tiles::place(index, place.pitch, columns, columns * rows, stride)
+                    - Point::from((page as f64 * stride, 0.0))
             },
             dt,
             arrival,
@@ -1334,9 +1379,11 @@ impl Nekoland {
         let Some(apps) = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()) else {
             return nothing;
         };
-        let (Some(layout), Some(area)) = (apps.layout, self.output_area()) else {
+        let (Some(layout), Some(output)) = (apps.layout, self.output_area()) else {
             return nothing;
         };
+        // The output as the view has it, before it is enlarged.
+        let area = Rectangle::new(output.loc, output.size.to_f64().downscale(layout.zoom).to_i32_round());
         // Out as it came in: with the overview it is part of, as that closes.
         let leaving = (self.overview.as_ref())
             .filter(|overview| overview.closing)
@@ -1398,6 +1445,7 @@ impl Nekoland {
             let sprites = stock.board(
                 &Board {
                     origin: place.grid.loc.to_f64() + Point::from((0.0, risen)),
+                    pitch: place.pitch,
                     seen,
                     cells: &open.cells,
                     glides: &open.glides,
@@ -1450,12 +1498,18 @@ impl Nekoland {
                 // A row that would go up past the search field's top goes out of sight.
                 let past = f64::from(layout.search.loc.y + place.up + ICON_TOP + ICON / 2);
                 // So does one that would go down past the floor, behind the Dock.
-                let sunk = f64::from(layout.floor - place.down() - (CELL_HEIGHT - ICON_TOP - ICON / 2));
+                let sunk = f64::from(layout.floor - place.down() - (NAME_END - ICON_TOP - ICON / 2));
                 (f64::from(place.split()), up, down, place.notch.map(f64::from), (past, sunk))
             });
             let gone = (1.0 - folder_fade * 2.0).max(0.0);
             // Each in from off the screen, the middle ones of the pages first, and out the
-            // other way.
+            // other way. On a screen much larger than the grid, from two places around
+            // it: from the screen's edges they would cross most of it.
+            let around = Rectangle::new(
+                layout.grid.loc - Point::from((layout.pitch.w * 2, layout.pitch.h * 2)),
+                layout.grid.size + Size::from((layout.pitch.w * 4, layout.pitch.h * 4)),
+            );
+            let from = around.intersection(area).unwrap_or(area).to_f64();
             let (opened, half) = (apps.opened, layout.grid.size.to_f64() / 2.0);
             let middle = layout.grid.loc.to_f64() + Point::from((half.w, half.h));
             let reach = half.w.hypot(half.h).max(1.0);
@@ -1466,7 +1520,7 @@ impl Nekoland {
                 } else {
                     1.0
                 };
-                let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), area.to_f64(), arrived);
+                let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), from, arrived);
                 let shown = (arrived * 3.0).clamp(0.0, 1.0) as f32;
                 match parted {
                     Some((split, up, _, notch, (past, _))) if home.y < split => {
@@ -1485,6 +1539,7 @@ impl Nekoland {
             let sprites = stock.board(
                 &Board {
                     origin: apps.pages_origin(&layout),
+                    pitch: layout.pitch,
                     seen,
                     cells: &apps.cells,
                     glides: &apps.glides,
@@ -1569,11 +1624,32 @@ impl Nekoland {
         }
         let backdrop = Some(Backdrop {
             id: &apps.ids[3],
-            rect: area,
+            rect: output,
             fade,
             tint: &apps.tint,
         });
         layers.extend(front.into_iter().map(Layer::Overlay));
+        // Enlarged about the output's corner. An overlay keeps its size here and is drawn
+        // larger about its middle, which is put where it belongs.
+        let (pivot, zoom) = (layout.pivot.to_f64(), layout.zoom);
+        if zoom != 1.0 {
+            for layer in &mut layers {
+                match layer {
+                    Layer::Sprites(sprites) => {
+                        *sprites = std::mem::take(sprites)
+                            .into_iter()
+                            .map(|sprite| sprite.scaled_about(pivot, zoom))
+                            .collect();
+                    }
+                    Layer::Overlay(overlay) => {
+                        let half = overlay.rect.size.to_f64().downscale(2.0);
+                        let middle = overlay.rect.loc.to_f64() + Point::from((half.w, half.h));
+                        let shown = pivot + (middle - pivot).upscale(zoom) - Point::from((half.w, half.h));
+                        overlay.rect.loc = shown.to_i32_round();
+                    }
+                }
+            }
+        }
         AppsScene {
             front: layers,
             backdrop,
@@ -1588,6 +1664,7 @@ impl Nekoland {
         if self.apps_style().is_some_and(AppsView::is_list) {
             return self.list_press(pos);
         }
+        let pos = self.apps_within(pos);
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1670,6 +1747,7 @@ impl Nekoland {
 
     /// A right click on the grid opens its menu. Returns whether it did.
     pub fn apps_menu(&mut self, pos: Point<f64, Logical>) -> bool {
+        let (on_screen, pos) = (pos, self.apps_within(pos));
         let Some(apps) = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()) else {
             return false;
         };
@@ -1693,7 +1771,7 @@ impl Nekoland {
                 crate::menubar::Entry::item(edit, command(AppsCommand::Edit)),
                 crate::menubar::Entry::item("還原預設", command(AppsCommand::Reset)),
             ],
-            pos.to_i32_round(),
+            on_screen.to_i32_round(),
         );
         true
     }
@@ -1738,6 +1816,7 @@ impl Nekoland {
         if self.apps_style().is_some_and(AppsView::is_list) {
             return self.list_motion(pos);
         }
+        let pos = self.apps_within(pos);
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1768,7 +1847,7 @@ impl Nekoland {
                     let was = match pressed {
                         Pressed::Cell(index) => Some(apps.icon_middle(&layout, index)),
                         Pressed::FolderCell(index) => apps.folder_layout(&layout).map(|place| {
-                            let icon = icon_rect(place.grid, place.columns, index % place.per_page()).to_f64();
+                            let icon = icon_rect(place.grid, place.pitch, place.columns, index % place.per_page()).to_f64();
                             icon.loc + Point::from((icon.size.w / 2.0, icon.size.h / 2.0))
                         }),
                         Pressed::App(_) => None,
@@ -1836,6 +1915,7 @@ impl Nekoland {
         if self.apps_style().is_some_and(AppsView::is_list) {
             return self.list_release(pos);
         }
+        let (on_screen, pos) = (pos, self.apps_within(pos));
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1877,10 +1957,10 @@ impl Nekoland {
         apps.gap = None;
         if let Entry::App(app) = held.entry {
             let id = apps.apps[app].id.clone();
-            if self.drop_on_dock(id, pos) {
+            if self.drop_on_dock(id, on_screen) {
                 return;
             }
-            match self.overview_bar_action(pos) {
+            match self.overview_bar_action(on_screen) {
                 Some(BarAction::Switch(desktop) | BarAction::Rename(desktop)) => return self.start_grid_app(app, Some(desktop)),
                 Some(BarAction::Add) => {
                     let desktop = self.workspaces.count();
@@ -1937,13 +2017,30 @@ impl Nekoland {
     /// applications on their way in or out, which come in from a little larger and leave
     /// the same way.
     pub fn apps_zoom_of(&self, id: &Id) -> Option<f64> {
-        let overview = self.overview.as_ref().filter(|_| self.config.animations)?;
+        let overview = self.overview.as_ref()?;
         let apps = overview.apps.as_ref()?;
-        if &apps.ids[1] != id {
+        // All of the view but its backdrop is as large as the view is shown.
+        if !apps.ids.contains(id) || &apps.ids[3] == id {
             return None;
         }
-        let leaving = overview.closing.then(|| overview.progress());
-        Some(crate::motion::apps_zoom(apps.opened, leaving)).filter(|zoom| (zoom - 1.0).abs() > ZOOM_AT_REST)
+        let whole = apps.layout.map_or(1.0, |layout| layout.zoom);
+        let arriving = if &apps.ids[1] == id && self.config.animations {
+            crate::motion::apps_zoom(apps.opened, overview.closing.then(|| overview.progress()))
+        } else {
+            1.0
+        };
+        Some(whole * arriving).filter(|zoom| (zoom - 1.0).abs() > ZOOM_AT_REST)
+    }
+
+    /// How many times its size the view is shown, or would be if it were.
+    fn apps_zoom(&self) -> f64 {
+        self.apps_layout().map_or(1.0, |layout| layout.zoom)
+    }
+
+    /// Where a point of the screen is in the view, before it is enlarged.
+    fn apps_within(&self, on_screen: Point<f64, Logical>) -> Point<f64, Logical> {
+        let layout = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()?.layout);
+        layout.map_or(on_screen, |layout| layout.within(on_screen))
     }
 
     /// A key in the view: typing narrows it down, or names the folder being renamed;
@@ -2329,6 +2426,9 @@ mod tests {
             grid: Rectangle::new((136, 120).into(), (7 * CELL_WIDTH, 4 * CELL_HEIGHT).into()),
             columns: 7,
             rows: 4,
+            pitch: Size::from((CELL_WIDTH, CELL_HEIGHT)),
+            zoom: 1.0,
+            pivot: Point::from((0, 0)),
             floor: 120 + 4 * CELL_HEIGHT + DOTS,
             stride: 1280,
             sidebar: None,
@@ -2336,7 +2436,7 @@ mod tests {
         // With room under its row, nothing goes up: the strip is right under the names.
         let top = FolderPlace::under(&layout, 0, 9, Some(640));
         assert_eq!((top.rows, top.up), (2, 0));
-        assert_eq!(top.panel, Rectangle::new((0, 120 + FOLDER_SPLIT).into(), (1280, FOLDER_TITLE + 2 * CELL_HEIGHT - FOLDER_TRIM).into()));
+        assert_eq!(top.panel, Rectangle::new((0, 120 + FOLDER_SPLIT).into(), (1280, FOLDER_TITLE + 2 * CELL_HEIGHT - (CELL_HEIGHT - NAME_END - FOLDER_PADDING)).into()));
         // The next row's icons are as far under it as the names over it are: 24.
         assert_eq!(120 + CELL_HEIGHT + ICON_TOP + top.down(), top.panel.loc.y + top.panel.size.h + 24);
         assert_eq!(top.panel.loc.y, 120 + NAME_END + 24);
@@ -2388,17 +2488,19 @@ mod tests {
     #[test]
     fn a_grid_finds_the_cell_and_how_near_its_icon() {
         let grid = Rectangle::new((100, 200).into(), (CELL_WIDTH * 4, CELL_HEIGHT * 2).into());
-        let (cell, _) = cell_at(grid, 4, 2, Point::from((101.0, 201.0))).unwrap();
+        let pitch = Size::from((CELL_WIDTH, CELL_HEIGHT));
+        let (cell, _) = cell_at(grid, pitch, 4, 2, Point::from((101.0, 201.0))).unwrap();
         assert_eq!(cell, 0);
         let middle = Point::from((
             100.0 + f64::from(CELL_WIDTH) * 2.5,
             200.0 + f64::from(CELL_HEIGHT) + f64::from(ICON_TOP) + f64::from(ICON) / 2.0,
         ));
-        assert_eq!(cell_at(grid, 4, 2, middle), Some((6, 0.0)));
-        assert_eq!(cell_at(grid, 4, 2, Point::from((99.0, 201.0))), None);
+        assert_eq!(cell_at(grid, pitch, 4, 2, middle), Some((6, 0.0)));
+        assert_eq!(cell_at(grid, pitch, 4, 2, Point::from((99.0, 201.0))), None);
         assert_eq!(
             cell_at(
                 grid,
+                pitch,
                 4,
                 2,
                 Point::from((101.0, 200.0 + f64::from(CELL_HEIGHT) * 2.0 + 1.0))

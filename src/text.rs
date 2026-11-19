@@ -39,6 +39,24 @@ pub fn picture_scale() -> i32 {
     PICTURE_SCALE.load(Ordering::Relaxed)
 }
 
+/// While it is kept, pictures are drawn `times` as dense as the output: for what is shown
+/// enlarged, which would be blurred at the output's own density.
+pub struct Denser(i32);
+
+impl Denser {
+    pub fn new(times: i32) -> Self {
+        let was = picture_scale();
+        PICTURE_SCALE.store(was * times.max(1), Ordering::Relaxed);
+        Self(was)
+    }
+}
+
+impl Drop for Denser {
+    fn drop(&mut self) {
+        PICTURE_SCALE.store(self.0, Ordering::Relaxed);
+    }
+}
+
 /// A surface to draw a picture on, `width` by `height` points, with as many pixels to each
 /// point as the outputs show; cairo, and the text on it, work in points.
 pub fn canvas(width: i32, height: i32) -> Result<ImageSurface, cairo::Error> {
