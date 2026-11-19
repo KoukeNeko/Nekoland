@@ -2518,7 +2518,6 @@ fn thumbnail_row(item: &Item, index: usize) -> (gtk::ListBoxRow, gtk::Picture) {
 
 fn css() -> &'static str {
     "
-.pv-markup { padding: 4px 12px; border-bottom: 1px solid alpha(currentColor, .12); }
 .pv-sheet { box-shadow: 0 0 0 1px alpha(currentColor, .12), 0 1px 4px alpha(black, .2); }
 .pv-checker {
   background-color: white;

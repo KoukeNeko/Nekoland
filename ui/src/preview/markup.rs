@@ -32,7 +32,7 @@ fn menu_button(icon: &str, tip: &str, menu: &gio::Menu) -> gtk::MenuButton {
 }
 
 pub fn build_bar() -> Bar {
-    let bar = gtk::Box::builder().spacing(GAP).css_classes(["pv-markup"]).build();
+    let bar = gtk::Box::builder().spacing(GAP).css_classes(["toolbar"]).build();
     let selection = gio::Menu::new();
     for (label, key) in [("矩形選取", "rectangle"), ("橢圓形選取", "ellipse"), ("套索選取", "lasso"), ("智慧型套索", "smart-lasso")] {
         selection.append(Some(label), Some(&format!("win.tool::{key}")));
