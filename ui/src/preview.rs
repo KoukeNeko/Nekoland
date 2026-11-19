@@ -421,6 +421,7 @@ struct Win {
     app: adw::Application,
     window: adw::ApplicationWindow,
     split: adw::OverlaySplitView,
+    sidebar_button: adw::SplitButton,
     title: adw::WindowTitle,
     stack: gtk::Stack,
     scroll: gtk::ScrolledWindow,
@@ -944,6 +945,7 @@ impl Win {
             app: app.clone(),
             window,
             split,
+            sidebar_button,
             title,
             stack,
             scroll,
@@ -1551,6 +1553,12 @@ impl Win {
         self.syncing.set(false);
         if items.len() > 1 && self.sidebar_mode.get() == Sidebar::Thumbnails {
             self.split.set_show_sidebar(true);
+        }
+        // A lone picture has nothing for a sidebar to list.
+        let listed = items.len() > 1 || items.iter().any(|item| item.is_page());
+        self.sidebar_button.set_visible(listed);
+        if !listed {
+            self.split.set_show_sidebar(false);
         }
         *self.items.borrow_mut() = items;
         self.select(index.min(self.items.borrow().len().saturating_sub(1)));
