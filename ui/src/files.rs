@@ -1010,9 +1010,14 @@ impl Window {
         enable("open", some && !trash);
         enable("quick-look", some);
         enable("info", true);
-        for name in ["rename", "compress", "duplicate", "link", "copy", "cut"] {
+        for name in ["rename", "duplicate", "link", "copy", "cut"] {
             enable(name, local && !trash);
         }
+        // An archive is made in one folder, of names in it.
+        let mut folders = chosen.iter().map(|i| info_file(i).and_then(|f| f.parent()).and_then(|p| p.path()));
+        let first = folders.next().flatten();
+        let one_folder = first.is_some() && folders.all(|folder| folder == first);
+        enable("compress", local && !trash && one_folder);
         enable("trash", some && !trash);
         enable("restore", some && trash);
         enable("delete-now", some && trash);

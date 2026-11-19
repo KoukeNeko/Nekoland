@@ -16,7 +16,7 @@ use gtk::gdk_pixbuf::{Pixbuf, PixbufRotation};
 use gtk::{gdk, gio, glib};
 
 use crate::{
-    browse::{bookmarks_path, free_name, info_file, is_dir, parse_bookmarks},
+    browse::{bookmarks_path, free_name, info_file, is_dir, parse_bookmarks, size_of},
     pane::{Pane, Where},
     rename, tags, Window,
 };
@@ -779,12 +779,13 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
     } else {
         target
     };
-    let total: u64 = files
-        .iter()
-        .filter_map(|f| f.path())
-        .map(|p| size_of(&p))
-        .sum::<u64>()
-        .max(1);
+    // Weighed away from the window's thread: a large folder takes a while to walk.
+    let paths: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
+    let (sender, sized) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(paths.iter().map(|p| size_of(p)).sum::<u64>().max(1));
+    });
+    let mut total = None;
     let have = |program: &str| glib::find_program_in_path(program).is_some();
     let mut command = if have("bsdtar") {
         let mut command = std::process::Command::new("bsdtar");
@@ -793,6 +794,7 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
             .arg(&target)
             .arg("-C")
             .arg(&folder)
+            .arg("--")
             .args(&names);
         command
     } else {
@@ -800,6 +802,7 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
         command
             .args(["-r", "-q", "-y"])
             .arg(&target)
+            .arg("--")
             .args(&names)
             .current_dir(&folder);
         command
@@ -824,11 +827,11 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
         let pane = pane.upgrade();
         match done {
             Ok(None) => {
+                total = total.or_else(|| sized.try_recv().ok());
                 // How much has been written of what goes in, which compression shrinks: never full until done.
                 let written = std::fs::metadata(&target).map_or(0, |m| m.len());
-                let fraction = (written as f64 / total as f64).min(0.95);
-                if let Some(pane) = &pane {
-                    pane.set_job(&uri, Some(fraction));
+                if let (Some(pane), Some(total)) = (&pane, total) {
+                    pane.set_job(&uri, Some((written as f64 / total as f64).min(0.95)));
                 }
                 glib::ControlFlow::Continue
             }
@@ -846,18 +849,6 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
             }
         }
     });
-}
-
-fn size_of(path: &Path) -> u64 {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if !meta.is_dir() {
-        return meta.len();
-    }
-    std::fs::read_dir(path)
-        .map(|entries| entries.flatten().map(|e| size_of(&e.path())).sum())
-        .unwrap_or(0)
 }
 
 // Tags, pictures and the sidebar.
@@ -1028,7 +1019,7 @@ fn rotate(path: &Path) -> Result<(), glib::Error> {
 
 pub fn add_bookmark(win: &Rc<Window>, folder: &gio::File) {
     let path = bookmarks_path();
-    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(mut text) = read_bookmarks(win, &path) else { return };
     let uri = folder.uri();
     if parse_bookmarks(&text).iter().any(|(u, _)| *u == uri.as_str()) {
         return;
@@ -1042,7 +1033,7 @@ pub fn add_bookmark(win: &Rc<Window>, folder: &gio::File) {
 
 pub fn remove_bookmark(win: &Rc<Window>, folder: &gio::File) {
     let path = bookmarks_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(text) = read_bookmarks(win, &path) else { return };
     let uri = folder.uri();
     let kept: String = text
         .lines()
@@ -1052,11 +1043,29 @@ pub fn remove_bookmark(win: &Rc<Window>, folder: &gio::File) {
     write_bookmarks(win, &path, &kept);
 }
 
+/// The bookmarks file's text, empty when there is none yet. One that cannot be read is not
+/// written over either.
+fn read_bookmarks(win: &Rc<Window>, path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+        Err(err) => {
+            win.alert("無法更改側欄", Some(&err.to_string()));
+            None
+        }
+    }
+}
+
 fn write_bookmarks(win: &Rc<Window>, path: &Path, text: &str) {
+    // Written beside it and moved over it, so a failure leaves the bookmarks as they were;
+    // over the file a link there points to, as one from a dotfiles folder.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let temporary = target.with_file_name(".bookmarks.partial");
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(path, text));
+        .and_then(|()| std::fs::write(&temporary, text))
+        .and_then(|()| std::fs::rename(&temporary, &target));
     match written {
         Ok(()) => win.places_changed(),
         Err(err) => win.alert("無法更改側欄", Some(&err.to_string())),

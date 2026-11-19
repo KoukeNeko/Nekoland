@@ -11,7 +11,7 @@ use std::{
 };
 
 use adw::prelude::*;
-use browse::{free_name, EDGE, GAP};
+use browse::{free_name, size_of, EDGE, GAP};
 use gtk::{gio, glib};
 
 mod browse;
@@ -644,6 +644,13 @@ impl Work {
                 Answer::KeepBoth => to = free_name(&to),
                 Answer::Replace if both_dirs => {}
                 Answer::Replace if is_dir || existing.is_dir() => {
+                    if inside_item(from, &to) {
+                        let message = format!("無法取代「{}」：「{}」在它裡面", display_name(&to), display_name(from));
+                        return match self.ask(Update::Failed { message }).0 {
+                            Answer::Stop => Err(Stopped),
+                            _ => Ok(()),
+                        };
+                    }
                     // A file and a folder do not overwrite each other; what gives way goes
                     // to the trash rather than being lost.
                     let target = gio::File::for_path(&to);
@@ -789,30 +796,24 @@ fn side(path: &Path) -> Side {
     }
 }
 
-/// Bytes in a file, or in everything in a folder; links are not followed.
-fn size_of(path: &Path) -> u64 {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if !meta.is_dir() {
-        return meta.len();
-    }
-    std::fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| size_of(&entry.path()))
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
 /// Whether `to` is in the folder `from`, through links too: a folder dropped on a link to
 /// itself would otherwise be copied into itself without end.
 fn inside_itself(from: &Path, to: &Path) -> bool {
     let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     to.parent()
         .is_some_and(|parent| real(parent).starts_with(real(from)))
+}
+
+/// Whether `path` is the item `item` or in it, through the links to the folders they are
+/// in: trashing the item would take `path` along. Each is a link itself, not where it leads.
+fn inside_item(path: &Path, item: &Path) -> bool {
+    let real = |path: &Path| match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .unwrap_or_else(|_| parent.to_path_buf())
+            .join(name),
+        _ => path.to_path_buf(),
+    };
+    real(path).starts_with(real(item))
 }
 
 /// Whether `to`'s folder is on the disk `from` is on, where a move is a rename.
@@ -847,6 +848,20 @@ mod tests {
         assert!(inside_itself(&folder, &dir.join("A 的連結").join("A")));
         assert!(inside_itself(&folder, &folder.join("A")));
         assert!(!inside_itself(&folder, &dir.join("B")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_holds_the_incoming_item_is_not_replaced() {
+        let dir = std::env::temp_dir().join(format!("nekoland-fileop-inside-{}", std::process::id()));
+        let folder = dir.join("Photos");
+        std::fs::create_dir_all(folder.join("Photos")).unwrap();
+        std::os::unix::fs::symlink(&folder, dir.join("連結")).unwrap();
+        assert!(inside_item(&folder.join("Photos"), &folder));
+        assert!(inside_item(&dir.join("連結").join("Photos"), &folder));
+        assert!(!inside_item(&folder, &folder.join("Photos")));
+        // Only the link goes to the trash, not the folder it leads to.
+        assert!(!inside_item(&folder.join("Photos"), &dir.join("連結")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

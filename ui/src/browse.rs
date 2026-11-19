@@ -33,6 +33,24 @@ pub fn home() -> PathBuf {
     glib::home_dir()
 }
 
+/// Bytes in a file, or in everything in a folder; links are not followed.
+pub fn size_of(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| size_of(&entry.path()))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
 pub fn is_dir(info: &gio::FileInfo) -> bool {
     info.file_type() == gio::FileType::Directory
 }
