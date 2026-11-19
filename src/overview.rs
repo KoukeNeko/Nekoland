@@ -811,7 +811,7 @@ impl Nekoland {
         });
 
         // Opened up: the pictures with their names, each centered top to bottom, and the add
-        // button after them, a smaller picture of the wallpaper under a plus.
+        // button at the right end, a smaller picture of the wallpaper under a plus.
         let top = (expanded_height - tile_height - LABEL_HEIGHT) / 2;
         let mut thumbnails = Vec::with_capacity(count);
         let mut expanded_items = Vec::with_capacity(count + 1);
@@ -1108,7 +1108,8 @@ impl Nekoland {
         }
         // The menu bar's content brings its own tint while it is there.
         let menu = if self.config.menu_bar_background {
-            (f64::from(MENU_BAR_HEIGHT) * (1.0 - self.overview_menu_away())).round() as i32
+            // Cut where the menu bar's picture is, so that no line is left between them.
+            MENU_BAR_HEIGHT - (f64::from(MENU_BAR_HEIGHT) * self.overview_menu_away()).round() as i32
         } else {
             0
         };
