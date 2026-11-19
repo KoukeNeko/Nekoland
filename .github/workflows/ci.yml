@@ -23,11 +23,12 @@ jobs:
 
       - name: Install packages
         # install.sh's build packages, read from it so that the two cannot drift apart;
-        # Ubuntu Sans, which a test sets text in; and rsync, which the backup's test runs.
+        # Ubuntu Sans, which a test sets text in; rsync, which the backup's test runs; and the
+        # partitioning tools the disk manager's test runs on an image file.
         run: |
           packages=$(sed -n '/^build_packages="/,/"$/p' install.sh | sed 's/^build_packages=//; s/"//g')
           apt-get update -q
-          apt-get install -y -q --no-install-recommends $packages fonts-ubuntu rsync
+          apt-get install -y -q --no-install-recommends $packages fonts-ubuntu rsync parted e2fsprogs zstd
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
