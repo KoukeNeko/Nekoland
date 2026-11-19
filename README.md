@@ -238,8 +238,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's
   language too, its own commands, and files in the home folder, and takes an input
-  method; clicking the search field of the overview's applications opens it with what
-  was typed there. It also answers sums, percentages and unit conversions (`5 km to mi`,
+  method. It also answers sums, percentages and unit conversions (`5 km to mi`,
   `3 坪 換成 m2`) and offers web, file and menu-item searches for what was typed. Its
   commands lock, sleep, restart and shut down, toggle dark mode, put the window under it
   in a half, a quarter, a third, a fourth or a sixth of the screen, larger, smaller or against an edge, and open views of their own: clipboard

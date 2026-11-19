@@ -1637,6 +1637,13 @@ impl Nekoland {
         // larger about its middle, which is put where it belongs.
         let (pivot, zoom) = (layout.pivot.to_f64(), layout.zoom);
         if zoom != 1.0 {
+            // The search field is in the middle of the room it has, not as much larger as
+            // the rest; the candidates stay under its corner.
+            let (field, grown) = (layout.search.to_f64(), field_zoom(zoom));
+            let field_middle = field.loc + Point::from((field.size.w / 2.0, field.size.h / 2.0));
+            let under_field = pivot + (field_middle - pivot).upscale(zoom)
+                + Point::from((-field.size.w / 2.0, field.size.h / 2.0)).upscale(grown)
+                + Point::from((0.0, 8.0));
             for layer in &mut layers {
                 match layer {
                     Layer::Sprites(sprites) => {
@@ -1644,6 +1651,12 @@ impl Nekoland {
                             .into_iter()
                             .map(|sprite| sprite.scaled_about(pivot, zoom))
                             .collect();
+                    }
+                    Layer::Overlay(overlay) if std::ptr::eq(overlay.id, &apps.ids[6]) => {
+                        // Drawn larger about its middle: its corner is that much further in.
+                        let half = overlay.rect.size.to_f64().downscale(2.0);
+                        let inset = Point::from((half.w, half.h)).upscale(grown - 1.0);
+                        overlay.rect.loc = (under_field + inset).to_i32_round();
                     }
                     Layer::Overlay(overlay) => {
                         let half = overlay.rect.size.to_f64().downscale(2.0);
@@ -1662,8 +1675,8 @@ impl Nekoland {
 
     /// A press in the view. In an open folder: an application, or its name to change it;
     /// outside it, the folder closes. On the grid: an entry, which may be started, opened
-    /// or dragged; the search field, which opens the launcher, which takes an input
-    /// method; the pages' dots; anywhere else leaves.
+    /// or dragged; the search field, which is typed in from anywhere, so that a press on it
+    /// does nothing; the pages' dots; anywhere else leaves.
     pub fn apps_press(&mut self, pos: Point<f64, Logical>) {
         if self.apps_style().is_some_and(AppsView::is_list) {
             return self.list_press(pos);
@@ -1701,14 +1714,6 @@ impl Nekoland {
             return;
         }
         if layout.search.to_f64().contains(pos) {
-            let query = apps.query.clone();
-            config::spawn(&format!(
-                "{} {}{}",
-                self.config.launcher,
-                self.config.launcher_search,
-                config::quote(&query)
-            ));
-            self.close_overview(None);
             return;
         }
         let cells = apps.cells().len();
@@ -2023,11 +2028,13 @@ impl Nekoland {
     pub fn apps_zoom_of(&self, id: &Id) -> Option<f64> {
         let overview = self.overview.as_ref()?;
         let apps = overview.apps.as_ref()?;
-        // All of the view but its backdrop is as large as the view is shown.
+        // All of the view but its backdrop is as large as the view is shown; the search
+        // field and the input method's candidates half as much larger.
         if !apps.ids.contains(id) || &apps.ids[3] == id {
             return None;
         }
         let whole = apps.layout.map_or(1.0, |layout| layout.zoom);
+        let whole = if &apps.ids[2] == id || &apps.ids[6] == id { field_zoom(whole) } else { whole };
         let arriving = if &apps.ids[1] == id && self.config.animations {
             crate::motion::apps_zoom(apps.opened, overview.closing.then(|| overview.progress()))
         } else {
@@ -2316,6 +2323,12 @@ fn paint_tile_in(
     );
     pangocairo::functions::show_layout(cr, &label);
     Some(())
+}
+
+/// How many times its size the search field is shown where the view is shown `zoom`
+/// times its own: half as much larger, as a field that large would be out of scale.
+fn field_zoom(zoom: f64) -> f64 {
+    1.0 + (zoom - 1.0) / 2.0
 }
 
 /// The dots that tell the pages, the one shown lit, in the middle of the grid's width.
