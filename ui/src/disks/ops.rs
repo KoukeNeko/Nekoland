@@ -28,8 +28,8 @@ pub const FILE_SYSTEMS: [(&str, &str); 7] = [
 ];
 
 pub enum Event {
-    /// How far it is, 0 to 1, or None when that is not known.
-    Progress(Option<f64>),
+    /// How far it is, 0 to 1.
+    Progress(f64),
     /// What it said when it worked, or why it did not.
     Done(Result<String, String>),
 }
@@ -223,7 +223,7 @@ fn run_step(step: &Step, reason: &str, cancel: &Cancel, events: &async_channel::
                 said.push_str(&String::from_utf8_lossy(&line));
                 said.push('\n');
                 if let (Some(total), Some(done)) = (step.total, written(&line)) {
-                    let _ = events.send_blocking(Event::Progress(Some((done as f64 / total as f64).min(1.0))));
+                    let _ = events.send_blocking(Event::Progress((done as f64 / total as f64).min(1.0)));
                 }
                 line.clear();
             } else {
@@ -386,15 +386,14 @@ pub fn eject(disk: &Disk) -> Job {
     Job::new(&format!("退出「{}」", disk.title()), steps)
 }
 
-pub fn format(disk: &Disk, part: &Part, fstype: &str, label: &str, zero: bool) -> Job {
-    let mut steps: Vec<Step> = unmount_steps(part).into_iter().map(Step::tolerated).collect();
+pub fn format(part: &Part, fstype: &str, label: &str, zero: bool) -> Job {
+    let mut steps = unmount_steps(part);
     if zero {
         steps.push(Step::root(&["dd", "if=/dev/zero", &format!("of={}", part.path), "bs=4M", "status=progress", "conv=fsync"]).of_bytes(part.size).tolerated());
     }
     steps.push(Step::root(&["wipefs", "-a", &part.path]));
     steps.push(root_args(mkfs_argv(fstype, label, &part.path)));
     steps.push(Step::root(&["udevadm", "settle"]).tolerated());
-    let _ = disk;
     Job::new(&format!("格式化「{}」", part.label()), steps)
 }
 
@@ -406,7 +405,7 @@ pub fn make_table(disk: &Disk, kind: &str) -> Job {
 }
 
 pub fn wipe(disk: &Disk, zero: bool, table: Option<&str>) -> Job {
-    let mut steps: Vec<Step> = unmount_all(disk).into_iter().map(Step::tolerated).collect();
+    let mut steps = unmount_all(disk);
     if zero {
         steps.push(Step::root(&["dd", "if=/dev/zero", &format!("of={}", disk.path), "bs=4M", "status=progress", "conv=fsync"]).of_bytes(disk.size).tolerated());
     } else {
@@ -482,6 +481,10 @@ pub fn resize_kind(part: &Part) -> Option<Resize> {
 
 /// The smallest a partition can be made.
 pub fn min_size(part: &Part) -> u64 {
+    // XFS can grow but never shrink.
+    if part.fstype == "xfs" {
+        return part.size;
+    }
     match part.used {
         Some(used) => (used + used / 10 + (64 << 20)).min(part.size),
         None => part.size,
@@ -489,7 +492,8 @@ pub fn min_size(part: &Part) -> u64 {
 }
 
 pub fn resize(disk: &Disk, part: &Part, kind: Resize, new_size: u64) -> Job {
-    let new_size = new_size / (1 << 20) * (1 << 20);
+    // Rounded to whole MiB, but a grow never ends below the partition's own end.
+    let new_size = if new_size >= part.size { (new_size / (1 << 20) * (1 << 20)).max(part.size) } else { new_size / (1 << 20) * (1 << 20) };
     let end = part.start + new_size - 1;
     let table = Step::root(&[
         "sh",
@@ -522,6 +526,7 @@ pub fn resize(disk: &Disk, part: &Part, kind: Resize, new_size: u64) -> Job {
                 steps.extend(unmount_steps(part));
                 steps.push(Step::root(&["ntfsresize", "-f", "-s", &new_size.to_string(), &part.path]));
             }
+            // Not reached: min_size keeps XFS from being made smaller.
             Resize::Xfs => {}
         }
         steps.push(table);
@@ -560,8 +565,9 @@ pub fn image_create(disk: &Disk, file: &Path, zstd: bool) -> Job {
 }
 
 pub fn image_restore(file: &Path, disk: &Disk) -> Job {
-    let script = "case \"$1\" in *.zst) zstd -dc -- \"$1\" ;; *) cat -- \"$1\" ;; esac | dd of=\"$2\" bs=4M status=none conv=fsync";
-    let mut steps: Vec<Step> = unmount_all(disk).into_iter().map(Step::tolerated).collect();
+    // The shell tells only how dd did, so a broken archive is tested before the disk is written.
+    let script = "case \"$1\" in *.zst) zstd -tq -- \"$1\" || exit 1 ;; esac; case \"$1\" in *.zst) zstd -dc -- \"$1\" ;; *) cat -- \"$1\" ;; esac | dd of=\"$2\" bs=4M status=none conv=fsync";
+    let mut steps = unmount_all(disk);
     steps.push(Step::root(&["sh", "-c", script, "sh", &file.to_string_lossy(), &disk.path]));
     steps.push(Step::root(&["partprobe", &disk.path]).tolerated());
     Job::new(&format!("還原「{}」", disk.title()), steps)
@@ -780,7 +786,7 @@ mod tests {
         disk.parts = vec![part.clone()];
         finish(resize(&disk, &part, Resize::Ext, 48 << 20)).unwrap_err(); // the file system has not been made yet
 
-        finish(format(&disk, &part, "ext4", "資料", false)).unwrap();
+        finish(format(&part, "ext4", "資料", false)).unwrap();
         assert!(said(&["dumpe2fs", "-h", &part.path]).contains("資料"));
         finish(check(&part).unwrap()).unwrap();
 
@@ -819,5 +825,20 @@ mod tests {
         let point = root.argv.last().unwrap();
         assert!(point.ends_with("/sdb1") && !point.contains(".."), "{point}");
         assert!(root.argv[2].contains("nosuid,nodev"));
+    }
+    #[test]
+    fn a_failed_unmount_stops_what_overwrites_the_disk() {
+        let mut disk = Disk { path: "/dev/sdb".into(), kname: "sdb".into(), name: String::new(), size: 0, kind: crate::model::Kind::External,
+            read_only: false, tran: String::new(), table: None, sector: 512, backing: None, parts: Vec::new() };
+        let mut part = whole(&disk, "ext4");
+        part.number = 1;
+        part.path = "/dev/sdb1".into();
+        part.mounts = vec![("/dev/sdb1".into(), "/media/user/data".into())];
+        disk.parts = vec![part.clone()];
+        for job in [format(&part, "ext4", "", false), wipe(&disk, false, None), image_restore(Path::new("a.img"), &disk)] {
+            let Action::Run(step) = &job.actions[0] else { panic!("an unmount runs a command") };
+            assert_eq!(step.argv[..2], ["udisksctl", "unmount"], "{}", job.reason);
+            assert!(!step.tolerate, "{}", job.reason);
+        }
     }
 }

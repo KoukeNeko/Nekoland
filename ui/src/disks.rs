@@ -385,7 +385,7 @@ impl Window {
         on_part("swap", |this, _, part| this.run_job("處理 swap", "無法處理 swap".into(), ops::swap(&part, !part.mounted())));
         on_part("resize", Window::resize);
         on_part("check", |this, _, part| this.check(part));
-        on_part("format", Window::format);
+        on_part("format", |this, _, part| this.format(part));
         let new_partition = gio::SimpleAction::new("new-partition", None);
         let this = self.clone();
         new_partition.connect_activate(move |_, _| {
@@ -520,10 +520,7 @@ impl Window {
         };
         let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).valign(gtk::Align::Center).build();
         text.append(&label(&disk.title(), &["heading"]));
-        let detail = match disk.kind {
-            Kind::Image => format!("{} · {}", model::size(disk.size), disk.kname),
-            _ => format!("{} · {}", model::size(disk.size), disk.kname),
-        };
+        let detail = format!("{} · {}", model::size(disk.size), disk.kname);
         text.append(&label(&detail, &["caption", "dim-label"]));
         if let Some(fill) = disk.fill() {
             let bar = gtk::ProgressBar::builder().fraction(fill / 100.0).css_classes(["dm-mini"]).build();
@@ -779,7 +776,7 @@ impl Window {
         enable("smart", whole && ops::which("smartctl").is_some());
         enable("speed", true);
         enable("image-create", true);
-        enable("image-restore", whole && !disk.read_only);
+        enable("image-restore", whole && !disk.read_only && !disk.parts.iter().any(|part| part.is_system()));
         enable("wipe", whole && !disk.read_only && !disk.parts.iter().any(|part| part.is_system()));
         self.more.set_sensitive(!self.busy.get());
     }
@@ -855,12 +852,11 @@ impl Window {
         glib::spawn_future_local(async move {
             while let Ok(event) = events.recv().await {
                 match event {
-                    Event::Progress(Some(done)) => {
+                    Event::Progress(done) => {
                         this.known.set(true);
                         this.busy_bar.set_fraction(done);
                         this.busy_text.set_label(&format!("{:.0}%", done * 100.0));
                     }
-                    Event::Progress(None) => this.known.set(false),
                     Event::Done(result) => {
                         this.cancel.replace(None);
                         this.set_busy(None);
@@ -922,7 +918,7 @@ impl Window {
         self.run_job(&format!("退出「{name}」"), format!("無法退出「{name}」"), ops::eject(disk));
     }
 
-    fn format(self: &Rc<Self>, disk: Disk, part: Part) {
+    fn format(self: &Rc<Self>, part: Part) {
         let known: Vec<&str> = ops::FILE_SYSTEMS.iter().map(|(_, name)| *name).collect();
         let current = ops::FILE_SYSTEMS.iter().position(|(id, _)| *id == part.fstype).unwrap_or(0) as u32;
         let fs = combo("檔案系統", &known, current);
@@ -939,7 +935,7 @@ impl Window {
             true,
             move || {
                 let fstype = ops::FILE_SYSTEMS[fs.selected() as usize].0;
-                let job = ops::format(&disk, &part, fstype, name.text().as_str(), wipe.selected() == 1);
+                let job = ops::format(&part, fstype, name.text().as_str(), wipe.selected() == 1);
                 this.run_job(&format!("格式化「{name_text}」"), format!("無法格式化「{name_text}」"), job);
             },
         );
