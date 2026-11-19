@@ -758,7 +758,12 @@ impl Nekoland {
         let names: Vec<String> = (0..count).map(|index| self.workspaces.name(index)).collect();
         let renaming = (self.overview.as_ref())
             .and_then(|overview| overview.renaming.as_ref())
-            .map(|naming| (naming.index, format!("{}{}", naming.text, naming.preedit), naming.chosen));
+            .map(|naming| match naming.preedit.is_empty() {
+                true => (naming.index, naming.text.clone(), naming.chosen),
+                // What is being composed replaces a chosen name, as typing would.
+                false if naming.chosen => (naming.index, naming.preedit.clone(), false),
+                false => (naming.index, format!("{}{}", naming.text, naming.preedit), false),
+            });
         let scroll = self.overview.as_ref().and_then(|overview| overview.bar_scroll);
         let (tile_width, first, scroll, scroll_end) = bar_row(output.size.w, count, active, scroll);
         let tile_height = (tile_width * output.size.h / output.size.w.max(1)).max(1);
