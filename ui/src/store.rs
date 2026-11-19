@@ -2054,7 +2054,6 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
     content.append(&loading());
     let all = gtk::Button::builder()
         .label("全部更新")
-        .css_classes(["suggested-action", "pill"])
         .sensitive(false)
         .build();
     let page = page("更新", &content, Some(all.upcast_ref()));
