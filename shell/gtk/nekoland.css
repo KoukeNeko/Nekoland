@@ -113,6 +113,72 @@ entry.error {
   outline-offset: -1.5px;
 }
 
+/* What is joined in a row or a column is one control, as a browser's address between its
+ * buttons: its parts are square where they meet and round only at its two ends. The rules
+ * above round every button with words and every field, which would part them again.
+ * Toggles joined are a control of their own, further down. */
+/* One with only an icon is as tall as one with words, whose line is taller than the
+ * icon: kept in the middle by its program, it would end short of its neighbours. */
+.linked:not(.vertical) > button:not(.toggle) {
+  min-height: 26px;
+}
+.linked:not(.vertical) > button:not(.toggle):not(:first-child),
+.linked:not(.vertical) > entry:not(:first-child),
+.linked:not(.vertical) > menubutton:not(:first-child) > button,
+.linked:not(.vertical) > dropdown:not(:first-child) > button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.linked:not(.vertical) > button:not(.toggle):not(:last-child),
+.linked:not(.vertical) > entry:not(:last-child),
+.linked:not(.vertical) > menubutton:not(:last-child) > button,
+.linked:not(.vertical) > dropdown:not(:last-child) > button {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.linked:not(.vertical) > button:not(.toggle):first-child,
+.linked:not(.vertical) > entry:first-child,
+.linked:not(.vertical) > menubutton:first-child > button,
+.linked:not(.vertical) > dropdown:first-child > button {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.linked:not(.vertical) > button:not(.toggle):last-child,
+.linked:not(.vertical) > entry:last-child,
+.linked:not(.vertical) > menubutton:last-child > button,
+.linked:not(.vertical) > dropdown:last-child > button {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+.linked.vertical > button:not(:first-child),
+.linked.vertical > entry:not(:first-child),
+.linked.vertical > menubutton:not(:first-child) > button,
+.linked.vertical > dropdown:not(:first-child) > button {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.linked.vertical > button:not(:last-child),
+.linked.vertical > entry:not(:last-child),
+.linked.vertical > menubutton:not(:last-child) > button,
+.linked.vertical > dropdown:not(:last-child) > button {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.linked.vertical > button:first-child,
+.linked.vertical > entry:first-child,
+.linked.vertical > menubutton:first-child > button,
+.linked.vertical > dropdown:first-child > button {
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+.linked.vertical > button:last-child,
+.linked.vertical > entry:last-child,
+.linked.vertical > menubutton:last-child > button,
+.linked.vertical > dropdown:last-child > button {
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 /* A switch: a line-coloured track that turns ink, its knob the colour drawn on ink then,
  * not libadwaita's white, which is lost on light ink in the dark. */
 switch {
