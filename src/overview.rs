@@ -450,6 +450,9 @@ pub struct Overview {
     /// How much the desktops' names showed on the strip when the overview began to close,
     /// so that they only fade from there and do not come back as the bar closes.
     names_at_close: f64,
+    /// How far the menu bar's content is off the screen, set once a frame: what is drawn
+    /// by it is cut at one height, which reading the clock again for each would not give.
+    menu_away: f64,
     expanding: bool,
     last_tick: Instant,
     strip_id: Id,
@@ -641,6 +644,7 @@ impl Nekoland {
             expansion: 0.0,
             expansion_speed: 0.0,
             names_at_close: 1.0,
+            menu_away: 0.0,
             expanding: false,
             last_tick: Instant::now(),
             strip_id: Id::new(),
@@ -1015,17 +1019,7 @@ impl Nekoland {
     /// How far the menu bar's content has gone up off the screen, 0 to 1: away as the
     /// overview opens, and back as it ends, once the desktops' names have gone.
     pub fn overview_menu_away(&self) -> f64 {
-        let Some(overview) = &self.overview else {
-            return 0.0;
-        };
-        if !self.config.animations {
-            return 1.0;
-        }
-        if overview.closing {
-            return (overview.progress() * 2.0).min(1.0);
-        }
-        let t = (overview.started.elapsed().as_secs_f64() / MENU_SLIDE.as_secs_f64()).min(1.0);
-        t * (2.0 - t)
+        self.overview.as_ref().map_or(0.0, |overview| overview.menu_away)
     }
 
     /// The desktops' bar: the menu bar's pane of glass grown down, the names fading out on
@@ -1201,6 +1195,14 @@ impl Nekoland {
             self.overview = None;
             return;
         }
+        overview.menu_away = if !self.config.animations {
+            1.0
+        } else if overview.closing {
+            (progress * 2.0).min(1.0)
+        } else {
+            let t = (overview.started.elapsed().as_secs_f64() / MENU_SLIDE.as_secs_f64()).min(1.0);
+            t * (2.0 - t)
+        };
         // A window gone moves the ones after it up the list, where the drag and the
         // hovered slot are held by position: they are let go rather than point at another.
         let before = overview.slots.len();
