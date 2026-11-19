@@ -794,7 +794,12 @@ impl Win {
                 pdfdoc::Target::Previous => self.go_page(index.saturating_sub(1), None),
                 pdfdoc::Target::First => self.go_page(0, None),
                 pdfdoc::Target::Last => self.go_page(last, None),
-                pdfdoc::Target::Uri(uri) => gtk::UriLauncher::new(&uri).launch(Some(&self.window), gio::Cancellable::NONE, |_| {}),
+                // A PDF is untrusted: its links may open web pages and mail, not files or other apps.
+                pdfdoc::Target::Uri(uri) => {
+                    if glib::Uri::peek_scheme(&uri).is_some_and(|scheme| matches!(scheme.as_str(), "http" | "https" | "mailto")) {
+                        gtk::UriLauncher::new(&uri).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
+                    }
+                }
             }
             return;
         }

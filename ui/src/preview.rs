@@ -2673,8 +2673,13 @@ mod tests {
         assert!(pdfdoc::permissions(&document).copy);
         // A password-protected file's pages are reordered with its password.
         pdfdoc::rebuild(&locked, &[(locked.clone(), Some("secret".into()), 2), (locked.clone(), Some("secret".into()), 1)]).unwrap();
+        assert!(open_pdf(&locked, None).is_err(), "reordering kept the password");
         let document = open_pdf(&locked, Some("secret")).unwrap();
         assert!(document.page(0).unwrap().text().unwrap().contains("two"));
+        assert!(!pdfdoc::permissions(&document).print);
+        // An open file stays open.
+        pdfdoc::rebuild(&path, &[(path.clone(), None, 2), (path.clone(), None, 1)]).unwrap();
+        assert!(open_pdf(&path, None).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

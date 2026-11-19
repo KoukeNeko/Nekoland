@@ -202,6 +202,10 @@ fn qpdf(args: Vec<OsString>) -> Result<String, String> {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::OpenOptionsExt;
+    // qpdf reads the argument file a line per argument, so a newline would split one in two.
+    if let Some(arg) = args.iter().find(|arg| arg.as_bytes().iter().any(|&byte| byte == b'\n' || byte == b'\r')) {
+        return Err(format!("qpdf: {} 含有換行", arg.to_string_lossy()));
+    }
     let dir = super::scratch_dir();
     std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     let listed = dir.join(format!("qpdf-{}-{}.args", std::process::id(), glib::monotonic_time()));
@@ -256,6 +260,11 @@ pub fn rebuild(path: &Path, plan: &[(PathBuf, Option<String>, u32)]) -> Result<(
             args.push(pages.iter().map(u32::to_string).collect::<Vec<_>>().join(",").into());
         }
         args.push("--".into());
+        // Built from --empty, the new file would otherwise drop the password and permissions.
+        args.push(OsString::from(format!("--copy-encryption={}", path.display())));
+        if let Some((_, Some(password), _)) = plan.iter().find(|(file, _, _)| file == path) {
+            args.push(format!("--encryption-file-password={password}").into());
+        }
         args.push(to.into());
         qpdf(args).map(drop)
     })

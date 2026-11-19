@@ -263,10 +263,21 @@ impl Win {
                 return Err(err);
             }
         }
-        self.keep_version(to);
+        let redacting_in_place = !redactions.is_empty() && to == pdf.path;
+        if !redacting_in_place {
+            self.keep_version(to);
+        }
         std::fs::rename(&new, to).map_err(|err| format!("{}: {err}", to.display()))?;
         if to == pdf.path {
-            if !redactions.is_empty() {
+            if redacting_in_place {
+                // What was blacked out must not outlive the save: no version or 還原 snapshot keeps it.
+                let versions = versions_dir(to);
+                if let Err(err) = std::fs::remove_dir_all(&versions).or_else(|err| if versions.exists() { Err(err) } else { Ok(()) }) {
+                    eprintln!("{}: {err}", versions.display());
+                }
+                for snapshot in pdf.undo.borrow_mut().drain(..).chain(pdf.redo.borrow_mut().drain(..)) {
+                    let _ = std::fs::remove_file(snapshot);
+                }
                 // The pages blacked out are pictures now, read again with the rest.
                 self.redactions.borrow_mut().clear();
                 pdf.dirty.set(false);
