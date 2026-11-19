@@ -62,6 +62,8 @@ const LIFT_TIME: f64 = 0.1;
 /// Nearer its own size than this, an icon the pointer left is drawn at it.
 const LIFT_AT_REST: f64 = 0.002;
 const SEARCH_WIDTH: i32 = 360;
+/// The corner of the search field: the design language's for a field.
+const SEARCH_RADIUS: i32 = 8;
 /// Room under the grid for the dots that tell the pages.
 const DOTS: i32 = 40;
 /// How long the view and a folder take to fade in.
@@ -1589,11 +1591,12 @@ impl Nekoland {
                 0
             };
             front.push(Overlay {
-                fade,
+                // Its glass goes with it, out of the way of the rows.
+                fade: fade * search_shown,
                 id: &apps.ids[2],
                 rect: Rectangle::new(layout.search.loc - Point::from((0, above)), layout.search.size),
-                glass: None,
-                alpha: search_shown,
+                glass: Some((Tier::Menu, SEARCH_RADIUS)),
+                alpha: 1.0,
                 picture,
             });
         }
@@ -2158,7 +2161,8 @@ fn draw_search(query: &str, preedit: &str, size: Size<i32, Logical>) -> Option<P
     {
         let cr = Context::new(&surface).ok()?;
         let colors = colors(true);
-        draw_field(&cr, (0.0, 0.0, f64::from(size.w), f64::from(size.h)), &colors);
+        // On glass, as all that floats over the desktop is.
+        paint_pane(&cr, f64::from(size.w), f64::from(size.h), f64::from(SEARCH_RADIUS), true, Tier::Menu);
         cr.set_source_rgb(colors.ink_3.0, colors.ink_3.1, colors.ink_3.2);
         cr.set_line_width(1.6);
         let (cx, cy) = (22.0, f64::from(size.h) / 2.0 - 1.0);
