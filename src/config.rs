@@ -1000,25 +1000,28 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
     };
     let changed = with_setting(&text, key, line);
     toml::from_str::<Config>(&changed).map_err(|err| format!("{line}: {err}"))?;
-    // Written whole or not at all, to a configuration linked from a dotfiles folder there.
-    let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    let partial = target.with_extension("toml.partial");
-    let write = || -> std::io::Result<()> {
-        use std::io::Write;
-        std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
-        let mut file = std::fs::File::create(&partial)?;
-        file.write_all(changed.as_bytes())?;
-        // The one there keeps who may read it.
-        if let Ok(old) = std::fs::metadata(&target) {
-            file.set_permissions(old.permissions())?;
-        }
-        // On the disk before it takes the old one's place, for a power cut in between.
-        file.sync_all()?;
-        std::fs::rename(&partial, &target)?;
-        // The rename itself is on the disk only once its folder is.
-        std::fs::File::open(target.parent().unwrap_or(&target))?.sync_all()
-    };
-    write().map_err(failed)
+    write_whole(&path, &changed).map_err(failed)
+}
+
+/// Writes a file whole or not at all, to the file a link there points to, as one linked from
+/// a dotfiles folder.
+pub fn write_whole(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut partial = target.clone().into_os_string();
+    partial.push(".partial");
+    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+    let mut file = std::fs::File::create(&partial)?;
+    file.write_all(text.as_bytes())?;
+    // The one there keeps who may read it.
+    if let Ok(old) = std::fs::metadata(&target) {
+        file.set_permissions(old.permissions())?;
+    }
+    // On the disk before it takes the old one's place, for a power cut in between.
+    file.sync_all()?;
+    std::fs::rename(&partial, &target)?;
+    // The rename itself is on the disk only once its folder is.
+    std::fs::File::open(target.parent().unwrap_or(&target))?.sync_all()
 }
 
 /// The configuration text with its `key = [...]` setting, on one line or several, replaced,

@@ -132,10 +132,7 @@ impl Workspaces {
         };
         let written = toml::to_string(&saved)
             .map_err(std::io::Error::other)
-            .and_then(|text| {
-                std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
-                std::fs::write(&path, text)
-            });
+            .and_then(|text| config::write_whole(&path, &text));
         if let Err(err) = written {
             tracing::warn!("{}: {err}", path.display());
         }
