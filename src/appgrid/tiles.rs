@@ -243,6 +243,7 @@ impl Stock {
                     rect: icon_rect(middle, f64::from(ICON) * size),
                     alpha: board.alpha,
                     turn,
+                    clip: None,
                 });
             }
             if let Some(Some(label)) = self.labels.get(&wanted.name) {
@@ -258,6 +259,7 @@ impl Stock {
                     ),
                     alpha: board.alpha,
                     turn,
+                    clip: None,
                 });
             }
             if let (true, Some(plate)) = (board.aimed == Some(index), &self.plate) {
@@ -267,6 +269,7 @@ impl Stock {
                     rect: icon_rect(middle, f64::from(ICON) * PLATE_GROWN),
                     alpha: board.alpha,
                     turn: 0.0,
+                    clip: None,
                 });
             }
             // The icon, its name and its plate fly as one.
@@ -300,6 +303,7 @@ impl Stock {
             rect: icon_rect(middle, size),
             alpha: 0.92,
             turn: 0.0,
+            clip: None,
         })
     }
 }

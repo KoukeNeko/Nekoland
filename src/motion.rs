@@ -128,13 +128,13 @@ pub fn apps_drop(opened: Instant, leaving: Option<f64>) -> f64 {
     leaving.unwrap_or_else(|| APPS_DROP.at(opened))
 }
 
-/// A folder opening out of its icon, a little past its size, and how long it takes to go
-/// back in.
-const FOLDER: Spring = Spring::new(0.28, 0.82);
-const FOLDER_CLOSE: f64 = 0.16;
+/// The pages parting for a folder, without swinging past, and how long they take to close
+/// over it again.
+const FOLDER: Spring = Spring::new(0.28, 1.0);
+const FOLDER_CLOSE: f64 = 0.2;
 
-/// How far out of its icon a folder has come, 0 to 1 and a little past: `opened` a moment
-/// ago, or on its way back in since it was `closed`, after which it is gone.
+/// How far the pages have parted for a folder, 0 to 1: `opened` a moment ago, or closing
+/// again since it was `closed`, after which it is gone.
 pub fn folder_arrival(opened: Instant, closed: Option<Instant>) -> Option<f64> {
     let Some(closed) = closed else {
         return Some(FOLDER.at(opened));

@@ -6,7 +6,8 @@
 //!
 //! As on the Mac's Launchpad, the grid is arranged by dragging: an application dropped
 //! between others goes there, onto another makes a folder of the two, onto a folder goes
-//! into it. A folder opens over the grid; its applications are reordered there or dragged
+//! into it. A folder opens in a strip under its row, as on Mac OS X, the rows parting for
+//! it; its applications are reordered there or dragged
 //! out of it, and its name is changed by clicking it. The arrangement is kept in
 //! `app-grid.toml` beside the configuration.
 //!
@@ -83,11 +84,19 @@ const EDGE_TIME: f64 = 0.6;
 const EDGE: f64 = 28.0;
 /// Within this of an icon's middle, a dragged application goes onto it, not beside it.
 const ONTO: f64 = 30.0;
+/// The design language's step between an open folder's strip and what is in it and
+/// beside it: the names over it, its own name, its last names, the icons under it.
 const FOLDER_PADDING: i32 = 24;
-const FOLDER_TITLE: i32 = 48;
-const FOLDER_COLUMNS: usize = 5;
-const FOLDER_ROWS: usize = 4;
-const FOLDER_RADIUS: i32 = 24;
+/// The band an open folder's name is in, over its applications: the padding and a line.
+const FOLDER_TITLE: i32 = FOLDER_PADDING + 24;
+/// How far under the top of its place a name ends: a line of 16 under where it starts.
+const NAME_END: i32 = ICON_TOP + ICON + 8 + 16;
+/// How far under the top of its row the pages part for an open folder.
+const FOLDER_SPLIT: i32 = NAME_END + FOLDER_PADDING;
+/// What a place has under its name, more than the padding: the strip ends that much short.
+const FOLDER_TRIM: i32 = CELL_HEIGHT - NAME_END - FOLDER_PADDING;
+/// The point an open folder's strip has up at its icon: how tall, and half as wide again.
+const FOLDER_NOTCH: i32 = 12;
 const ARRANGEMENT: &str = "app-grid.toml";
 
 struct GridApp {
@@ -286,15 +295,67 @@ enum Pressed {
     App(usize),
 }
 
-/// What a folder's pane was drawn with: its size, its name, and whether it was being renamed.
-type FolderDrawn = (Size<i32, Logical>, String, bool);
+/// What a folder's strip was drawn with: its size, its name, whether it was being renamed,
+/// and how far along it its name starts and its point is.
+type FolderDrawn = (Size<i32, Logical>, String, bool, i32, Option<i32>);
 
-/// Where an open folder is: its pane, its grid, and the grid's columns and rows.
+/// Where an open folder is, as on Mac OS X: a strip across the screen under its icon's row,
+/// which the rows above and below part for. Its strip, its grid, and the grid's columns
+/// and rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct FolderPlace {
     panel: Rectangle<i32, Logical>,
     grid: Rectangle<i32, Logical>,
     columns: usize,
     rows: usize,
+    /// How far the rows down to its icon's go up for it; those below go down by the rest
+    /// of its height.
+    up: i32,
+    /// Where across the screen its point is: the middle of its icon, if that is on the page.
+    notch: Option<i32>,
+}
+
+impl FolderPlace {
+    /// The strip under the row `row` of the page, for a folder of `count` applications:
+    /// as many rows of them as there is room for down to the dots, the rows above going
+    /// up to the search field at most.
+    fn under(layout: &Layout, row: usize, count: usize, notch: Option<i32>) -> Self {
+        let split = layout.grid.loc.y + row as i32 * CELL_HEIGHT + FOLDER_SPLIT;
+        let bottom = layout.grid.loc.y + layout.grid.size.h + DOTS;
+        let room = bottom - (layout.search.loc.y + FOLDER_SPLIT) - FOLDER_TITLE + FOLDER_TRIM;
+        let columns = layout.columns.max(1);
+        let rows = count.max(1).div_ceil(columns).min((room / CELL_HEIGHT).max(1) as usize);
+        let height = FOLDER_TITLE + rows as i32 * CELL_HEIGHT - FOLDER_TRIM;
+        let up = (split + height - bottom).max(0);
+        let left = layout.grid.loc.x + layout.grid.size.w / 2 - layout.stride / 2;
+        let panel = Rectangle::new((left, split - up).into(), (layout.stride, height).into());
+        Self {
+            panel,
+            grid: Rectangle::new(
+                (layout.grid.loc.x, panel.loc.y + FOLDER_TITLE).into(),
+                (columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT).into(),
+            ),
+            columns,
+            rows,
+            up,
+            notch,
+        }
+    }
+
+    /// Where the pages part, at rest.
+    fn split(&self) -> i32 {
+        self.panel.loc.y + self.up
+    }
+
+    /// How far the rows under it go down for it: until their icons are the padding under it.
+    fn down(&self) -> i32 {
+        self.panel.size.h - self.up - (CELL_HEIGHT - FOLDER_SPLIT + ICON_TOP - FOLDER_PADDING)
+    }
+
+    /// Where its name starts, along the strip: over the first icon's side.
+    fn title_x(&self) -> i32 {
+        self.grid.loc.x - self.panel.loc.x + (CELL_WIDTH - ICON) / 2
+    }
 }
 
 struct OpenFolder {
@@ -787,30 +848,16 @@ impl AppGrid {
         }
     }
 
-    /// The folder to draw, open or on its way back in, with how it is drawn: the point
-    /// that stays where it is, how many times its size it is about that point, and how far
-    /// out of its icon it has come, 0 to 1.
-    fn folder_shown(&self, layout: &Layout) -> Option<(&OpenFolder, FolderPlace, Point<f64, Logical>, f64, f64)> {
+    /// The folder to draw, open or on its way back in, and how far the pages have parted
+    /// for it, 0 to 1.
+    fn folder_shown(&self, layout: &Layout) -> Option<(&OpenFolder, FolderPlace, f64)> {
         let (open, closed) = match (&self.open, &self.closed) {
             (Some(open), _) => (open, None),
             (None, Some((open, closed))) => (open, Some(*closed)),
             (None, None) => return None,
         };
         let out = crate::motion::folder_arrival(open.opened, closed)?;
-        let place = self.folder_place(open.folder, layout)?;
-        let panel = place.panel.to_f64();
-        let middle = panel.loc + Point::from((panel.size.w / 2.0, panel.size.h / 2.0));
-        // From its icon on the page, or, with no icon there, as while searching, its middle.
-        let small = f64::from(ICON) / panel.size.w;
-        let icon = (self.cells.iter())
-            .position(|cell| matches!(cell, Cell::Entry(Entry::Folder(folder)) if *folder == open.folder))
-            .filter(|_| self.query.is_empty())
-            .map_or(middle, |index| self.icon_middle(layout, index));
-        let pivot = Point::from((
-            (icon.x - small * middle.x) / (1.0 - small),
-            (icon.y - small * middle.y) / (1.0 - small),
-        ));
-        Some((open, place, pivot, small + (1.0 - small) * out, out.clamp(0.0, 1.0)))
+        Some((open, self.folder_place(open.folder, layout)?, out))
     }
 
     /// Where the open folder is, and its grid of applications.
@@ -819,25 +866,14 @@ impl AppGrid {
     }
 
     fn folder_place(&self, folder: usize, layout: &Layout) -> Option<FolderPlace> {
-        let count = self.folders.get(folder)?.apps.len().max(1);
-        let columns = count.clamp(3, FOLDER_COLUMNS);
-        let rows = count.div_ceil(columns).clamp(1, FOLDER_ROWS);
-        let size = Size::from((
-            columns as i32 * CELL_WIDTH + FOLDER_PADDING * 2,
-            rows as i32 * CELL_HEIGHT + FOLDER_PADDING * 2 + FOLDER_TITLE,
-        ));
-        let center = layout.grid.loc + Point::from((layout.grid.size.w / 2, layout.grid.size.h / 2));
-        let panel = Rectangle::new(center - Point::from((size.w / 2, size.h / 2)), size);
-        let grid = Rectangle::new(
-            panel.loc + Point::from((FOLDER_PADDING, FOLDER_PADDING + FOLDER_TITLE)),
-            Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT)),
-        );
-        Some(FolderPlace {
-            panel,
-            grid,
-            columns,
-            rows,
-        })
+        let count = self.folders.get(folder)?.apps.len();
+        // Under its icon on the page, or, with no icon there, as while searching, the top row.
+        let index = (self.cells.iter())
+            .position(|cell| matches!(cell, Cell::Entry(Entry::Folder(other)) if *other == folder))
+            .filter(|_| self.query.is_empty());
+        let row = index.map_or(0, |index| index % layout.per_page().max(1) / layout.columns.max(1));
+        let notch = index.map(|index| self.icon_middle(layout, index).x.round() as i32);
+        Some(FolderPlace::under(layout, row, count, notch))
     }
 
     /// The tint under it all, as large as the output, and the search field.
@@ -1207,12 +1243,14 @@ impl Nekoland {
     fn refresh_folder(&mut self, layout: &Layout, pointer: Option<Point<f64, Logical>>, dt: f64) -> Option<()> {
         let animated = self.config.animations;
         let apps = self.overview.as_mut()?.apps.as_mut()?;
+        let place = apps.folder_layout(layout)?;
         let FolderPlace {
             panel,
             grid,
             columns,
             rows,
-        } = apps.folder_layout(layout)?;
+            ..
+        } = place;
         let cells = apps.folder_cells();
         let hovered = pointer
             .filter(|_| apps.held.is_none())
@@ -1238,9 +1276,10 @@ impl Nekoland {
             arrival,
         );
         open.cells = cells;
-        let key = (panel.size, name, open.renaming);
+        let notch = place.notch.map(|notch| notch - panel.loc.x);
+        let key = (panel.size, name, open.renaming, place.title_x(), notch);
         if open.drawn.as_ref() != Some(&key) || open.picture.is_none() {
-            open.picture = draw_folder(panel.size, &key.1, key.2);
+            open.picture = draw_folder(&key);
             open.drawn = Some(key);
         }
         for wanted in &wanted {
@@ -1300,16 +1339,26 @@ impl Nekoland {
                 picture,
             });
         }
-        // How far the open folder has come in, which the pages go dim by.
-        let folder = apps.folder_shown(&layout);
+        // How far the pages have parted for the open folder, which they go dim by.
+        let animated = self.config.animations;
+        let folder = (apps.folder_shown(&layout))
+            .map(|(open, place, out)| (open, place, if animated { out.clamp(0.0, 1.0) } else { 1.0 }))
+            // It closes as the grid leaves.
+            .map(|(open, place, out)| (open, place, out * leaving.unwrap_or(1.0)));
         let folder_fade = folder.as_ref().map_or(0.0, |(.., out)| *out as f32);
-        if let Some((open, FolderPlace { panel, grid, .. }, pivot, zoom, _)) = folder {
-            // There to see well before it is its size.
-            let alpha = (folder_fade * 3.0).min(1.0).min(leaving.map_or(1.0, |leaving| leaving as f32));
+        if let Some((open, place, out)) = &folder {
+            // There to see well before the pages have parted all the way.
+            let alpha = (folder_fade * 3.0).min(1.0);
             layers.extend(front.drain(..).map(Layer::Overlay));
+            // The strip goes up with the rows above it, and is as tall as the pages have
+            // parted; its applications go with it, and show only within it.
+            let risen = f64::from(place.up) * (1.0 - out);
+            let top = f64::from(place.panel.loc.y) + risen;
+            let height = f64::from(place.panel.size.h) * out;
+            let (left, width) = (f64::from(place.panel.loc.x), f64::from(place.panel.size.w));
             let sprites = stock.board(
                 &Board {
-                    origin: grid.loc.to_f64(),
+                    origin: place.grid.loc.to_f64() + Point::from((0.0, risen)),
                     seen,
                     cells: &open.cells,
                     glides: &open.glides,
@@ -1325,18 +1374,20 @@ impl Nekoland {
                 None,
                 |entry| apps.wanted(entry),
             );
-            let animated = self.config.animations;
             layers.push(Layer::Sprites(
                 (sprites.into_iter())
-                    .map(|sprite| if animated { sprite.scaled_about(pivot, zoom) } else { sprite })
+                    .map(|sprite| sprite.clipped(Rectangle::new((left, top).into(), (width, height).into())))
                     .collect(),
             ));
             if let Some(picture) = &open.picture {
                 front.push(Overlay {
                     fade: alpha,
                     id: &apps.ids[4],
-                    rect: panel,
-                    glass: Some((Tier::Menu, FOLDER_RADIUS)),
+                    rect: Rectangle::new(
+                        (place.panel.loc.x, top.round() as i32 - FOLDER_NOTCH).into(),
+                        (place.panel.size.w, FOLDER_NOTCH + height.round() as i32).into(),
+                    ),
+                    glass: None,
                     alpha: 1.0,
                     picture,
                 });
@@ -1353,6 +1404,12 @@ impl Nekoland {
                 _ => None,
             };
             let dimmed = 1.0 - (1.0 - FOLDER_DIM) * folder_fade;
+            // The rows down to the open folder's go up for its strip and the rest down,
+            // dim, all but the folder itself.
+            let parted = folder.as_ref().map(|(_, place, out)| {
+                let (up, down) = (f64::from(place.up) * out, f64::from(place.down()) * out);
+                (f64::from(place.split()), up, down, place.notch.map(f64::from))
+            });
             // Each in from off the screen, the middle ones of the pages first, and out the
             // other way.
             let (opened, half) = (apps.opened, layout.grid.size.to_f64() / 2.0);
@@ -1360,9 +1417,22 @@ impl Nekoland {
             let reach = half.w.hypot(half.h).max(1.0);
             let flight = |home: Point<f64, Logical>| {
                 let from_middle = home - middle;
-                let arrived = crate::motion::app_arrival(opened, leaving, from_middle.x.hypot(from_middle.y) / reach);
+                let arrived = if animated {
+                    crate::motion::app_arrival(opened, leaving, from_middle.x.hypot(from_middle.y) / reach)
+                } else {
+                    1.0
+                };
                 let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), area.to_f64(), arrived);
-                (now, grown, (arrived * 3.0).clamp(0.0, 1.0) as f32)
+                let shown = (arrived * 3.0).clamp(0.0, 1.0) as f32;
+                match parted {
+                    Some((split, up, _, notch)) if home.y < split => {
+                        let open = notch.is_some_and(|notch| (home.x - notch).abs() < 1.0)
+                            && split - home.y < f64::from(CELL_HEIGHT);
+                        (now - Point::from((0.0, up)), grown, if open { shown } else { shown * dimmed })
+                    }
+                    Some((_, _, down, _)) => (now + Point::from((0.0, down)), grown, shown * dimmed),
+                    None => (now, grown, shown),
+                }
             };
             let sprites = stock.board(
                 &Board {
@@ -1377,9 +1447,9 @@ impl Nekoland {
                     },
                     aimed,
                     shake: apps.shake(),
-                    alpha: fade * dimmed,
+                    alpha: fade,
                 },
-                self.config.animations.then_some(&flight),
+                Some(&flight),
                 |entry| apps.wanted(entry),
             );
             layers.push(Layer::Sprites(sprites));
@@ -1392,11 +1462,16 @@ impl Nekoland {
                         picture.size,
                     ),
                     glass: None,
-                    alpha: dimmed,
+                    alpha: 1.0 - folder_fade,
                     picture,
                 });
             }
         }
+        // Out of the way of the rows that went up over it for a folder.
+        let search_shown = match &folder {
+            Some((_, place, _)) if place.up > 0 => 1.0 - folder_fade,
+            _ => 1.0,
+        };
         if let Some((_, picture)) = &apps.search {
             // Let down from above the screen, and back up as the view leaves.
             let above = if self.config.animations {
@@ -1410,7 +1485,7 @@ impl Nekoland {
                 id: &apps.ids[2],
                 rect: Rectangle::new(layout.search.loc - Point::from((0, above)), layout.search.size),
                 glass: None,
-                alpha: 1.0,
+                alpha: search_shown,
                 picture,
             });
         }
@@ -1470,16 +1545,18 @@ impl Nekoland {
         let Some(layout) = apps.layout else {
             return;
         };
-        if let Some(FolderPlace {
-            panel,
-            grid,
-            columns,
-            rows,
-        }) = apps.folder_layout(&layout)
-        {
+        if let Some(place) = apps.folder_layout(&layout) {
+            let FolderPlace {
+                panel,
+                grid,
+                columns,
+                rows,
+                ..
+            } = place;
+            // Its name, and as much again beside it.
             let title = Rectangle::new(
-                panel.loc,
-                Size::from((panel.size.w, FOLDER_PADDING + FOLDER_TITLE)),
+                panel.loc + Point::from((place.title_x() - 12, 0)),
+                Size::from((CELL_WIDTH * 2, FOLDER_TITLE)),
             );
             let count = apps
                 .open
@@ -1678,6 +1755,7 @@ impl Nekoland {
             grid,
             columns,
             rows,
+            ..
         }) = apps.folder_layout(&layout)
         {
             if panel.to_f64().contains(pos) && matches!(from, Source::Folder(_)) {
@@ -1690,7 +1768,7 @@ impl Nekoland {
                 });
                 return;
             }
-            apps.open = None;
+            apps.close_folder();
         }
         if !apps.query.is_empty() {
             apps.target = Target::Nowhere;
@@ -1815,21 +1893,17 @@ impl Nekoland {
         self.close_overview(None);
     }
 
-    /// How many times its size the overlay named `id` is drawn, and about which point, its
-    /// middle if none is given: the applications on their way in or out, which come in
-    /// from a little larger and leave the same way, or a folder out of its icon.
-    pub fn apps_zoom_of(&self, id: &Id) -> Option<(Option<Point<f64, Logical>>, f64)> {
+    /// How many times its size the overlay named `id` is drawn, about its middle: the
+    /// applications on their way in or out, which come in from a little larger and leave
+    /// the same way.
+    pub fn apps_zoom_of(&self, id: &Id) -> Option<f64> {
         let overview = self.overview.as_ref().filter(|_| self.config.animations)?;
         let apps = overview.apps.as_ref()?;
-        if &apps.ids[4] == id {
-            let (.., pivot, zoom, _) = apps.folder_shown(apps.layout.as_ref()?)?;
-            return Some((Some(pivot), zoom)).filter(|(_, zoom)| (zoom - 1.0).abs() > ZOOM_AT_REST);
-        }
         if &apps.ids[1] != id {
             return None;
         }
         let leaving = overview.closing.then(|| overview.progress());
-        Some((None, crate::motion::apps_zoom(apps.opened, leaving))).filter(|(_, zoom)| (zoom - 1.0).abs() > ZOOM_AT_REST)
+        Some(crate::motion::apps_zoom(apps.opened, leaving)).filter(|zoom| (zoom - 1.0).abs() > ZOOM_AT_REST)
     }
 
     /// A key in the view: typing narrows it down, or names the folder being renamed;
@@ -2119,26 +2193,53 @@ fn draw_dots(width: i32, pages: usize, lit: usize) -> Option<Picture> {
 
 /// The open folder's pane: its name, in a field while it is changed. Its applications are
 /// sprites over it.
-fn draw_folder(size: Size<i32, Logical>, name: &str, renaming: bool) -> Option<Picture> {
-    let surface = text::canvas(size.w, size.h).ok()?;
+fn draw_folder((size, name, renaming, title_x, notch): &FolderDrawn) -> Option<Picture> {
+    let (width, top) = (f64::from(size.w), f64::from(FOLDER_NOTCH));
+    let bottom = top + f64::from(size.h);
+    let surface = text::canvas(size.w, size.h + FOLDER_NOTCH).ok()?;
     {
         let cr = Context::new(&surface).ok()?;
-        paint_pane(
-            &cr,
-            f64::from(size.w),
-            f64::from(size.h),
-            f64::from(FOLDER_RADIUS),
-            true,
-            Tier::Menu,
-        );
+        // Its top edge, up to a point at its icon.
+        let edge = || {
+            cr.move_to(0.0, top);
+            if let Some(notch) = notch.map(f64::from) {
+                cr.line_to(notch - top, top);
+                cr.line_to(notch, 0.0);
+                cr.line_to(notch + top, top);
+            }
+            cr.line_to(width, top);
+        };
+        edge();
+        cr.line_to(width, bottom);
+        cr.line_to(0.0, bottom);
+        cr.close_path();
+        cr.clip_preserve();
+        // Let into the pages: darker than they are, and darker yet under its edges.
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.34);
+        cr.fill().ok()?;
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.07);
+        for spread in [4.0, 10.0, 18.0, 28.0] {
+            cr.set_line_width(spread);
+            edge();
+            cr.stroke().ok()?;
+            cr.move_to(0.0, bottom);
+            cr.line_to(width, bottom);
+            cr.stroke().ok()?;
+        }
+        cr.set_line_width(2.0);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.4);
+        edge();
+        cr.stroke().ok()?;
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
+        cr.move_to(0.0, bottom);
+        cr.line_to(width, bottom);
+        cr.stroke().ok()?;
+
         let title = text_layout(&cr, name, 14.0);
         title.set_font_description(Some(&text::font("Bold 14")));
         let (width, height) = title.pixel_size();
-        let (x, y) = (
-            f64::from(size.w - width) / 2.0,
-            f64::from(FOLDER_PADDING) + f64::from(FOLDER_TITLE - height) / 2.0 - 6.0,
-        );
-        if renaming {
+        let (x, y) = (f64::from(*title_x), top + f64::from(FOLDER_PADDING + FOLDER_TITLE - height) / 2.0);
+        if *renaming {
             // The design language's field around the name, dark as the overview is.
             let colors = colors(true);
             let field = f64::from(FIELD_HEIGHT);
@@ -2171,6 +2272,34 @@ fn draw_held(tile: &Tile) -> Option<Picture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_opens_under_its_row_and_the_rows_part_for_it() {
+        let layout = Layout {
+            search: Rectangle::new((460, 56).into(), (SEARCH_WIDTH, 32).into()),
+            grid: Rectangle::new((136, 120).into(), (7 * CELL_WIDTH, 4 * CELL_HEIGHT).into()),
+            columns: 7,
+            rows: 4,
+            stride: 1280,
+            sidebar: None,
+        };
+        // With room under its row, nothing goes up: the strip is right under the names.
+        let top = FolderPlace::under(&layout, 0, 9, Some(640));
+        assert_eq!((top.rows, top.up), (2, 0));
+        assert_eq!(top.panel, Rectangle::new((0, 120 + FOLDER_SPLIT).into(), (1280, FOLDER_TITLE + 2 * CELL_HEIGHT - FOLDER_TRIM).into()));
+        // The next row's icons are as far under it as the names over it are: 24.
+        assert_eq!(120 + CELL_HEIGHT + ICON_TOP + top.down(), top.panel.loc.y + top.panel.size.h + 24);
+        assert_eq!(top.panel.loc.y, 120 + NAME_END + 24);
+        // In the last row, the rows go up for it, and it ends where the dots do.
+        let last = FolderPlace::under(&layout, 3, 9, Some(640));
+        assert!(last.up > 0);
+        assert_eq!(last.panel.loc.y + last.panel.size.h, 120 + 4 * CELL_HEIGHT + DOTS);
+        assert_eq!(last.split(), 120 + 3 * CELL_HEIGHT + FOLDER_SPLIT);
+        // However many it holds, its row stays under the top of the search field.
+        let full = FolderPlace::under(&layout, 3, 200, None);
+        assert!(full.split() - full.up - FOLDER_SPLIT >= layout.search.loc.y);
+        assert!(full.rows >= 1);
+    }
 
     #[test]
     fn an_icon_grows_under_the_pointer_and_settles_back_when_it_leaves() {

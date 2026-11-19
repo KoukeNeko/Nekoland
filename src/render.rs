@@ -798,15 +798,11 @@ fn floating_elements(
             Kind::Unspecified,
         )
         .ok();
-        // The applications come in and go out a little larger, around their middle, and a
-        // folder out of its icon; the glass behind goes with them.
-        let zoom = state.apps_zoom_of(overlay.id).map(|(pivot, zoom)| {
-            let pivot = match pivot {
-                Some(pivot) => (pivot - output_loc.to_f64()).to_physical(scale).to_i32_round(),
-                None => rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2)),
-            };
-            (pivot, zoom)
-        });
+        // The applications come in and go out a little larger, around their middle; the
+        // glass behind goes with them.
+        let zoom = state
+            .apps_zoom_of(overlay.id)
+            .map(|zoom| (rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2)), zoom));
         elements.extend(picture.map(|picture| match zoom {
             Some((pivot, zoom)) => {
                 SceneElement::ZoomedPicture(RescaleRenderElement::from_element(picture, pivot, zoom))

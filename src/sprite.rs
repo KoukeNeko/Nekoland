@@ -133,6 +133,8 @@ pub struct Placed<'a> {
     pub alpha: f32,
     /// How far it is turned about its middle, in radians.
     pub turn: f64,
+    /// What it shows within, if not all of it: the rest of it is not drawn.
+    pub clip: Option<Rectangle<f64, Logical>>,
 }
 
 impl Placed<'_> {
@@ -143,6 +145,11 @@ impl Placed<'_> {
             pivot + Point::from((from_pivot.x * factor, from_pivot.y * factor)),
             Size::from((self.rect.size.w * factor, self.rect.size.h * factor)),
         );
+        self
+    }
+
+    pub fn clipped(mut self, to: Rectangle<f64, Logical>) -> Self {
+        self.clip = Some(to);
         self
     }
 
@@ -161,12 +168,24 @@ impl Placed<'_> {
         if self.alpha <= 0.0 || self.rect.size.w < 1.0 || self.rect.size.h < 1.0 {
             return None;
         }
+        let shown = match self.clip {
+            Some(clip) => self.rect.intersection(clip)?,
+            None => self.rect,
+        };
         let texture = self.sprite.texture(renderer)?;
-        let rect = Rectangle::new(self.rect.loc - output_loc.to_f64(), self.rect.size);
+        // As much of the picture as of its place is shown.
+        let (whole, grown) = (texture.size().to_f64(), self.rect.size);
+        let (from, kept) = (shown.loc - self.rect.loc, shown.size);
+        let src = Rectangle::new(
+            (from.x / grown.w * whole.w, from.y / grown.h * whole.h).into(),
+            (kept.w / grown.w * whole.w, kept.h / grown.h * whole.h).into(),
+        );
+        let rect = Rectangle::new(shown.loc - output_loc.to_f64(), shown.size);
         let program = (self.turn != 0.0).then(|| turning_program(renderer)).flatten();
         Some(SpriteElement {
             id: self.id.clone(),
             texture,
+            src,
             program,
             dst: rect.to_physical(scale).to_i32_round(),
             alpha: self.alpha,
@@ -178,6 +197,7 @@ impl Placed<'_> {
 pub struct SpriteElement {
     id: Id,
     texture: GlesTexture,
+    src: Rectangle<f64, Buffer>,
     program: Option<GlesTexProgram>,
     dst: Rectangle<i32, Physical>,
     alpha: f32,
@@ -200,7 +220,7 @@ impl Element for SpriteElement {
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
-        Rectangle::from_size(self.texture.size().to_f64())
+        self.src
     }
 
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {

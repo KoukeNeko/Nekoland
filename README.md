@@ -370,7 +370,7 @@ application to the next and Return starts it.
 The applications are arranged by dragging, as on the Mac's Launchpad: one dropped
 between others goes there, the others making room; onto another, the two make a folder
 named after its kind; onto a folder, it goes in. A dragged icon held at the grid's side
-turns the page. A folder opens over the grid; its applications are reordered there or
+turns the page. A folder opens under its row, the rows parting for it; its applications are reordered there or
 dragged out, and a click on its name changes it. The arrangement is kept in
 `app-grid.toml` beside `config.toml`. A right click on the grid opens a menu to arrange
 it or put it back as it was, except on an application that came with the system:
