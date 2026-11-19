@@ -1279,6 +1279,7 @@ impl Nekoland {
                     shake: apps.shake(),
                     alpha,
                 },
+                None,
                 |entry| apps.wanted(entry),
             )));
             if let Some(picture) = &open.picture {
@@ -1303,13 +1304,17 @@ impl Nekoland {
                 _ => None,
             };
             let dimmed = 1.0 - (1.0 - FOLDER_DIM) * folder_fade;
-            // In from a little larger, around the middle of the pages, and out the same way.
-            let zoom = if self.config.animations {
-                crate::motion::apps_zoom(apps.opened, leaving)
-            } else {
-                1.0
+            // Each in from off the screen, the middle ones of the pages first, and out the
+            // other way.
+            let (opened, half) = (apps.opened, layout.grid.size.to_f64() / 2.0);
+            let middle = layout.grid.loc.to_f64() + Point::from((half.w, half.h));
+            let reach = half.w.hypot(half.h).max(1.0);
+            let flight = |home: Point<f64, Logical>| {
+                let from_middle = home - middle;
+                let arrived = crate::motion::app_arrival(opened, leaving, from_middle.x.hypot(from_middle.y) / reach);
+                let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), area.to_f64(), arrived);
+                (now, grown, (arrived * 3.0).clamp(0.0, 1.0) as f32)
             };
-            let middle = (layout.grid.loc + Point::from((layout.grid.size.w / 2, layout.grid.size.h / 2))).to_f64();
             let sprites = stock.board(
                 &Board {
                     origin: apps.pages_origin(&layout),
@@ -1325,11 +1330,10 @@ impl Nekoland {
                     shake: apps.shake(),
                     alpha: fade * dimmed,
                 },
+                self.config.animations.then_some(&flight),
                 |entry| apps.wanted(entry),
             );
-            layers.push(Layer::Sprites(
-                sprites.into_iter().map(|sprite| sprite.scaled_about(middle, zoom)).collect(),
-            ));
+            layers.push(Layer::Sprites(sprites));
             if let Some((_, picture)) = &apps.dots {
                 front.push(Overlay {
                     fade,

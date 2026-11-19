@@ -202,14 +202,25 @@ pub(super) struct Board<'a> {
     pub alpha: f32,
 }
 
+/// Where an entry is on its way in or out, for one whose icon's middle is at a point at
+/// rest: that middle now, how many times its size it is, and how much it shows.
+pub(super) type Flight<'f> = &'f dyn Fn(Point<f64, Logical>) -> (Point<f64, Logical>, f64, f32);
+
 /// How much an icon gives while it is pressed.
 const PRESSED_SIZE: f64 = 0.94;
 
 impl Stock {
-    /// The sprites of a board's entries where they are now, front first.
-    pub(super) fn board<'a>(&'a self, board: &Board<'a>, wanted: impl Fn(Entry) -> Wanted) -> Vec<Placed<'a>> {
-        let mut placed = Vec::new();
+    /// The sprites of a board's entries where they are now, front first: on their way in
+    /// or out by `flight`, if they are.
+    pub(super) fn board<'a>(
+        &'a self,
+        board: &Board<'a>,
+        flight: Option<Flight<'_>>,
+        wanted: impl Fn(Entry) -> Wanted,
+    ) -> Vec<Placed<'a>> {
+        let mut placed: Vec<Placed<'a>> = Vec::new();
         for (index, cell) in board.cells.iter().enumerate() {
+            let first = placed.len();
             let Cell::Entry(entry) = cell else {
                 continue;
             };
@@ -257,6 +268,18 @@ impl Stock {
                     alpha: board.alpha,
                     turn: 0.0,
                 });
+            }
+            // The icon, its name and its plate fly as one.
+            if let Some(flight) = flight {
+                let (now, grown, shown) = flight(middle);
+                for sprite in &mut placed[first..] {
+                    let from_middle = sprite.rect.loc - middle;
+                    sprite.rect = smithay::utils::Rectangle::new(
+                        now + Point::from((from_middle.x * grown, from_middle.y * grown)),
+                        smithay::utils::Size::from((sprite.rect.size.w * grown, sprite.rect.size.h * grown)),
+                    );
+                    sprite.alpha *= shown;
+                }
             }
         }
         placed

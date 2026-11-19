@@ -140,6 +140,52 @@ pub fn apps_zoom(opened: Instant, leaving: Option<f64>) -> f64 {
     1.0 + (APPS_SCALE - 1.0) * (1.0 - arrived)
 }
 
+/// How far out of place an application starts, in times its size, when each comes in on its
+/// own, and how long after the middle ones the outermost set off.
+const APP_SCALE: f64 = 1.3;
+const APPS_SPREAD: f64 = 0.14;
+/// How much of the way out the outermost have gone before the middle ones set off.
+const APPS_LEAVING_SPREAD: f64 = 0.35;
+
+/// How far an application has come home, 0 to 1 and a little past: one `out` of the way
+/// from the middle to the edge, 0 to 1, of those `opened` a moment ago, or `leaving`, from
+/// 1 down to 0. As a phone's do, the middle ones land first and the rest follow outwards,
+/// and they leave from the edge inwards.
+pub fn app_arrival(opened: Instant, leaving: Option<f64>, out: f64) -> f64 {
+    let out = out.clamp(0.0, 1.0);
+    match leaving {
+        Some(leaving) => ((leaving - out * APPS_LEAVING_SPREAD) / (1.0 - APPS_LEAVING_SPREAD)).clamp(0.0, 1.0),
+        None => APPS.position(seconds_since(opened) - out * APPS_SPREAD),
+    }
+}
+
+/// At most how many times as far from the middle an application starts: one in the very
+/// middle has no way out, and comes in larger alone.
+const APP_FAR_MOST: f64 = 6.0;
+
+/// Where an application `arrived` that far is on its way `home` from off the `screen`, by
+/// its middle, and how many times its size: out along the line from the screen's middle
+/// through its place, and larger. It is `across` wide and high at most.
+pub fn app_flight(
+    home: Point<f64, Logical>,
+    across: f64,
+    screen: Rectangle<f64, Logical>,
+    arrived: f64,
+) -> (Point<f64, Logical>, f64) {
+    let away = 1.0 - arrived;
+    let middle = screen.loc + Point::from((screen.size.w / 2.0, screen.size.h / 2.0));
+    let from_middle = home - middle;
+    // How many times as far it is clear of the nearer edge, itself and all.
+    let clear_x = (screen.size.w / 2.0 + across * APP_SCALE / 2.0) / from_middle.x.abs();
+    let clear_y = (screen.size.h / 2.0 + across * APP_SCALE / 2.0) / from_middle.y.abs();
+    let far = clear_x.min(clear_y).clamp(1.0, APP_FAR_MOST);
+    let out = 1.0 + (far - 1.0) * away;
+    (
+        middle + Point::from((from_middle.x * out, from_middle.y * out)),
+        1.0 + (APP_SCALE - 1.0) * away,
+    )
+}
+
 /// The rectangle `t` of the way from one to another; a spring's `t` may pass 1.
 pub fn lerp(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
     let mix = |a: i32, b: i32| (f64::from(a) + f64::from(b - a) * t).round() as i32;
@@ -686,6 +732,18 @@ mod tests {
     #[test]
     fn the_applications_come_in_larger_and_leave_the_way_they_came() {
         let long_ago = Instant::now() - std::time::Duration::from_secs(5);
+        // The middle ones are home before the outermost, and are the last to leave.
+        let a_while = Instant::now() - std::time::Duration::from_millis(150);
+        assert!(app_arrival(a_while, None, 0.0) > app_arrival(a_while, None, 1.0));
+        assert!(app_arrival(a_while, Some(0.5), 0.0) > app_arrival(a_while, Some(0.5), 1.0));
+        assert_eq!(app_arrival(a_while, Some(1.0), 1.0), 1.0);
+        assert_eq!(app_arrival(a_while, Some(0.0), 0.0), 0.0);
+        // Home when there, and off the screen before it sets off.
+        let screen = Rectangle::new(Point::from((0.0, 0.0)), Size::from((1280.0, 800.0)));
+        let home = Point::from((300.0, 500.0));
+        assert_eq!(app_flight(home, 132.0, screen, 1.0), (home, 1.0));
+        let (start, grown) = app_flight(home, 132.0, screen, 0.0);
+        assert!(start.y - 66.0 * grown >= 800.0 || start.x + 66.0 * grown <= 0.0);
         assert_eq!(apps_zoom(Instant::now(), Some(1.0)), 1.0);
         assert!((apps_zoom(Instant::now(), Some(0.0)) - APPS_SCALE).abs() < 1e-9);
         assert!((apps_zoom(Instant::now(), None) - APPS_SCALE).abs() < 0.01);
