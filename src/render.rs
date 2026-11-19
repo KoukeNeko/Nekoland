@@ -10,7 +10,7 @@ use smithay::{
             utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
             AsRenderElements, Id, Kind,
         },
-        gles::GlesRenderer,
+        gles::{element::PixelShaderElement, GlesRenderer},
         utils::CommitCounter,
     },
     desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
@@ -53,6 +53,7 @@ render_elements! {
     pub SceneElement<=GlesRenderer>;
     Surface=SurfaceElement,
     Rounded=crate::rounded::RoundedSurface,
+    Shadow=PixelShaderElement,
     Glass=Pane,
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
@@ -1148,6 +1149,11 @@ fn windows_on_glass(
                     .map(|pane| SceneElement::Glass(pane.faded(pose.alpha))),
             );
             kept.push(id);
+        }
+        if rounds_x11_corners(window) {
+            let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size);
+            let focused = state.focused_window().as_ref() == Some(window);
+            elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));
         }
         elements.append(&mut scene);
         scene = elements;
