@@ -1353,11 +1353,13 @@ impl Nekoland {
         } else {
             name.to_string()
         };
+        // Kept by its pixels: what is shown enlarged is drawn denser, and wants its own.
+        let pixels = size * text::picture_scale();
         if let Some((.., icon)) = self
             .dock
             .icons
             .iter()
-            .find(|(cached, at, cached_dark, _)| *cached == key && *at == size && *cached_dark == dark)
+            .find(|(cached, at, cached_dark, _)| *cached == key && *at == pixels && *cached_dark == dark)
         {
             return icon.clone();
         }
@@ -1368,7 +1370,7 @@ impl Nekoland {
         }
         let icon =
             text::named_icon(name, "", (size * 3).max(96), ink(dark)).and_then(|icon| trimmed(icon, size));
-        self.dock.icons.push((key, size, dark, icon.clone()));
+        self.dock.icons.push((key, pixels, dark, icon.clone()));
         icon
     }
 

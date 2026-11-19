@@ -1082,9 +1082,13 @@ impl Nekoland {
     }
 
     fn apps_layout(&self) -> Option<Layout> {
+        self.layout_of(self.overview.as_ref()?.apps.as_ref()?.style)
+    }
+
+    /// Where the parts of the view are in a style, shown or not.
+    fn layout_of(&self, style: AppsView) -> Option<Layout> {
         let output = self.space.outputs().next()?;
         let area = self.space.output_geometry(output)?;
-        let style = self.overview.as_ref()?.apps.as_ref()?.style;
         if style.is_list() {
             return Some(list::layout(
                 style,
@@ -2032,9 +2036,11 @@ impl Nekoland {
         Some(whole * arriving).filter(|zoom| (zoom - 1.0).abs() > ZOOM_AT_REST)
     }
 
-    /// How many times its size the view is shown, or would be if it were.
+    /// How many times its size the view is shown, or will be when it is: its sprites are
+    /// drawn for that before it is.
     fn apps_zoom(&self) -> f64 {
-        self.apps_layout().map_or(1.0, |layout| layout.zoom)
+        let style = self.apps_style().unwrap_or(self.config.apps_view);
+        self.layout_of(style).map_or(1.0, |layout| layout.zoom)
     }
 
     /// Where a point of the screen is in the view, before it is enlarged.
