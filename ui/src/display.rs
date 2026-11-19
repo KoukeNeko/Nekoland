@@ -214,6 +214,13 @@ fn resolution_choices(
     choices
 }
 
+/// What a choice drawn at a scale really is, for under the size it looks like: its mode's
+/// pixels and the scale. Two choices can look the same size, one of them four times as
+/// sharp, and on a screen shown in a window nothing else tells them apart.
+fn choice_pixels(choice: Choice) -> Option<String> {
+    ((choice.scale - 1.0).abs() >= SAME_SCALE).then(|| format!("{} · {}×", choice.mode.label(), choice.scale))
+}
+
 /// The looks of the display's own mode, from the largest text to the most room, each with
 /// what is written under its picture: the ends and the default are named, as on the Mac.
 fn looks(display: &Display) -> Vec<(Choice, &'static str)> {
@@ -424,6 +431,7 @@ impl Resolution {
         for choice in resolution_choices(&display, &self.modes, &self.scales, true) {
             let row = adw::ActionRow::builder()
                 .title(choice_label(choice, &display))
+                .subtitle(choice_pixels(choice).unwrap_or_default())
                 .activatable(true)
                 .build();
             row.add_suffix(
@@ -1048,6 +1056,10 @@ mod tests {
             .map(|choice| choice_label(choice, &display))
             .collect();
         assert_eq!(labels, ["3840 × 2160", "1920 × 1080"]);
+        // What tells it from a mode of 1920 by 1080: its own pixels, and the scale.
+        let own = Choice { mode: four_k, scale: 2.0 };
+        assert_eq!(choice_pixels(own).as_deref(), Some("3840 × 2160 · 2×"));
+        assert_eq!(choice_pixels(Choice { mode: four_k, scale: 1.0 }), None);
         // Chosen at twice, the settings name no scale; at one, they do.
         assert_eq!(own_scale(&display, &scales, four_k), 2.0);
         assert_eq!(own_scale(&display, &scales, display.preferred), 1.0);
