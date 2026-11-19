@@ -6,13 +6,14 @@ use std::time::{Duration, Instant};
 use smithay::{
     backend::renderer::element::{solid::SolidColorBuffer, Id},
     desktop::Window,
+    input::keyboard::Keysym,
     utils::{IsAlive, Logical, Point, Rectangle, Size},
 };
 
 use crate::{
     appgrid::AppGrid,
     glass::Tier,
-    menubar::{Overlay, MENU_BAR_HEIGHT},
+    menubar::{Command, Entry, Overlay, MENU_BAR_HEIGHT},
     motion::lerp,
     text::{self, Picture},
     windows::{is_managed, window_names},
@@ -28,6 +29,12 @@ const NAME_PADDING: i32 = 12;
 const NAME_GAP: i32 = 8;
 const NAME_PILL: i32 = 24;
 const THUMBNAIL_WIDTH: i32 = 192;
+/// The narrowest the desktops' pictures get to fit more along the bar; past that, it scrolls.
+const MIN_THUMBNAIL_WIDTH: i32 = 120;
+/// Kept free at each end of the bar.
+const BAR_EDGE: i32 = 48;
+/// How far the add button stays in from the right edge.
+const ADD_MARGIN: i32 = 24;
 const THUMBNAIL_GAP: i32 = 32;
 const EXPANDED_PADDING: i32 = 12;
 const LABEL_HEIGHT: i32 = 24;
@@ -82,7 +89,42 @@ pub struct Slot {
 #[derive(Clone, Copy)]
 pub(crate) enum BarAction {
     Switch(usize),
+    /// A desktop's name under its picture, which is renamed where it is, as on Windows.
+    Rename(usize),
     Add,
+}
+
+/// A desktop's name being typed in the bar.
+pub(crate) struct Naming {
+    index: usize,
+    text: String,
+    /// Whether the name is still all chosen, as when renaming starts, so that typing
+    /// replaces it, as on Windows.
+    chosen: bool,
+    /// What the input method is composing, and what it offers to choose from.
+    preedit: String,
+    pub ime_focused: bool,
+    candidates: Option<(crate::ime::Candidates, Picture)>,
+    candidates_id: Id,
+}
+
+impl Naming {
+    fn insert(&mut self, typed: &str) {
+        if std::mem::take(&mut self.chosen) {
+            self.text.clear();
+        }
+        self.text.push_str(typed);
+    }
+}
+
+/// A desktop being dragged along the opened-up bar to another place.
+struct DesktopDrag {
+    index: usize,
+    start: Point<f64, Logical>,
+    /// How far from its picture's left edge it was taken, and where the pointer is now.
+    grab: f64,
+    x: f64,
+    moving: bool,
 }
 
 pub struct BarItem {
@@ -124,6 +166,10 @@ struct SpacesBar {
     plus: Option<Picture>,
     /// The button that takes a desktop away, shown on the one the pointer is on.
     close: Option<Picture>,
+    /// How far along the row of pictures is scrolled, when they do not all fit.
+    scroll: f64,
+    /// How far along it can be.
+    scroll_end: f64,
 }
 
 struct BarColors {
@@ -194,6 +240,41 @@ impl BarColors {
         let _ = cr.stroke();
     }
 
+    /// A desktop's name being typed: in a field, with the caret after it.
+    fn field(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>, typed: &str, chosen: bool, font: &pango::FontDescription) {
+        text::rounded_rectangle(
+            cr,
+            f64::from(rect.loc.x) + 0.5,
+            f64::from(rect.loc.y) + 0.5,
+            f64::from(rect.size.w) - 1.0,
+            f64::from(rect.size.h) - 1.0,
+            4.0,
+        );
+        cr.set_source_rgba(self.ink.0, self.ink.1, self.ink.2, 0.10);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgb(self.ink.0, self.ink.1, self.ink.2);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+        let inner = Rectangle::new(rect.loc + Point::from((6, 0)), rect.size - Size::from((14, 0)));
+        let width = text_width(typed, font).min(inner.size.w);
+        if chosen {
+            cr.rectangle(
+                f64::from(inner.loc.x + (inner.size.w - width) / 2) - 2.0,
+                f64::from(rect.loc.y) + 3.0,
+                f64::from(width) + 4.0,
+                f64::from(rect.size.h) - 6.0,
+            );
+            cr.set_source_rgba(self.ink.0, self.ink.1, self.ink.2, 0.25);
+            let _ = cr.fill();
+            cr.set_source_rgb(self.ink.0, self.ink.1, self.ink.2);
+        }
+        show_centered(cr, typed, font, inner, self.ink);
+        let caret = f64::from(inner.loc.x + (inner.size.w + width) / 2) + 1.5;
+        cr.move_to(caret, f64::from(rect.loc.y) + 4.0);
+        cr.line_to(caret, f64::from(rect.loc.y + rect.size.h) - 4.0);
+        let _ = cr.stroke();
+    }
+
     fn draw_plus(&self, cr: &cairo::Context, rect: Rectangle<i32, Logical>, size: f64) {
         let (x, y) = (
             f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0,
@@ -249,6 +330,8 @@ fn show_centered(
     let layout = text::new_layout(cr);
     layout.set_font_description(Some(font));
     layout.set_text(text);
+    layout.set_width(rect.size.w * pango::SCALE);
+    layout.set_ellipsize(pango::EllipsizeMode::End);
     let (width, height) = layout.pixel_size();
     cr.set_source_rgb(color.0, color.1, color.2);
     cr.move_to(
@@ -256,6 +339,92 @@ fn show_centered(
         f64::from(rect.loc.y) + f64::from(rect.size.h - height) / 2.0,
     );
     pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// How the opened-up bar lays out `count` desktops on a screen `screen_width` wide: as wide
+/// as each picture is, where the first one starts, and how far along the row is scrolled,
+/// out of how far it can be. They shrink to fit left of the add button, down to a width;
+/// more than fit then scroll, at first as far as shows the one shown, `active`.
+fn bar_row(screen_width: i32, count: usize, active: usize, scroll: Option<f64>) -> (i32, i32, f64, f64) {
+    let count = count.max(1) as i32;
+    let right = screen_width - add_width() - ADD_MARGIN - THUMBNAIL_GAP;
+    let room = right - BAR_EDGE;
+    let fitted = (room - THUMBNAIL_GAP * (count - 1)) / count;
+    let width = fitted.clamp(MIN_THUMBNAIL_WIDTH, THUMBNAIL_WIDTH);
+    let row = (width + THUMBNAIL_GAP) * count - THUMBNAIL_GAP;
+    if row <= room {
+        return (width, ((screen_width - row) / 2).min(right - row), 0.0, 0.0);
+    }
+    let end = f64::from(row - room);
+    let centered = f64::from((width + THUMBNAIL_GAP) * active as i32 + width / 2 - room / 2);
+    let scroll = scroll.unwrap_or(centered).clamp(0.0, end);
+    (width, BAR_EDGE - scroll.round() as i32, scroll, end)
+}
+
+/// The add button is a bit more than half a full-size desktop, and keeps that size however
+/// small the desktops get.
+fn add_width() -> i32 {
+    (f64::from(THUMBNAIL_WIDTH) * ADD_SIZE).round() as i32
+}
+
+/// Where the strip's row of names `row` wide starts on a screen `screen_width` wide:
+/// centered, or, too long for that, as far along as shows the one shown, which is `at`
+/// along the row and `width` wide.
+fn strip_start(screen_width: i32, row: i32, at: i32, width: i32) -> i32 {
+    // Clear of the add button at the right end, and as far from the left.
+    let edge = MENU_BAR_HEIGHT + 16;
+    if row <= screen_width - edge * 2 {
+        return (screen_width - row) / 2;
+    }
+    let centered = screen_width / 2 - at - width / 2;
+    centered.clamp(screen_width - edge - row, edge)
+}
+
+/// A wallpaper filling a desktop's picture `width` by `height`, cut to it as swaybg's fill
+/// mode does.
+fn wallpaper_tile(path: &str, width: i32, height: i32) -> Option<cairo::ImageSurface> {
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(crate::config::expand_home(path), -1, height * 2, true)
+        .inspect_err(|err| tracing::warn!("{path}: {err}"))
+        .ok()?;
+    let picture = text::pixbuf_surface(&pixbuf, None)?;
+    let tile = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;
+    let cr = cairo::Context::new(&tile).ok()?;
+    let scale = (f64::from(width) / f64::from(picture.width())).max(f64::from(height) / f64::from(picture.height()));
+    cr.translate(
+        (f64::from(width) - f64::from(picture.width()) * scale) / 2.0,
+        (f64::from(height) - f64::from(picture.height()) * scale) / 2.0,
+    );
+    cr.scale(scale, scale);
+    cr.set_source_surface(&picture, 0.0, 0.0).ok()?;
+    cr.paint().ok()?;
+    drop(cr);
+    Some(tile)
+}
+
+/// The pictures offered as a desktop's own wallpaper, from where Settings finds them.
+fn wallpaper_choices() -> Vec<String> {
+    const DIRS: [&str; 3] = ["~/.local/share/backgrounds", "~/Pictures/Wallpapers", "/usr/share/backgrounds"];
+    const MOST: usize = 12;
+    let mut found = Vec::new();
+    for dir in DIRS {
+        let Ok(entries) = std::fs::read_dir(crate::config::expand_home(dir)) else {
+            continue;
+        };
+        let mut pictures: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| matches!(extension.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        pictures.sort();
+        found.extend(pictures);
+    }
+    found.truncate(MOST);
+    found
 }
 
 /// A picture drawn by `paint` on a surface of that size.
@@ -290,6 +459,15 @@ pub struct Overview {
     /// and what names its frame from one frame to the next.
     glides: Vec<(f64, f64, Id)>,
     drag: Option<Drag>,
+    desktop_drag: Option<DesktopDrag>,
+    /// How far along the bar's pictures are scrolled, once scrolled; till then, as far as
+    /// shows the desktop shown.
+    bar_scroll: Option<f64>,
+    /// The desktop being renamed, and what is typed for it so far.
+    pub(crate) renaming: Option<Naming>,
+    /// The wallpapers of desktops that have their own, drawn at a width, as their pictures
+    /// in the bar show them: read once while the overview is open.
+    wallpaper_tiles: std::cell::RefCell<std::collections::HashMap<(String, i32), Option<cairo::ImageSurface>>>,
     /// The desktop in the opened-up bar the pointer is on, which shows its close button.
     hovered_desktop: Option<usize>,
     /// The slot under the pointer.
@@ -470,6 +648,10 @@ impl Nekoland {
             glass_id: Id::new(),
             glides: Vec::new(),
             drag: None,
+            desktop_drag: None,
+            bar_scroll: None,
+            renaming: None,
+            wallpaper_tiles: Default::default(),
             hovered_desktop: None,
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
@@ -573,8 +755,13 @@ impl Nekoland {
         let colors = BarColors::new(dark);
         let count = self.workspaces.count();
         let active = self.workspaces.active;
-        let names: Vec<String> = (0..count).map(|index| format!("桌面 {}", index + 1)).collect();
-        let tile_height = thumbnail_height(output);
+        let names: Vec<String> = (0..count).map(|index| self.workspaces.name(index)).collect();
+        let renaming = (self.overview.as_ref())
+            .and_then(|overview| overview.renaming.as_ref())
+            .map(|naming| (naming.index, format!("{}{}", naming.text, naming.preedit), naming.chosen));
+        let scroll = self.overview.as_ref().and_then(|overview| overview.bar_scroll);
+        let (tile_width, first, scroll, scroll_end) = bar_row(output.size.w, count, active, scroll);
+        let tile_height = (tile_width * output.size.h / output.size.w.max(1)).max(1);
         let expanded_height = expanded_height(output);
         let font = text::font("Medium 10");
 
@@ -584,9 +771,11 @@ impl Nekoland {
             .map(|name| text_width(name, &font) + NAME_PADDING * 2)
             .collect();
         let row: i32 = widths.iter().sum::<i32>() + NAME_GAP * (count as i32 - 1).max(0);
+        let active_at: i32 = widths.iter().take(active).map(|width| width + NAME_GAP).sum();
+        let active_width = widths.get(active).copied().unwrap_or(0);
         let mut strip_items = Vec::with_capacity(count + 1);
         let strip = draw(output.size.w, MENU_BAR_HEIGHT, |cr| {
-            let mut x = (output.size.w - row) / 2;
+            let mut x = strip_start(output.size.w, row, active_at, active_width);
             for (index, (name, width)) in names.iter().zip(&widths).enumerate() {
                 let pill = Rectangle::new(
                     Point::from((x, (MENU_BAR_HEIGHT - NAME_PILL) / 2)),
@@ -617,8 +806,7 @@ impl Nekoland {
         });
 
         // Opened up: the pictures with their names, each centered top to bottom, and the add
-        // button at the end, a smaller picture of the wallpaper under a plus.
-        let row = count as i32 * THUMBNAIL_WIDTH + THUMBNAIL_GAP * (count as i32 - 1).max(0);
+        // button after them, a smaller picture of the wallpaper under a plus.
         let top = (expanded_height - tile_height - LABEL_HEIGHT) / 2;
         let mut thumbnails = Vec::with_capacity(count);
         let mut expanded_items = Vec::with_capacity(count + 1);
@@ -626,42 +814,76 @@ impl Nekoland {
         let expanded = draw(output.size.w, expanded_height, |cr| {
             colors.paint_glass(cr);
         });
-        let mut x = (output.size.w - row) / 2;
+        // A desktop with a wallpaper other than the one drawn now shows its own picture of
+        // it, which its frame carries, under its windows.
+        let own_wallpapers: Vec<Option<cairo::ImageSurface>> = (0..count)
+            .map(|index| {
+                let path = self.overview_own_wallpaper(index)?;
+                let overview = self.overview.as_ref()?;
+                let mut tiles = overview.wallpaper_tiles.borrow_mut();
+                tiles
+                    .entry((path.clone(), tile_width))
+                    .or_insert_with(|| wallpaper_tile(&path, tile_width, tile_height))
+                    .clone()
+            })
+            .collect();
+        let mut x = first;
         for (index, name) in names.iter().enumerate() {
-            let tile = Rectangle::new(Point::from((x, top)), Size::from((THUMBNAIL_WIDTH, tile_height)));
+            let tile = Rectangle::new(Point::from((x, top)), Size::from((tile_width, tile_height)));
+            let label = Rectangle::new(
+                Point::from((x, top + tile_height + 4)),
+                Size::from((tile_width, LABEL_HEIGHT - 4)),
+            );
             // Behind the live picture, which is drawn over it.
             let on_frame = Rectangle::new(Point::from((FRAME_MARGIN, FRAME_MARGIN)), tile.size);
             frames.extend(draw(
-                THUMBNAIL_WIDTH + FRAME_MARGIN * 2,
+                tile_width + FRAME_MARGIN * 2,
                 tile_height + LABEL_HEIGHT + FRAME_MARGIN * 2,
                 |cr| {
                     colors.fill_tile(cr, on_frame);
+                    if let Some(wallpaper) = &own_wallpapers[index] {
+                        let _ = cr.save();
+                        text::rounded_rectangle(
+                            cr,
+                            f64::from(on_frame.loc.x),
+                            f64::from(on_frame.loc.y),
+                            f64::from(on_frame.size.w),
+                            f64::from(on_frame.size.h),
+                            6.0,
+                        );
+                        cr.clip();
+                        let _ = cr.set_source_surface(wallpaper, f64::from(on_frame.loc.x), f64::from(on_frame.loc.y));
+                        let _ = cr.paint();
+                        let _ = cr.restore();
+                    }
                     if index == active {
                         colors.ring(cr, on_frame);
                     }
-                    let label = Rectangle::new(
+                    let on_label = Rectangle::new(
                         Point::from((FRAME_MARGIN, FRAME_MARGIN + tile_height + 4)),
-                        Size::from((THUMBNAIL_WIDTH, LABEL_HEIGHT - 4)),
+                        label.size,
                     );
-                    show_centered(cr, name, &font, label, colors.ink);
+                    match renaming.as_ref().filter(|(at, ..)| *at == index) {
+                        Some((_, typed, chosen)) => colors.field(cr, on_label, typed, *chosen, &font),
+                        None => show_centered(cr, name, &font, on_label, colors.ink),
+                    }
                 },
             ));
             thumbnails.push(Rectangle::new(output.loc + tile.loc, tile.size));
             expanded_items.push(BarItem {
-                rect: Rectangle::new(
-                    output.loc + tile.loc,
-                    Size::from((THUMBNAIL_WIDTH, tile_height + LABEL_HEIGHT)),
-                ),
+                rect: Rectangle::new(output.loc + tile.loc, tile.size),
                 action: BarAction::Switch(index),
             });
-            x += THUMBNAIL_WIDTH + THUMBNAIL_GAP;
+            expanded_items.push(BarItem {
+                rect: Rectangle::new(output.loc + label.loc, label.size),
+                action: BarAction::Rename(index),
+            });
+            x += tile_width + THUMBNAIL_GAP;
         }
-        let add_size = Size::from((
-            (f64::from(THUMBNAIL_WIDTH) * ADD_SIZE).round() as i32,
-            (f64::from(tile_height) * ADD_SIZE).round() as i32,
-        ));
+        let full_height = THUMBNAIL_WIDTH * output.size.h / output.size.w.max(1);
+        let add_size = Size::from((add_width(), (f64::from(full_height) * ADD_SIZE).round() as i32));
         let add = Rectangle::new(
-            output.loc + Point::from((output.size.w - add_size.w - 24, top + (tile_height - add_size.h) / 2)),
+            output.loc + Point::from((output.size.w - add_size.w - ADD_MARGIN, top + (tile_height - add_size.h) / 2)),
             add_size,
         );
         let plus = draw(add.size.w, add.size.h, |cr| {
@@ -676,7 +898,8 @@ impl Nekoland {
             cr.line_to(x, y + arm);
             let _ = cr.stroke();
         });
-        expanded_items.push(BarItem {
+        // First, over desktops scrolled under it.
+        expanded_items.insert(0, BarItem {
             rect: add,
             action: BarAction::Add,
         });
@@ -709,6 +932,8 @@ impl Nekoland {
             add,
             plus,
             close,
+            scroll,
+            scroll_end,
         }
     }
 
@@ -722,10 +947,15 @@ impl Nekoland {
     pub fn overview_thumbnails(&self) -> Vec<(usize, Rectangle<i32, Logical>)> {
         self.overview.as_ref().map_or_else(Vec::new, |overview| {
             let away = 1.0 - overview.expansion;
+            let dragged = overview.desktop_drag.as_ref().filter(|drag| drag.moving);
             (overview.bar.thumbnails.iter().zip(&overview.glides).enumerate())
                 .map(|(index, (place, (x, ..)))| {
                     let above = place.loc.y + place.size.h + LABEL_HEIGHT + FRAME_MARGIN - overview.bar.area.loc.y;
                     let y = place.loc.y - (f64::from(above) * away).round() as i32;
+                    let x = match dragged.filter(|drag| drag.index == index) {
+                        Some(drag) => drag.x - drag.grab,
+                        None => *x,
+                    };
                     (index, Rectangle::new(Point::from((x.round() as i32, y)), place.size))
                 })
                 .collect()
@@ -741,6 +971,12 @@ impl Nekoland {
         let away = f64::from(right - bar.add.loc.x) * (1.0 - overview.expansion);
         let rect = Rectangle::new(bar.add.loc + Point::from((away.round() as i32, 0)), bar.add.size);
         Some((rect, bar.plus.as_ref()?))
+    }
+
+    /// Where the desktops' row ends, short of the add button, when the bar is opened up.
+    pub fn overview_row_end(&self) -> Option<i32> {
+        let add = self.overview.as_ref()?.bar.add;
+        Some(add.loc.x - THUMBNAIL_GAP / 2)
     }
 
     /// The close button on the desktop the pointer is on, and where it is.
@@ -803,18 +1039,40 @@ impl Nekoland {
         }
         let expansion = overview.expansion;
         let mut overlays = Vec::new();
+        // What the input method offers for a name being typed, under its field.
+        if let Some((naming, picture)) = overview
+            .renaming
+            .as_ref()
+            .and_then(|naming| Some((naming, &naming.candidates.as_ref()?.1)))
+        {
+            let field = overview.bar.expanded_items.iter().find(|item| matches!(item.action, BarAction::Rename(index) if index == naming.index));
+            if let Some(field) = field {
+                let right = overview.bar.area.loc.x + overview.bar.area.size.w - picture.size.w;
+                let x = (field.rect.loc.x + field.rect.size.w / 2 - picture.size.w / 2).clamp(overview.bar.area.loc.x, right);
+                overlays.push(Overlay {
+                    fade: 1.0,
+                    id: &naming.candidates_id,
+                    rect: Rectangle::new(Point::from((x, field.rect.loc.y + field.rect.size.h + 4)), picture.size),
+                    glass: None,
+                    alpha: 1.0,
+                    picture,
+                });
+            }
+        }
         // Each desktop's ring and name, where its picture is, cut off where the bar ends.
         let shown = panel.loc.y + panel.size.h;
+        let row_end = self.overview_row_end().unwrap_or(i32::MAX);
         for ((_, place), (picture, (.., id))) in
             (self.overview_thumbnails().into_iter()).zip(overview.bar.frames.iter().zip(&overview.glides))
         {
             let loc = place.loc - Point::from((FRAME_MARGIN, FRAME_MARGIN));
             let height = picture.size.h.min(shown - loc.y);
-            if expansion > 0.0 && height > 0 {
+            let width = picture.size.w.min(row_end - loc.x);
+            if expansion > 0.0 && height > 0 && width > 0 {
                 overlays.push(Overlay {
                     fade: 1.0,
                     id,
-                    rect: Rectangle::new(loc, Size::from((picture.size.w, height))),
+                    rect: Rectangle::new(loc, Size::from((width, height))),
                     glass: None,
                     alpha: expansion as f32,
                     picture,
@@ -959,7 +1217,11 @@ impl Nekoland {
             let apps = overview.apps.as_ref();
             if overview.closing || apps.is_some_and(|apps| apps.style() != crate::config::AppsView::Overview) {
                 overview.expanding = false;
-            } else if dragging || (settled && y < f64::from(MENU_BAR_HEIGHT)) {
+            } else if dragging
+                || overview.renaming.is_some()
+                || overview.desktop_drag.as_ref().is_some_and(|drag| drag.moving)
+                || (settled && y < f64::from(MENU_BAR_HEIGHT))
+            {
                 overview.expanding = true;
             } else if let Some(apps) = apps {
                 // Over the applications it opens up once they have mostly come in.
@@ -1031,7 +1293,7 @@ impl Nekoland {
         // The desktop under the pointer in the opened-up bar shows its close button, when
         // there is another desktop for its windows to go to.
         overview.hovered_desktop = pointer
-            .filter(|_| open >= 0.5 && desktops > 1 && !dragging)
+            .filter(|_| open >= 0.5 && desktops > 1 && !dragging && overview.desktop_drag.is_none())
             .and_then(|pos| {
                 thumbnails
                     .iter()
@@ -1054,6 +1316,8 @@ impl Nekoland {
 
     /// A click in the overview: on a desktop's name or picture, the add button, a window, or nothing.
     pub fn overview_click(&mut self, pos: Point<f64, Logical>) {
+        // A name being typed is taken as it is once anything else is clicked, as on Windows.
+        self.finish_renaming(true);
         let Some(overview) = &self.overview else {
             return;
         };
@@ -1086,13 +1350,27 @@ impl Nekoland {
             .iter()
             .find(|item| item.rect.to_f64().contains(pos))
             .map(|item| item.action);
+        let opened_up = overview.expansion >= 0.5;
         match action {
-            // As on the Mac, picking a desktop goes to it and leaves the overview, whose
-            // closing is the way there: the desktops do not slide past each other as well.
-            Some(BarAction::Switch(index)) => {
-                self.show_workspace(index, false);
-                self.close_overview(None);
+            // On the opened-up bar the press may become a drag of the desktop along it; let
+            // go unmoved, it is picked then.
+            Some(BarAction::Switch(index)) if opened_up => {
+                let left = self
+                    .overview_thumbnails()
+                    .get(index)
+                    .map_or(pos.x, |(_, rect)| f64::from(rect.loc.x));
+                if let Some(overview) = &mut self.overview {
+                    overview.desktop_drag = Some(DesktopDrag {
+                        index,
+                        start: pos,
+                        grab: pos.x - left,
+                        x: pos.x,
+                        moving: false,
+                    });
+                }
             }
+            Some(BarAction::Switch(index)) => self.pick_desktop(index),
+            Some(BarAction::Rename(index)) => self.start_renaming(index),
             Some(BarAction::Add) => {
                 self.add_workspace();
                 self.rebuild_overview();
@@ -1123,9 +1401,38 @@ impl Nekoland {
         }
     }
 
-    /// The pointer moved with a window held: far enough, and it is being dragged.
+    /// As on the Mac, picking a desktop goes to it and leaves the overview, whose closing is
+    /// the way there: the desktops do not slide past each other as well.
+    fn pick_desktop(&mut self, index: usize) {
+        self.show_workspace(index, false);
+        self.close_overview(None);
+    }
+
+    /// The pointer moved with a window or a desktop held: far enough, and it is being
+    /// dragged. A desktop dragged takes the place of the one it is over, which moves aside.
     pub fn overview_motion(&mut self, pos: Point<f64, Logical>) {
         self.apps_motion(pos);
+        let Some(overview) = self.overview.as_mut() else {
+            return;
+        };
+        if let Some(drag) = overview.desktop_drag.as_mut() {
+            drag.x = pos.x;
+            if !drag.moving && (pos.x - drag.start.x).hypot(pos.y - drag.start.y) > DRAG_THRESHOLD {
+                drag.moving = true;
+            }
+            let from = drag.index;
+            let over = (overview.bar.thumbnails.iter()).position(|place| {
+                let reach = f64::from(THUMBNAIL_GAP) / 2.0;
+                pos.x >= f64::from(place.loc.x) - reach && pos.x < f64::from(place.loc.x + place.size.w) + reach
+            });
+            if let Some(to) = over.filter(|&to| drag.moving && to != from) {
+                drag.index = to;
+                let glide = overview.glides.remove(from);
+                overview.glides.insert(to, glide);
+                self.move_workspace(from, to);
+                self.refresh_overview_bar();
+            }
+        }
         if let Some(drag) = self.overview.as_mut().and_then(|overview| overview.drag.as_mut()) {
             let (dx, dy) = (pos.x - drag.start.x, pos.y - drag.start.y);
             if !drag.moving && dx.hypot(dy) > DRAG_THRESHOLD {
@@ -1137,6 +1444,12 @@ impl Nekoland {
     /// A button came up in the overview: a window let go unmoved is picked; one dragged
     /// onto a desktop goes there, onto the add button to a new desktop.
     pub fn overview_release(&mut self, pos: Point<f64, Logical>) {
+        if let Some(drag) = self.overview.as_mut().and_then(|overview| overview.desktop_drag.take()) {
+            if !drag.moving {
+                self.pick_desktop(drag.index);
+            }
+            return;
+        }
         if self.apps_shown() {
             self.apps_release(pos);
             return;
@@ -1161,7 +1474,7 @@ impl Nekoland {
             .find(|item| item.rect.to_f64().contains(pos))
             .map(|item| item.action);
         match target {
-            Some(BarAction::Switch(index)) => self.move_to_workspace(&window, index),
+            Some(BarAction::Switch(index) | BarAction::Rename(index)) => self.move_to_workspace(&window, index),
             Some(BarAction::Add) => {
                 let index = self.workspaces.count();
                 self.add_workspace();
@@ -1174,9 +1487,257 @@ impl Nekoland {
     }
 }
 
+impl Nekoland {
+    /// The wallpaper of a desktop, when it is not the one drawn now, which shows only the
+    /// desktop shown.
+    pub fn overview_own_wallpaper(&self, index: usize) -> Option<String> {
+        let shown = self.desktop_wallpaper(self.workspaces.active);
+        self.desktop_wallpaper(index).filter(|wallpaper| Some(wallpaper) != shown.as_ref())
+    }
+
+    /// Draws the desktops' bar again as it is now, where the desktops have not come or gone.
+    fn refresh_overview_bar(&mut self) {
+        let Some(output) = self.output_area() else {
+            return;
+        };
+        let bar = self.spaces_bar(output);
+        if let Some(overview) = &mut self.overview {
+            overview.bar = bar;
+        }
+    }
+
+    /// The wheel over the opened-up bar scrolls along its pictures, when they do not all fit.
+    /// Returns whether it did.
+    pub fn overview_scroll(&mut self, pos: Point<f64, Logical>, amount: f64) -> bool {
+        let Some(overview) = self.overview.as_mut() else {
+            return false;
+        };
+        let on_bar = overview.expansion >= 0.5
+            && pos.y < f64::from(overview.bar.area.loc.y + expanded_height(overview.bar.area));
+        if !on_bar || overview.bar.scroll_end <= 0.0 || amount == 0.0 {
+            return false;
+        }
+        overview.bar_scroll = Some((overview.bar.scroll + amount * 3.0).clamp(0.0, overview.bar.scroll_end));
+        self.refresh_overview_bar();
+        true
+    }
+
+    /// A right click on a desktop's name or picture opens what can be done to it, as
+    /// Windows' Task View does. Returns whether it was on one.
+    pub fn overview_desktop_menu(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(overview) = &self.overview else {
+            return false;
+        };
+        if overview.apps.as_ref().is_some_and(|apps| apps.style() != crate::config::AppsView::Overview) {
+            return false;
+        }
+        let items = if overview.expansion >= 0.5 {
+            &overview.bar.expanded_items
+        } else {
+            &overview.bar.strip_items
+        };
+        let Some(index) = items
+            .iter()
+            .find(|item| item.rect.to_f64().contains(pos))
+            .and_then(|item| match item.action {
+                BarAction::Switch(index) | BarAction::Rename(index) => Some(index),
+                BarAction::Add => None,
+            })
+        else {
+            return false;
+        };
+        self.finish_renaming(true);
+        let count = self.workspaces.count();
+        let own = self.workspaces.wallpaper(index).map(str::to_string);
+        let mut choices = wallpaper_choices();
+        if let Some(own) = own.as_ref().filter(|own| !choices.contains(own)) {
+            choices.insert(0, own.clone());
+        }
+        let mut wallpapers = vec![
+            Entry::item("與其他桌面相同", Command::Workspace(WorkspaceCommand::Wallpaper(index, None)))
+                .checked(own.is_none()),
+            Entry::separator(),
+        ];
+        wallpapers.extend(choices.into_iter().map(|path| {
+            let name = std::path::Path::new(&path)
+                .file_stem()
+                .map_or_else(|| path.clone(), |stem| stem.to_string_lossy().into_owned());
+            let checked = own.as_ref() == Some(&path);
+            Entry::item(name, Command::Workspace(WorkspaceCommand::Wallpaper(index, Some(path)))).checked(checked)
+        }));
+        let entries = vec![
+            Entry::item("重新命名", Command::Workspace(WorkspaceCommand::Rename(index))),
+            Entry::submenu("桌布", wallpapers),
+            Entry::separator(),
+            Entry::item("向左移", Command::Workspace(WorkspaceCommand::Move(index, index.wrapping_sub(1))))
+                .enabled(index > 0),
+            Entry::item("向右移", Command::Workspace(WorkspaceCommand::Move(index, index + 1)))
+                .enabled(index + 1 < count),
+            Entry::separator(),
+            Entry::item("關閉", Command::Workspace(WorkspaceCommand::Close(index))).enabled(count > 1),
+        ];
+        self.open_menu_at(entries, pos.to_i32_round());
+        true
+    }
+
+    /// What the desktops' menu in the overview asked for.
+    pub fn workspace_command(&mut self, command: WorkspaceCommand) {
+        match command {
+            WorkspaceCommand::Rename(index) => self.start_renaming(index),
+            WorkspaceCommand::Move(from, to) => {
+                if let Some(overview) = self.overview.as_mut().filter(|overview| from < overview.glides.len() && to < overview.glides.len()) {
+                    let glide = overview.glides.remove(from);
+                    overview.glides.insert(to, glide);
+                }
+                self.move_workspace(from, to);
+                self.refresh_overview_bar();
+            }
+            WorkspaceCommand::Wallpaper(index, path) => {
+                self.set_workspace_wallpaper(index, path);
+                self.refresh_overview_bar();
+            }
+            WorkspaceCommand::Close(index) => {
+                if let Some(overview) = self.overview.as_mut().filter(|overview| index < overview.glides.len()) {
+                    overview.glides.remove(index);
+                }
+                self.remove_workspace(index);
+            }
+        }
+    }
+
+    /// Starts typing a desktop's name where it is shown, the bar held open meanwhile.
+    fn start_renaming(&mut self, index: usize) {
+        let name = self.workspaces.name(index);
+        let Some(overview) = self.overview.as_mut() else {
+            return;
+        };
+        overview.renaming = Some(Naming {
+            index,
+            text: name,
+            chosen: true,
+            preedit: String::new(),
+            ime_focused: false,
+            candidates: None,
+            candidates_id: Id::new(),
+        });
+        overview.expanding = true;
+        self.refresh_overview_bar();
+    }
+
+    /// Stops typing a desktop's name, taking what was typed or not.
+    fn finish_renaming(&mut self, take: bool) {
+        let Some(naming) = self.overview.as_mut().and_then(|overview| overview.renaming.take()) else {
+            return;
+        };
+        if take {
+            self.rename_workspace(naming.index, &naming.text);
+        }
+        self.refresh_overview_bar();
+    }
+
+    /// A key while a desktop's name is being typed: Return takes it, Escape leaves it as it
+    /// was. Returns whether one was being typed.
+    pub fn overview_rename_key(&mut self, sym: Keysym, typed: Option<char>) -> bool {
+        let Some(naming) = self.overview.as_mut().and_then(|overview| overview.renaming.as_mut()) else {
+            return false;
+        };
+        match sym {
+            Keysym::Return | Keysym::KP_Enter | Keysym::Escape => {
+                self.finish_renaming(sym != Keysym::Escape);
+                return true;
+            }
+            Keysym::BackSpace => {
+                if std::mem::take(&mut naming.chosen) {
+                    naming.text.clear();
+                } else {
+                    naming.text.pop();
+                }
+            }
+            // The arrows let the name go, to be added to rather than replaced.
+            Keysym::Left | Keysym::Right | Keysym::Home | Keysym::End => naming.chosen = false,
+            _ => match typed.filter(|character| !character.is_control()) {
+                Some(character) => naming.insert(&character.to_string()),
+                None => return true,
+            },
+        }
+        self.refresh_overview_bar();
+        true
+    }
+
+    /// What the input method says goes into a desktop's name being typed. Returns whether
+    /// one was being typed.
+    pub fn overview_rename_ime(&mut self, event: crate::ime::ImeEvent) -> bool {
+        use crate::ime::ImeEvent;
+        let Some(naming) = self.overview.as_mut().and_then(|overview| overview.renaming.as_mut()) else {
+            return false;
+        };
+        match event {
+            ImeEvent::Commit(text) => naming.insert(&text),
+            ImeEvent::Preedit(text) => naming.preedit = text,
+            ImeEvent::Candidates(candidates) => {
+                naming.candidates = candidates.and_then(|candidates| {
+                    let picture = crate::appgrid::draw_candidates(&candidates)?;
+                    Some((candidates, picture))
+                });
+                return true;
+            }
+            ImeEvent::Key(raw) => {
+                let sym = Keysym::from(raw);
+                return self.overview_rename_key(sym, sym.key_char());
+            }
+        }
+        self.refresh_overview_bar();
+        true
+    }
+}
+
+/// What can be done to a desktop from its menu in the overview.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkspaceCommand {
+    Rename(usize),
+    /// A wallpaper of its own, or, with none, the one of them all.
+    Wallpaper(usize, Option<String>),
+    /// From one place along the row to another.
+    Move(usize, usize),
+    Close(usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_desktops_fit_left_of_the_add_button() {
+        let (width, first, scroll, end) = bar_row(2000, 10, 0, None);
+        let last_end = first + (width + THUMBNAIL_GAP) * 10 - THUMBNAIL_GAP;
+        assert!(width < THUMBNAIL_WIDTH && width >= MIN_THUMBNAIL_WIDTH);
+        assert!(first >= BAR_EDGE && last_end <= 2000 - add_width() - ADD_MARGIN - THUMBNAIL_GAP);
+        assert_eq!((scroll, end), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_few_desktops_keep_their_size_and_are_centered() {
+        let (width, first, ..) = bar_row(2000, 2, 0, None);
+        assert_eq!(width, THUMBNAIL_WIDTH);
+        assert_eq!(first, (2000 - (width * 2 + THUMBNAIL_GAP)) / 2);
+    }
+
+    #[test]
+    fn too_many_desktops_scroll_to_the_one_shown_and_no_further_than_the_end() {
+        let (width, first, scroll, end) = bar_row(1280, 30, 29, None);
+        assert_eq!(width, MIN_THUMBNAIL_WIDTH);
+        assert!(end > 0.0 && scroll == end);
+        assert_eq!(first, BAR_EDGE - end.round() as i32);
+        let (.., scroll, _) = bar_row(1280, 30, 29, Some(-50.0));
+        assert_eq!(scroll, 0.0);
+    }
+
+    #[test]
+    fn a_long_strip_keeps_the_desktop_shown_on_screen() {
+        let start = strip_start(1280, 3000, 2900, 80);
+        assert!(start + 2900 + 80 <= 1280 - MENU_BAR_HEIGHT - 16);
+        assert_eq!(strip_start(1280, 400, 0, 80), 440);
+    }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((x, y)), Size::from((w, h)))

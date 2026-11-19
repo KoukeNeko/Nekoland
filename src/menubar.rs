@@ -119,6 +119,11 @@ pub enum Command {
     /// A window command, as the launcher's and the shortcuts' are named.
     Arrange(&'static str),
     MoveToDesktop(usize),
+    MoveToNewDesktop,
+    /// Shows the focused window on every desktop, or on the one shown alone again.
+    ShowOnAllDesktops,
+    /// What the desktops' menu in the overview offers.
+    Workspace(crate::overview::WorkspaceCommand),
     BringAllToFront,
     /// What the Dock's menu for an application offers.
     Dock(DockCommand),
@@ -1872,17 +1877,24 @@ impl Nekoland {
                 ];
                 let desktops = self.workspaces.count();
                 let active = self.workspaces.active;
-                if desktops > 1 && has_window {
-                    entries.push(Entry {
-                        children: (0..desktops)
-                            .filter(|&index| index != active)
-                            .map(|index| {
-                                Entry::item(format!("桌面 {}", index + 1), Command::MoveToDesktop(index))
-                            })
-                            .collect(),
-                        ..Entry::note("移到").enabled(true)
-                    });
+                let mut targets: Vec<Entry> = (0..desktops)
+                    .filter(|&index| index != active)
+                    .map(|index| Entry::item(self.workspaces.name(index), Command::MoveToDesktop(index)))
+                    .collect();
+                if !targets.is_empty() {
+                    targets.push(Entry::separator());
                 }
+                targets.push(Entry::item("新桌面", Command::MoveToNewDesktop));
+                entries.push(Entry {
+                    children: targets,
+                    ..Entry::note("移到").enabled(has_window)
+                });
+                let sticky = focused.as_ref().is_some_and(|window| self.workspaces.is_sticky(window));
+                entries.push(
+                    Entry::item("在所有桌面上顯示", Command::ShowOnAllDesktops)
+                        .checked(sticky)
+                        .enabled(has_window),
+                );
                 entries.push(Entry::separator());
                 entries.push(Entry::item("全部移到最前面", Command::BringAllToFront));
                 if let Some((app_id, _)) = &app {
@@ -2483,6 +2495,17 @@ impl Nekoland {
                     self.move_to_workspace(&window, index);
                 }
             }
+            Command::MoveToNewDesktop => {
+                if let Some(window) = focused {
+                    self.move_to_new_workspace(&window);
+                }
+            }
+            Command::ShowOnAllDesktops => {
+                if let Some(window) = focused {
+                    self.toggle_sticky(&window);
+                }
+            }
+            Command::Workspace(command) => self.workspace_command(command),
             Command::BringAllToFront => {
                 if let Some((app_id, _)) = app {
                     for window in self.app_windows(&app_id).iter().rev() {

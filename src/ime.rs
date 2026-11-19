@@ -209,7 +209,8 @@ impl crate::state::Nekoland {
         use smithay::input::keyboard::Keysym;
         let sym = keysym.modified_sym();
         // Ctrl+Space switches the input method; other shortcuts stay the compositor's.
-        let renaming = self.desktop.renaming.is_some() || self.hover.note_mut().is_some();
+        let naming_desktop = self.overview.as_ref().is_some_and(|overview| overview.renaming.is_some());
+        let renaming = self.desktop.renaming.is_some() || self.hover.note_mut().is_some() || naming_desktop;
         let typing = (self.overview.is_some() || renaming)
             && self.menu_bar.open.is_none()
             && !(modifiers.alt || modifiers.logo)
@@ -229,15 +230,16 @@ impl crate::state::Nekoland {
         let Some(ime) = &self.ime else {
             return false;
         };
-        let focused = match (
-            self.hover.note_mut(),
-            &mut self.desktop.renaming,
-            self.overview.as_mut().and_then(|overview| overview.apps.as_mut()),
-        ) {
-            (Some(note), _, _) => &mut note.ime_focused,
-            (None, Some(rename), _) => &mut rename.ime_focused,
-            (None, None, Some(apps)) => &mut apps.ime_focused,
-            (None, None, None) => return false,
+        let (naming, apps) = match self.overview.as_mut() {
+            Some(overview) => (overview.renaming.as_mut(), overview.apps.as_mut()),
+            None => (None, None),
+        };
+        let focused = match (self.hover.note_mut(), &mut self.desktop.renaming, naming, apps) {
+            (Some(note), ..) => &mut note.ime_focused,
+            (None, Some(rename), ..) => &mut rename.ime_focused,
+            (None, None, Some(naming), _) => &mut naming.ime_focused,
+            (None, None, None, Some(apps)) => &mut apps.ime_focused,
+            (None, None, None, None) => return false,
         };
         let state = u32::from(modifiers.shift)
             | u32::from(modifiers.caps_lock) << 1
@@ -284,6 +286,10 @@ impl crate::state::Nekoland {
                 ImeEvent::Preedit(text) => rename.preedit = text,
                 ImeEvent::Candidates(candidates) => self.desktop.candidates = candidates,
             }
+            return;
+        }
+        if self.overview.as_ref().is_some_and(|overview| overview.renaming.is_some()) {
+            self.overview_rename_ime(event);
             return;
         }
         match event {

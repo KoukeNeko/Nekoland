@@ -327,6 +327,7 @@ impl Nekoland {
                 if !locked
                     && (self.notification_center_scroll(pointer.current_location(), vertical_amount)
                         || self.dock_scroll(pointer.current_location(), vertical_amount)
+                        || self.overview_scroll(pointer.current_location(), vertical_amount + horizontal_amount)
                         || self.apps_scroll(vertical_amount + horizontal_amount))
                 {
                     return;
@@ -368,7 +369,7 @@ impl Nekoland {
         {
             return;
         }
-        if button == BUTTON_RIGHT && self.apps_menu(pos) {
+        if button == BUTTON_RIGHT && (self.overview_desktop_menu(pos) || self.apps_menu(pos)) {
             return;
         }
         if self.overview.is_some() && self.overview_covers(pos) {
@@ -455,6 +456,9 @@ impl Nekoland {
         }
 
         if self.overview.is_some() && !(ctrl || alt || logo) {
+            if self.overview_rename_key(sym, typed) {
+                return true;
+            }
             if self.apps_shown() {
                 return self.apps_key(sym, typed);
             }
@@ -498,6 +502,17 @@ impl Nekoland {
             Keysym::F2 if ctrl => self.open_first_menu(),
             Keysym::F3 if ctrl => self.focus_dock(),
             Keysym::Up if ctrl && alt => self.toggle_overview(),
+            // Windows' keys for its desktops, Super standing for the Windows key: with Shift
+            // too, the window in front goes along.
+            Keysym::Left | Keysym::Right if logo && ctrl && shift => {
+                if let Some(window) = focused {
+                    self.carry_window_by(&window, if sym == Keysym::Left { -1 } else { 1 });
+                }
+            }
+            Keysym::Left if logo && ctrl => self.switch_workspace_by(-1),
+            Keysym::Right if logo && ctrl => self.switch_workspace_by(1),
+            Keysym::d if logo && ctrl => self.add_and_show_workspace(),
+            Keysym::F4 if logo && ctrl => self.remove_workspace(self.workspaces.active),
             Keysym::Left if ctrl && alt => self.switch_workspace_by(-1),
             Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
             Keysym::Page_Up if logo => self.switch_workspace_by(-1),

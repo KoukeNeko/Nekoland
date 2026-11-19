@@ -268,6 +268,9 @@ pub struct Config {
     pub dock_minimize_effect: MinimizeEffect,
     /// Whether applications not kept stay in the Dock a while after they quit.
     pub dock_recents: bool,
+    /// Whether the Dock shows only the windows of the desktop shown, as Windows' taskbar
+    /// can, rather than those of every desktop.
+    pub dock_this_desktop: bool,
     /// How solid the glass's tint is, from 0 to 1, and how strong its blur, from 0, none, to
     /// 1: of the menu bar and the Dock themselves, and of all other glass, menus,
     /// notifications and what shows behind windows, as through GTK's sidebars, whose tint
@@ -829,6 +832,7 @@ impl Default for Config {
             dock_minimize_into_app: false,
             dock_minimize_effect: MinimizeEffect::Genie,
             dock_recents: true,
+            dock_this_desktop: false,
             bar_opacity: 0.5,
             bar_blur: 0.5,
             glass_opacity: 0.8,
@@ -1061,16 +1065,21 @@ pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// Draws the wallpaper with swaybg, if one is set; the program is returned, to be stopped
+/// Draws a wallpaper with swaybg, if there is one; the program is returned, to be stopped
 /// when the wallpaper changes.
-pub fn start_wallpaper(config: &Config) -> Option<std::process::Child> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = config.wallpaper.as_ref()?.replacen('~', &home, 1);
+pub fn start_wallpaper(path: Option<&str>, mode: WallpaperMode) -> Option<std::process::Child> {
+    let path = expand_home(path?);
     Command::new("swaybg")
-        .args(["-m", config.wallpaper_mode.name(), "-i", &path])
+        .args(["-m", mode.name(), "-i", &path])
         .spawn()
         .inspect_err(|err| tracing::warn!("swaybg: {err}"))
         .ok()
+}
+
+/// A path with `~` at its start made the home folder's.
+pub fn expand_home(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    path.replacen('~', &home, 1)
 }
 
 /// Starts a shell command as a client of this compositor.

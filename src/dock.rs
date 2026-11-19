@@ -874,21 +874,27 @@ impl Nekoland {
             .focused_window()
             .filter(is_managed)
             .map(|window| window_names(&window).1);
-        let mut running: Vec<String> = Vec::new();
-        for window in self.all_windows().filter(|window| is_managed(window)) {
-            let app_id = window_names(window).1;
-            // Nekoland's own launcher and dialogs are part of the desktop, not applications.
-            let own = app_id == LAUNCHER_APP_ID || app_id == CONFIRM_APP_ID;
-            if !app_id.is_empty() && !own && !running.contains(&app_id) {
-                running.push(app_id);
+        let apps_of = |windows: &mut dyn Iterator<Item = &Window>| {
+            let mut apps: Vec<String> = Vec::new();
+            for window in windows.filter(|window| is_managed(window)) {
+                let app_id = window_names(window).1;
+                // Nekoland's own launcher and dialogs are part of the desktop, not applications.
+                let own = app_id == LAUNCHER_APP_ID || app_id == CONFIRM_APP_ID;
+                if !app_id.is_empty() && !own && !apps.contains(&app_id) {
+                    apps.push(app_id);
+                }
             }
-        }
+            apps
+        };
+        // What runs at all, for what quit; and what the Dock shows as running.
+        let anywhere = apps_of(&mut self.all_windows());
+        let running = apps_of(&mut self.dock_windows().iter());
         let same = |one: &str, other: &str| one.eq_ignore_ascii_case(other);
         // As the Mac's recent applications: those not kept that ran and were quit, the
         // latest first, if launchers list them.
         let recents = self.dock.recents.clone();
         for app_id in std::mem::take(&mut self.dock.was_running) {
-            let quit = !running.iter().any(|now| same(now, &app_id));
+            let quit = !anywhere.iter().any(|now| same(now, &app_id));
             let kept = self.config.dock.iter().any(|kept| same(kept, &app_id));
             let listed = gio::DesktopAppInfo::new(&format!("{app_id}.desktop"))
                 .is_some_and(|info| info.should_show());
@@ -907,7 +913,7 @@ impl Nekoland {
                 }
             }
         }
-        self.dock.was_running = running.clone();
+        self.dock.was_running = anywhere;
         // An application brought forward has been attended to.
         if let Some(launcher) = active
             .as_ref()
@@ -1997,9 +2003,9 @@ impl Nekoland {
         }
 
         let windows: Vec<Window> = self
-            .all_windows()
+            .dock_windows()
+            .into_iter()
             .filter(|window| is_managed(window) && window_names(window).1 == app_id)
-            .cloned()
             .collect();
         let (Some(output), Some(index)) = (
             self.output_rect(),
@@ -2916,9 +2922,9 @@ impl Nekoland {
     fn dock_menu(&mut self, app_id: &str, running: bool, kept: bool) -> Vec<Entry> {
         let focused = self.focused_window();
         let windows: Vec<Window> = self
-            .all_windows()
+            .dock_windows()
+            .into_iter()
             .filter(|window| is_managed(window) && window_names(window).1 == app_id)
-            .cloned()
             .collect();
         let mut entries = Vec::new();
         if !windows.is_empty() {

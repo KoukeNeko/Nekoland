@@ -436,7 +436,7 @@ impl Nekoland {
     /// Reads the configuration again and applies what changed that is not read anew each
     /// time it is used: the wallpaper, the keyboard and the pointing devices.
     pub fn reload_config(&mut self) {
-        let old_wallpaper = (self.config.wallpaper.clone(), self.config.wallpaper_mode);
+        let old_wallpaper = (self.desktop_wallpaper(self.workspaces.active), self.config.wallpaper_mode);
         let old_keyboard = self.config.keyboard();
         let old_font = std::mem::take(&mut self.config.font);
         self.config = Config::load();
@@ -466,15 +466,8 @@ impl Nekoland {
         }
         // Menus and the like take the glass's new look as they next open.
         self.config.set_glass_look();
-        if old_wallpaper != (self.config.wallpaper.clone(), self.config.wallpaper_mode) {
-            // The one before stays until the new one has drawn, so that nothing under it
-            // shows in between.
-            self.stop_old_wallpaper();
-            self.old_wallpaper = self.wallpaper.take();
-            self.wallpaper = crate::config::start_wallpaper(&self.config);
-            if self.wallpaper.is_none() {
-                self.stop_old_wallpaper();
-            }
+        if old_wallpaper != (self.desktop_wallpaper(self.workspaces.active), self.config.wallpaper_mode) {
+            self.show_wallpaper();
         }
         let devices = std::mem::take(&mut self.pointer_devices);
         for device in devices {

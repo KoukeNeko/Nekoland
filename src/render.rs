@@ -418,11 +418,17 @@ fn desktop_thumbnails(
     // The add button is a desktop with no windows yet: the wallpaper alone.
     let add = state.overview_add_button().map(|(rect, _)| (None, rect));
     let desktops = state.overview_thumbnails().into_iter().map(|(index, rect)| (Some(index), rect));
+    let row_end = state.overview_row_end().unwrap_or(i32::MAX);
     for (index, rect) in desktops.chain(add) {
         let factor = f64::from(rect.size.w) / f64::from(output_width);
         let offset = (rect.loc - output_loc).to_physical_precise_round(scale);
         // Each is cut to its own picture as well as to the bar.
-        let Some(crop) = crop.intersection(Rectangle::new(rect.loc - output_loc, rect.size).to_physical_precise_round(scale))
+        // Desktops scrolled along the row stop short of the add button.
+        let mut shown = Rectangle::new(rect.loc - output_loc, rect.size);
+        if index.is_some() {
+            shown.size.w = shown.size.w.min(row_end - rect.loc.x);
+        }
+        let Some(crop) = crop.intersection(shown.to_physical_precise_round(scale))
         else {
             continue;
         };
@@ -440,8 +446,11 @@ fn desktop_thumbnails(
                 ),
             );
         }
+        // A desktop with a wallpaper of its own has it on its frame instead.
+        let own_wallpaper = index.is_some_and(|index| state.overview_own_wallpaper(index).is_some());
         for surface in BELOW_WINDOWS
             .into_iter()
+            .filter(|_| !own_wallpaper)
             .flat_map(|layer| map.layers_on(layer).rev())
         {
             let location = map.layer_geometry(surface).unwrap_or_default().loc;

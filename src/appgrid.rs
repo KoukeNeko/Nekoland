@@ -1711,7 +1711,7 @@ impl Nekoland {
                 return;
             }
             match self.overview_bar_action(pos) {
-                Some(BarAction::Switch(desktop)) => return self.start_grid_app(app, Some(desktop)),
+                Some(BarAction::Switch(desktop) | BarAction::Rename(desktop)) => return self.start_grid_app(app, Some(desktop)),
                 Some(BarAction::Add) => {
                     let desktop = self.workspaces.count();
                     self.add_workspace();

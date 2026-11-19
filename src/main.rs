@@ -245,7 +245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::spawn("nekoland-store --choose-browser");
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
-        let wallpaper = config::start_wallpaper(config);
+        let wallpaper = config::start_wallpaper(
+            data.state.desktop_wallpaper(data.state.workspaces.active).as_deref(),
+            config.wallpaper_mode,
+        );
         match &command {
             Some(command) => config::spawn(command),
             // Something to start from, when nothing else was asked for.

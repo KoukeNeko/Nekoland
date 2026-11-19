@@ -1124,6 +1124,7 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     ));
     dock.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
     dock.add(&switch_row(config, "最近使用的應用程式", "dock_recents"));
+    dock.add(&switch_row(config, "只顯示目前桌面的視窗", "dock_this_desktop"));
     page.add(&dock);
 
     let bar = group("選單列");
@@ -2782,7 +2783,7 @@ const ARRANGE_SHORTCUTS: [(&str, &str); 10] = [
 
 /// The compositor's own shortcuts, as src/input.rs takes them, by what they do; the window
 /// arrangement's are on 視窗.
-const SYSTEM_SHORTCUTS: [(&str, &str); 15] = [
+const SYSTEM_SHORTCUTS: [(&str, &str); 18] = [
     ("啟動器", "Alt Space"),
     ("所有應用程式", "Super A"),
     ("終端機", "Super Enter"),
@@ -2791,7 +2792,10 @@ const SYSTEM_SHORTCUTS: [(&str, &str); 15] = [
     ("最小化視窗", "Super H"),
     ("全螢幕", "F11"),
     ("所有視窗", "Ctrl Alt ↑"),
-    ("切換桌面", "Ctrl Alt ← →"),
+    ("切換桌面", "Super Ctrl ← →"),
+    ("新增桌面", "Super Ctrl D"),
+    ("關閉桌面", "Super Ctrl F4"),
+    ("視窗移到旁邊的桌面", "Super Ctrl Shift ← →"),
     ("選單列", "Ctrl F2"),
     ("Dock", "Ctrl F3"),
     ("鎖定螢幕", "Super L"),
