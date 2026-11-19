@@ -430,7 +430,7 @@ struct Win {
     mark_layer: gtk::DrawingArea,
     content: adw::ToolbarView,
     /// The markup bar, under the header, and the buttons that only pictures or PDFs have.
-    markup_bar: gtk::Box,
+    markup_bar: gtk::Revealer,
     picture_tools: Vec<gtk::Widget>,
     pdf_tools: Vec<gtk::Widget>,
     highlight_button: adw::SplitButton,
@@ -918,8 +918,12 @@ impl Win {
         let bar = markup::build_bar();
         let content = adw::ToolbarView::new();
         content.add_top_bar(&header);
-        content.add_top_bar(&bar.bar);
-        bar.bar.set_visible(false);
+        // It slides down from under the toolbar and back up into it.
+        let markup_bar = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .child(&bar.bar)
+            .build();
+        content.add_top_bar(&markup_bar);
         content.set_content(Some(&view));
         let split = adw::OverlaySplitView::builder()
             .sidebar(&sidebar_stack)
@@ -952,7 +956,7 @@ impl Win {
             picture,
             mark_layer,
             content,
-            markup_bar: bar.bar,
+            markup_bar,
             picture_tools: bar.picture_tools,
             pdf_tools: bar.pdf_tools,
             highlight_button,

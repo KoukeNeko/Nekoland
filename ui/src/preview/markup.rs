@@ -251,7 +251,7 @@ impl Win {
 
     /// The markup bar shown or hidden; hidden, the tool is put down.
     pub fn set_markup(self: &Rc<Self>, on: bool) {
-        self.markup_bar.set_visible(on);
+        self.markup_bar.set_reveal_child(on);
         self.set_action_state("markup", on.to_variant());
         if !on {
             self.set_tool(None);
@@ -263,8 +263,8 @@ impl Win {
     pub fn set_tool(self: &Rc<Self>, tool: Option<Tool>) {
         self.tool.set(tool);
         self.set_action_state("tool", tool.map_or("", Tool::key).to_variant());
-        if tool.is_some() && !self.markup_bar.is_visible() {
-            self.markup_bar.set_visible(true);
+        if tool.is_some() && !self.markup_bar.reveals_child() {
+            self.markup_bar.set_reveal_child(true);
             self.set_action_state("markup", true.to_variant());
         }
         self.stroke.take();
