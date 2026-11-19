@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46464a"/><stop offset="1" stop-color="#202023"/></linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8bb6fa"/><stop offset="1" stop-color="#2f7cf6"/></linearGradient>
+    <clipPath id="photo"><rect x="30" y="34" width="68" height="60" rx="6"/></clipPath>
+  </defs>
+  <rect x="12.5" y="12.5" width="103" height="103" rx="24" fill="url(#bg)"/>
+  <rect x="26" y="30" width="76" height="68" rx="9" fill="#fbfaf8"/>
+  <g clip-path="url(#photo)">
+    <rect x="30" y="34" width="68" height="60" fill="url(#sky)"/>
+    <circle cx="80" cy="50" r="7" fill="#f5af6a"/>
+    <path d="M30 94V78l18-18 16 16 10-10 24 24v4z" fill="#2f5d3a"/>
+  </g>
+</svg>

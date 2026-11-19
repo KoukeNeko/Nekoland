@@ -57,12 +57,17 @@ name = "nekoland-disks"
 path = "src/disks.rs"
 
 [[bin]]
+name = "nekoland-preview"
+path = "src/preview.rs"
+
+[[bin]]
 name = "nekoland-terminal"
 path = "src/terminal.rs"
 
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 async-channel = "2"
+cairo-rs = { version = "0.20", features = ["pdf"] }
 base64 = "0.22"
 flate2 = "1"
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }

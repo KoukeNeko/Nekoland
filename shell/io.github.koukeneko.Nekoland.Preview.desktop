@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Preview
+Name[zh_TW]=預覽程式
+Comment=View pictures and PDFs
+Comment[zh_TW]=檢視圖片與 PDF
+Exec=nekoland-preview %U
+Icon=io.github.koukeneko.Nekoland.Preview
+Categories=Graphics;Viewer;
+MimeType=application/pdf;image/png;image/jpeg;image/gif;image/bmp;image/tiff;image/webp;image/heic;image/heif;image/avif;image/jp2;image/x-exr;image/x-icon;image/vnd.adobe.photoshop;image/x-tga;image/vnd.radiance;image/x-sgi;image/x-xbitmap;image/x-pict;application/illustrator;

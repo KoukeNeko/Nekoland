@@ -34,7 +34,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     pipewire pipewire-pulse wireplumber brightnessctl power-profiles-daemon orca
     grub-common plymouth plymouth-label python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
-    file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
+    file libimage-exiftool-perl ffmpeg poppler-utils libheif-examples libopenjp2-tools imagemagick libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
     libvte-2.91-gtk4-0 fonts-jetbrains-mono
     udisks2 parted e2fsprogs btrfs-progs xfsprogs exfatprogs ntfs-3g dosfstools smartmontools zstd"

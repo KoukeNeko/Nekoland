@@ -642,6 +642,16 @@ seconds is marked 沒有回應. It asks the compositor through `nekoland msg tas
 each window's process, application and whether it answers, and `quit-app` and
 `force-quit-app`.
 
+`nekoland-preview`, from `ui/`, is 預覽程式: PDFs and pictures, as the Mac's Preview opens
+them, in a window with a sidebar of thumbnails, one for each file or each page of a PDF
+(drawn with `pdftoppm`). The picture fits the window or is zoomed with Ctrl+scroll, a pinch or
+the buttons (Ctrl+9 fits, Ctrl+0 shows it at its real size, a double click toggles) and is
+dragged to move. Pictures turn (Ctrl+L, Ctrl+R), flip, are cropped (Ctrl+K, drag the part to keep, Return) and resized, and are saved over the file (Ctrl+S) or
+as a PNG, JPEG, TIFF or BMP, or exported as a PDF, HEIC (`heif-enc`), JPEG 2000 (`opj_compress`) or OpenEXR (ImageMagick); 拷貝 puts the picture on the clipboard and 取得資訊 tells its
+kind, size and date. 標註 (Ctrl+M) draws with a pen, a highlighter, rectangles, ellipses, arrows and text in a chosen colour, and 還原 (Ctrl+Z) takes the last change back; 匯出為 PDF makes a PDF of a picture. 上移此頁, 下移此頁, 插入 PDF and 刪除此頁 write a PDF again with its pages so. A file opened with it, or dropped on it, replaces what is shown; HEIC,
+JPEG 2000, OpenEXR, HDR, SGI, PICT, camera RAW and the like, which gdk-pixbuf cannot read, are
+converted by ImageMagick when it is installed; an Illustrator `.ai` is read as the PDF it holds.
+
 `nekoland-disk`, from `ui/`, is 磁碟用量: where a folder's space went. A place in its sidebar,
 a folder chosen or dropped on it, or a folder opened with it is scanned on a thread of its
 own, staying on its disk, counting the blocks each file takes and a file with several names
