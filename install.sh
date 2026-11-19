@@ -111,6 +111,10 @@ for program in "$target/release/nekoland" "$target/release/nekoland-"*; do
     sudo install -m 755 "$program" /usr/local/bin/
 done
 sudo install -m 644 "$target/release/libnekoland_menus.so" /usr/local/bin/
+# The commit installed and the checkout it came from, which Settings and Market update from.
+sudo install -d /usr/local/share/nekoland
+git -C "$src" rev-parse HEAD | sudo tee /usr/local/share/nekoland/COMMIT >/dev/null
+printf '%s\n' "$src" | sudo tee /usr/local/share/nekoland/SOURCE >/dev/null
 sudo install -Dm 644 -t /usr/local/share/applications "$src"/shell/*.desktop
 # GIO finds which program opens a kind of file from the folder's cache, not the files themselves.
 sudo update-desktop-database -q /usr/local/share/applications

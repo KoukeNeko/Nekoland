@@ -12,6 +12,7 @@ mod imagegen;
 mod network;
 mod printers;
 mod region;
+mod selfupdate;
 mod themes;
 mod users;
 mod web;
@@ -6972,6 +6973,9 @@ fn computer_name_row(name: &str) -> adw::EntryRow {
 /// system installs security updates by itself.
 fn updates_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
+    let nekoland = group("");
+    nekoland.add(&selfupdate::row(None));
+    page.add(&nekoland);
     let updates = group("");
     let available = adw::ActionRow::builder().title("可用的更新").subtitle("正在檢查").build();
     let open = gtk::Button::builder().label("在 Market 中更新").valign(gtk::Align::Center).build();

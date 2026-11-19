@@ -15,6 +15,7 @@ mod focus;
 mod ipc;
 #[path = "store/pling.rs"]
 mod pling;
+mod selfupdate;
 #[path = "store/sources.rs"]
 mod sources;
 mod themes;
@@ -469,7 +470,7 @@ fn count_updates(store: &Rc<Store>) {
             #[weak]
             store,
             move |found: Updates| {
-                let count = found.admin.len() + found.user.len() + found.snaps.len();
+                let count = found.count();
                 store.updates_label.set_label(&if count > 0 {
                     count.to_string()
                 } else {
@@ -1980,10 +1981,19 @@ struct Updates {
     user: Vec<(String, String, String)>,
     snaps: Vec<String>,
     next_snap_refresh: String,
+    /// Nekoland's own, when main has a newer commit than the one installed.
+    nekoland: Option<selfupdate::Status>,
+}
+
+impl Updates {
+    fn count(&self) -> usize {
+        self.admin.len() + self.user.len() + self.snaps.len() + usize::from(self.nekoland.is_some())
+    }
 }
 
 fn updates() -> Updates {
-    let (apt, flatpaks, brew, (snaps, next)) = std::thread::scope(|scope| {
+    let (apt, flatpaks, brew, (snaps, next), nekoland) = std::thread::scope(|scope| {
+        let nekoland = scope.spawn(selfupdate::check);
         let apt = scope.spawn(sources::apt_updates);
         let flatpaks = scope.spawn(sources::flatpak_updates);
         let brew = scope.spawn(sources::brew_updates);
@@ -1993,6 +2003,11 @@ fn updates() -> Updates {
             flatpaks.join().unwrap_or_default(),
             brew.join().unwrap_or_default(),
             snaps.join().unwrap_or_default(),
+            nekoland
+                .join()
+                .ok()
+                .and_then(Result::ok)
+                .filter(|status| !status.is_current()),
         )
     });
     let system_flatpaks: Vec<String> =
@@ -2002,6 +2017,7 @@ fn updates() -> Updates {
             .into_iter()
             .map(|(n, o, v)| (n, "apt".into(), format!("{o} → {v}")))
             .collect(),
+        nekoland,
         ..Default::default()
     };
     for (id, _) in flatpaks {
@@ -2055,7 +2071,7 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
                 while let Some(child) = content.first_child() {
                     content.remove(&child);
                 }
-                let count = found.admin.len() + found.user.len() + found.snaps.len();
+                let count = found.count();
                 store.updates_label.set_label(&if count > 0 {
                     count.to_string()
                 } else {
@@ -2064,6 +2080,14 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
                 if count == 0 {
                     content.append(&empty("沒有更新"));
                     return;
+                }
+                if let Some(status) = &found.nekoland {
+                    let list = gtk::ListBox::builder()
+                        .css_classes(["boxed-list"])
+                        .selection_mode(gtk::SelectionMode::None)
+                        .build();
+                    list.append(&selfupdate::row(Some(status.clone())));
+                    content.append(&list);
                 }
                 let band = |title: &str, end: String, items: &[(String, String, String)]| {
                     if items.is_empty() {
@@ -2089,7 +2113,8 @@ fn updates_page(store: &Rc<Store>) -> adw::NavigationPage {
                     &snaps,
                 );
 
-                all.set_sensitive(true);
+                // Nekoland updates from its own row.
+                all.set_sensitive(count > usize::from(found.nekoland.is_some()));
                 let found = Rc::new(found);
                 all.connect_clicked(glib::clone!(
                     #[weak]
