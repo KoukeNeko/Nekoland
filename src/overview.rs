@@ -301,10 +301,15 @@ fn close_button_rect(thumbnail: Rectangle<i32, Logical>) -> Rectangle<i32, Logic
     )
 }
 
-/// How wide a desktop's picture is in the opened-up bar with room for it: as much of a
-/// larger screen's width as of one 1280 wide.
+/// How wide a desktop's picture is in the opened-up bar with room for it: larger on a
+/// screen wider than 1280, by three fifths of what the screen is.
 fn full_width(screen_width: i32) -> i32 {
-    (THUMBNAIL_WIDTH * screen_width / 1280).max(THUMBNAIL_WIDTH)
+    (THUMBNAIL_WIDTH * (2 * 1280 + 3 * screen_width) / (5 * 1280)).max(THUMBNAIL_WIDTH)
+}
+
+/// How high the line of a desktop's name is under its picture: larger as its picture is.
+fn label_height(screen_width: i32) -> i32 {
+    LABEL_HEIGHT * full_width(screen_width) / THUMBNAIL_WIDTH
 }
 
 fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
@@ -313,7 +318,7 @@ fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
 
 /// How tall the desktops' bar is opened up, from the top of the screen.
 pub(crate) fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
-    MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + LABEL_HEIGHT
+    MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + label_height(output.size.w)
 }
 
 fn text_width(text: &str, font: &pango::FontDescription) -> i32 {
@@ -828,7 +833,10 @@ impl Nekoland {
 
         // Opened up: the pictures with their names, each centered top to bottom, and the add
         // button at the right end, a smaller picture of the wallpaper under a plus.
-        let top = (expanded_height - tile_height - LABEL_HEIGHT) / 2;
+        let label_height = label_height(output.size.w);
+        // The names under the pictures, as much larger as their line is.
+        let label_font = text::font(&format!("Medium {}", 10 * label_height / LABEL_HEIGHT));
+        let top = (expanded_height - tile_height - label_height) / 2;
         let mut thumbnails = Vec::with_capacity(count);
         let mut expanded_items = Vec::with_capacity(count + 1);
         let mut frames = Vec::with_capacity(count);
@@ -854,13 +862,13 @@ impl Nekoland {
             let tile = Rectangle::new(Point::from((x, top)), Size::from((tile_width, tile_height)));
             let label = Rectangle::new(
                 Point::from((x, top + tile_height + 4)),
-                Size::from((tile_width, LABEL_HEIGHT - 4)),
+                Size::from((tile_width, label_height - 4)),
             );
             // Behind the live picture, which is drawn over it.
             let on_frame = Rectangle::new(Point::from((FRAME_MARGIN, FRAME_MARGIN)), tile.size);
             frames.extend(draw(
                 tile_width + FRAME_MARGIN * 2,
-                tile_height + LABEL_HEIGHT + FRAME_MARGIN * 2,
+                tile_height + label_height + FRAME_MARGIN * 2,
                 |cr| {
                     colors.fill_tile(cr, on_frame);
                     if let Some(wallpaper) = &own_wallpapers[index] {
@@ -886,8 +894,8 @@ impl Nekoland {
                         label.size,
                     );
                     match renaming.as_ref().filter(|(at, ..)| *at == index) {
-                        Some((_, typed, chosen)) => colors.field(cr, on_label, typed, *chosen, &font),
-                        None => show_centered(cr, name, &font, on_label, colors.ink),
+                        Some((_, typed, chosen)) => colors.field(cr, on_label, typed, *chosen, &label_font),
+                        None => show_centered(cr, name, &label_font, on_label, colors.ink),
                     }
                 },
             ));
@@ -972,7 +980,7 @@ impl Nekoland {
             let dragged = overview.desktop_drag.as_ref().filter(|drag| drag.moving);
             (overview.bar.thumbnails.iter().zip(&overview.glides).enumerate())
                 .map(|(index, (place, (x, ..)))| {
-                    let above = place.loc.y + place.size.h + LABEL_HEIGHT + FRAME_MARGIN - overview.bar.area.loc.y;
+                    let above = place.loc.y + place.size.h + label_height(overview.bar.area.size.w) + FRAME_MARGIN - overview.bar.area.loc.y;
                     let y = place.loc.y - (f64::from(above) * away).round() as i32;
                     let x = match dragged.filter(|drag| drag.index == index) {
                         Some(drag) => drag.x - drag.grab,
@@ -1747,7 +1755,7 @@ mod tests {
     fn a_few_desktops_keep_their_size_and_are_centered() {
         let (width, first, ..) = bar_row(2000, 2, 0, None);
         // Larger on a screen wider than 1280, by as much.
-        assert_eq!((width, full_width(1280)), (300, THUMBNAIL_WIDTH));
+        assert_eq!((width, full_width(1280)), (256, THUMBNAIL_WIDTH));
         assert_eq!(first, (2000 - (width * 2 + THUMBNAIL_GAP)) / 2);
     }
 
