@@ -28,9 +28,9 @@ const BAR_GAP: i32 = 16;
 const NAME_PADDING: i32 = 12;
 const NAME_GAP: i32 = 8;
 const NAME_PILL: i32 = 24;
-const THUMBNAIL_WIDTH: i32 = 192;
-/// The narrowest the desktops' pictures get to fit more along the bar; past that, it scrolls.
-const MIN_THUMBNAIL_WIDTH: i32 = 120;
+/// How much of the screen's width a desktop's picture is in the opened-up bar: a tenth,
+/// on a screen of any size, as the Mac's is the same share of any of its screens.
+const THUMBNAIL_SHARE: i32 = 10;
 /// Kept free at each end of the bar.
 const BAR_EDGE: i32 = 48;
 /// How far the add button stays in from the right edge.
@@ -301,15 +301,20 @@ fn close_button_rect(thumbnail: Rectangle<i32, Logical>) -> Rectangle<i32, Logic
     )
 }
 
-/// How wide a desktop's picture is in the opened-up bar with room for it: larger on a
-/// screen wider than 1280, by three fifths of what the screen is.
+/// How wide a desktop's picture is in the opened-up bar with room for it.
 fn full_width(screen_width: i32) -> i32 {
-    (THUMBNAIL_WIDTH * (2 * 1280 + 3 * screen_width) / (5 * 1280)).max(THUMBNAIL_WIDTH)
+    (screen_width / THUMBNAIL_SHARE).max(1)
 }
 
-/// How high the line of a desktop's name is under its picture: larger as its picture is.
+/// The narrowest the desktops' pictures get to fit more along the bar; past that, it scrolls.
+fn least_width(screen_width: i32) -> i32 {
+    full_width(screen_width) * 5 / 8
+}
+
+/// How high the line of a desktop's name is under its picture: larger on a screen wider
+/// than 1280, by three fifths of what the screen is.
 fn label_height(screen_width: i32) -> i32 {
-    LABEL_HEIGHT * full_width(screen_width) / THUMBNAIL_WIDTH
+    (LABEL_HEIGHT * (2 * 1280 + 3 * screen_width) / (5 * 1280)).max(LABEL_HEIGHT)
 }
 
 fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
@@ -364,7 +369,7 @@ fn bar_row(screen_width: i32, count: usize, active: usize, scroll: Option<f64>) 
     let right = screen_width - add_width(screen_width) - ADD_MARGIN - THUMBNAIL_GAP;
     let room = right - BAR_EDGE;
     let fitted = (room - THUMBNAIL_GAP * (count - 1)) / count;
-    let width = fitted.clamp(MIN_THUMBNAIL_WIDTH, full_width(screen_width));
+    let width = fitted.clamp(least_width(screen_width), full_width(screen_width));
     let row = (width + THUMBNAIL_GAP) * count - THUMBNAIL_GAP;
     if row <= room {
         return (width, ((screen_width - row) / 2).min(right - row), 0.0, 0.0);
@@ -1746,7 +1751,7 @@ mod tests {
     fn ten_desktops_fit_left_of_the_add_button() {
         let (width, first, scroll, end) = bar_row(2000, 10, 0, None);
         let last_end = first + (width + THUMBNAIL_GAP) * 10 - THUMBNAIL_GAP;
-        assert!(width < full_width(2000) && width >= MIN_THUMBNAIL_WIDTH);
+        assert!(width < full_width(2000) && width >= least_width(2000));
         assert!(first >= BAR_EDGE && last_end <= 2000 - add_width(2000) - ADD_MARGIN - THUMBNAIL_GAP);
         assert_eq!((scroll, end), (0.0, 0.0));
     }
@@ -1754,15 +1759,15 @@ mod tests {
     #[test]
     fn a_few_desktops_keep_their_size_and_are_centered() {
         let (width, first, ..) = bar_row(2000, 2, 0, None);
-        // Larger on a screen wider than 1280, by as much.
-        assert_eq!((width, full_width(1280)), (256, THUMBNAIL_WIDTH));
+        // The same share of a screen of any width.
+        assert_eq!((width, full_width(1280)), (200, 128));
         assert_eq!(first, (2000 - (width * 2 + THUMBNAIL_GAP)) / 2);
     }
 
     #[test]
     fn too_many_desktops_scroll_to_the_one_shown_and_no_further_than_the_end() {
         let (width, first, scroll, end) = bar_row(1280, 30, 29, None);
-        assert_eq!(width, MIN_THUMBNAIL_WIDTH);
+        assert_eq!(width, least_width(1280));
         assert!(end > 0.0 && scroll == end);
         assert_eq!(first, BAR_EDGE - end.round() as i32);
         let (.., scroll, _) = bar_row(1280, 30, 29, Some(-50.0));
