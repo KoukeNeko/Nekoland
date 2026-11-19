@@ -57,9 +57,6 @@ set_default() {
 set_default GRUB_THEME "\"$dest/theme.txt\""
 set_default GRUB_GFXMODE "\"$mode,auto\""
 set_default GRUB_DISTRIBUTOR '"Nekoland"'
-if sudo grep -q '^GRUB_TERMINAL' "$defaults"; then
-    sudo sed -i 's|^GRUB_TERMINAL.*|#&|' "$defaults"
-fi
 
 # Ubuntu hides the menu (GRUB_TIMEOUT_STYLE=hidden, timeout 0), and its cloud images fix the
 # terminal to the console, which has no theme. Files in /etc/default/grub.d are read after

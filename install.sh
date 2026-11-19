@@ -9,6 +9,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/KoukeNeko/Nekoland/main/install.sh | sh
 set -eu
 
+# All of it is in main, run on the last line, so that a download cut short runs nothing.
+main() {
+
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
@@ -142,9 +145,17 @@ if [ -f /etc/default/grub ]; then
 fi
 
 # Waiting for the network to come up holds the boot back by up to two minutes on Ubuntu Server
-# where a port is unplugged or has no address; nothing here needs it done before the desktop.
-say "Not waiting for the network at boot"
-sudo systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service
+# where a port is unplugged or has no address. It waits ten seconds at most instead; not at all,
+# as masking the waits did before, would start what needs the network before it is there.
+say "Waiting at most 10 seconds for the network at boot"
+sudo systemctl unmask systemd-networkd-wait-online.service NetworkManager-wait-online.service
+sudo install -d /etc/systemd/system/systemd-networkd-wait-online.service.d \
+    /etc/systemd/system/NetworkManager-wait-online.service.d
+printf '[Service]\nExecStart=\nExecStart=/usr/lib/systemd/systemd-networkd-wait-online --timeout=10 --any\n' |
+    sudo tee /etc/systemd/system/systemd-networkd-wait-online.service.d/nekoland.conf >/dev/null
+printf '[Service]\nExecStart=\nExecStart=/usr/bin/nm-online -s -q --timeout=10\n' |
+    sudo tee /etc/systemd/system/NetworkManager-wait-online.service.d/nekoland.conf >/dev/null
+sudo systemctl daemon-reload
 
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
@@ -156,9 +167,11 @@ if [ ! -e "$config" ]; then
     install -Dm 644 "$src/shell/config.toml" "$config"
 fi
 
-# Logging in on the first console starts Nekoland in place of the shell, so that quitting it,
-# or its ending while the screen is locked, logs out rather than leaving a shell behind the
-# lock. The last session's log is kept beside the new one. An older block is replaced.
+# Logging in on the first console starts Nekoland and logs out once it ends, so that quitting
+# it, or its ending while the screen is locked, leaves no shell behind the lock. Ending with an
+# error, it first shows the end of its log for a moment, as a login that only flickers back
+# tells nothing; Ctrl+C cannot stop that into a shell. The last session's log is kept beside
+# the new one. An older block is replaced: its last line is the only "fi" not indented.
 marker="# Nekoland: started by logging in on the first console"
 say "Starting Nekoland from ~/.profile on tty1"
 touch "$HOME/.profile"
@@ -168,7 +181,13 @@ $marker
 if [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ] && [ "\$(tty)" = /dev/tty1 ]; then
     mkdir -p "\$HOME/.local/state"
     mv -f "\$HOME/.local/state/nekoland.log" "\$HOME/.local/state/nekoland.log.old" 2>/dev/null
-    exec nekoland >"\$HOME/.local/state/nekoland.log" 2>&1
+    if ! nekoland >"\$HOME/.local/state/nekoland.log" 2>&1; then
+        trap '' INT QUIT TSTP
+        tail -n 20 "\$HOME/.local/state/nekoland.log"
+        echo "Nekoland ended with an error. Ctrl+Alt+F2 gives a console."
+        sleep 10
+    fi
+    exit
 fi
 EOF
 
@@ -188,3 +207,6 @@ if command -v netplan >/dev/null && [ "$(sudo netplan get renderer)" != NetworkM
 fi
 
 say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there.$network_note"
+}
+
+main "$@"

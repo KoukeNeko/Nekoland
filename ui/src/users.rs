@@ -11,6 +11,11 @@ use crate::{alert, as_root, group};
 
 /// Where systemd takes the first console's login from, as install.sh starts Nekoland there.
 const AUTOLOGIN: &str = "/etc/systemd/system/getty@tty1.service.d/nekoland-autologin.conf";
+/// What shell/plymouth/install-splash.sh adds only with autologin: without it they would hide
+/// the first console's login prompt behind the splash.
+const SPLASH_DROPINS: &str = "/etc/systemd/system/plymouth-quit.service.d/nekoland.conf \
+    /etc/systemd/system/plymouth-quit-wait.service.d/nekoland.conf \
+    /etc/systemd/system/getty@tty1.service.d/nekoland-splash.conf";
 /// The group whose members sudo lets administer the computer, as Ubuntu has it.
 const ADMINS: &str = "sudo";
 
@@ -205,7 +210,7 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<UsersPage>) {
                 );
                 as_root("開啟自動登入", &["sh", "-c", &script, "sh", &me], None, then);
             } else {
-                let script = format!("rm -f {AUTOLOGIN} && systemctl daemon-reload");
+                let script = format!("rm -f {AUTOLOGIN} {SPLASH_DROPINS} && systemctl daemon-reload");
                 as_root("關閉自動登入", &["sh", "-c", &script], None, then);
             }
         }
