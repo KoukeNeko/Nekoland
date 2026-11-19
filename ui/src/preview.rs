@@ -38,6 +38,8 @@ mod menus;
 mod pdfdoc;
 #[path = "preview/prefs.rs"]
 mod prefs;
+#[path = "preview/printing.rs"]
+mod printing;
 #[path = "preview/settings.rs"]
 mod settings;
 #[path = "preview/shapes.rs"]

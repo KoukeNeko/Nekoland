@@ -955,103 +955,53 @@ impl Win {
 
     /// 列印: the PDF's pages or the pictures chosen, each fitted to its sheet or at its size,
     /// turned to fit when that fits better.
-    /// 列印: how the pages go on the sheet, then the system's print dialog. The choices come
-    /// first, as the desktop's print portal has no room for a program's own.
     pub fn print(self: &Rc<Self>) {
-        let fit = gtk::CheckButton::builder().label("縮放至符合").active(true).build();
-        let actual = gtk::CheckButton::builder().label("實際大小").group(&fit).build();
-        let rotate = gtk::CheckButton::builder().label("自動旋轉").active(true).build();
-        let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(GAP).build();
-        column.append(&fit);
-        column.append(&actual);
-        column.append(&rotate);
-        let alert = adw::AlertDialog::new(Some("列印"), None);
-        alert.set_extra_child(Some(&column));
-        alert.add_responses(&[("cancel", "取消"), ("do", "列印⋯")]);
-        alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
-        alert.set_default_response(Some("do"));
-        alert.set_close_response("cancel");
-        let weak = Rc::downgrade(self);
-        alert.choose(&self.window, gio::Cancellable::NONE, move |response| {
-            if let Some(win) = weak.upgrade().filter(|_| response == "do") {
-                win.print_with(fit.is_active(), rotate.is_active());
-            }
-        });
-    }
-
-    fn print_with(self: &Rc<Self>, fit: bool, rotate: bool) {
         let Some(item) = self.item() else { return };
         let pdf = self.pdf.borrow().clone().filter(|_| item.is_page());
+        let chosen = self.chosen_items();
         let pictures: Vec<Rc<Item>> = match pdf {
             Some(_) => Vec::new(),
-            None => self.chosen_items().into_iter().filter_map(|index| self.items.borrow().get(index).cloned()).collect(),
+            None => chosen.iter().filter_map(|&index| self.items.borrow().get(index).cloned()).collect(),
         };
-        let operation = gtk::PrintOperation::new();
-        operation.set_job_name(&item.name());
-        operation.set_n_pages(pdf.as_ref().map_or(pictures.len(), |pdf| pdf.sizes.len()) as i32);
-        if let Some(page) = item.page.filter(|_| pdf.is_some()) {
-            operation.set_current_page(page as i32 - 1);
-        }
+        let (count, current) = match &pdf {
+            Some(pdf) => (pdf.sizes.len(), item.page.map_or(0, |page| page as usize - 1)),
+            None => (pictures.len(), chosen.iter().position(|&index| index == self.current.get()).unwrap_or(0)),
+        };
         let weak = Rc::downgrade(self);
-        operation.connect_draw_page(move |operation, context, index| {
-            let Some(win) = weak.upgrade() else { return };
-            let cr = context.cairo_context();
-            let (width, height) = (context.width(), context.height());
-            let (dpi_x, _) = (context.dpi_x(), context.dpi_y());
-            // What is drawn, as a size in points and how to draw it there.
-            let draw: Box<dyn Fn(&gtk::cairo::Context)>;
-            let (w, h) = match &pdf {
+        // The picture drawn last, which the preview asks for again and again.
+        let last: RefCell<Option<(usize, Pixbuf)>> = RefCell::default();
+        let page = move |index: usize| -> Option<printing::Page> {
+            match &pdf {
                 Some(pdf) => {
-                    let Some(page) = pdf.document().page(index) else { return };
+                    let page = pdf.document().page(index as i32)?;
                     let size = page.size();
-                    draw = Box::new(move |cr| page.render_for_printing(cr));
-                    size
+                    Some(printing::Page { size, draw: Box::new(move |cr| page.render_for_printing(cr)) })
                 }
                 None => {
-                    let Some(pixbuf) = pictures.get(index as usize).and_then(|item| win.pixbuf_of(item)) else { return };
-                    let dpi = pictures.get(index as usize).and_then(|item| item.dpi.get()).unwrap_or(72.0);
+                    let item = pictures.get(index)?;
+                    let cached = last.borrow().as_ref().filter(|(cached, _)| *cached == index).map(|(_, pixbuf)| pixbuf.clone());
+                    let pixbuf = match cached {
+                        Some(pixbuf) => pixbuf,
+                        None => {
+                            let pixbuf = weak.upgrade()?.pixbuf_of(item)?;
+                            *last.borrow_mut() = Some((index, pixbuf.clone()));
+                            pixbuf
+                        }
+                    };
+                    let dpi = item.dpi.get().unwrap_or(72.0);
                     let size = (f64::from(pixbuf.width()) * 72.0 / dpi, f64::from(pixbuf.height()) * 72.0 / dpi);
-                    draw = Box::new(move |cr| {
-                        cr.scale(72.0 / dpi, 72.0 / dpi);
-                        cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
-                        let _ = cr.paint();
-                    });
-                    size
+                    Some(printing::Page {
+                        size,
+                        draw: Box::new(move |cr| {
+                            cr.scale(72.0 / dpi, 72.0 / dpi);
+                            cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
+                            let _ = cr.paint();
+                        }),
+                    })
                 }
-            };
-            let points = dpi_x / 72.0;
-            let turned = rotate && (w > h) != (width > height);
-            let (w, h) = if turned { (h, w) } else { (w, h) };
-            // Through the desktop's portal there is no tab of options, but its 頁面設定 has a
-            // scale: anything but 100% prints at that share of the actual size.
-            let chosen = operation.print_settings().map_or(100.0, |settings| settings.scale());
-            let scale = if (chosen - 100.0).abs() > f64::EPSILON {
-                points * chosen / 100.0
-            } else if fit {
-                (width / w).min(height / h)
-            } else {
-                points
-            };
-            cr.translate((width - w * scale) / 2.0, (height - h * scale) / 2.0);
-            cr.scale(scale, scale);
-            if turned {
-                cr.translate(w, 0.0);
-                cr.rotate(std::f64::consts::FRAC_PI_2);
             }
-            draw(&cr);
-        });
-        // Not blocking the window, nor anything else waiting on it, while the dialog is open.
-        operation.set_allow_async(true);
-        let window = self.window.clone();
-        operation.connect_done(move |operation, result| {
-            if result == gtk::PrintOperationResult::Error {
-                let message = operation.error().map(|err| err.to_string());
-                alert::notice(&window, "無法列印", message.as_deref());
-            }
-        });
-        if let Err(err) = operation.run(gtk::PrintOperationAction::PrintDialog, Some(&self.window)) {
-            alert::notice(&self.window, "無法列印", Some(&err.to_string()));
-        }
+        };
+        printing::show(self.window.upcast_ref(), printing::Source { name: item.name(), count, current, page: Box::new(page) });
     }
 
     /// 丟到垃圾桶: the file shown, and its items with it.
