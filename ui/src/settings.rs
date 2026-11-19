@@ -5511,12 +5511,13 @@ fn gsettings_switch(title: &str, schema: &'static str, key: &'static str) -> adw
 
 /// What opens each kind of file or link, by the types it is the default for; the first
 /// lists the choices.
-const DEFAULT_APPS: [(&str, &[&str]); 7] = [
+const DEFAULT_APPS: [(&str, &[&str]); 8] = [
     ("網頁瀏覽器", &web::WEB_TYPES),
     ("郵件", &["x-scheme-handler/mailto"]),
     ("檔案", &["inode/directory"]),
     ("文字", &["text/plain"]),
     ("圖片", &["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    ("PDF", &["application/pdf"]),
     ("音樂", &["audio/mpeg", "audio/flac", "audio/ogg", "audio/x-wav"]),
     ("影片", &["video/mp4", "video/webm", "video/x-matroska"]),
 ];
