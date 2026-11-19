@@ -353,12 +353,14 @@ fn unmount_all(disk: &Disk) -> Vec<Step> {
 
 pub fn mount(part: &Part) -> Job {
     let name: String = part.label().chars().map(|c| if c == '/' || c == ' ' { '_' } else { c }).collect();
+    // A label of "..", or one hidden, must not lead the mount point out of the user's folder.
+    let name = if name.is_empty() || name.starts_with('.') { part.kname.clone() } else { name };
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     let point = format!("/media/{user}/{name}");
     Job::new(
         &format!("掛載「{}」", part.label()),
         vec![Step {
-            fallback: Some(Box::new(Step::root(&["sh", "-c", "mkdir -p \"$2\" && mount \"$1\" \"$2\"", "sh", &part.path, &point]))),
+            fallback: Some(Box::new(Step::root(&["sh", "-c", "mkdir -p \"$2\" && mount -o nosuid,nodev \"$1\" \"$2\"", "sh", &part.path, &point]))),
             ..Step::user(&["udisksctl", "mount", "-b", &part.path])
         }],
     )
@@ -583,9 +585,9 @@ pub fn open_image(file: &Path) -> Job {
 pub fn speed(disk: &Disk, point: Option<&str>) -> Job {
     let mut steps = vec![Step::root(&["dd", &format!("if={}", disk.path), "of=/dev/null", "bs=1M", "count=1024", "iflag=direct"])];
     if let Some(point) = point {
-        let file = format!("{}/.nekoland-speed", point.trim_end_matches('/'));
-        steps.push(Step::user(&["dd", "if=/dev/zero", &format!("of={file}"), "bs=1M", "count=512", "oflag=direct", "conv=fsync"]).tolerated());
-        steps.push(Step::user(&["rm", "-f", &file]).tolerated());
+        // A new file of its own, so a link left at a known name is not written through.
+        let script = "f=$(mktemp -p \"$1\" .nekoland-speed.XXXXXX) || exit 1; dd if=/dev/zero of=\"$f\" bs=1M count=512 oflag=direct conv=fsync; status=$?; rm -f \"$f\"; exit $status";
+        steps.push(Step::user(&["sh", "-c", script, "sh", point]).tolerated());
     }
     Job::new(&format!("測試「{}」的速度", disk.title()), steps)
 }
@@ -802,5 +804,20 @@ mod tests {
         assert!(read.is_some() && write.is_some(), "{said}");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_label_cannot_lead_the_mount_point_elsewhere() {
+        let disk = Disk { path: "/dev/sdb".into(), kname: "sdb".into(), name: String::new(), size: 0, kind: crate::model::Kind::External,
+            read_only: false, tran: String::new(), table: None, sector: 512, backing: None, parts: Vec::new() };
+        let mut part = whole(&disk, "ext4");
+        part.kname = "sdb1".into();
+        part.path = "/dev/sdb1".into();
+        part.name = "..".into();
+        let Action::Run(step) = &mount(&part).actions[0] else { panic!("a mount runs a command") };
+        let root = step.fallback.as_ref().expect("root mounts when udisks may not");
+        let point = root.argv.last().unwrap();
+        assert!(point.ends_with("/sdb1") && !point.contains(".."), "{point}");
+        assert!(root.argv[2].contains("nosuid,nodev"));
     }
 }
