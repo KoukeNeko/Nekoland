@@ -402,17 +402,21 @@ impl Resolution {
         // One look is no choice.
         self.pictures.set_visible(looks.len() > 1);
         let mut first: Option<gtk::ToggleButton> = None;
+        // A look with no name keeps the line of one, so that the sizes under them line up.
+        let names = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
         for (choice, label) in looks {
             let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
             content.append(&look_picture(choice.scale, choice.is(current)));
-            content.append(&gtk::Label::new(Some(label)));
+            let name = gtk::Label::new(Some(label));
+            names.add_widget(&name);
+            content.append(&name);
             // The size it looks like, under its name: the pictures alone do not tell two
             // near sizes apart.
             let size = choice.looks_like().label();
             content.append(&gtk::Label::builder().label(&size).css_classes(["dim-label", "caption"]).build());
             let button = gtk::ToggleButton::builder()
                 .child(&content)
-                .css_classes(["flat"])
+                .css_classes(["flat", "nk-look"])
                 .active(choice.is(current))
                 .build();
             button.update_property(&[gtk::accessible::Property::Label(&size)]);

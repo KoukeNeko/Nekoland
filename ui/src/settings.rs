@@ -464,8 +464,11 @@ fn build(app: &adw::Application) {
 
     // A page's name has its glyphs half a pixel under the middle of its line, where its
     // icon, placed on whole pixels, cannot follow but by a transform.
+    // A look's tile has the same room on every side, as a row has.
     let sidebar_css = gtk::CssProvider::new();
-    sidebar_css.load_from_string(".nk-sidebar-icon { -gtk-icon-transform: translateY(0.5px); }");
+    sidebar_css.load_from_string(
+        ".nk-sidebar-icon { -gtk-icon-transform: translateY(0.5px); } button.nk-look { padding: 12px; }",
+    );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
