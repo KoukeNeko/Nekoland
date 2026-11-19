@@ -428,7 +428,9 @@ GTK 4's menus are as the Mac's: a submenu opens beside its menu, on the right or
 room there, on the left, instead of sliding in over it, and no popover has an arrow. GTK
 leaves both to each program, so `libnekoland_menus.so`, from `menus/`, is loaded into what
 Nekoland starts through `LD_PRELOAD`, from beside the `nekoland` binary, and changes each
-popover as it is made. It reaches programs linked with GTK 4.14 or later, not those that
+popover as it is made. A button a program opens a popover from itself, as a browser's site
+menu, is solid ink while the popover shows, as GTK's own menu button is: the library marks
+it, a plain button having no state a stylesheet could go by. It reaches programs linked with GTK 4.14 or later, not those that
 load GTK while running, as Python and GJS programs do; others are left as they are.
 
 Text is drawn as the Mac draws it on a dense display: unhinted, with grey edges, and

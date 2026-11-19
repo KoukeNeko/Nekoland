@@ -11,7 +11,8 @@
 //! program is listening for, which it otherwise leaves out.
 //!
 //! It also gives a row of buttons that chooses one of a few a pill that slides to the
-//! chosen one; see `segments`.
+//! chosen one; see `segments`. And a button a popover was opened from looks chosen while
+//! the popover shows; see `opened`.
 //!
 //! Nothing is linked: GTK's functions are looked up in the program, and a program without
 //! GTK 4.14 or later is left as it is.
@@ -19,6 +20,7 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::OnceLock;
 
+mod opened;
 mod segments;
 
 type GType = usize;
@@ -86,6 +88,7 @@ unsafe extern "C" fn constructed(popover: *mut c_void) {
         constructed(popover);
     }
     (gtk.set_has_arrow)(popover, 0);
+    opened::watch(popover);
 }
 
 unsafe extern "C" fn notify(popover: *mut c_void, pspec: *mut GParamSpec) {

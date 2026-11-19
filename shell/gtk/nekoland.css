@@ -423,7 +423,10 @@ fontchooser .linked > menubutton > button {
   box-shadow: none;
 }
 
-/* One of two states that is on is solid ink, as what is chosen is. */
+/* One of two states that is on is solid ink, as what is chosen is; and so is a button
+ * whose own popover is showing, as a menu button is, which Nekoland marks in the programs
+ * it starts, a plain button having no state for it. */
+button.nekoland-opened,
 button.toggle:checked {
   background-color: var(--nekoland-ink);
   color: var(--nekoland-on-ink);
