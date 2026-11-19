@@ -138,6 +138,26 @@ fn mode_rates(text: &str) -> Vec<(Size, Vec<u32>)> {
     sizes
 }
 
+/// The scale each of the display's sizes is drawn at when the settings name none, from what
+/// `nekoland msg scales` prints.
+fn mode_scales(text: &str) -> Vec<(Size, f64)> {
+    text.lines()
+        .filter_map(|line| {
+            let (size, scale) = line.split_once(' ')?;
+            Some((Size::parse(size)?, scale.trim().parse().ok()?))
+        })
+        .collect()
+}
+
+/// The scale a mode is drawn at when the settings name none: a mode that is not the
+/// display's own has its own, as a virtual display's larger ones do.
+fn own_scale(display: &Display, scales: &[(Size, f64)], mode: Size) -> f64 {
+    if mode == display.preferred {
+        return display.density_scale;
+    }
+    scales.iter().find(|(size, _)| *size == mode).map_or(1.0, |(_, scale)| *scale)
+}
+
 /// One of the resolution list's choices: a mode, drawn at a scale.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Choice {
@@ -164,20 +184,27 @@ fn default_choice(display: &Display) -> Choice {
 }
 
 /// The sizes the display can look like at its own mode, and with `all` each of its other
-/// modes too, as they are, the most room first; the one in use is always among them.
-fn resolution_choices(display: &Display, modes: &[(Size, Vec<u32>)], all: bool) -> Vec<Choice> {
+/// modes too, at the scale each has of its own and as they are, the most room first; the
+/// one in use is always among them.
+fn resolution_choices(
+    display: &Display,
+    modes: &[(Size, Vec<u32>)],
+    scales: &[(Size, f64)],
+    all: bool,
+) -> Vec<Choice> {
     let mut choices: Vec<Choice> = SCALES
         .iter()
         .map(|&scale| Choice { mode: display.preferred, scale })
         .filter(|choice| choice.looks_like().height >= LEAST_HEIGHT)
         .collect();
     if all {
-        choices.extend(
-            modes
-                .iter()
-                .filter(|(size, _)| *size != display.preferred)
-                .map(|(size, _)| Choice { mode: *size, scale: 1.0 }),
-        );
+        for (size, _) in modes.iter().filter(|(size, _)| *size != display.preferred) {
+            let own = own_scale(display, scales, *size);
+            choices.push(Choice { mode: *size, scale: own });
+            if (own - 1.0).abs() >= SAME_SCALE {
+                choices.push(Choice { mode: *size, scale: 1.0 });
+            }
+        }
     }
     let current = current_choice(display);
     if !choices.iter().any(|choice| choice.is(current)) {
@@ -193,22 +220,22 @@ fn choice_label(choice: Choice, display: &Display) -> String {
     let size = choice.looks_like().label();
     if choice.is(default_choice(display)) {
         format!("{size}（預設）")
-    } else if choice.mode != display.preferred {
+    } else if choice.mode.pixels() < display.preferred.pixels() {
         format!("{size}（低解析度）")
     } else {
         size
     }
 }
 
-/// Puts a choice in effect: the display's own mode and its default scale are left unset, to
+/// Puts a choice in effect: the display's own mode and a mode's own scale are left unset, to
 /// follow the display.
-fn apply_choice(choice: Choice, display: &Display) {
+fn apply_choice(choice: Choice, display: &Display, scales: &[(Size, f64)]) {
     if choice.mode == display.preferred {
         unset("mode");
     } else {
         set(&format!("mode = {:?}", choice.mode.setting()));
     }
-    if choice.is(default_choice(display)) {
+    if (choice.scale - own_scale(display, scales, choice.mode)).abs() < SAME_SCALE {
         unset("scale");
     } else {
         set(&format!("scale = {:?}", choice.scale));
@@ -219,6 +246,8 @@ fn apply_choice(choice: Choice, display: &Display) {
 struct Resolution {
     display: RefCell<Display>,
     modes: Vec<(Size, Vec<u32>)>,
+    /// The scale each size is drawn at when the settings name none.
+    scales: Vec<(Size, f64)>,
     group: adw::PreferencesGroup,
     rows: RefCell<Vec<adw::ActionRow>>,
     show_all: adw::SwitchRow,
@@ -236,9 +265,11 @@ impl Resolution {
     fn new() -> Option<Rc<Self>> {
         let display = parse_display(&output("nekoland", &["msg", "display"])?)?;
         let modes = mode_rates(&output("nekoland", &["msg", "modes"]).unwrap_or_default());
+        let scales = mode_scales(&output("nekoland", &["msg", "scales"]).unwrap_or_default());
         let resolution = Rc::new(Resolution {
             display: RefCell::new(display),
             modes,
+            scales,
             group: group(""),
             rows: RefCell::default(),
             show_all: adw::SwitchRow::builder().title("顯示所有解析度").build(),
@@ -273,7 +304,7 @@ impl Resolution {
         self.group.remove(&self.show_all);
         let display = self.display.borrow().clone();
         let current = current_choice(&display);
-        for choice in resolution_choices(&display, &self.modes, self.show_all.is_active()) {
+        for choice in resolution_choices(&display, &self.modes, &self.scales, self.show_all.is_active()) {
             let row = adw::ActionRow::builder()
                 .title(choice_label(choice, &display))
                 .activatable(true)
@@ -301,7 +332,7 @@ impl Resolution {
         if choice.is(current_choice(&display)) {
             return;
         }
-        apply_choice(choice, &display);
+        apply_choice(choice, &display, &self.scales);
         {
             let mut display = self.display.borrow_mut();
             let fastest = self.rates_of(choice.mode).first().copied().unwrap_or(display.current.1);
@@ -856,7 +887,7 @@ mod tests {
     #[test]
     fn the_list_runs_from_most_room_to_largest_text() {
         let display = display();
-        let labels: Vec<String> = resolution_choices(&display, &[], false)
+        let labels: Vec<String> = resolution_choices(&display, &[], &[], false)
             .into_iter()
             .map(|choice| choice_label(choice, &display))
             .collect();
@@ -874,12 +905,35 @@ mod tests {
             ..display()
         };
         let modes = mode_rates("x\n3840x2160@60\n1920x1080@60\n1280x720@60\n");
-        let hidden = resolution_choices(&display, &modes, false);
+        let hidden = resolution_choices(&display, &modes, &[], false);
         assert!(hidden.iter().any(|choice| choice.is(current_choice(&display))));
         assert!(!hidden.iter().any(|choice| choice.mode.height == 1080));
-        let all = resolution_choices(&display, &modes, true);
+        let all = resolution_choices(&display, &modes, &[], true);
         let low = all.iter().find(|choice| choice.mode.height == 1080).unwrap();
         assert_eq!(choice_label(*low, &display), "1920 × 1080（低解析度）");
+    }
+
+    #[test]
+    fn a_mode_larger_than_the_displays_own_keeps_its_own_scale() {
+        // A virtual display's own mode is small, and its 4K one is drawn at twice.
+        let display = Display {
+            current: (Size { width: 1024, height: 768 }, 60),
+            preferred: Size { width: 1024, height: 768 },
+            scale: 1.0,
+            density_scale: 1.0,
+        };
+        let four_k = Size { width: 3840, height: 2160 };
+        let modes = mode_rates("x\n3840x2160@60\n1024x768@60\n");
+        let scales = mode_scales("3840x2160 2\n1024x768 1\n");
+        let labels: Vec<String> = resolution_choices(&display, &modes, &scales, true)
+            .into_iter()
+            .filter(|choice| choice.mode == four_k)
+            .map(|choice| choice_label(choice, &display))
+            .collect();
+        assert_eq!(labels, ["3840 × 2160", "1920 × 1080"]);
+        // Chosen at twice, the settings name no scale; at one, they do.
+        assert_eq!(own_scale(&display, &scales, four_k), 2.0);
+        assert_eq!(own_scale(&display, &scales, display.preferred), 1.0);
     }
 
     #[test]
@@ -890,7 +944,7 @@ mod tests {
             scale: 1.0,
             density_scale: 1.0,
         };
-        let heights: Vec<i32> = resolution_choices(&display, &[], false)
+        let heights: Vec<i32> = resolution_choices(&display, &[], &[], false)
             .iter()
             .map(|choice| choice.looks_like().height)
             .collect();

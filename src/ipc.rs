@@ -197,6 +197,26 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
             return Some(lines.join("\n") + "\n");
         }
+        // Each size the output has a mode of, one a line, and the scale it is drawn at when
+        // the settings name none: `WIDTHxHEIGHT SCALE`.
+        "scales" => {
+            let output = state.space.outputs().next()?;
+            let size_mm = output.physical_properties().size;
+            let mut lines: Vec<String> = Vec::new();
+            for mode in output.modes() {
+                let scale = crate::udev::density_scale(
+                    mode.size.w,
+                    mode.size.h,
+                    size_mm.w.max(0) as u32,
+                    size_mm.h.max(0) as u32,
+                );
+                let line = format!("{}x{} {scale}\n", mode.size.w, mode.size.h);
+                if !lines.contains(&line) {
+                    lines.push(line);
+                }
+            }
+            return Some(lines.concat());
+        }
         // Every output, one a line, left to right: its name, its size in points, and where
         // its left edge is.
         "displays" => {

@@ -736,7 +736,8 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
 `first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
-`display` its mode, preferred mode, scale and the scale its density gives, `sun` today's
+`display` its mode, preferred mode, scale and the scale its density gives, `scales` the
+scale each of its sizes is drawn at when the settings name none, `sun` today's
 sunset and sunrise where the time zone is,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
 it in effect, or says why not; `'unset KEY'` puts one back at its default.
