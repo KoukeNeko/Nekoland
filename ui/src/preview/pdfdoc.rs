@@ -196,28 +196,31 @@ pub fn has_qpdf() -> bool {
     Command::new("qpdf").arg("--version").output().is_ok_and(|output| output.status.success())
 }
 
-/// Runs qpdf with `args`, handed over in a file only this user can read, one a line, so the
-/// passwords among them are not in its command line for any user to see.
+/// Runs qpdf with `args`, handed over on its standard input, one a line, so the passwords
+/// among them are not in its command line for any user to see. Not in a file: Ubuntu's
+/// AppArmor lets qpdf read little but PDFs.
 fn qpdf(args: Vec<OsString>) -> Result<String, String> {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
-    // qpdf reads the argument file a line per argument, so a newline would split one in two.
+    use std::process::Stdio;
+    // qpdf reads its arguments a line each, so a newline would split one in two.
     if let Some(arg) = args.iter().find(|arg| arg.as_bytes().iter().any(|&byte| byte == b'\n' || byte == b'\r')) {
         return Err(format!("qpdf: {} 含有換行", arg.to_string_lossy()));
     }
-    let dir = super::scratch_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-    let listed = dir.join(format!("qpdf-{}-{}.args", std::process::id(), glib::monotonic_time()));
-    let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&listed).and_then(|mut file| {
-        for arg in &args {
-            file.write_all(arg.as_bytes())?;
-            file.write_all(b"\n")?;
-        }
-        Ok(())
-    });
-    let output = written.and_then(|()| Command::new("qpdf").arg(format!("@{}", listed.display())).output());
-    let _ = std::fs::remove_file(&listed);
+    let listed: Vec<u8> = args.iter().flat_map(|arg| arg.as_bytes().iter().copied().chain([b'\n'])).collect();
+    let output = Command::new("qpdf")
+        .arg("@-")
+        // Nekoland's menus are for GTK programs; AppArmor would not let qpdf load them anyway.
+        .env_remove("LD_PRELOAD")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            let written = child.stdin.take().map_or(Ok(()), |mut stdin| stdin.write_all(&listed));
+            let output = child.wait_with_output()?;
+            written.map(|()| output)
+        });
     let output = output.map_err(|err| format!("qpdf: {err}"))?;
     // 3 is a success with warnings, such as a damaged file it mended.
     match output.status.code() {
@@ -232,7 +235,8 @@ fn password_arg(password: Option<&str>) -> Option<OsString> {
 
 /// Writes `to`, then puts it in `path`'s place, so the file is replaced whole or not at all.
 fn replace(path: &Path, write: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
-    let kept = path.with_extension("pdf.new");
+    // Ending in .pdf, which is all AppArmor lets qpdf write.
+    let kept = path.with_extension("new.pdf");
     let result = write(&kept).and_then(|()| std::fs::rename(&kept, path).map_err(|err| format!("{}: {err}", path.display())));
     if result.is_err() {
         let _ = std::fs::remove_file(&kept);

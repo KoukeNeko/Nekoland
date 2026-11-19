@@ -525,10 +525,16 @@ struct Win {
     adjusting: RefCell<Option<Pixbuf>>,
 }
 
-/// In the user's own cache, not the shared temporary folder, where another user could have
-/// made the folder first.
+/// In the temporary folder, where Ubuntu's AppArmor lets qpdf read and write PDFs, as it does
+/// not in a hidden folder such as the cache; made there under a name no other user can guess
+/// first, open to this user only.
 fn scratch_dir() -> PathBuf {
-    glib::user_cache_dir().join(format!("nekoland/preview-{}", std::process::id()))
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        glib::mkdtemp(glib::tmp_dir().join("nekoland-preview-XXXXXX"))
+            .unwrap_or_else(|| glib::user_cache_dir().join(format!("nekoland/preview-{}", std::process::id())))
+    })
+    .clone()
 }
 
 fn open_pdf(path: &Path, password: Option<&str>) -> Result<poppler::Document, glib::Error> {

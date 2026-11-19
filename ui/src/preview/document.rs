@@ -232,7 +232,8 @@ impl Win {
     /// Writes the PDF with its annotations and form to `to`, what is to be blacked out made a
     /// picture of its page; written to its own file, it is then read again from it.
     fn save_pdf(self: &Rc<Self>, pdf: &Rc<Pdf>, to: &Path) -> Result<(), String> {
-        let new = to.with_extension("pdf.new");
+        // Ending in .pdf, for qpdf to read under AppArmor.
+        let new = to.with_extension("new.pdf");
         pdf.document().save(&gio::File::for_path(&new).uri()).map_err(|err| err.to_string())?;
         let redactions = self.redactions.borrow().clone();
         if !redactions.is_empty() {
