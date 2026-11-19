@@ -44,7 +44,7 @@ OVERRIDES = f"{os.environ.get('XDG_CONFIG_HOME', HOME + '/.config')}/nekoland/ic
 HAND_DRAWN = ["/usr/local/share/icons/Nekoland/scalable/apps",
               os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "apps")]
 INDEX = "/usr/local/share/icons/Nekoland/index.theme"
-DATA_DIRS = [f"{HOME}/.local/share", f"{HOME}/.local/share/flatpak/exports/share", "/var/lib/flatpak/exports/share",
+DATA_DIRS = [f"{HOME}/.local/share", f"{HOME}/.local/share/flatpak/exports/share", "/var/lib/flatpak/exports/share", "/var/lib/snapd/desktop",
              *os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")]
 SHIPPED = "io.github.koukeneko.Nekoland."
 LIGHT, DARK = "#f7f7f9", "#232327"
@@ -327,8 +327,6 @@ def desktop_icons():
                 continue
             if section.get("NoDisplay") == "true" or not section.get("Icon"):
                 continue
-            if os.path.isabs(section["Icon"]):
-                continue  # a path bypasses the icon theme, so a restyle could never be found
             names.add(section["Icon"])
     return sorted(n for n in names if not n.startswith(SHIPPED))
 

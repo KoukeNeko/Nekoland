@@ -411,7 +411,12 @@ pub fn gio_icon_names(icon: gio::Icon) -> Vec<String> {
 fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute() {
-        return path.is_file().then(|| path.to_path_buf());
+        // A path bypasses the icon theme, but the restyle of its file (snap apps give one)
+        // is kept in ours under the file's name.
+        let restyled = path.file_stem().and_then(|stem| stem.to_str()).and_then(|stem| {
+            data_dirs().iter().find_map(|dir| find_file(&dir.join("icons/Nekoland"), stem, 4))
+        });
+        return restyled.or_else(|| path.is_file().then(|| path.to_path_buf()));
     }
     let key = (name.to_string(), extra_dir.to_string());
     if let Some(found) = FOUND_ICONS
