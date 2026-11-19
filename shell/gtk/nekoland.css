@@ -102,6 +102,14 @@ dropdown > button {
   box-shadow: none;
   font-weight: 400;
 }
+/* A search field is as low as the Mac's, a sidebar row's height. */
+entry.search {
+  min-height: 28px;
+  border-radius: 7px;
+}
+fontchooser .linked > entry.search {
+  min-height: 36px;
+}
 entry:focus-within {
   background-color: var(--nekoland-sheet);
   outline: 1.5px solid var(--nekoland-ink);
@@ -388,10 +396,10 @@ progressbar > trough {
   box-shadow: none;
 }
 
-/* Where one is in a sidebar is solid ink too. */
+/* Where one is in a sidebar is solid ink too. Rows are as low as the Mac's. */
 .navigation-sidebar > row {
-  min-height: 32px;
-  border-radius: 8px;
+  min-height: 28px;
+  border-radius: 7px;
 }
 .navigation-sidebar row:selected {
   background-color: var(--nekoland-ink);
