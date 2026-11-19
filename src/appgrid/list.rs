@@ -421,7 +421,7 @@ impl Nekoland {
         let layout = apps.layout;
         if let Some((Pressed::App(app), _)) = apps.press.take() {
             if layout.and_then(|layout| apps.app_at(&layout, pos)) == Some(app) {
-                self.start_grid_app(app, None, Some(super::icon_around(pos)));
+                self.start_grid_app(app, None);
             }
             return;
         }
@@ -469,7 +469,7 @@ impl Nekoland {
             }
             Keysym::Return | Keysym::KP_Enter => {
                 if let Some(app) = apps.focus.or(apps.hovered).or_else(|| listed.first().copied()) {
-                    self.start_grid_app(app, None, None);
+                    self.start_grid_app(app, None);
                 }
                 return true;
             }

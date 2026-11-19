@@ -33,8 +33,7 @@ use smithay::{
 };
 
 use crate::{
-    dock::fit_window,
-    windows::{is_managed, window_names},
+    windows::is_managed,
     Nekoland,
 };
 
@@ -133,9 +132,6 @@ const POPUP_FADE: f64 = 0.08;
 /// come home, and going out the way they came.
 const APPS: Spring = Spring::new(0.38, 0.82);
 const APPS_SCALE: f64 = 1.12;
-/// How long an application started from its icon may take to show a window that still
-/// opens out of that icon.
-const LAUNCH_PATIENCE: f64 = 10.0;
 
 /// How many times their size the applications are drawn: `opened` a moment ago, or
 /// `leaving`, from 1 down to 0, with the view they are part of.
@@ -195,14 +191,6 @@ struct Opening {
 }
 
 /// An application started from its icon, whose window has not shown yet.
-struct Launch {
-    /// What its window may give as its application: the desktop entry's name, and the
-    /// window class the entry says it has.
-    names: Vec<String>,
-    icon: Rectangle<i32, Logical>,
-    started: Instant,
-}
-
 struct Morph {
     window: Window,
     /// Where it was drawn when it was sent off, and the size it had then, by which to tell
@@ -236,7 +224,6 @@ pub struct Motion {
     morphing: Vec<Morph>,
     ghosts: Vec<Ghost>,
     slide: Option<Slide>,
-    launches: Vec<Launch>,
 }
 
 /// A window as it was last drawn, with the part of it the picture covers, from where its
@@ -439,40 +426,6 @@ impl Nekoland {
         {
             motion.slide = None;
         }
-        motion
-            .launches
-            .retain(|launch| seconds_since(launch.started) < LAUNCH_PATIENCE);
-    }
-
-    /// An application was started from its `icon` on screen: its window opens out of it.
-    pub fn motion_launching(&mut self, names: Vec<String>, icon: Rectangle<i32, Logical>) {
-        if !self.config.animations {
-            return;
-        }
-        self.motion.launches.push(Launch {
-            names,
-            icon,
-            started: Instant::now(),
-        });
-    }
-
-    /// The icon a window's application was just started from, if it was, fitted to the
-    /// window's shape. A dialog is not what the icon started.
-    fn icon_launched_from(&mut self, window: &Window) -> Option<Rectangle<i32, Logical>> {
-        if window
-            .toplevel()
-            .is_some_and(|toplevel| toplevel.parent().is_some())
-        {
-            return None;
-        }
-        let app_id = window_names(window).1;
-        let index = self
-            .motion
-            .launches
-            .iter()
-            .position(|launch| launch.names.iter().any(|name| name.eq_ignore_ascii_case(&app_id)))?;
-        let launch = self.motion.launches.remove(index);
-        Some(fit_window(window, launch.icon))
     }
 
     /// Whether a window is drawn somewhere other than where it is, or is about to be.
@@ -573,15 +526,12 @@ impl Nekoland {
             .collect()
     }
 
-    /// A window was shown for the first time: one started from an icon among the
-    /// applications comes out of that icon, any other grows a little where it is, as the
-    /// Mac's do wherever they were started from.
+    /// A window was shown for the first time: it grows a little where it is. One started
+    /// from the applications does too, as they are gone by then, back to the desktop.
     pub fn motion_open(&mut self, window: &Window) {
-        if !self.config.animations {
-            return;
+        if self.config.animations {
+            self.start_opening(window, None);
         }
-        let from = self.icon_launched_from(window);
-        self.start_opening(window, from);
     }
 
     /// A window was brought back on screen other than out of the Dock.

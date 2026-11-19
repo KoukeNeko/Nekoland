@@ -204,11 +204,6 @@ fn icon_rect(grid: Rectangle<i32, Logical>, columns: usize, cell: usize) -> Rect
     )
 }
 
-/// An icon's worth of the screen around a point, for what was started by a click there.
-fn icon_around(pos: Point<f64, Logical>) -> Rectangle<i32, Logical> {
-    Rectangle::new(pos.to_i32_round() - Point::from((ICON / 2, ICON / 2)), Size::from((ICON, ICON)))
-}
-
 /// Where an icon being dragged came from.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -1685,12 +1680,7 @@ impl Nekoland {
                     });
                     match apps.cells().get(index).copied().filter(|_| here == Some(index)) {
                         Some(Cell::Entry(Entry::App(_))) if editing => {}
-                        Some(Cell::Entry(Entry::App(app))) => {
-                            let icon = apps.layout.map(|layout| {
-                                icon_rect(layout.grid, layout.columns, index % layout.per_page().max(1))
-                            });
-                            self.start_grid_app(app, None, icon);
-                        }
+                        Some(Cell::Entry(Entry::App(app))) => self.start_grid_app(app, None),
                         Some(Cell::Entry(Entry::Folder(folder))) => {
                             apps.open = Some(OpenFolder::new(folder));
                         }
@@ -1702,15 +1692,11 @@ impl Nekoland {
                         .open
                         .as_ref()
                         .and_then(|open| apps.folders[open.folder].apps.get(index).copied());
-                    let icon = apps
-                        .layout
-                        .and_then(|layout| apps.folder_layout(&layout))
-                        .map(|place| icon_rect(place.grid, place.columns, index));
                     if let Some(app) = app.filter(|_| !editing) {
-                        self.start_grid_app(app, None, icon);
+                        self.start_grid_app(app, None);
                     }
                 }
-                Pressed::App(app) => self.start_grid_app(app, None, Some(icon_around(pos))),
+                Pressed::App(app) => self.start_grid_app(app, None),
             }
             return;
         }
@@ -1725,11 +1711,11 @@ impl Nekoland {
                 return;
             }
             match self.overview_bar_action(pos) {
-                Some(BarAction::Switch(desktop)) => return self.start_grid_app(app, Some(desktop), None),
+                Some(BarAction::Switch(desktop)) => return self.start_grid_app(app, Some(desktop)),
                 Some(BarAction::Add) => {
                     let desktop = self.workspaces.count();
                     self.add_workspace();
-                    return self.start_grid_app(app, Some(desktop), None);
+                    return self.start_grid_app(app, Some(desktop));
                 }
                 None => {}
             }
@@ -1744,9 +1730,8 @@ impl Nekoland {
         apps.land(entry, let_go);
     }
 
-    /// Starts an application of the grid, on `desktop` if one is given, and leaves. Its
-    /// window opens out of `icon`, where it was started by a click on one.
-    fn start_grid_app(&mut self, index: usize, desktop: Option<usize>, icon: Option<Rectangle<i32, Logical>>) {
+    /// Starts an application of the grid, on `desktop` if one is given, and leaves.
+    fn start_grid_app(&mut self, index: usize, desktop: Option<usize>) {
         let Some(apps) = self.overview.as_ref().and_then(|overview| overview.apps.as_ref()) else {
             return;
         };
@@ -1765,10 +1750,6 @@ impl Nekoland {
         }
         if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
             tracing::warn!("{id}: {err}");
-        }
-        if let Some(icon) = icon {
-            let class = info.startup_wm_class().map(|class| class.to_string());
-            self.motion_launching(std::iter::once(id.clone()).chain(class).collect(), icon);
         }
         self.dock_launching(&id);
         self.close_overview(None);
@@ -1835,7 +1816,7 @@ impl Nekoland {
                 match cells.get(first) {
                     Some(Cell::Entry(Entry::App(app))) => {
                         let app = *app;
-                        self.start_grid_app(app, None, None);
+                        self.start_grid_app(app, None);
                     }
                     _ => return false,
                 }
