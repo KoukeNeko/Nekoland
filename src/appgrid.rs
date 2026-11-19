@@ -46,11 +46,13 @@ use crate::{
     Nekoland,
 };
 
-const CELL_WIDTH: i32 = 132;
-const CELL_HEIGHT: i32 = 128;
-const ICON: i32 = 66;
+// Every measure of the page is a multiple of 8, as the rest of the desktop's are: icons 80
+// apart each way, with their names in between.
+const CELL_WIDTH: i32 = 144;
+const CELL_HEIGHT: i32 = 144;
+const ICON: i32 = 64;
 /// How far under the top of its place an icon is.
-const ICON_TOP: i32 = 12;
+const ICON_TOP: i32 = 16;
 /// How much the icon under the pointer grows, as on the iPad, its name staying as it is.
 const HOVER_LIFT: f64 = 1.08;
 /// How many seconds an icon takes to grow most of the way under the pointer, or to settle
@@ -2146,7 +2148,7 @@ mod tests {
         assert_eq!(cell, 0);
         let middle = Point::from((
             100.0 + f64::from(CELL_WIDTH) * 2.5,
-            200.0 + f64::from(CELL_HEIGHT) + 12.0 + f64::from(ICON) / 2.0,
+            200.0 + f64::from(CELL_HEIGHT) + f64::from(ICON_TOP) + f64::from(ICON) / 2.0,
         ));
         assert_eq!(cell_at(grid, 4, 2, middle), Some((6, 0.0)));
         assert_eq!(cell_at(grid, 4, 2, Point::from((99.0, 201.0))), None);

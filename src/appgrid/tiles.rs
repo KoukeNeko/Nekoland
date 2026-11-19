@@ -27,9 +27,9 @@ use crate::{
 const DRAWN_ICON: i32 = HELD_SIZE;
 /// Room around the icon on its sprite, for its corners as it turns.
 const ICON_MARGIN: i32 = 4;
-const LABEL_HEIGHT: i32 = 22;
-/// How far under the top of its place a name is.
-const LABEL_TOP: i32 = ICON + 20;
+const LABEL_HEIGHT: i32 = 24;
+/// How far under the top of its place a name is: 8 under its icon.
+const LABEL_TOP: i32 = ICON_TOP + ICON + 8;
 /// How far the plate under an icon another is aimed onto reaches around it.
 const PLATE_GROWN: f64 = 1.3;
 /// How fast an entry glides to its place, and the pages to the one shown: the rate of a
@@ -327,11 +327,11 @@ fn draw_sprite(width: i32, height: i32, paint: impl FnOnce(&Context)) -> Option<
 fn draw_label(name: &str) -> Option<Sprite> {
     draw_sprite(CELL_WIDTH, LABEL_HEIGHT, |cr| {
         let label = text_layout(cr, name, 10.0);
-        label.set_width((CELL_WIDTH - 14) * pango::SCALE);
+        label.set_width((CELL_WIDTH - 16) * pango::SCALE);
         label.set_ellipsize(pango::EllipsizeMode::End);
         let (width, _) = label.pixel_size();
         cr.set_source_rgb(1.0, 1.0, 1.0);
-        cr.move_to(f64::from(CELL_WIDTH - width.min(CELL_WIDTH - 14)) / 2.0, 0.0);
+        cr.move_to(f64::from(CELL_WIDTH - width.min(CELL_WIDTH - 16)) / 2.0, 0.0);
         pangocairo::functions::show_layout(cr, &label);
     })
 }
