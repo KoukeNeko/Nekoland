@@ -896,9 +896,11 @@ impl Nekoland {
         for app_id in std::mem::take(&mut self.dock.was_running) {
             let quit = !anywhere.iter().any(|now| same(now, &app_id));
             let kept = self.config.dock.iter().any(|kept| same(kept, &app_id));
-            let listed = gio::DesktopAppInfo::new(&format!("{app_id}.desktop"))
-                .is_some_and(|info| info.should_show());
-            if quit && !kept && listed {
+            // Read only for one that quit: this is every frame, and reading it is the disk.
+            let listed = || {
+                gio::DesktopAppInfo::new(&format!("{app_id}.desktop")).is_some_and(|info| info.should_show())
+            };
+            if quit && !kept && listed() {
                 self.dock.recents.retain(|recent| !same(recent, &app_id));
                 self.dock.recents.insert(0, app_id);
                 self.dock.recents.truncate(RECENTS);
