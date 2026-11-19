@@ -1351,10 +1351,17 @@ impl Nekoland {
             }
         }
         if let Some((_, picture)) = &apps.search {
+            // Let down from above the screen, and back up as the view leaves.
+            let above = if self.config.animations {
+                let way = f64::from(layout.search.loc.y + layout.search.size.h - area.loc.y);
+                (way * (1.0 - crate::motion::apps_drop(apps.opened, leaving))).round() as i32
+            } else {
+                0
+            };
             front.push(Overlay {
                 fade,
                 id: &apps.ids[2],
-                rect: layout.search,
+                rect: Rectangle::new(layout.search.loc - Point::from((0, above)), layout.search.size),
                 glass: None,
                 alpha: 1.0,
                 picture,

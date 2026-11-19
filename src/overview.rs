@@ -50,6 +50,9 @@ const FRAME_MARGIN: i32 = 6;
 /// than it comes.
 const BAR_OPEN_RATE: f64 = 30.0;
 const BAR_CLOSE_RATE: f64 = 45.0;
+/// How little the bar's spring is damped as it opens: it swings past and back, as a
+/// phone's Dock does coming in.
+const BAR_OPEN_DAMPING: f64 = 0.55;
 /// How long the applications come in before the bar starts to open up over them.
 const BAR_AFTER_APPS: Duration = Duration::from_millis(150);
 /// How long the menu bar's content takes to slide up off the screen as the overview opens;
@@ -447,6 +450,8 @@ pub struct Overview {
     /// How far the desktops' bar is opened up, 0 to 1, how fast, and whether it is opening.
     expansion: f64,
     expansion_speed: f64,
+    /// The same as it is drawn: a little past 1 while the bar swings at the end of its way.
+    swing: f64,
     /// How much the desktops' names showed on the strip when the overview began to close,
     /// so that they only fade from there and do not come back as the bar closes.
     names_at_close: f64,
@@ -643,6 +648,7 @@ impl Nekoland {
             bar: SpacesBar::default(),
             expansion: 0.0,
             expansion_speed: 0.0,
+            swing: 0.0,
             names_at_close: 1.0,
             menu_away: 0.0,
             expanding: false,
@@ -820,7 +826,8 @@ impl Nekoland {
         let mut thumbnails = Vec::with_capacity(count);
         let mut expanded_items = Vec::with_capacity(count + 1);
         let mut frames = Vec::with_capacity(count);
-        let expanded = draw(output.size.w, expanded_height, |cr| {
+        // With room under it for the bar to swing past its height as it opens.
+        let expanded = draw(output.size.w, expanded_height + expanded_height / 4, |cr| {
             colors.paint_glass(cr);
         });
         // A desktop with a wallpaper other than the one drawn now shows its own picture of
@@ -955,7 +962,7 @@ impl Nekoland {
     /// along the bar as desktops come and go, and down from above the screen as it opens up.
     pub fn overview_thumbnails(&self) -> Vec<(usize, Rectangle<i32, Logical>)> {
         self.overview.as_ref().map_or_else(Vec::new, |overview| {
-            let away = 1.0 - overview.expansion;
+            let away = 1.0 - overview.swing;
             let dragged = overview.desktop_drag.as_ref().filter(|drag| drag.moving);
             (overview.bar.thumbnails.iter().zip(&overview.glides).enumerate())
                 .map(|(index, (place, (x, ..)))| {
@@ -977,7 +984,7 @@ impl Nekoland {
         let overview = self.overview.as_ref()?;
         let bar = &overview.bar;
         let right = bar.area.loc.x + bar.area.size.w;
-        let away = f64::from(right - bar.add.loc.x) * (1.0 - overview.expansion);
+        let away = f64::from(right - bar.add.loc.x) * (1.0 - overview.swing);
         let rect = Rectangle::new(bar.add.loc + Point::from((away.round() as i32, 0)), bar.add.size);
         Some((rect, bar.plus.as_ref()?))
     }
@@ -1009,7 +1016,7 @@ impl Nekoland {
             .outputs()
             .next()
             .and_then(|output| self.space.output_geometry(output))?;
-        let grown = f64::from(expanded_height(output) - MENU_BAR_HEIGHT) * overview.expansion;
+        let grown = f64::from(expanded_height(output) - MENU_BAR_HEIGHT) * overview.swing;
         Some(Rectangle::new(
             output.loc,
             Size::from((output.size.w, MENU_BAR_HEIGHT + grown.round() as i32)),
@@ -1247,13 +1254,20 @@ impl Nekoland {
             (0.0, BAR_CLOSE_RATE)
         };
         if self.config.animations {
-            // A frame late by much is taken in small steps, not as a jump.
-            crate::motion::settle(&mut overview.expansion, &mut overview.expansion_speed, goal, rate, seconds.min(0.05));
+            // A frame late by much is not taken as a jump.
+            let seconds = seconds.min(0.05);
+            let (swing, speed) = (&mut overview.swing, &mut overview.expansion_speed);
+            if overview.expanding {
+                crate::motion::swing(swing, speed, goal, rate, BAR_OPEN_DAMPING, seconds);
+            } else {
+                crate::motion::settle(swing, speed, goal, rate, seconds);
+            }
         }
-        if !self.config.animations || ((overview.expansion - goal).abs() < 0.002 && overview.expansion_speed.abs() < 0.05) {
-            (overview.expansion, overview.expansion_speed) = (goal, 0.0);
+        if !self.config.animations || ((overview.swing - goal).abs() < 0.002 && overview.expansion_speed.abs() < 0.05) {
+            (overview.swing, overview.expansion_speed) = (goal, 0.0);
         }
-        overview.expansion = overview.expansion.clamp(0.0, 1.0);
+        overview.swing = overview.swing.max(0.0);
+        overview.expansion = overview.swing.min(1.0);
 
         for ((x, speed, _), place) in overview.glides.iter_mut().zip(&overview.bar.thumbnails) {
             let goal = f64::from(place.loc.x);

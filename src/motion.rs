@@ -106,6 +106,28 @@ pub fn settle(value: &mut f64, speed: &mut f64, goal: f64, rate: f64, seconds: f
     *speed = (*speed - pull * rate * seconds) * decay;
 }
 
+/// As `settle`, on a spring that swings past its goal and back, the less `damping`, under
+/// 1, the further: what a bar let down does at the end of its way.
+pub fn swing(value: &mut f64, speed: &mut f64, goal: f64, rate: f64, damping: f64, seconds: f64) {
+    // In small steps, which keep it the same spring however late the frame is.
+    let steps = (seconds / 0.004).ceil().max(1.0);
+    let step = seconds / steps;
+    for _ in 0..steps as usize {
+        *speed -= (rate * rate * (*value - goal) + 2.0 * damping * rate * *speed) * step;
+        *value += *speed * step;
+    }
+}
+
+/// The search field of the applications let down from above the screen, swinging a little
+/// past its place.
+const APPS_DROP: Spring = Spring::new(0.42, 0.62);
+
+/// How far down to its place what is let down over the applications has come, 0 to 1 and a
+/// little past: `opened` a moment ago, or `leaving`, from 1 down to 0, straight back up.
+pub fn apps_drop(opened: Instant, leaving: Option<f64>) -> f64 {
+    leaving.unwrap_or_else(|| APPS_DROP.at(opened))
+}
+
 fn seconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64()
 }
@@ -738,6 +760,14 @@ mod tests {
         assert!(app_arrival(a_while, Some(0.5), 0.0) > app_arrival(a_while, Some(0.5), 1.0));
         assert_eq!(app_arrival(a_while, Some(1.0), 1.0), 1.0);
         assert_eq!(app_arrival(a_while, Some(0.0), 0.0), 0.0);
+        // A swing goes past its goal, and comes to rest on it.
+        let (mut value, mut speed, mut most) = (0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..120 {
+            swing(&mut value, &mut speed, 1.0, 30.0, 0.55, 1.0 / 60.0);
+            most = most.max(value);
+        }
+        assert!(most > 1.05 && most < 1.2);
+        assert!((value - 1.0).abs() < 0.002);
         // Home when there, and off the screen before it sets off.
         let screen = Rectangle::new(Point::from((0.0, 0.0)), Size::from((1280.0, 800.0)));
         let home = Point::from((300.0, 500.0));
