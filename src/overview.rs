@@ -301,8 +301,14 @@ fn close_button_rect(thumbnail: Rectangle<i32, Logical>) -> Rectangle<i32, Logic
     )
 }
 
+/// How wide a desktop's picture is in the opened-up bar with room for it: as much of a
+/// larger screen's width as of one 1280 wide.
+fn full_width(screen_width: i32) -> i32 {
+    (THUMBNAIL_WIDTH * screen_width / 1280).max(THUMBNAIL_WIDTH)
+}
+
 fn thumbnail_height(output: Rectangle<i32, Logical>) -> i32 {
-    (THUMBNAIL_WIDTH * output.size.h / output.size.w.max(1)).max(1)
+    (full_width(output.size.w) * output.size.h / output.size.w.max(1)).max(1)
 }
 
 /// How tall the desktops' bar is opened up, from the top of the screen.
@@ -350,10 +356,10 @@ fn show_centered(
 /// more than fit then scroll, at first as far as shows the one shown, `active`.
 fn bar_row(screen_width: i32, count: usize, active: usize, scroll: Option<f64>) -> (i32, i32, f64, f64) {
     let count = count.max(1) as i32;
-    let right = screen_width - add_width() - ADD_MARGIN - THUMBNAIL_GAP;
+    let right = screen_width - add_width(screen_width) - ADD_MARGIN - THUMBNAIL_GAP;
     let room = right - BAR_EDGE;
     let fitted = (room - THUMBNAIL_GAP * (count - 1)) / count;
-    let width = fitted.clamp(MIN_THUMBNAIL_WIDTH, THUMBNAIL_WIDTH);
+    let width = fitted.clamp(MIN_THUMBNAIL_WIDTH, full_width(screen_width));
     let row = (width + THUMBNAIL_GAP) * count - THUMBNAIL_GAP;
     if row <= room {
         return (width, ((screen_width - row) / 2).min(right - row), 0.0, 0.0);
@@ -366,8 +372,8 @@ fn bar_row(screen_width: i32, count: usize, active: usize, scroll: Option<f64>) 
 
 /// The add button is a bit more than half a full-size desktop, and keeps that size however
 /// small the desktops get.
-fn add_width() -> i32 {
-    (f64::from(THUMBNAIL_WIDTH) * ADD_SIZE).round() as i32
+fn add_width(screen_width: i32) -> i32 {
+    (f64::from(full_width(screen_width)) * ADD_SIZE).round() as i32
 }
 
 /// Where the strip's row of names `row` wide starts on a screen `screen_width` wide:
@@ -896,8 +902,8 @@ impl Nekoland {
             });
             x += tile_width + THUMBNAIL_GAP;
         }
-        let full_height = THUMBNAIL_WIDTH * output.size.h / output.size.w.max(1);
-        let add_size = Size::from((add_width(), (f64::from(full_height) * ADD_SIZE).round() as i32));
+        let full_height = thumbnail_height(output);
+        let add_size = Size::from((add_width(output.size.w), (f64::from(full_height) * ADD_SIZE).round() as i32));
         let add = Rectangle::new(
             output.loc + Point::from((output.size.w - add_size.w - ADD_MARGIN, top + (tile_height - add_size.h) / 2)),
             add_size,
@@ -1732,15 +1738,16 @@ mod tests {
     fn ten_desktops_fit_left_of_the_add_button() {
         let (width, first, scroll, end) = bar_row(2000, 10, 0, None);
         let last_end = first + (width + THUMBNAIL_GAP) * 10 - THUMBNAIL_GAP;
-        assert!(width < THUMBNAIL_WIDTH && width >= MIN_THUMBNAIL_WIDTH);
-        assert!(first >= BAR_EDGE && last_end <= 2000 - add_width() - ADD_MARGIN - THUMBNAIL_GAP);
+        assert!(width < full_width(2000) && width >= MIN_THUMBNAIL_WIDTH);
+        assert!(first >= BAR_EDGE && last_end <= 2000 - add_width(2000) - ADD_MARGIN - THUMBNAIL_GAP);
         assert_eq!((scroll, end), (0.0, 0.0));
     }
 
     #[test]
     fn a_few_desktops_keep_their_size_and_are_centered() {
         let (width, first, ..) = bar_row(2000, 2, 0, None);
-        assert_eq!(width, THUMBNAIL_WIDTH);
+        // Larger on a screen wider than 1280, by as much.
+        assert_eq!((width, full_width(1280)), (300, THUMBNAIL_WIDTH));
         assert_eq!(first, (2000 - (width * 2 + THUMBNAIL_GAP)) / 2);
     }
 
