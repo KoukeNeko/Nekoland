@@ -651,6 +651,19 @@ folder's many smallest files are drawn as one item. 快速查看, 在「檔案�
 kept in `~/.local/state/nekoland/disk`, five of each folder, for 最近的掃描 and for comparing
 with a later one; 儲存掃描檔 writes one as a gzipped `.nekoscan` to open elsewhere.
 
+`nekoland-disks`, from `ui/`, is 磁碟: the drives and what is on them. `lsblk` and `losetup`
+are read every three seconds, and each drive's partitions and free space are drawn side by
+side as wide as they are large, with how full each is, beside a list of them. Choosing one
+shows what can be done to it: 掛載 and 卸載 through `udisksctl`, 停用 or 啟用 for swap, 調整大小
+for ext4, Btrfs, XFS (larger only) and NTFS, 檢查檔案系統, 格式化 to ext4, Btrfs, XFS, exFAT, FAT32,
+NTFS or swap, quick or written over with zeros, 新增分割區 in free space, and 建立分割表 on a
+drive with none. What `udisksctl` may not do, and all the rest, is done as root through
+`sudo -A`, asking for the password with `nekoland-askpass`; the partition the system runs from
+is not unmounted or formatted. An external drive can be 退出; the menu reads its SMART data
+(with `smartmontools`), times it, writes it to a `.img` or `.img.zst` and writes one back, and
+清除磁碟 wipes it. 開啟映像檔 makes a loop drive of an image, shown under 映像檔. A job's
+progress is shown in the bar over the buttons, with 取消.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

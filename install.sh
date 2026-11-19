@@ -33,7 +33,8 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
-    libvte-2.91-gtk4-0 fonts-jetbrains-mono"
+    libvte-2.91-gtk4-0 fonts-jetbrains-mono
+    udisks2 parted e2fsprogs btrfs-progs xfsprogs exfatprogs ntfs-3g dosfstools smartmontools zstd"
 # Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
 [ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Disks
+Name[zh_TW]=磁碟
+Comment=Mount, format and partition drives
+Comment[zh_TW]=掛載、格式化與分割磁碟
+Exec=nekoland-disks %U
+Icon=io.github.koukeneko.Nekoland.Disks
+Categories=System;Utility;Filesystem;
+MimeType=application/x-cd-image;
