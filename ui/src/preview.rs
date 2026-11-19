@@ -56,6 +56,8 @@ const THUMB_SIZE: i32 = 160;
 const MIN_SCALE: f64 = 0.05;
 const MAX_SCALE: f64 = 16.0;
 const ZOOM_STEP: f64 = 1.25;
+/// How far two fingers go across the touchpad, in pixels, to turn a page.
+const SWIPE_DISTANCE: f64 = 150.0;
 /// What the Mac's Preview opens: PDFs and pictures, camera RAW and the less common ones too.
 /// Which of them can be read depends on the image loaders installed.
 const MIME_TYPES: [&str; 23] = [
@@ -1298,6 +1300,39 @@ impl Win {
                 }
             });
             scroll.add_controller(wheel);
+
+            // Two fingers swept across the touchpad turn to the next or last page or picture,
+            // once the view can go no further that way.
+            let swipe = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::HORIZONTAL);
+            // Ahead of the scrolled window's own handling, which would take it as a scroll.
+            swipe.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let swept = Rc::new(Cell::new(0.0_f64));
+            swipe.connect_scroll({
+                let (weak, swept, scroll) = (weak.clone(), swept.clone(), scroll.clone());
+                move |swipe, dx, _| {
+                    let Some(win) = weak.upgrade() else { return glib::Propagation::Proceed };                    // A wheel's tilt is not a swipe.
+                    if swipe.unit() != gdk::ScrollUnit::Surface || dx == 0.0 {
+                        return glib::Propagation::Proceed;
+                    }
+                    let room = scroll.hadjustment();
+                    let at_edge = if dx > 0.0 { room.value() >= room.upper() - room.page_size() - 0.5 } else { room.value() <= room.lower() + 0.5 };
+                    if !at_edge || swept.get().is_nan() {
+                        return glib::Propagation::Proceed;
+                    }
+                    swept.set(swept.get() + dx);
+                    if swept.get().abs() >= SWIPE_DISTANCE {
+                        win.step(if swept.get() > 0.0 { 1 } else { -1 });
+                        // One turn a swipe; NaN until the fingers lift.
+                        swept.set(f64::NAN);
+                    }
+                    glib::Propagation::Stop
+                }
+            });
+            swipe.connect_scroll_end({
+                let swept = swept.clone();
+                move |_| swept.set(0.0)
+            });
+            scroll.add_controller(swipe);
 
             let pinch = gtk::GestureZoom::new();
             let began_at = Rc::new(Cell::new(1.0));
