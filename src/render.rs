@@ -798,19 +798,38 @@ fn floating_elements(
             Kind::Unspecified,
         )
         .ok();
-        // The applications come in and go out a little larger, around their middle.
-        elements.extend(picture.map(|picture| match state.apps_zoom_of(overlay.id) {
-            Some(zoom) => {
-                let middle = rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2));
-                SceneElement::ZoomedPicture(RescaleRenderElement::from_element(picture, middle, zoom))
+        // The applications come in and go out a little larger, around their middle, and a
+        // folder out of its icon; the glass behind goes with them.
+        let zoom = state.apps_zoom_of(overlay.id).map(|(pivot, zoom)| {
+            let pivot = match pivot {
+                Some(pivot) => (pivot - output_loc.to_f64()).to_physical(scale).to_i32_round(),
+                None => rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2)),
+            };
+            (pivot, zoom)
+        });
+        elements.extend(picture.map(|picture| match zoom {
+            Some((pivot, zoom)) => {
+                SceneElement::ZoomedPicture(RescaleRenderElement::from_element(picture, pivot, zoom))
             }
             None => SceneElement::Picture(picture),
         }));
+        let (rect, grown) = match zoom {
+            Some((pivot, zoom)) => (
+                Rectangle::new(
+                    pivot + (rect.loc - pivot).to_f64().upscale(zoom).to_i32_round(),
+                    rect.size.to_f64().upscale(zoom).to_i32_round(),
+                ),
+                zoom,
+            ),
+            None => (rect, 1.0),
+        };
         elements.extend(
             glass
                 .as_deref_mut()
                 .zip(overlay.glass)
-                .and_then(|(glass, (tier, radius))| glass.pane_with(overlay.id.clone(), tier, rect, pixels(radius)))
+                .and_then(|(glass, (tier, radius))| {
+                    glass.pane_with(overlay.id.clone(), tier, rect, (f64::from(pixels(radius)) * grown).round() as i32)
+                })
                 .map(|pane| SceneElement::Glass(pane.faded(overlay.fade))),
         );
     }

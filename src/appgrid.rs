@@ -375,6 +375,8 @@ pub struct AppGrid {
     /// Since when a dragged icon has rested at an edge of the grid, and which.
     edge: Option<(bool, Instant)>,
     open: Option<OpenFolder>,
+    /// The folder that was open, going back into its icon since it was closed.
+    closed: Option<(OpenFolder, Instant)>,
     opened: Instant,
     last_tick: Instant,
     scrolled: f64,
@@ -607,6 +609,7 @@ impl AppGrid {
             gap: None,
             edge: None,
             open: None,
+            closed: None,
             opened: Instant::now(),
             last_tick: Instant::now(),
             scrolled: 0.0,
@@ -777,10 +780,46 @@ impl AppGrid {
         self.save();
     }
 
+    /// Closes the open folder, which goes back into its icon.
+    fn close_folder(&mut self) {
+        if let Some(open) = self.open.take() {
+            self.closed = Some((open, Instant::now()));
+        }
+    }
+
+    /// The folder to draw, open or on its way back in, with how it is drawn: the point
+    /// that stays where it is, how many times its size it is about that point, and how far
+    /// out of its icon it has come, 0 to 1.
+    fn folder_shown(&self, layout: &Layout) -> Option<(&OpenFolder, FolderPlace, Point<f64, Logical>, f64, f64)> {
+        let (open, closed) = match (&self.open, &self.closed) {
+            (Some(open), _) => (open, None),
+            (None, Some((open, closed))) => (open, Some(*closed)),
+            (None, None) => return None,
+        };
+        let out = crate::motion::folder_arrival(open.opened, closed)?;
+        let place = self.folder_place(open.folder, layout)?;
+        let panel = place.panel.to_f64();
+        let middle = panel.loc + Point::from((panel.size.w / 2.0, panel.size.h / 2.0));
+        // From its icon on the page, or, with no icon there, as while searching, its middle.
+        let small = f64::from(ICON) / panel.size.w;
+        let icon = (self.cells.iter())
+            .position(|cell| matches!(cell, Cell::Entry(Entry::Folder(folder)) if *folder == open.folder))
+            .filter(|_| self.query.is_empty())
+            .map_or(middle, |index| self.icon_middle(layout, index));
+        let pivot = Point::from((
+            (icon.x - small * middle.x) / (1.0 - small),
+            (icon.y - small * middle.y) / (1.0 - small),
+        ));
+        Some((open, place, pivot, small + (1.0 - small) * out, out.clamp(0.0, 1.0)))
+    }
+
     /// Where the open folder is, and its grid of applications.
     fn folder_layout(&self, layout: &Layout) -> Option<FolderPlace> {
-        let open = self.open.as_ref()?;
-        let count = self.folders.get(open.folder)?.apps.len().max(1);
+        self.folder_place(self.open.as_ref()?.folder, layout)
+    }
+
+    fn folder_place(&self, folder: usize, layout: &Layout) -> Option<FolderPlace> {
+        let count = self.folders.get(folder)?.apps.len().max(1);
         let columns = count.clamp(3, FOLDER_COLUMNS);
         let rows = count.div_ceil(columns).clamp(1, FOLDER_ROWS);
         let size = Size::from((
@@ -1262,11 +1301,13 @@ impl Nekoland {
             });
         }
         // How far the open folder has come in, which the pages go dim by.
-        let folder_fade = (apps.open.as_ref()).map_or(0.0, |open| fade_since(open.opened));
-        if let (Some(open), Some(FolderPlace { panel, grid, .. })) = (&apps.open, apps.folder_layout(&layout)) {
-            let alpha = folder_fade.min(leaving.map_or(1.0, |leaving| leaving as f32));
+        let folder = apps.folder_shown(&layout);
+        let folder_fade = folder.as_ref().map_or(0.0, |(.., out)| *out as f32);
+        if let Some((open, FolderPlace { panel, grid, .. }, pivot, zoom, _)) = folder {
+            // There to see well before it is its size.
+            let alpha = (folder_fade * 3.0).min(1.0).min(leaving.map_or(1.0, |leaving| leaving as f32));
             layers.extend(front.drain(..).map(Layer::Overlay));
-            layers.push(Layer::Sprites(stock.board(
+            let sprites = stock.board(
                 &Board {
                     origin: grid.loc.to_f64(),
                     seen,
@@ -1283,7 +1324,13 @@ impl Nekoland {
                 },
                 None,
                 |entry| apps.wanted(entry),
-            )));
+            );
+            let animated = self.config.animations;
+            layers.push(Layer::Sprites(
+                (sprites.into_iter())
+                    .map(|sprite| if animated { sprite.scaled_about(pivot, zoom) } else { sprite })
+                    .collect(),
+            ));
             if let Some(picture) = &open.picture {
                 front.push(Overlay {
                     fade: alpha,
@@ -1448,7 +1495,7 @@ impl Nekoland {
                     apps.press = Some((Pressed::FolderCell(cell), pos));
                     apps.pressed = Instant::now();
                 } else if !panel.to_f64().contains(pos) {
-                    apps.open = None;
+                    apps.close_folder();
                     apps.save();
                 }
             }
@@ -1768,13 +1815,21 @@ impl Nekoland {
         self.close_overview(None);
     }
 
-    /// How many times its size the overlay named `id` is drawn, if it is the applications
-    /// on their way in or out: they come in from a little larger and leave the same way.
-    pub fn apps_zoom_of(&self, id: &Id) -> Option<f64> {
+    /// How many times its size the overlay named `id` is drawn, and about which point, its
+    /// middle if none is given: the applications on their way in or out, which come in
+    /// from a little larger and leave the same way, or a folder out of its icon.
+    pub fn apps_zoom_of(&self, id: &Id) -> Option<(Option<Point<f64, Logical>>, f64)> {
         let overview = self.overview.as_ref().filter(|_| self.config.animations)?;
-        let apps = overview.apps.as_ref().filter(|apps| &apps.ids[1] == id)?;
+        let apps = overview.apps.as_ref()?;
+        if &apps.ids[4] == id {
+            let (.., pivot, zoom, _) = apps.folder_shown(apps.layout.as_ref()?)?;
+            return Some((Some(pivot), zoom)).filter(|(_, zoom)| (zoom - 1.0).abs() > ZOOM_AT_REST);
+        }
+        if &apps.ids[1] != id {
+            return None;
+        }
         let leaving = overview.closing.then(|| overview.progress());
-        Some(crate::motion::apps_zoom(apps.opened, leaving)).filter(|zoom| (zoom - 1.0).abs() > ZOOM_AT_REST)
+        Some((None, crate::motion::apps_zoom(apps.opened, leaving))).filter(|(_, zoom)| (zoom - 1.0).abs() > ZOOM_AT_REST)
     }
 
     /// A key in the view: typing narrows it down, or names the folder being renamed;
@@ -1806,10 +1861,10 @@ impl Nekoland {
                 return true;
             }
             if sym == Keysym::Escape {
-                apps.open = None;
+                apps.close_folder();
                 return true;
             }
-            apps.open = None;
+            apps.close_folder();
         }
         let pages = apps.layout.map_or(1, |layout| apps.pages(&layout));
         match sym {

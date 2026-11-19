@@ -128,6 +128,21 @@ pub fn apps_drop(opened: Instant, leaving: Option<f64>) -> f64 {
     leaving.unwrap_or_else(|| APPS_DROP.at(opened))
 }
 
+/// A folder opening out of its icon, a little past its size, and how long it takes to go
+/// back in.
+const FOLDER: Spring = Spring::new(0.28, 0.82);
+const FOLDER_CLOSE: f64 = 0.16;
+
+/// How far out of its icon a folder has come, 0 to 1 and a little past: `opened` a moment
+/// ago, or on its way back in since it was `closed`, after which it is gone.
+pub fn folder_arrival(opened: Instant, closed: Option<Instant>) -> Option<f64> {
+    let Some(closed) = closed else {
+        return Some(FOLDER.at(opened));
+    };
+    let left = 1.0 - seconds_since(closed) / FOLDER_CLOSE;
+    (left > 0.0).then(|| left * left * (3.0 - 2.0 * left))
+}
+
 fn seconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64()
 }
@@ -760,6 +775,9 @@ mod tests {
         assert!(app_arrival(a_while, Some(0.5), 0.0) > app_arrival(a_while, Some(0.5), 1.0));
         assert_eq!(app_arrival(a_while, Some(1.0), 1.0), 1.0);
         assert_eq!(app_arrival(a_while, Some(0.0), 0.0), 0.0);
+        // A folder closed is on its way in for a moment, then gone.
+        assert!(folder_arrival(long_ago, Some(Instant::now())).is_some_and(|out| out > 0.9));
+        assert_eq!(folder_arrival(long_ago, Some(long_ago)), None);
         // A swing goes past its goal, and comes to rest on it.
         let (mut value, mut speed, mut most) = (0.0f64, 0.0f64, 0.0f64);
         for _ in 0..120 {
