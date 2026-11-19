@@ -161,6 +161,8 @@ struct Layout {
     grid: Rectangle<i32, Logical>,
     columns: usize,
     rows: usize,
+    /// How far down an open folder may reach: its padding over the Dock.
+    floor: i32,
     /// How far apart the pages are: the output's width, so that one leaves by a side of
     /// the screen as the next comes in by the other.
     stride: i32,
@@ -297,7 +299,7 @@ enum Pressed {
 
 /// What a folder's strip was drawn with: its size, its name, whether it was being renamed,
 /// and how far along it its name starts and its point is.
-type FolderDrawn = (Size<i32, Logical>, String, bool, i32, Option<i32>);
+type FolderDrawn = (Size<i32, Logical>, String, bool, i32, Option<i32>, (usize, usize));
 
 /// Where an open folder is, as on Mac OS X: a strip across the screen under its icon's row,
 /// which the rows above and below part for. Its strip, its grid, and the grid's columns
@@ -317,11 +319,11 @@ struct FolderPlace {
 
 impl FolderPlace {
     /// The strip under the row `row` of the page, for a folder of `count` applications:
-    /// as many rows of them as there is room for down to the dots, the rows above going
+    /// as many rows of them as there is room for down to the Dock, the rows above going
     /// up to the search field at most.
     fn under(layout: &Layout, row: usize, count: usize, notch: Option<i32>) -> Self {
         let split = layout.grid.loc.y + row as i32 * CELL_HEIGHT + FOLDER_SPLIT;
-        let bottom = layout.grid.loc.y + layout.grid.size.h + DOTS;
+        let bottom = layout.floor;
         let room = bottom - (layout.search.loc.y + FOLDER_SPLIT) - FOLDER_TITLE + FOLDER_TRIM;
         let columns = layout.columns.max(1);
         let rows = count.max(1).div_ceil(columns).min((room / CELL_HEIGHT).max(1) as usize);
@@ -347,6 +349,16 @@ impl FolderPlace {
         self.panel.loc.y + self.up
     }
 
+    /// How many applications it shows at once: the rest are on further pages of it.
+    fn per_page(&self) -> usize {
+        self.columns * self.rows
+    }
+
+    /// Which of a folder's applications a point is on, with its page `page` shown.
+    fn cell_at(&self, page: usize, pos: Point<f64, Logical>) -> Option<usize> {
+        cell_at(self.grid, self.columns, self.rows, pos).map(|(cell, _)| page * self.per_page() + cell)
+    }
+
     /// How far the rows under it go down for it: until their icons are the padding under it.
     fn down(&self) -> i32 {
         self.panel.size.h - self.up - (CELL_HEIGHT - FOLDER_SPLIT + ICON_TOP - FOLDER_PADDING)
@@ -362,6 +374,8 @@ struct OpenFolder {
     folder: usize,
     renaming: bool,
     opened: Instant,
+    /// Which page of its applications is shown, where it holds more than fit.
+    page: usize,
     hovered: Option<usize>,
     lifts: Lifts,
     /// Its applications in their places, room kept where a dragged one would go, and
@@ -378,6 +392,7 @@ impl OpenFolder {
             folder,
             renaming: false,
             opened: Instant::now(),
+            page: 0,
             hovered: None,
             lifts: Lifts::default(),
             cells: Vec::new(),
@@ -1054,7 +1069,8 @@ impl Nekoland {
             (SEARCH_WIDTH, FIELD_HEIGHT).into(),
         );
         let grid_top = top + FIELD_HEIGHT + 32;
-        let bottom = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size) - DOTS - 8;
+        let dock = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size);
+        let bottom = dock - DOTS - 8;
         let columns = ((area.size.w - 160) / CELL_WIDTH).clamp(4, 8) as usize;
         let rows = ((bottom - grid_top) / CELL_HEIGHT).clamp(2, 5) as usize;
         let size = Size::from((columns as i32 * CELL_WIDTH, rows as i32 * CELL_HEIGHT));
@@ -1064,6 +1080,7 @@ impl Nekoland {
             grid,
             columns,
             rows,
+            floor: dock - FOLDER_PADDING,
             stride: area.size.w,
             sidebar: None,
         })
@@ -1246,16 +1263,16 @@ impl Nekoland {
         let place = apps.folder_layout(layout)?;
         let FolderPlace {
             panel,
-            grid,
             columns,
             rows,
             ..
         } = place;
         let cells = apps.folder_cells();
+        let pages = cells.len().div_ceil(place.per_page()).max(1);
+        let page = apps.open.as_ref()?.page.min(pages - 1);
         let hovered = pointer
             .filter(|_| apps.held.is_none())
-            .and_then(|pos| cell_at(grid, columns, rows, pos))
-            .map(|(cell, _)| cell)
+            .and_then(|pos| place.cell_at(page, pos))
             .filter(|&cell| cell < cells.len());
         let wanted: Vec<Wanted> = (cells.iter())
             .filter_map(|cell| match cell {
@@ -1265,19 +1282,24 @@ impl Nekoland {
             .collect();
         let open = apps.open.as_mut()?;
         let name = apps.folders[open.folder].name.clone();
+        open.page = page;
         open.hovered = hovered;
         open.lifts.step(hovered, dt, animated);
         let arrival = if animated { Arrival::Gliding } else { Arrival::AtOnce };
+        let stride = f64::from(panel.size.w);
         tiles::glide(
             &mut open.glides,
             &cells,
-            |index| tiles::place(index, columns, columns * rows, 0.0),
+            // Its pages side by side, the one shown in the strip.
+            |index| {
+                tiles::place(index, columns, columns * rows, stride) - Point::from((page as f64 * stride, 0.0))
+            },
             dt,
             arrival,
         );
         open.cells = cells;
         let notch = place.notch.map(|notch| notch - panel.loc.x);
-        let key = (panel.size, name, open.renaming, place.title_x(), notch);
+        let key = (panel.size, name, open.renaming, place.title_x(), notch, (pages, page));
         if open.drawn.as_ref() != Some(&key) || open.picture.is_none() {
             open.picture = draw_folder(&key);
             open.drawn = Some(key);
@@ -1408,8 +1430,13 @@ impl Nekoland {
             // dim, all but the folder itself.
             let parted = folder.as_ref().map(|(_, place, out)| {
                 let (up, down) = (f64::from(place.up) * out, f64::from(place.down()) * out);
-                (f64::from(place.split()), up, down, place.notch.map(f64::from))
+                // A row that would go up past the search field's top goes out of sight.
+                let past = f64::from(layout.search.loc.y + place.up + ICON_TOP + ICON / 2);
+                // So does one that would go down past the floor, behind the Dock.
+                let sunk = f64::from(layout.floor - place.down() - (CELL_HEIGHT - ICON_TOP - ICON / 2));
+                (f64::from(place.split()), up, down, place.notch.map(f64::from), (past, sunk))
             });
+            let gone = (1.0 - folder_fade * 2.0).max(0.0);
             // Each in from off the screen, the middle ones of the pages first, and out the
             // other way.
             let (opened, half) = (apps.opened, layout.grid.size.to_f64() / 2.0);
@@ -1425,12 +1452,16 @@ impl Nekoland {
                 let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), area.to_f64(), arrived);
                 let shown = (arrived * 3.0).clamp(0.0, 1.0) as f32;
                 match parted {
-                    Some((split, up, _, notch)) if home.y < split => {
+                    Some((split, up, _, notch, (past, _))) if home.y < split => {
                         let open = notch.is_some_and(|notch| (home.x - notch).abs() < 1.0)
                             && split - home.y < f64::from(CELL_HEIGHT);
+                        let shown = if home.y < past { shown * gone } else { shown };
                         (now - Point::from((0.0, up)), grown, if open { shown } else { shown * dimmed })
                     }
-                    Some((_, _, down, _)) => (now + Point::from((0.0, down)), grown, shown * dimmed),
+                    Some((_, _, down, _, (_, sunk))) => {
+                        let shown = if home.y > sunk { shown * gone } else { shown };
+                        (now + Point::from((0.0, down)), grown, shown * dimmed)
+                    }
                     None => (now, grown, shown),
                 }
             };
@@ -1462,7 +1493,8 @@ impl Nekoland {
                         picture.size,
                     ),
                     glass: None,
-                    alpha: 1.0 - folder_fade,
+                    // Gone before the rows under the folder come down over them.
+                    alpha: 1.0 - (folder_fade * 3.0).min(1.0),
                     picture,
                 });
             }
@@ -1546,13 +1578,7 @@ impl Nekoland {
             return;
         };
         if let Some(place) = apps.folder_layout(&layout) {
-            let FolderPlace {
-                panel,
-                grid,
-                columns,
-                rows,
-                ..
-            } = place;
+            let panel = place.panel;
             // Its name, and as much again beside it.
             let title = Rectangle::new(
                 panel.loc + Point::from((place.title_x() - 12, 0)),
@@ -1565,9 +1591,7 @@ impl Nekoland {
             if let Some(open) = apps.open.as_mut() {
                 if title.to_f64().contains(pos) {
                     open.renaming = true;
-                } else if let Some((cell, _)) =
-                    cell_at(grid, columns, rows, pos).filter(|(cell, _)| *cell < count)
-                {
+                } else if let Some(cell) = place.cell_at(open.page, pos).filter(|cell| *cell < count) {
                     open.renaming = false;
                     apps.press = Some((Pressed::FolderCell(cell), pos));
                     apps.pressed = Instant::now();
@@ -1727,7 +1751,7 @@ impl Nekoland {
                     let was = match pressed {
                         Pressed::Cell(index) => Some(apps.icon_middle(&layout, index)),
                         Pressed::FolderCell(index) => apps.folder_layout(&layout).map(|place| {
-                            let icon = icon_rect(place.grid, place.columns, index).to_f64();
+                            let icon = icon_rect(place.grid, place.columns, index % place.per_page()).to_f64();
                             icon.loc + Point::from((icon.size.w / 2.0, icon.size.h / 2.0))
                         }),
                         Pressed::App(_) => None,
@@ -1750,20 +1774,11 @@ impl Nekoland {
         };
         // Inside the open folder, it moves among the folder's; out of it, the folder closes
         // and it goes back to the grid.
-        if let Some(FolderPlace {
-            panel,
-            grid,
-            columns,
-            rows,
-            ..
-        }) = apps.folder_layout(&layout)
-        {
-            if panel.to_f64().contains(pos) && matches!(from, Source::Folder(_)) {
-                let count = apps
-                    .open
-                    .as_ref()
-                    .map_or(0, |open| apps.folders[open.folder].apps.len());
-                apps.target = cell_at(grid, columns, rows, pos).map_or(Target::Nowhere, |(cell, _)| {
+        if let Some(place) = apps.folder_layout(&layout) {
+            if place.panel.to_f64().contains(pos) && matches!(from, Source::Folder(_)) {
+                let (count, page) = (apps.open.as_ref())
+                    .map_or((0, 0), |open| (apps.folders[open.folder].apps.len(), open.page));
+                apps.target = place.cell_at(page, pos).map_or(Target::Nowhere, |cell| {
                     Target::InFolder(cell.min(count.saturating_sub(1)))
                 });
                 return;
@@ -1984,18 +1999,17 @@ impl Nekoland {
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return false;
         };
-        if apps.open.is_some() {
-            return true;
-        }
-        let pages = apps.layout.map_or(1, |layout| apps.pages(&layout));
         apps.scrolled += amount;
         if apps.scrolled.abs() >= PAGE_SCROLL {
-            apps.page = if apps.scrolled > 0.0 {
-                (apps.page + 1).min(pages - 1)
-            } else {
-                apps.page.saturating_sub(1)
-            };
+            let on = apps.scrolled > 0.0;
             apps.scrolled = 0.0;
+            // The open folder's pages, which it keeps within what it holds, or the grid's.
+            if let Some(open) = apps.open.as_mut() {
+                open.page = if on { open.page + 1 } else { open.page.saturating_sub(1) };
+                return true;
+            }
+            let pages = apps.layout.map_or(1, |layout| apps.pages(&layout));
+            apps.page = if on { (apps.page + 1).min(pages - 1) } else { apps.page.saturating_sub(1) };
         }
         true
     }
@@ -2193,7 +2207,7 @@ fn draw_dots(width: i32, pages: usize, lit: usize) -> Option<Picture> {
 
 /// The open folder's pane: its name, in a field while it is changed. Its applications are
 /// sprites over it.
-fn draw_folder((size, name, renaming, title_x, notch): &FolderDrawn) -> Option<Picture> {
+fn draw_folder((size, name, renaming, title_x, notch, (pages, lit)): &FolderDrawn) -> Option<Picture> {
     let (width, top) = (f64::from(size.w), f64::from(FOLDER_NOTCH));
     let bottom = top + f64::from(size.h);
     let surface = text::canvas(size.w, size.h + FOLDER_NOTCH).ok()?;
@@ -2252,6 +2266,16 @@ fn draw_folder((size, name, renaming, title_x, notch): &FolderDrawn) -> Option<P
         cr.set_source_rgb(1.0, 1.0, 1.0);
         cr.move_to(x, y);
         pangocairo::functions::show_layout(&cr, &title);
+        // Its pages' dots, as the grid's are, on its name's line at the other side.
+        if *pages > 1 {
+            let last = f64::from(size.w - *title_x) - 3.5;
+            for page in 0..*pages {
+                let x = last - (*pages - 1 - page) as f64 * 18.0;
+                cr.arc(x, top + f64::from(FOLDER_PADDING) + 12.0, 3.5, 0.0, std::f64::consts::TAU);
+                cr.set_source_rgba(1.0, 1.0, 1.0, if page == *lit { 1.0 } else { 0.35 });
+                cr.fill().ok()?;
+            }
+        }
     }
     text::picture(surface)
 }
@@ -2280,6 +2304,7 @@ mod tests {
             grid: Rectangle::new((136, 120).into(), (7 * CELL_WIDTH, 4 * CELL_HEIGHT).into()),
             columns: 7,
             rows: 4,
+            floor: 120 + 4 * CELL_HEIGHT + DOTS,
             stride: 1280,
             sidebar: None,
         };
@@ -2290,6 +2315,8 @@ mod tests {
         // The next row's icons are as far under it as the names over it are: 24.
         assert_eq!(120 + CELL_HEIGHT + ICON_TOP + top.down(), top.panel.loc.y + top.panel.size.h + 24);
         assert_eq!(top.panel.loc.y, 120 + NAME_END + 24);
+        // What does not fit is on its next page, a point on a place there being that one.
+        assert_eq!(top.cell_at(1, top.grid.loc.to_f64() + Point::from((150.0, 10.0))), Some(15));
         // In the last row, the rows go up for it, and it ends where the dots do.
         let last = FolderPlace::under(&layout, 3, 9, Some(640));
         assert!(last.up > 0);
@@ -2298,7 +2325,8 @@ mod tests {
         // However many it holds, its row stays under the top of the search field.
         let full = FolderPlace::under(&layout, 3, 200, None);
         assert!(full.split() - full.up - FOLDER_SPLIT >= layout.search.loc.y);
-        assert!(full.rows >= 1);
+        // As many rows as there is height for: only what is past those is on a next page.
+        assert_eq!(full.rows, 3);
     }
 
     #[test]

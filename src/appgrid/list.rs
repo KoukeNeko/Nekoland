@@ -102,6 +102,7 @@ pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>, dock_space:
             grid,
             columns,
             rows: 0,
+            floor: bottom,
             stride: area.size.w,
             sidebar: Some(sidebar),
         };
@@ -116,6 +117,7 @@ pub(super) fn layout(style: AppsView, area: Rectangle<i32, Logical>, dock_space:
         grid: Rectangle::new((left, top).into(), (width, bottom - top).into()),
         columns,
         rows: 0,
+        floor: bottom,
         stride: area.size.w,
         sidebar: None,
     }
