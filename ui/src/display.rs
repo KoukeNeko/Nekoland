@@ -214,6 +214,90 @@ fn resolution_choices(
     choices
 }
 
+/// The looks of the display's own mode, from the largest text to the most room, each with
+/// what is written under its picture: the ends and the default are named, as on the Mac.
+fn looks(display: &Display) -> Vec<(Choice, &'static str)> {
+    let mut looks: Vec<Choice> = resolution_choices(display, &[], &[], false)
+        .into_iter()
+        .filter(|choice| choice.mode == display.preferred)
+        .collect();
+    looks.reverse();
+    let last = looks.len().saturating_sub(1);
+    looks
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            let label = if choice.is(default_choice(display)) {
+                "預設"
+            } else if index == 0 {
+                "較大文字"
+            } else if index == last {
+                "更多空間"
+            } else {
+                ""
+            };
+            (choice, label)
+        })
+        .collect()
+}
+
+/// A look drawn small: a window with its buttons and lines of text, as large as the look
+/// makes them, and the one in use with a line of ink around it.
+fn look_picture(scale: f64, chosen: bool) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder()
+        .content_width(88)
+        .content_height(60)
+        .halign(gtk::Align::Center)
+        .build();
+    area.set_draw_func(move |area, cr, width, height| {
+        let (width, height) = (f64::from(width), f64::from(height));
+        let ink = area.color();
+        let paint = |alpha: f32| {
+            cr.set_source_rgba(
+                f64::from(ink.red()),
+                f64::from(ink.green()),
+                f64::from(ink.blue()),
+                f64::from(ink.alpha() * alpha),
+            );
+        };
+        // The window: a sheet with a line around it.
+        let radius = 6.0;
+        cr.new_sub_path();
+        cr.arc(width - radius - 0.5, radius + 0.5, radius, -std::f64::consts::FRAC_PI_2, 0.0);
+        cr.arc(width - radius - 0.5, height - radius - 0.5, radius, 0.0, std::f64::consts::FRAC_PI_2);
+        cr.arc(radius + 0.5, height - radius - 0.5, radius, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        cr.arc(radius + 0.5, radius + 0.5, radius, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
+        cr.close_path();
+        paint(0.06);
+        let _ = cr.fill_preserve();
+        cr.clip_preserve();
+        // Half of the line is inside the clip: twice as wide, it shows as wide as meant.
+        paint(if chosen { 1.0 } else { 0.2 });
+        cr.set_line_width(if chosen { 4.0 } else { 2.0 });
+        let _ = cr.stroke();
+        // Its buttons, then lines of text for as far down as there is room.
+        let unit = 2.0 * scale;
+        let (left, mut y) = (4.0 * scale, 4.0 * scale);
+        paint(0.5);
+        for dot in 0..3 {
+            cr.arc(left + unit + f64::from(dot) * unit * 3.0, y + unit, unit, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+        }
+        y += unit * 4.5;
+        paint(0.35);
+        let mut line = 0;
+        while y < height {
+            // Every third line ends short, as a paragraph's last does.
+            let across = if line % 3 == 2 { 0.5 } else { 1.0 };
+            cr.rectangle(left, y, (width - left * 2.0).max(unit) * across, unit);
+            let _ = cr.fill();
+            y += unit * 2.5;
+            line += 1;
+        }
+    });
+    area
+}
+
 /// A choice as the list shows it: the size it looks like, and whether it is the display's
 /// default or a mode less sharp than its own.
 fn choice_label(choice: Choice, display: &Display) -> String {
@@ -249,8 +333,13 @@ struct Resolution {
     /// The scale each size is drawn at when the settings name none.
     scales: Vec<(Size, f64)>,
     group: adw::PreferencesGroup,
+    /// The looks of the display's own mode, each a picture to press, as the Mac has them,
+    /// in a group of their own over the list.
+    pictures: adw::PreferencesGroup,
+    looks: gtk::Box,
+    /// Every size it can show, opened up under them.
+    all: adw::ExpanderRow,
     rows: RefCell<Vec<adw::ActionRow>>,
-    show_all: adw::SwitchRow,
     rate: adw::ComboRow,
     /// Set while the rates are filled in, which is not a choice of one.
     filling_rates: Cell<bool>,
@@ -272,17 +361,14 @@ impl Resolution {
             scales,
             group: group(""),
             rows: RefCell::default(),
-            show_all: adw::SwitchRow::builder().title("顯示所有解析度").build(),
+            pictures: group(""),
+            looks: gtk::Box::builder().spacing(12).homogeneous(true).build(),
+            all: adw::ExpanderRow::builder().title("所有解析度").build(),
             rate: adw::ComboRow::builder().title("更新頻率").build(),
             filling_rates: Cell::new(false),
         });
-        resolution.group.add(&resolution.show_all);
-        let weak = Rc::downgrade(&resolution);
-        resolution.show_all.connect_active_notify(move |_| {
-            if let Some(resolution) = weak.upgrade() {
-                resolution.fill_rows();
-            }
-        });
+        resolution.pictures.add(&resolution.looks);
+        resolution.group.add(&resolution.all);
         let weak = Rc::downgrade(&resolution);
         resolution.rate.connect_selected_notify(move |row| {
             if let Some(resolution) = weak.upgrade() {
@@ -298,13 +384,57 @@ impl Resolution {
 
     fn fill_rows(self: &Rc<Self>) {
         for row in self.rows.borrow_mut().drain(..) {
-            self.group.remove(&row);
+            self.all.remove(&row);
         }
-        // The switch stays under the sizes.
-        self.group.remove(&self.show_all);
+        while let Some(look) = self.looks.first_child() {
+            self.looks.remove(&look);
+        }
         let display = self.display.borrow().clone();
         let current = current_choice(&display);
-        for choice in resolution_choices(&display, &self.modes, &self.scales, self.show_all.is_active()) {
+        let looks = looks(&display);
+        // One look is no choice.
+        self.pictures.set_visible(looks.len() > 1);
+        let mut first: Option<gtk::ToggleButton> = None;
+        for (choice, label) in looks {
+            let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+            content.append(&look_picture(choice.scale, choice.is(current)));
+            content.append(&gtk::Label::new(Some(label)));
+            // The size it looks like, under its name while the pointer is on it, as on the
+            // Mac; its line is kept, so that nothing moves as it shows.
+            let size = choice.looks_like().label();
+            let shown = gtk::Label::builder().label(&size).css_classes(["dim-label", "caption"]).opacity(0.0).build();
+            content.append(&shown);
+            let button = gtk::ToggleButton::builder()
+                .child(&content)
+                .css_classes(["flat"])
+                .active(choice.is(current))
+                .build();
+            button.update_property(&[gtk::accessible::Property::Label(&size)]);
+            let pointer = gtk::EventControllerMotion::new();
+            pointer.connect_enter(glib::clone!(
+                #[weak]
+                shown,
+                move |_, _, _| shown.set_opacity(1.0)
+            ));
+            pointer.connect_leave(glib::clone!(
+                #[weak]
+                shown,
+                move |_| shown.set_opacity(0.0)
+            ));
+            button.add_controller(pointer);
+            match &first {
+                Some(first) => button.set_group(Some(first)),
+                None => first = Some(button.clone()),
+            }
+            let weak: Weak<Self> = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(resolution) = weak.upgrade() {
+                    resolution.choose(choice);
+                }
+            });
+            self.looks.append(&button);
+        }
+        for choice in resolution_choices(&display, &self.modes, &self.scales, true) {
             let row = adw::ActionRow::builder()
                 .title(choice_label(choice, &display))
                 .activatable(true)
@@ -321,10 +451,9 @@ impl Resolution {
                     resolution.choose(choice);
                 }
             });
-            self.group.add(&row);
+            self.all.add_row(&row);
             self.rows.borrow_mut().push(row);
         }
-        self.group.add(&self.show_all);
     }
 
     fn choose(self: &Rc<Self>, choice: Choice) {
@@ -830,6 +959,7 @@ pub fn display_page(config: &Config) -> adw::PreferencesPage {
     }
     let resolution = Resolution::new();
     if let Some(resolution) = &resolution {
+        page.add(&resolution.pictures);
         page.add(&resolution.group);
     }
     if let Some(brightness) = brightness_group() {
@@ -934,6 +1064,20 @@ mod tests {
         // Chosen at twice, the settings name no scale; at one, they do.
         assert_eq!(own_scale(&display, &scales, four_k), 2.0);
         assert_eq!(own_scale(&display, &scales, display.preferred), 1.0);
+    }
+
+    #[test]
+    fn the_looks_run_from_largest_text_to_most_room() {
+        let display = display();
+        let named: Vec<(String, &str)> =
+            looks(&display).into_iter().map(|(choice, label)| (choice.looks_like().label(), label)).collect();
+        assert_eq!(named.first(), Some(&("1920 × 1080".to_string(), "預設")));
+        assert_eq!(named.last(), Some(&("3840 × 2160".to_string(), "更多空間")));
+        assert!(named[1..named.len() - 1].iter().all(|(_, label)| label.is_empty()));
+        // On a display whose default is not its largest text, that end is named too.
+        let coarse = Display { density_scale: 1.0, ..display };
+        assert_eq!(looks(&coarse).first().map(|(_, label)| *label), Some("較大文字"));
+        assert_eq!(looks(&coarse).last().map(|(_, label)| *label), Some("預設"));
     }
 
     #[test]
