@@ -163,7 +163,7 @@ struct Layout {
     /// a larger output, and are further apart.
     pitch: Size<i32, Logical>,
     /// How many times its size the view is shown, about `pivot`, the output's corner: on
-    /// an output with room for more than eight by five, it is enlarged to fill it, as
+    /// an output with room for more than seven by five, it is enlarged to fill it, as
     /// Launchpad is. Everything else here is as it is before that.
     zoom: f64,
     pivot: Point<i32, Logical>,
@@ -1098,22 +1098,22 @@ impl Nekoland {
             _ => area.loc.y + expanded_height(area) + 24,
         };
         let dock = area.loc.y + area.size.h - crate::dock::dock_space(self.config.dock_size);
-        // With room for more than eight by five, all of it is enlarged to fill the room,
+        // With room for more than seven by five, all of it is enlarged to fill the room,
         // and laid out here as on the smaller output that makes it.
         let zoom = (f64::from(dock - top) / f64::from(FIELD_HEIGHT + 32 + 5 * CELL_HEIGHT + DOTS + 8))
-            .min(f64::from(area.size.w) / f64::from(8 * CELL_WIDTH + 160))
+            .min(f64::from(area.size.w) / f64::from(7 * CELL_WIDTH + 160))
             .max(1.0);
         let before = |length: i32| (f64::from(length) / zoom).round() as i32;
         let (top, dock) = (area.loc.y + before(top - area.loc.y), area.loc.y + before(dock - area.loc.y));
         let width = before(area.size.w);
         let bottom = dock - DOTS - 8;
-        let columns = ((width - 160) / CELL_WIDTH).clamp(4, 8) as usize;
+        let columns = ((width - 160) / CELL_WIDTH).clamp(4, 7) as usize;
         let rows = ((bottom - top - FIELD_HEIGHT - 32) / CELL_HEIGHT).clamp(2, 5) as usize;
-        // On an output with room for more than its eight by five, the places are further
+        // On an output with room for more than its seven by five, the places are further
         // apart to fill it, the icons as large as ever: no more than a quarter wider than
         // they are high.
         let high = if rows == 5 { (bottom - top - FIELD_HEIGHT - 32) / 5 } else { CELL_HEIGHT };
-        let wide = if columns == 8 { ((width - 160) / 8).min(high * 5 / 4) } else { CELL_WIDTH };
+        let wide = if columns == 7 { ((width - 160) / 7).min(high * 5 / 4) } else { CELL_WIDTH };
         let pitch = Size::from((wide.max(CELL_WIDTH), high.max(CELL_HEIGHT)));
         let size = Size::from((columns as i32 * pitch.w, rows as i32 * pitch.h));
         let search = Rectangle::new(

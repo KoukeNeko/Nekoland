@@ -366,7 +366,7 @@ page, the latest started first and the rest under the name of their kind; `sideb
 the kinds in a list on glass at the left, with the latest started, and the icons of
 the one chosen beside it. On the long page the wheel scrolls, the arrows move from one
 application to the next and Return starts it. On a display with room for more than
-eight by five icons, the pages are shown larger to fill it, icons, names and all, as
+seven by five icons, the pages are shown larger to fill it, icons, names and all, as
 Launchpad is.
 
 The applications are arranged by dragging, as on the Mac's Launchpad: one dropped
