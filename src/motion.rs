@@ -120,7 +120,7 @@ pub fn swing(value: &mut f64, speed: &mut f64, goal: f64, rate: f64, damping: f6
 
 /// The search field of the applications let down from above the screen, swinging a little
 /// past its place.
-const APPS_DROP: Spring = Spring::new(0.42, 0.62);
+const APPS_DROP: Spring = Spring::new(0.34, 0.62);
 
 /// How far down to its place what is let down over the applications has come, 0 to 1 and a
 /// little past: `opened` a moment ago, or `leaving`, from 1 down to 0, straight back up.
@@ -167,7 +167,7 @@ const POPUP_FADE: f64 = 0.08;
 
 /// The applications coming in from a little larger than they are, as a phone's icons
 /// come home, and going out the way they came.
-const APPS: Spring = Spring::new(0.38, 0.82);
+const APPS: Spring = Spring::new(0.3, 0.82);
 const APPS_SCALE: f64 = 1.12;
 
 /// How many times their size the applications are drawn: `opened` a moment ago, or
@@ -180,7 +180,7 @@ pub fn apps_zoom(opened: Instant, leaving: Option<f64>) -> f64 {
 /// How far out of place an application starts, in times its size, when each comes in on its
 /// own, and how long after the middle ones the outermost set off.
 const APP_SCALE: f64 = 1.3;
-const APPS_SPREAD: f64 = 0.14;
+const APPS_SPREAD: f64 = 0.1;
 /// How much of the way out the outermost have gone before the middle ones set off.
 const APPS_LEAVING_SPREAD: f64 = 0.35;
 
