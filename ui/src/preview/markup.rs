@@ -1119,7 +1119,9 @@ impl Win {
         let draw = gtk::GestureDrag::new();
         draw.connect_drag_begin({
             let (strokes, pad) = (strokes.clone(), pad.clone());
-            move |_, x, y| {
+            move |drag, x, y| {
+                // The dialog moves the window when dragged; a stroke on the pad is not that.
+                drag.set_state(gtk::EventSequenceState::Claimed);
                 strokes.borrow_mut().push(vec![(x, y)]);
                 pad.queue_draw();
             }

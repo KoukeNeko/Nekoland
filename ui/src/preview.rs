@@ -773,8 +773,11 @@ impl Win {
             .focusable(true)
             .build();
         pdf_column.set_cursor_from_name(Some("text"));
+        // The column takes the focus when a page is pressed; scrolled to it, the view would jump
+        // to its end mid-drag.
+        let pdf_view = gtk::Viewport::builder().child(&pdf_column).scroll_to_focus(false).build();
         let pdf_scroll = gtk::ScrolledWindow::builder()
-            .child(&pdf_column)
+            .child(&pdf_view)
             .hexpand(true)
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)

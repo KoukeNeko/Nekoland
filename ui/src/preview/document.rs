@@ -847,6 +847,7 @@ impl Win {
             .filter_map(|line| {
                 let rest = line.strip_prefix("device `")?;
                 let (name, description) = rest.split_once("' is ")?;
+                let description = description.strip_prefix("a ").or_else(|| description.strip_prefix("an ")).unwrap_or(description);
                 Some((name.to_owned(), description.to_owned()))
             })
             .collect();
