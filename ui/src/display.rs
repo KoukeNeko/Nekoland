@@ -399,29 +399,16 @@ impl Resolution {
             let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
             content.append(&look_picture(choice.scale, choice.is(current)));
             content.append(&gtk::Label::new(Some(label)));
-            // The size it looks like, under its name while the pointer is on it, as on the
-            // Mac; its line is kept, so that nothing moves as it shows.
+            // The size it looks like, under its name: the pictures alone do not tell two
+            // near sizes apart.
             let size = choice.looks_like().label();
-            let shown = gtk::Label::builder().label(&size).css_classes(["dim-label", "caption"]).opacity(0.0).build();
-            content.append(&shown);
+            content.append(&gtk::Label::builder().label(&size).css_classes(["dim-label", "caption"]).build());
             let button = gtk::ToggleButton::builder()
                 .child(&content)
                 .css_classes(["flat"])
                 .active(choice.is(current))
                 .build();
             button.update_property(&[gtk::accessible::Property::Label(&size)]);
-            let pointer = gtk::EventControllerMotion::new();
-            pointer.connect_enter(glib::clone!(
-                #[weak]
-                shown,
-                move |_, _, _| shown.set_opacity(1.0)
-            ));
-            pointer.connect_leave(glib::clone!(
-                #[weak]
-                shown,
-                move |_| shown.set_opacity(0.0)
-            ));
-            button.add_controller(pointer);
             match &first {
                 Some(first) => button.set_group(Some(first)),
                 None => first = Some(button.clone()),
