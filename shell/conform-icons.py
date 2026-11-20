@@ -116,7 +116,9 @@ def find_source(name):
     for data in DATA_DIRS:
         for theme in ("hicolor", "Yaru", "Adwaita"):
             # Exactly name.svg or name.png: "name.*" would also take name.Other-symbolic.svg.
-            for path in glob.glob(f"{data}/icons/{theme}/*/apps/{glob.escape(name)}.[sp][vn]g"):
+            # Any context, not only apps: an entry may name a theme's device or category icon,
+            # as Volume Control names multimedia-volume-control.
+            for path in glob.glob(f"{data}/icons/{theme}/*/*/{glob.escape(name)}.[sp][vn]g"):
                 if os.path.dirname(path) == OUT_DIR or (path.endswith(".svg") and MARK in open(path, errors="replace").read(200)):
                     continue  # one of ours, from this run or an earlier version's place
                 size_dir = path.split("/")[-3]
