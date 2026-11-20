@@ -1,5 +1,6 @@
-//! The settings in a window of their own, one for the app, laid out as Nekominal's page: a column of the sections at the left with the
-//! search on top and the settings file at the bottom, and the section's title over its items at the right. A search
+//! The settings in a window of their own, one for the app, laid out as Nekoland's own settings: a sidebar of the
+//! sections with the search on top and the settings file at the bottom, and the section's items at the right under
+//! its title. A search
 //! shows what it finds in every section, under the name of each. Each change is saved and shown at once.
 
 use std::{
@@ -25,8 +26,13 @@ use super::{
 const DELETE_ICON: &str = "user-trash-symbolic";
 
 const TITLE: &str = "設定";
-const WINDOW_WIDTH: i32 = 960;
+// Nekoland's own settings window's measures.
+const WINDOW_WIDTH: i32 = 980;
 const WINDOW_HEIGHT: i32 = 720;
+const WINDOW_MIN_WIDTH: i32 = 640;
+const SIDEBAR_MIN_WIDTH: f64 = 280.0;
+const SIDEBAR_MAX_WIDTH: f64 = 340.0;
+const SIDEBAR_FRACTION: f64 = 0.3;
 
 thread_local! {
     /// The colours of the schemes' tiles, written again when a scheme comes or goes.
@@ -48,15 +54,13 @@ pub fn open(section: Section, detail: Option<&str>) {
                 return;
             };
             let page = SettingsPage::new(section);
-            let content = adw::ToolbarView::new();
-            content.add_top_bar(&adw::HeaderBar::new());
-            content.set_content(Some(&page.widget));
             let window = adw::ApplicationWindow::builder()
                 .application(&app)
                 .title(tr(TITLE))
                 .default_width(WINDOW_WIDTH)
                 .default_height(WINDOW_HEIGHT)
-                .content(&content)
+                .width_request(WINDOW_MIN_WIDTH)
+                .content(&page.widget)
                 .build();
             window.connect_close_request(|_| {
                 WINDOW.take();
@@ -82,6 +86,7 @@ pub fn relabel() {
     WINDOW.with_borrow(|open| {
         if let Some((window, page)) = open {
             window.set_title(Some(tr(TITLE)));
+            page.sidebar.set_title(tr(TITLE));
             page.relabel();
         }
     });
@@ -100,8 +105,6 @@ pub fn reload_scheme_css() {
 }
 
 /// Nekominal's measures of the page.
-const NAV_WIDTH: i32 = 220;
-const NAV_PAD: i32 = 12;
 // A preferences page's margins and width, as libadwaita's, which Nekoland's own settings use.
 const PAD: i32 = 12;
 const PAD_TOP: i32 = 24;
@@ -539,17 +542,20 @@ pub fn change(edit: impl FnOnce(&mut Config)) {
 }
 
 pub struct SettingsPage {
-    pub widget: gtk::Box,
+    pub widget: adw::NavigationSplitView,
+    sidebar: adw::NavigationPage,
+    /// The right side, titled with the section shown.
+    content: adw::NavigationPage,
     nav: gtk::ListBox,
     counts: Vec<gtk::Label>,
     /// The names of the sections and of the settings file, named again when the language changes.
     nav_titles: Vec<gtk::Label>,
     file_title: gtk::Label,
     search: gtk::SearchEntry,
-    title: gtk::Label,
-    /// At the right of the title: what adds to the page, as the Triggers page's new rule.
+    /// Over the items where the page has more to say: what it is for and what adds to it, as the Triggers page's
+    /// new rule.
+    header: gtk::Box,
     title_action: gtk::Box,
-    /// Under the title: what the page is for, where Nekominal says it.
     intro: gtk::Label,
     items: gtk::Box,
     /// The rows shown, to grey the ones that do nothing as the settings change.
@@ -566,14 +572,12 @@ impl SettingsPage {
     pub fn new(section: Section) -> Rc<Self> {
         let search = gtk::SearchEntry::builder()
             .placeholder_text(tr(SEARCH_PLACEHOLDER))
-            .margin_start(NAV_PAD)
-            .margin_end(NAV_PAD)
-            .margin_top(NAV_PAD)
-            .margin_bottom(NAV_PAD)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(6)
             .build();
         let nav = gtk::ListBox::builder()
             .css_classes(["navigation-sidebar"])
-            .vexpand(true)
             .build();
         let mut counts = Vec::new();
         let mut nav_titles = Vec::new();
@@ -585,36 +589,28 @@ impl SettingsPage {
         }
         let file_title = gtk::Label::builder().label(tr(FILE_TITLE)).xalign(0.0).build();
         let file = file_button(&file_title);
-        let column = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .width_request(NAV_WIDTH)
-            .css_classes(["term-settings-nav"])
-            .build();
-        column.append(&search);
-        column.append(&nav);
-        column.append(&file);
+        let side = adw::ToolbarView::new();
+        side.add_top_bar(&adw::HeaderBar::new());
+        side.add_top_bar(&search);
+        side.set_content(Some(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .child(&nav)
+                .build(),
+        ));
+        side.add_bottom_bar(&file);
+        let sidebar = adw::NavigationPage::builder().title(tr(TITLE)).child(&side).build();
 
-        let title = gtk::Label::builder()
-            .xalign(0.0)
-            .hexpand(true)
-            .css_classes(["title-2"])
-            .build();
-        let title_action = gtk::Box::builder().valign(gtk::Align::Center).build();
-        let title_line = gtk::Box::builder().spacing(12).build();
-        title_line.append(&title);
-        title_line.append(&title_action);
         let intro = gtk::Label::builder()
             .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
             .css_classes(["dim-label"])
-            .margin_top(6)
-            .visible(false)
             .build();
-        let header = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .margin_bottom(18)
-            .build();
-        header.append(&title_line);
+        let title_action = gtk::Box::builder().valign(gtk::Align::Center).build();
+        let header = gtk::Box::builder().spacing(12).margin_bottom(18).visible(false).build();
         header.append(&intro);
+        header.append(&title_action);
         let items = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["term-settings-items"])
@@ -640,18 +636,27 @@ impl SettingsPage {
             .child(&clamp)
             .build();
 
-        let widget = gtk::Box::builder().css_classes(["term-settings"]).build();
-        widget.append(&column);
-        widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        widget.append(&scroller);
+        let content_view = adw::ToolbarView::new();
+        content_view.add_top_bar(&adw::HeaderBar::new());
+        content_view.set_content(Some(&scroller));
+        let content = adw::NavigationPage::builder().title(section.title()).child(&content_view).build();
+        let widget = adw::NavigationSplitView::builder()
+            .sidebar(&sidebar)
+            .content(&content)
+            .min_sidebar_width(SIDEBAR_MIN_WIDTH)
+            .max_sidebar_width(SIDEBAR_MAX_WIDTH)
+            .sidebar_width_fraction(SIDEBAR_FRACTION)
+            .build();
         let this = Rc::new(Self {
             widget,
+            sidebar,
+            content,
             nav,
             counts,
             nav_titles,
             file_title,
             search,
-            title,
+            header,
             title_action,
             intro,
             items,
@@ -737,15 +742,15 @@ impl SettingsPage {
         })
     }
 
-    /// The title's line: the Triggers page adds a rule from it and says under it what a rule is.
+    /// The page's title, and over its items the Triggers page's line that says what a rule is and adds one.
     fn show_header(self: &Rc<Self>, section: Section, searching: bool) {
-        self.title
-            .set_text(if searching { tr("搜尋結果") } else { section.title() });
+        self.content
+            .set_title(if searching { tr("搜尋結果") } else { section.title() });
         while let Some(child) = self.title_action.first_child() {
             self.title_action.remove(&child);
         }
         let triggers = !searching && section == Section::Triggers;
-        self.intro.set_visible(triggers);
+        self.header.set_visible(triggers);
         if triggers {
             self.intro.set_text(tr(trigger_settings::INTRO));
             self.title_action.append(&trigger_settings::add_button(&self.trigger, &self.rerender_soon()));
@@ -902,8 +907,8 @@ fn nav_row(section: Section) -> (gtk::ListBoxRow, gtk::Label, gtk::Label) {
         .css_classes(["caption", "dim-label"])
         .visible(false)
         .build();
-    let line = gtk::Box::builder().spacing(12).build();
-    line.append(&gtk::Image::from_icon_name(section.icon()));
+    let line = gtk::Box::builder().spacing(8).build();
+    line.append(&gtk::Image::builder().icon_name(section.icon()).pixel_size(16).build());
     let title = gtk::Label::builder().label(section.title()).xalign(0.0).hexpand(true).build();
     line.append(&title);
     line.append(&count);
@@ -912,15 +917,16 @@ fn nav_row(section: Section) -> (gtk::ListBoxRow, gtk::Label, gtk::Label) {
 
 /// The settings file, opened in the editor the desktop has for it.
 fn file_button(title: &gtk::Label) -> gtk::Button {
-    let content = gtk::Box::builder().spacing(12).build();
-    content.append(&gtk::Image::from_icon_name("document-edit-symbolic"));
+    let content = gtk::Box::builder().spacing(8).build();
+    content.append(&gtk::Image::builder().icon_name("document-edit-symbolic").pixel_size(16).build());
     content.append(title);
     let button = gtk::Button::builder()
         .child(&content)
         .css_classes(["flat", "term-settings-file"])
-        .margin_start(NAV_PAD - 6)
-        .margin_end(NAV_PAD - 6)
-        .margin_bottom(NAV_PAD)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
         .build();
     button.connect_clicked(|button| {
         // The file is written out first: until a setting changes there may be none to open.

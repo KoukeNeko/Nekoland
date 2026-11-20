@@ -249,7 +249,6 @@ vte-terminal { padding: 8px 12px; }
 @keyframes term-pulse { 50% { border-color: alpha(@warning_color, 0.3); } }
 .term-cell-spinner { min-width: 10px; min-height: 10px; }
 
-.term-settings-nav { background: @sidebar_bg_color; }
 .term-settings-heading { margin: 24px 0 12px; }
 .term-settings-items > .term-settings-heading:first-child { margin-top: 0; }
 .term-settings-file { font-weight: inherit; }
