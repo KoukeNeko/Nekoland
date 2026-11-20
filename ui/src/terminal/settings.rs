@@ -44,10 +44,13 @@ pub fn reload_scheme_css() {
 /// Nekominal's measures of the page.
 const NAV_WIDTH: i32 = 220;
 const NAV_PAD: i32 = 12;
-const PAD: i32 = 32;
-const CONTENT_MAX: i32 = 1600;
+// A preferences page's margins and width, as libadwaita's, which Nekoland's own settings use.
+const PAD: i32 = 12;
+const PAD_TOP: i32 = 24;
+const CONTENT_MAX: i32 = 600;
+const CONTENT_TIGHTENING: i32 = 400;
 const FIELD_WIDTH: i32 = 280;
-const THUMB_WIDTH: i32 = 200;
+const THUMB_WIDTH: i32 = 160;
 const THUMB_RATIO: f64 = 0.6;
 const SCHEME_COLUMNS: u32 = 6;
 /// How many of a scheme's colours its tile shows: red to cyan, as Nekominal's do.
@@ -561,14 +564,14 @@ impl SettingsPage {
             .orientation(gtk::Orientation::Vertical)
             .margin_start(PAD)
             .margin_end(PAD)
-            .margin_top(18)
-            .margin_bottom(PAD)
+            .margin_top(PAD_TOP)
+            .margin_bottom(PAD_TOP)
             .build();
         page.append(&header);
         page.append(&items);
         let clamp = adw::Clamp::builder()
             .maximum_size(CONTENT_MAX)
-            .tightening_threshold(CONTENT_MAX)
+            .tightening_threshold(CONTENT_TIGHTENING)
             .child(&page)
             .build();
         let scroller = gtk::ScrolledWindow::builder()
@@ -881,7 +884,7 @@ fn file_button(title: &gtk::Label) -> gtk::Button {
 pub fn plates() -> gtk::ListBox {
     gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["term-items"])
+        .css_classes(["boxed-list"])
         .build()
 }
 
@@ -889,7 +892,7 @@ pub fn heading(text: &'static str) -> gtk::Label {
     gtk::Label::builder()
         .label(tr(text))
         .xalign(0.0)
-        .css_classes(["heading", "dim-label", "term-settings-heading"])
+        .css_classes(["heading", "term-settings-heading"])
         .build()
 }
 

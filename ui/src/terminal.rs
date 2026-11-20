@@ -209,9 +209,7 @@ row:hover .term-state { opacity: 0; }
 .term-cell-spinner { min-width: 10px; min-height: 10px; }
 
 .term-settings-nav { background: @sidebar_bg_color; }
-.term-settings-heading { margin: 24px 12px 8px; }
-.term-items { background: none; }
-.term-items > row { margin-bottom: 4px; border-radius: 8px; background-color: @card_bg_color; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.03), 0 1px 3px 1px rgba(0, 0, 0, 0.07); }
+.term-settings-heading { margin: 24px 0 12px; }
 .term-picture { padding: 6px; border-radius: 10px; border: 1px solid alpha(currentColor, 0.12); }
 .term-picture:checked { background: none; border: 2px solid var(--accent-bg-color); padding: 5px; }
 .term-miniature { border-radius: 6px; background: @window_bg_color; }
