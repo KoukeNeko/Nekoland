@@ -764,7 +764,9 @@ impl Nekoland {
             Keysym::y if command_key => DesktopCommand::QuickLook,
             Keysym::c if command_key => DesktopCommand::Copy(chosen),
             Keysym::d if command_key => DesktopCommand::Duplicate(chosen),
-            Keysym::o | Keysym::Down if modifiers.logo => DesktopCommand::Open(chosen),
+            // Super Shift O is 截圖's text recognition.
+            Keysym::o if modifiers.logo && !modifiers.shift => DesktopCommand::Open(chosen),
+            Keysym::Down if modifiers.logo => DesktopCommand::Open(chosen),
             Keysym::i if modifiers.logo => DesktopCommand::Info(chosen),
             Keysym::BackSpace if modifiers.logo => DesktopCommand::Trash(chosen),
             Keysym::Delete if plain => DesktopCommand::Trash(chosen),

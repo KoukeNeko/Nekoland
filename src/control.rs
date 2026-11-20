@@ -956,15 +956,8 @@ pub(crate) fn draw_bar_icon(cr: &Context, x: f64, y: f64, size: f64, color: (f64
     cr.restore().ok();
 }
 
-/// Takes a picture of the whole screen into Pictures, once the panel is gone from it, and
-/// says where it went.
-const SCREENSHOT: &str = r#"dir=$(xdg-user-dir PICTURES 2>/dev/null || echo "$HOME")
-mkdir -p "$dir"
-file="$dir/截圖 $(date '+%Y-%m-%d %H.%M.%S').png"
-sleep 0.2
-grim "$file" && gdbus call --session --dest org.freedesktop.Notifications \
-  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify \
-  截圖 0 "$file" 已儲存截圖 "$(basename "$file")" '[]' '{}' 5000 >/dev/null"#;
+/// Takes a picture of the whole screen with 截圖, once the panel is gone from it.
+const SCREENSHOT: &str = "sleep 0.2; nekoland-shot full";
 
 impl Nekoland {
     /// Opens the control center under its icon in the bar, or closes it.

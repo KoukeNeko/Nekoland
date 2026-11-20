@@ -31,6 +31,11 @@ pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
 /// The application ID of Nekoland's confirmation dialog, which draws its own opaque card
 /// and shadow, so it needs no glass.
 pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
+/// The title of 截圖's full-screen window for choosing what to take: it shows a still
+/// picture of the screen, so it appears and goes at once, without the windows' motion.
+pub const SHOT_OVERLAY_TITLE: &str = "截圖範圍";
+/// The application ID of a picture 截圖 pinned to the screen, kept in front of the windows.
+pub const PIN_APP_ID: &str = "io.github.koukeneko.Nekoland.ShotPin";
 
 /// Whether a window is drawn with square corners: one maximized, fullscreen or tiled, as
 /// GTK draws them, or an X11 window, which draws none.
@@ -360,7 +365,17 @@ impl Nekoland {
         if let (Some(xwm), Some(surface)) = (self.xwm.as_mut(), window.x11_surface()) {
             let _ = xwm.raise_window(surface);
         }
+        self.raise_pins();
         self.set_keyboard_focus(Some(key_focus_of(window)));
+    }
+
+    /// Puts the pictures 截圖 pinned back in front of whatever was raised.
+    pub fn raise_pins(&mut self) {
+        let pins: Vec<Window> =
+            self.space.elements().filter(|window| window_names(window).1 == PIN_APP_ID).cloned().collect();
+        for pin in &pins {
+            self.space.raise_element(pin, false);
+        }
     }
 
     /// Hands the keyboard to the topmost window, when whatever had it went away.
@@ -386,7 +401,9 @@ impl Nekoland {
         }
         data(window).placed.set(true);
 
-        if let Some(area) = self.usable_area() {
+        // One that asked to be fullscreen or maximized before it was shown is in place already.
+        let free = matches!(placement_of(window), Placement::Free | Placement::Arranged);
+        if let Some(area) = self.usable_area().filter(|_| free) {
             let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
             // The launcher opens down from a fifth of the way, as its results come.
             let y = if window_names(window).1 == LAUNCHER_APP_ID {
@@ -727,6 +744,7 @@ impl Nekoland {
         self.space.unmap_elem(window);
         self.minimized.push((window.clone(), location));
         self.focus_top_window();
+        self.repick_pointer();
     }
 
     /// Brings a window back if it was minimized. Returns whether it was.
@@ -783,6 +801,7 @@ impl Nekoland {
         if had_focus {
             self.focus_top_window();
         }
+        self.repick_pointer();
     }
 }
 

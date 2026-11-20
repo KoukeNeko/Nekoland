@@ -9,10 +9,7 @@ use std::time::{Duration, Instant};
 use smithay::{
     delegate_idle_inhibit, delegate_session_lock,
     desktop::{Window, WindowSurfaceType},
-    input::{
-        keyboard::{FilterResult, Keysym},
-        pointer::MotionEvent,
-    },
+    input::keyboard::{FilterResult, Keysym},
     output::Output,
     reexports::{
         calloop::{
@@ -319,16 +316,8 @@ impl SessionLockHandler for Nekoland {
             if pointer.is_grabbed() {
                 pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), 0);
             }
-            let location = pointer.current_location();
-            let under = self.surface_under(location);
-            let motion = MotionEvent {
-                location,
-                serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
-            };
-            pointer.motion(self, under, &motion);
-            pointer.frame(self);
         }
+        self.repick_pointer();
         // shortcut: confirmed before the next frame, the first without windows, is shown;
         // wait for that frame's presentation if a locker relies on it.
         confirmation.lock();

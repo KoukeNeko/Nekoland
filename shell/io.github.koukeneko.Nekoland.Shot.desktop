@@ -1,0 +1,36 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot
+Name[zh_TW]=截圖
+Comment=Capture, mark up and share the screen
+Comment[zh_TW]=擷取、標記與分享螢幕畫面
+Exec=nekoland-shot area
+Icon=io.github.koukeneko.Nekoland.Shot
+Categories=Graphics;Utility;
+StartupNotify=false
+Actions=Full;Window;Scroll;History;Prefs;
+
+[Desktop Action Full]
+Name=Capture Screen
+Name[zh_TW]=擷取全螢幕
+Exec=nekoland-shot full
+
+[Desktop Action Window]
+Name=Capture Window
+Name[zh_TW]=擷取視窗
+Exec=nekoland-shot window
+
+[Desktop Action Scroll]
+Name=Scrolling Capture
+Name[zh_TW]=捲動擷取
+Exec=nekoland-shot scroll
+
+[Desktop Action History]
+Name=History
+Name[zh_TW]=截圖紀錄
+Exec=nekoland-shot history
+
+[Desktop Action Prefs]
+Name=Preferences
+Name[zh_TW]=偏好設定
+Exec=nekoland-shot prefs

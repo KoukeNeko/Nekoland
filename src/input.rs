@@ -479,10 +479,17 @@ impl Nekoland {
             self.window_command(command);
             return true;
         }
+        if let Some(command) = shot_shortcut(sym, ctrl, alt, logo, shift) {
+            config::spawn(command);
+            return true;
+        }
 
         match sym {
             // The only way out on a bare console.
-            Keysym::BackSpace if ctrl && alt => self.loop_signal.stop(),
+            Keysym::BackSpace if ctrl && alt => {
+                tracing::info!("quitting: Ctrl+Alt+BackSpace");
+                self.loop_signal.stop();
+            }
             Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
             Keysym::Return if logo => config::spawn(&self.config.terminal),
             Keysym::grave if logo => config::spawn(DROP_DOWN_TERMINAL),
@@ -601,6 +608,28 @@ fn arrange_shortcut(sym: Keysym, logo: bool, alt: bool, shift: bool) -> Option<&
     Some(command)
 }
 
+/// 截圖's command for a key: Super Shift with the numbers macOS takes pictures of the screen
+/// with, and a letter for each other way of taking one; Print Screen alone takes an area.
+fn shot_shortcut(sym: Keysym, ctrl: bool, alt: bool, logo: bool, shift: bool) -> Option<&'static str> {
+    if sym == Keysym::Print && !(ctrl || alt || logo) {
+        return Some("nekoland-shot area");
+    }
+    if !(logo && shift) || ctrl || alt {
+        return None;
+    }
+    Some(match sym {
+        Keysym::_3 => "nekoland-shot full",
+        Keysym::_4 => "nekoland-shot area",
+        Keysym::_5 => "nekoland-shot window",
+        Keysym::_6 => "nekoland-shot scroll",
+        Keysym::r => "nekoland-shot repeat",
+        Keysym::o => "nekoland-shot ocr",
+        Keysym::v => "nekoland-shot clipboard",
+        Keysym::d => "nekoland-shot delay",
+        _ => return None,
+    })
+}
+
 fn close(window: Option<Window>) {
     match window.as_ref().map(Window::underlying_surface) {
         Some(WindowSurface::Wayland(toplevel)) => toplevel.send_close(),
@@ -662,6 +691,24 @@ mod tests {
         assert_eq!(arrange_shortcut(Keysym::h, true, false, false), None);
         assert_eq!(arrange_shortcut(Keysym::Return, true, false, false), None);
         assert_eq!(arrange_shortcut(Keysym::u, true, false, false), None);
+    }
+
+    #[test]
+    fn super_shift_with_a_number_takes_a_screenshot() {
+        assert_eq!(shot_shortcut(Keysym::_3, false, false, true, true), Some("nekoland-shot full"));
+        assert_eq!(shot_shortcut(Keysym::_4, false, false, true, true), Some("nekoland-shot area"));
+        assert_eq!(shot_shortcut(Keysym::_6, false, false, true, true), Some("nekoland-shot scroll"));
+        assert_eq!(shot_shortcut(Keysym::o, false, false, true, true), Some("nekoland-shot ocr"));
+        assert_eq!(shot_shortcut(Keysym::Print, false, false, false, false), Some("nekoland-shot area"));
+        // Without Shift, or with Ctrl or Alt too, the keys are others'.
+        assert_eq!(shot_shortcut(Keysym::_3, false, false, true, false), None);
+        assert_eq!(shot_shortcut(Keysym::d, true, false, true, true), None);
+        assert_eq!(shot_shortcut(Keysym::_4, false, true, true, true), None);
+        assert_eq!(shot_shortcut(Keysym::Print, false, false, true, false), None);
+        // None of them is one of the window shortcuts, which are looked at first.
+        for key in [Keysym::_3, Keysym::_4, Keysym::_5, Keysym::_6, Keysym::r, Keysym::o, Keysym::v, Keysym::d] {
+            assert_eq!(arrange_shortcut(key, true, false, true), None);
+        }
     }
 
     #[test]

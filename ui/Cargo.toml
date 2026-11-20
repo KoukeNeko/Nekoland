@@ -61,6 +61,10 @@ name = "nekoland-preview"
 path = "src/preview.rs"
 
 [[bin]]
+name = "nekoland-shot"
+path = "src/shot.rs"
+
+[[bin]]
 name = "nekoland-terminal"
 path = "src/terminal.rs"
 

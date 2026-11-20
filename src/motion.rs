@@ -612,7 +612,7 @@ impl Nekoland {
     /// A window was shown for the first time: it grows a little where it is. One started
     /// from the applications does too, as they are gone by then, back to the desktop.
     pub fn motion_open(&mut self, window: &Window) {
-        if self.config.animations {
+        if self.config.animations && !is_shot_overlay(window) {
             self.start_opening(window, None);
         }
     }
@@ -659,7 +659,12 @@ impl Nekoland {
     pub fn motion_close(&mut self, window: &Window) {
         // In the overview windows are drawn small, elsewhere; under the lock, not at all. An
         // X11 program's menus and tooltips come and go too often to leave pictures behind.
-        if !self.config.animations || self.overview.is_some() || self.lock.is_some() || !is_managed(window) {
+        if !self.config.animations
+            || self.overview.is_some()
+            || self.lock.is_some()
+            || !is_managed(window)
+            || is_shot_overlay(window)
+        {
             return;
         }
         let Some(pose) = self.window_pose(window) else {
@@ -820,4 +825,9 @@ mod tests {
         }
         .is_still());
     }
+}
+
+/// Whether a window is 截圖's choosing of what to take, which shows the screen as it was.
+fn is_shot_overlay(window: &Window) -> bool {
+    crate::windows::window_names(window).0 == crate::windows::SHOT_OVERLAY_TITLE
 }

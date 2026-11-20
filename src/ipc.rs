@@ -291,6 +291,23 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                     .collect(),
             );
         }
+        // The windows on screen, the topmost first: `X Y WIDTH HEIGHT` in points, a tab and
+        // the title. 截圖 takes a window by these.
+        "window-areas" => {
+            return Some(
+                state
+                    .space
+                    .elements()
+                    .rev()
+                    .filter(|window| is_managed(window))
+                    .filter_map(|window| {
+                        let area = state.space.element_geometry(window)?;
+                        let title = window_names(window).0.replace(['\t', '\n'], " ");
+                        Some(format!("{} {} {} {}\t{title}\n", area.loc.x, area.loc.y, area.size.w, area.size.h))
+                    })
+                    .collect(),
+            );
+        }
         // The applications' windows, for the task manager, one a line: the process behind
         // it, its application ID, and `1` or `0` for whether it answers pings.
         "tasks" => return Some(task_windows(state)),
@@ -319,7 +336,11 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         "workspace-next" => state.switch_workspace_by(1),
         "workspace-previous" => state.switch_workspace_by(-1),
-        "quit" => state.loop_signal.stop(),
+        "quit" => {
+            // Said, so that a session that ended without it was ended from outside.
+            tracing::info!("quitting: asked by `nekoland msg quit`");
+            state.loop_signal.stop();
+        }
         other => tracing::warn!("unknown message: {other}"),
     }
     None

@@ -23,6 +23,7 @@ use smithay::{
     utils::{Rectangle, Serial, SERIAL_COUNTER},
     wayland::{
         compositor::{add_destruction_hook, with_states},
+        selection::data_device::DnDGrab,
         shell::xdg::{
             PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
@@ -109,6 +110,10 @@ impl XdgShellHandler for Nekoland {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if dragging_data(&self.seat) {
+            surface.send_configure();
+            return;
+        }
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             self.restore_on_request(&window);
         }
@@ -124,6 +129,10 @@ impl XdgShellHandler for Nekoland {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if dragging_data(&self.seat) {
+            surface.send_configure();
+            return;
+        }
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             self.restore_on_request(&window);
         }
@@ -288,6 +297,15 @@ impl XdgShellHandler for Nekoland {
 // Xdg Shell
 delegate_xdg_shell!(Nekoland);
 
+/// Whether a drag of data holds the pointer. GTK may still ask to move a window, and to take it
+/// out of a half or the whole display first, with the press that started the drag, from a window
+/// handle under what was dragged; doing so would drop what is being dragged.
+fn dragging_data(seat: &Seat<Nekoland>) -> bool {
+    seat.get_pointer()
+        .and_then(|pointer| pointer.with_grab(|_, grab| grab.is::<DnDGrab<Nekoland>>()))
+        .unwrap_or(false)
+}
+
 fn check_grab(
     seat: &Seat<Nekoland>,
     surface: &WlSurface,
@@ -297,6 +315,9 @@ fn check_grab(
 
     // Check that this surface has a click grab.
     if !pointer.has_grab(serial) {
+        return None;
+    }
+    if dragging_data(seat) {
         return None;
     }
 

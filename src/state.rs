@@ -3,7 +3,7 @@ use std::{collections::HashSet, ffi::OsString, sync::Arc, time::Duration};
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
-    input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatState},
+    input::{keyboard::Keycode, pointer::{CursorImageStatus, MotionEvent}, Seat, SeatState},
     output::Output,
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction},
@@ -13,7 +13,7 @@ use smithay::{
             Client, Display, DisplayHandle,
         },
     },
-    utils::{Logical, Point},
+    utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
@@ -371,6 +371,26 @@ impl Nekoland {
         layer_surface_under(ABOVE_WINDOWS)
             .or_else(window_under)
             .or_else(|| layer_surface_under(BELOW_WINDOWS))
+    }
+
+    /// Points the pointer, where it stands, into whatever is under it now: once what it was
+    /// over has gone, a click or scroll without moving it first reaches what is left.
+    pub fn repick_pointer(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if pointer.is_grabbed() {
+            return;
+        }
+        let location = pointer.current_location();
+        let under = self.surface_under(location);
+        let motion = MotionEvent {
+            location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+        };
+        pointer.motion(self, under, &motion);
+        pointer.frame(self);
     }
 
     /// What every backend does once an output has been drawn: tell its surfaces that a
