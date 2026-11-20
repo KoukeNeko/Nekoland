@@ -25,7 +25,6 @@ const NEW_TAB_TOOLTIP: &str = "新增分頁";
 const PROFILES_TOOLTIP: &str = "設定檔";
 const WAITING_TOOLTIP: &str = "下一個需要回應的分頁 (Ctrl+Shift+U)";
 const CONTEXT_TOOLTIP: &str = "脈絡";
-const MENU_TOOLTIP: &str = "主選單";
 const NUDGE: Duration = Duration::from_millis(300);
 const NUDGE_CLASS: &str = "nudge";
 const BRANCH_ICON: &str = "media-playlist-consecutive-symbolic";
@@ -190,7 +189,6 @@ pub struct TitleBar {
     time: Piece,
     branch: Piece,
     folder: Piece,
-    menu: gtk::MenuButton,
     layout: std::cell::Cell<Option<TabLayout>>,
 }
 
@@ -237,8 +235,6 @@ impl TitleBar {
         bar.append(&time.widget);
         bar.append(&branch.widget);
         bar.append(&folder.widget);
-        let menu = window_menu_button();
-        bar.append(&menu);
         bar.append(&gtk::WindowControls::new(gtk::PackType::End));
         let widget = gtk::WindowHandle::builder().child(&bar).build();
         let this = Self {
@@ -263,7 +259,6 @@ impl TitleBar {
             time,
             branch,
             folder,
-            menu,
             layout: std::cell::Cell::default(),
         };
         this.set_layout(config::current().tab_layout);
@@ -354,7 +349,6 @@ impl TitleBar {
             (self.profiles.upcast_ref(), PROFILES_TOOLTIP),
             (self.waiting.upcast_ref(), WAITING_TOOLTIP),
             (self.context.button.upcast_ref(), CONTEXT_TOOLTIP),
-            (self.menu.upcast_ref(), MENU_TOOLTIP),
         ] {
             widget.set_tooltip_text(Some(tr(tooltip)));
         }
@@ -443,34 +437,5 @@ fn new_menu_button() -> gtk::MenuButton {
     let button = menu_button("pan-down-symbolic", tr(PROFILES_TOOLTIP), &profiles_menu());
     button.set_create_popup_func(|button| button.set_menu_model(Some(&profiles_menu())));
     button.set_tooltip_text(Some(tr(PROFILES_TOOLTIP)));
-    button
-}
-
-/// The window's menu, behind the three dots.
-fn window_menu() -> gio::Menu {
-    let tabs = gio::Menu::new();
-    tabs.append(Some(tr("重新命名分頁")), Some("win.rename-tab"));
-    tabs.append(Some(tr("向右分割")), Some("win.split-right"));
-    tabs.append(Some(tr("向下分割")), Some("win.split-down"));
-    tabs.append(Some(tr("尋找")), Some("win.find"));
-    let view = gio::Menu::new();
-    view.append(Some(tr("切換側邊欄")), Some("win.toggle-sidebar"));
-    view.append(Some(tr("放大字型")), Some("win.zoom-in"));
-    view.append(Some(tr("縮小字型")), Some("win.zoom-out"));
-    view.append(Some(tr("重設字型大小")), Some("win.zoom-reset"));
-    let app = gio::Menu::new();
-    app.append(Some(tr("設定")), Some("app.preferences"));
-    app.append(Some(tr("關於終端機")), Some("app.about"));
-    let menu = gio::Menu::new();
-    menu.append_section(None, &tabs);
-    menu.append_section(None, &view);
-    menu.append_section(None, &app);
-    menu
-}
-
-/// The three dots; the menu is built as it opens, in the language chosen then.
-fn window_menu_button() -> gtk::MenuButton {
-    let button = menu_button("open-menu-symbolic", tr(MENU_TOOLTIP), &window_menu());
-    button.set_create_popup_func(|button| button.set_menu_model(Some(&window_menu())));
     button
 }

@@ -169,6 +169,46 @@ const SHORTCUTS: [(&str, &[&str], &str); 27] = [
     ("app.quit", &["<Control><Shift>q"], "結束"),
 ];
 
+/// Nekoland's menu bar: each menu's commands in sections, named and keyed as [`SHORTCUTS`] says. Nekoland's own
+/// application menu has the settings, About and Quit, and its own Window menu follows these.
+const MENUS: [(&str, &[&[&str]]); 3] = [
+    ("檔案", &[&["win.new-tab", "win.new-window"], &["win.rename-tab", "win.close-tab"], &["win.save-layout"]]),
+    ("編輯", &[&["win.copy", "win.paste"], &["win.find", "win.search-tabs", "win.hints"]]),
+    (
+        "顯示方式",
+        &[
+            &["win.toggle-sidebar", "win.palette"],
+            &["win.split-right", "win.split-down"],
+            &["win.zoom-in", "win.zoom-out", "win.zoom-reset"],
+        ],
+    ),
+];
+
+/// The menu bar in the language chosen now.
+pub fn menubar() -> gio::Menu {
+    let menubar = gio::Menu::new();
+    for (title, sections) in MENUS {
+        let menu = gio::Menu::new();
+        for actions in sections {
+            let section = gio::Menu::new();
+            for action in *actions {
+                let (_, accels, label) = SHORTCUTS
+                    .iter()
+                    .find(|(listed, ..)| listed == action)
+                    .expect("every menu command is in SHORTCUTS");
+                let item = gio::MenuItem::new(Some(lang::tr(label)), Some(action));
+                if let Some(accel) = accels.first() {
+                    item.set_attribute_value("accel", Some(&accel.to_variant()));
+                }
+                section.append_item(&item);
+            }
+            menu.append_section(None, &section);
+        }
+        menubar.append_submenu(Some(lang::tr(title)), &menu);
+    }
+    menubar
+}
+
 /// What GTK has no class for: the round marks, the tinted count and its shake, the ways the sidebar lists the tabs, and
 /// the parts of the settings page. Everything else is libadwaita's own, so the window follows the desktop's style and
 /// accent.
@@ -327,6 +367,7 @@ fn add_app_actions(app: &adw::Application) {
     for (action, accels, _) in SHORTCUTS {
         app.set_accels_for_action(action, accels);
     }
+    app.set_menubar(Some(&menubar()));
 }
 
 /// Reads every pane's foreground program and folder, and redraws what changed.
@@ -412,4 +453,18 @@ fn connect_app(app: &adw::Application) {
             None => window::open_first(app),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_menu_command_has_a_shortcut_entry() {
+        for (_, sections) in MENUS {
+            for action in sections.iter().flat_map(|actions| actions.iter()) {
+                assert!(SHORTCUTS.iter().any(|(listed, ..)| listed == action), "{action} is not in SHORTCUTS");
+            }
+        }
+    }
 }

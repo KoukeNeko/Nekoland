@@ -1118,6 +1118,9 @@ fn relabel_all() {
     for window in all_windows() {
         window.relabel();
     }
+    if let Some(app) = gio::Application::default().and_downcast::<gtk::Application>() {
+        app.set_menubar(Some(&crate::menubar()));
+    }
 }
 
 /// Redraws every sidebar and count once the current events are handled.
