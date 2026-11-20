@@ -456,11 +456,7 @@ fn build(app: &adw::Application) {
             Some(start)
         })
         .collect();
-    let pages: Vec<(&str, &str, gtk::Widget)> = groups
-        .into_iter()
-        .flatten()
-        .map(|(name, icon)| (name, icon, make_page(name, &config)))
-        .collect();
+    let pages: Vec<(&str, &str)> = groups.into_iter().flatten().collect();
 
     // A page's name has its glyphs half a pixel under the middle of its line, where its
     // icon, placed on whole pixels, cannot follow but by a transform.
@@ -480,6 +476,18 @@ fn build(app: &adw::Application) {
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
+    // A page is built the first time it is shown or searched: built all at once, the pages
+    // Settings is not opened for cost about as much memory as the window itself.
+    let page_of = {
+        let make_page = make_page.clone();
+        Rc::new(move |stack: &gtk::Stack, name: &str| -> gtk::Widget {
+            stack.child_by_name(name).unwrap_or_else(|| {
+                let page = make_page(name, &Config::load());
+                stack.add_named(&page, Some(name));
+                page
+            })
+        })
+    };
     let sidebar = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
@@ -497,8 +505,7 @@ fn build(app: &adw::Application) {
         });
         row.set_header(title.as_ref());
     });
-    for (name, icon, page) in &pages {
-        stack.add_named(page, Some(name));
+    for (name, icon) in &pages {
         let icon = gtk::Image::builder()
             .icon_name(*icon)
             .pixel_size(16)
@@ -569,8 +576,11 @@ fn build(app: &adw::Application) {
         stack,
         #[weak]
         content,
+        #[strong]
+        page_of,
         move |_, row| {
             if let Some(name) = row.and_then(|row| names.get(row.index() as usize)) {
+                page_of(&stack, name);
                 stack.set_visible_child_name(name);
                 content.set_title(name);
             }
@@ -589,6 +599,8 @@ fn build(app: &adw::Application) {
         side,
         #[strong]
         hits,
+        #[strong]
+        page_of,
         move |entry| {
             while let Some(old) = results.first_child() {
                 results.remove(&old);
@@ -604,7 +616,8 @@ fn build(app: &adw::Application) {
                 if name.to_lowercase().contains(&query) {
                     found.push((name.to_string(), at, None));
                 }
-                let Some(page) = stack.child_by_name(name) else { continue };
+                // Searched, every page is built, so that its settings can be found.
+                let page = page_of(&stack, name);
                 let mut rows = Vec::new();
                 setting_rows(&page, &mut rows);
                 for (title, row) in rows {
