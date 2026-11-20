@@ -105,6 +105,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().init();
     }
 
+    // Logging in on a seat gives the session CAP_WAKE_ALARM as an ambient capability, which
+    // everything started from here would inherit; bubblewrap, which the image loaders run in,
+    // will not start with any, so no icon or picture could be read.
+    // SAFETY: only clears this process's ambient set.
+    if unsafe { libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) } != 0 {
+        tracing::warn!("could not clear the ambient capabilities: {}", std::io::Error::last_os_error());
+    }
+
     // The Mac thickens the outlines of all its text. FreeType can do so only for CFF fonts,
     // which Noto Sans CJK is: here by 0.4px at any stem width, where its own curve leaves
     // stems as wide as those at 2x alone. Latin is set heavier instead; see
