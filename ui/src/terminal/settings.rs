@@ -1299,16 +1299,12 @@ impl Colours {
         let text = widget.color();
         let with_alpha = |alpha: f32| gdk::RGBA::new(text.red(), text.green(), text.blue(), alpha);
         let state = |status: Status| gdk::RGBA::parse(status.colour()).unwrap_or(text);
-        #[allow(deprecated)]
-        let accent = widget
-            .style_context()
-            .lookup_color("accent_color")
-            .unwrap_or_else(|| state(Status::Working));
         Self {
             line: with_alpha(0.16),
             faint: with_alpha(0.12),
             strong: with_alpha(0.43),
-            accent,
+            // Nekoland's accent is the ink; `accent_color` is still the theme's own, Ubuntu's orange.
+            accent: text,
             wait: state(Status::Waiting),
             work: state(Status::Working),
             done: state(Status::Done),

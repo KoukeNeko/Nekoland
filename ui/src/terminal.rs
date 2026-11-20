@@ -179,7 +179,7 @@ const CSS: &str = "
 .term-waiting.nudge { animation: term-nudge 300ms ease-out; }
 @keyframes term-nudge { 30% { transform: translateX(-6px); } 60% { transform: translateX(4px); } }
 .term-piece { margin: 0 6px; }
-.term-bell { box-shadow: inset 0 0 0 3px @accent_color; }
+.term-bell { box-shadow: inset 0 0 0 3px var(--accent-color); }
 
 .navigation-sidebar > row:not(:selected):not(:hover) .term-name:not(.urgent) { opacity: 0.55; }
 .term-heading { padding: 10px 6px 2px; }
@@ -194,7 +194,7 @@ row:hover .term-state { opacity: 0; }
 .term-cards > row, .term-cards > row:selected, .term-cards > row:hover { background: none; padding: 3px 2px; }
 .term-card { padding: 12px; border-radius: 8px; border: 1px solid alpha(currentColor, 0.12); background: alpha(currentColor, 0.03); }
 .term-cards > row:hover .term-card { background: alpha(currentColor, 0.07); }
-.term-cards > row:selected .term-card { border-color: @accent_bg_color; background: alpha(currentColor, 0.09); }
+.term-cards > row:selected .term-card { border-color: var(--accent-bg-color); background: alpha(currentColor, 0.09); }
 .term-pill { padding: 1px 8px; border-radius: 9px; background: alpha(currentColor, 0.16); }
 .term-peek { padding: 6px 8px; border-radius: 6px; background: alpha(currentColor, 0.07); }
 .term-icons > row, .term-icons > row:selected, .term-icons > row:hover { background: none; padding: 4px 0; margin: 0; }
@@ -202,7 +202,7 @@ row:hover .term-state { opacity: 0; }
 .term-icons > row:hover .term-cell { background: alpha(currentColor, 0.07); }
 .term-icons > row:selected .term-cell { background: alpha(currentColor, 0.12); }
 .term-cell.ringed.warning { border-color: @warning_color; animation: term-pulse 1.4s ease-in-out infinite; }
-.term-cell.ringed.accent { border-color: @accent_color; }
+.term-cell.ringed.accent { border-color: var(--accent-color); }
 .term-cell.ringed.success { border-color: @success_color; }
 .term-cell.ringed.error { border-color: @error_color; }
 @keyframes term-pulse { 50% { border-color: alpha(@warning_color, 0.3); } }
@@ -213,19 +213,19 @@ row:hover .term-state { opacity: 0; }
 .term-items { background: none; }
 .term-items > row { margin-bottom: 4px; border-radius: 8px; background-color: @card_bg_color; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.03), 0 1px 3px 1px rgba(0, 0, 0, 0.07); }
 .term-picture { padding: 6px; border-radius: 10px; border: 1px solid alpha(currentColor, 0.12); }
-.term-picture:checked { background: none; border: 2px solid @accent_bg_color; padding: 5px; }
+.term-picture:checked { background: none; border: 2px solid var(--accent-bg-color); padding: 5px; }
 .term-miniature { border-radius: 6px; background: @window_bg_color; }
 .term-scheme { padding: 10px 12px; border-radius: 8px; min-height: 44px; }
 .term-swatch { min-width: 16px; min-height: 16px; border-radius: 4px; }
 .term-schemes > flowboxchild { padding: 2px; border-radius: 10px; }
-.term-schemes > flowboxchild:selected { background: @accent_bg_color; }
+.term-schemes > flowboxchild:selected { background: var(--accent-bg-color); }
 .term-code { font-family: monospace; padding: 1px 8px; border-radius: 6px; background: alpha(currentColor, 0.08); }
 .term-tag { padding: 2px 9px; border-radius: 9px; background: alpha(currentColor, 0.1); }
 .term-tag.mark { background: alpha(@warning_color, 0.22); }
 .term-tag.warn { background: alpha(@error_color, 0.22); }
 .term-sample { font-family: monospace; padding: 8px 10px; border-radius: 6px; background: alpha(currentColor, 0.06); }
 .term-swatch-button { padding: 4px; border-radius: 8px; }
-.term-swatch-button:checked { box-shadow: inset 0 0 0 2px @accent_bg_color; background: none; }
+.term-swatch-button:checked { box-shadow: inset 0 0 0 2px var(--accent-bg-color); background: none; }
 .term-swatch-button .term-swatch { min-width: 20px; min-height: 20px; }
 ";
 

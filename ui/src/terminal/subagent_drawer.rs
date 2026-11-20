@@ -32,10 +32,10 @@ pub fn css() -> &'static str {
 .term-drawer { background-color: @view_bg_color; color: @view_fg_color; box-shadow: -1px 0 0 alpha(currentColor, 0.12), -6px 0 18px alpha(black, 0.12); }
 .term-drawer-title { font-size: 15px; font-weight: bold; }
 .term-drawer-box { padding: 10px; border-radius: 6px; background: alpha(currentColor, 0.05); }
-.term-drawer-state.running { color: @accent_color; }
+.term-drawer-state.running { color: var(--accent-color); }
 .term-drawer-state.failed { color: @error_color; }
 .term-call-dot { min-width: 6px; min-height: 6px; border-radius: 3px; background: alpha(currentColor, 0.2); }
-.term-call-dot.open { background: @accent_bg_color; }
+.term-call-dot.open { background: var(--accent-bg-color); }
 "#
 }
 

@@ -26,13 +26,13 @@ pub fn css() -> &'static str {
     r#"
 .term-step { min-width: 8px; min-height: 8px; border-radius: 2px; background: alpha(currentColor, 0.18); }
 .term-step.big { min-width: 10px; min-height: 10px; border-radius: 3px; }
-.term-step.running { background: @accent_bg_color; }
+.term-step.running { background: var(--accent-bg-color); }
 .term-step.failed { background: @error_color; }
 .term-step-button { padding: 0; min-width: 0; min-height: 0; border-radius: 3px; }
-.term-agent-dot { min-width: 8px; min-height: 8px; border-radius: 4px; background: @accent_bg_color; }
+.term-agent-dot { min-width: 8px; min-height: 8px; border-radius: 4px; background: var(--accent-bg-color); }
 .term-agent-dot.done { background: none; box-shadow: inset 0 0 0 1.5px alpha(currentColor, 0.3); }
-.term-subagents-mark { color: @accent_color; }
-.term-subagents-mark .term-step { background: @accent_bg_color; }
+.term-subagents-mark { color: var(--accent-color); }
+.term-subagents-mark .term-step { background: var(--accent-bg-color); }
 .term-subagent-row { padding: 3px 6px; min-height: 0; border-radius: 6px; }
 .term-subagent-row label { font-weight: normal; }
 .term-phase-name { padding: 0 2px; min-height: 0; margin-left: -2px; }
