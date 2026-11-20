@@ -22,7 +22,6 @@ pub const EVENTS: &str = "傳送哪些事件";
 pub const TEST: &str = "測試";
 const URL_NOTE: &str = "ntfy 主題，或接收 POST 的 https 網址";
 const TOKEN_NOTE: &str = "選填，以 Bearer 傳送，不寫進記錄";
-const FIELD_WIDTH: i32 = 280;
 const SECONDS_IN_MINUTE: u64 = 60;
 
 /// The address the notifications go to; one the push would refuse is marked and kept out.
@@ -36,7 +35,7 @@ pub fn url_row() -> adw::ActionRow {
         mark_refused(field, None);
         change(|config| config.push.url = url);
     });
-    field.set_width_request(FIELD_WIDTH);
+    field.set_hexpand(true);
     field.set_placeholder_text(Some("https://ntfy.sh/…"));
     let row = adw::ActionRow::builder().title(tr(URL)).subtitle(tr(URL_NOTE)).build();
     row.add_suffix(&field);
@@ -48,7 +47,7 @@ pub fn token_row() -> adw::ActionRow {
     let entry = gtk::PasswordEntry::builder()
         .text(config::current().push.token)
         .show_peek_icon(true)
-        .width_request(FIELD_WIDTH)
+        .hexpand(true)
         .valign(gtk::Align::Center)
         .build();
     let take = |entry: &gtk::PasswordEntry| {
@@ -70,20 +69,18 @@ pub fn token_row() -> adw::ActionRow {
     row
 }
 
-/// The events pushed, any of them on.
-pub fn events_row() -> adw::ActionRow {
-    let buttons = gtk::Box::builder().css_classes(["linked"]).valign(gtk::Align::Center).build();
+/// The events pushed, any of them on, each a switch under the row.
+pub fn events_row() -> adw::ExpanderRow {
+    let row = adw::ExpanderRow::builder().title(tr(EVENTS)).build();
     let chosen = config::current().push.events;
     for event in PushEvent::ALL {
-        let button = gtk::ToggleButton::builder().label(event.label()).active(chosen.contains(&event)).build();
-        button.connect_toggled(move |button| {
-            let on = button.is_active();
+        let switch = adw::SwitchRow::builder().title(event.label()).active(chosen.contains(&event)).build();
+        switch.connect_active_notify(move |switch| {
+            let on = switch.is_active();
             change(|config| set_event(&mut config.push.events, event, on));
         });
-        buttons.append(&button);
+        row.add_row(&switch);
     }
-    let row = adw::ActionRow::builder().title(tr(EVENTS)).build();
-    row.add_suffix(&buttons);
     row
 }
 

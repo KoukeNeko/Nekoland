@@ -110,8 +110,9 @@ const PAD: i32 = 12;
 const PAD_TOP: i32 = 24;
 const CONTENT_MAX: i32 = 600;
 const CONTENT_TIGHTENING: i32 = 400;
-const FIELD_WIDTH: i32 = 280;
 const THUMB_WIDTH: i32 = 160;
+// The narrowest a miniature goes, so three fit across the page at its narrowest.
+const THUMB_MIN_WIDTH: i32 = 100;
 const THUMB_RATIO: f64 = 0.6;
 const SCHEME_COLUMNS: u32 = 6;
 /// How many of a scheme's colours its tile shows: red to cyan, as Nekominal's do.
@@ -985,32 +986,17 @@ fn spin_row(title: &str, value: f64, (min, max): (f64, f64), step: f64, set: Set
     row
 }
 
-/// A choice of a few: a linked button an option at the right of the row, as Nekominal's option buttons.
-fn options_row(title: &str, options: &[&str], chosen: usize, set: Set<usize>) -> adw::ActionRow {
-    let buttons = gtk::Box::builder()
-        .css_classes(["linked"])
-        .valign(gtk::Align::Center)
+/// A choice of a few, as Nekoland's own settings offer one: a drop-down at the right of the row.
+fn options_row(title: &str, options: &[&str], chosen: usize, set: Set<usize>) -> adw::ComboRow {
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .model(&gtk::StringList::new(options))
+        .selected(chosen as u32)
         .build();
-    let mut first: Option<gtk::ToggleButton> = None;
-    for (index, option) in options.iter().enumerate() {
-        let button = gtk::ToggleButton::builder()
-            .label(*option)
-            .active(index == chosen)
-            .build();
-        if let Some(first) = &first {
-            button.set_group(Some(first));
-        } else {
-            first = Some(button.clone());
-        }
-        button.connect_toggled(move |button| {
-            if button.is_active() {
-                change(|config| set(config, index));
-            }
-        });
-        buttons.append(&button);
-    }
-    let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(&buttons);
+    row.connect_selected_notify(move |row| {
+        let index = row.selected() as usize;
+        change(|config| set(config, index));
+    });
     row
 }
 
@@ -1075,7 +1061,7 @@ fn text_row(title: &str, get: Get<String>, set: Set<String>, check: Check) -> ad
         mark_refused(field, None);
         change(|config| set(config, text));
     });
-    field.set_width_request(FIELD_WIDTH);
+    field.set_hexpand(true);
     let row = adw::ActionRow::builder().title(title).build();
     row.add_suffix(&field);
     row
@@ -1185,8 +1171,9 @@ fn pictures_row(
     let mut first: Option<gtk::ToggleButton> = None;
     for (index, name) in names.iter().enumerate() {
         let drawing = gtk::DrawingArea::builder()
-            .content_width(THUMB_WIDTH)
+            .content_width(THUMB_MIN_WIDTH)
             .content_height((f64::from(THUMB_WIDTH) * THUMB_RATIO) as i32)
+            .hexpand(true)
             .css_classes(["term-miniature"])
             .build();
         drawing.set_draw_func(move |area, cairo, width, height| {
