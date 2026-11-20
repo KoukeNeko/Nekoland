@@ -85,6 +85,22 @@ fn has_render_node() -> bool {
     })
 }
 
+/// Hyper-V's paravirtual GPU, as WSL has it: the host's GPU reached through `dxgkrnl`,
+/// with no render node, and drawn with by Mesa's D3D12 driver.
+const PARAVIRTUAL_GPU: &str = "/dev/dxg";
+const MESA_DRIVER: &str = "GALLIUM_DRIVER";
+const MESA_DRIVER_D3D12: &str = "d3d12";
+
+/// In an xrdp session Mesa draws on the CPU, since the X server xrdp started has no GPU;
+/// with Hyper-V's paravirtual one, Nekoland and the programs it starts draw on the host's
+/// GPU instead. On a console the display's own driver is used, so this is for xrdp only.
+/// A choice already made is kept.
+fn use_paravirtual_gpu() {
+    if std::env::var_os(MESA_DRIVER).is_none() && std::path::Path::new(PARAVIRTUAL_GPU).exists() {
+        std::env::set_var(MESA_DRIVER, MESA_DRIVER_D3D12);
+    }
+}
+
 pub struct CalloopData {
     state: Nekoland,
     display_handle: DisplayHandle,
@@ -167,6 +183,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // others choose X11 then, as XWayland's DISPLAY is there too: drawn through XWayland,
         // Chrome has no window buttons and its menus' shadows take glass.
         std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
+    }
+    if data.state.remote {
+        use_paravirtual_gpu();
     }
     if nested {
         // XWayland takes DISPLAY; the clipboard of xrdp's client is on this one.

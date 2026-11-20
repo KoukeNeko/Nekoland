@@ -512,10 +512,13 @@ programs name show as they are, and one a program draws itself as the arrow. Wit
 other; other kinds of content stay where they were copied. Sound needs xrdp's PipeWire
 module, `pipewire-module-xrdp`.
 
-xrdp draws in software, so glass is slower than on a console. All of the client's
-monitors are one display to Nekoland. The user's D-Bus services serve one session at a
-time: logged in on the console and over RDP at once, the services started last follow the
-session that started last.
+xrdp draws in software, so glass is slower than on a console. In a Hyper-V VM given a
+GPU partition, with `dxgkrnl` loaded and the host's D3D12 libraries in `/usr/lib/wsl` as
+WSL lays them out, Nekoland sets `GALLIUM_DRIVER=d3d12` in xrdp sessions when `/dev/dxg`
+is there and none was chosen, and draws, as the programs it starts do, on the host's GPU.
+All of the client's monitors are one display to Nekoland. The user's D-Bus services
+serve one session at a time: logged in on the console and over RDP at once, the services
+started last follow the session that started last.
 
 ## GTK applications
 
