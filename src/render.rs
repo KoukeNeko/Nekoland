@@ -185,7 +185,12 @@ pub fn scene_elements(
             .into_iter()
             .map(SceneElement::Ghost)
             .collect();
-        under.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed));
+        let mut backdrop: Vec<SceneElement> = state
+            .desktop_elements(renderer, output_geometry.loc, scale)
+            .into_iter()
+            .collect();
+        backdrop.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+        under.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed, backdrop));
         let mut overlays = state.fps_overlays();
         overlays.extend(state.hover_overlays());
         overlays.extend(state.menu_bar_overlays());
@@ -308,19 +313,28 @@ pub fn scene_elements(
         }
     }
 
-    // Under the applications too, whose glass shows them blurred where they are.
-    for slot in resting() {
-        elements.extend(window_thumbnail(renderer, slot));
-    }
-
-    elements.push(SceneElement::Solid(SolidColorRenderElement::from_buffer(
+    // Under the applications too, whose glass shows them blurred where they are. Each
+    // window keeps its own glass, as on the desktop, so a see-through sidebar stays blurred
+    // all the way in and out.
+    let mut backdrop = vec![SceneElement::Solid(SolidColorRenderElement::from_buffer(
         &overview.dim,
         (0, 0),
         scale,
         1.0,
         Kind::Unspecified,
-    )));
-    elements.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+    ))];
+    backdrop.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+    let posed: Vec<(Window, Pose)> = resting()
+        .map(|slot| {
+            let pose = Pose {
+                actual: slot.from,
+                shown: slot.now,
+                alpha: 1.0,
+            };
+            (slot.window.clone(), pose)
+        })
+        .collect();
+    elements.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed, backdrop));
     // The applications in front of the desktops' bar, on glass behind everything else.
     let apps = state.apps_scene();
     // A menu a right click opened here, over it all.
@@ -1103,14 +1117,15 @@ fn popup_pivot(popup: &PopupKind, rect: Rectangle<i32, Logical>) -> Point<i32, L
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
 const WINDOW_RADIUS: i32 = 14;
 
-/// `windows`, front to back, each where it is drawn, over the layers under them and on glass
-/// of what is under it.
+/// `windows`, front to back, each where it is drawn, over `backdrop` and on glass of what is
+/// under it.
 fn windows_on_glass(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     output: &Output,
     mut glass: Option<&mut Glass>,
     windows: &[(Window, Pose)],
+    backdrop: Vec<SceneElement>,
 ) -> Vec<SceneElement> {
     let output_loc = state
         .space
@@ -1119,11 +1134,7 @@ fn windows_on_glass(
         .unwrap_or_default();
     let scale = output.current_scale().fractional_scale();
     let output_size = output.current_mode().map(|mode| mode.size);
-    let mut scene: Vec<SceneElement> = state
-        .desktop_elements(renderer, output_loc, scale)
-        .into_iter()
-        .collect();
-    scene.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+    let mut scene = backdrop;
     let mut kept = Vec::new();
     // From the bottom up, so the glass of each one shows those under it, theirs included.
     for (window, pose) in windows.iter().rev() {
