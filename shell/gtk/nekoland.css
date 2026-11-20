@@ -772,7 +772,7 @@ flowbox > flowboxchild:active {
  * the sidebar is left see-through. libadwaita puts a window's content a few frames deep,
  * which the rules below follow, as Ubuntu-Tools' sidebar blur does. */
 window.background:not(.desktopwindow) { background: none; }
-window.background:not(.desktopwindow) > *:not(dialog-host):not(.titlebar) { background-color: var(--window-bg-color); }
+window.background:not(.desktopwindow) > *:not(dialog-host):not(.titlebar):not(tooltip) { background-color: var(--window-bg-color); }
 window.background:not(.desktopwindow) > dialog-host > widget > widget > *:not(toast) { background-color: var(--window-bg-color); }
 window.background:not(.desktopwindow) > dialog-host > widget > widget > navigation-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > overlay-split-view, window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay, window.background:not(.desktopwindow) > dialog-host > widget > widget > widget, window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverview { background: none; }
 window.background:not(.desktopwindow) > dialog-host > widget > widget > toastoverlay > *:not(toast) { background-color: var(--window-bg-color); }
