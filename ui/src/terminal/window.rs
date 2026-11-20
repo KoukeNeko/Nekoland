@@ -139,8 +139,9 @@ impl Window {
             .default_width(DEFAULT_WIDTH)
             .default_height(DEFAULT_HEIGHT)
             .content(&toasts)
-            .css_classes([theme::WINDOW_CLASS])
             .build();
+        // Added, not set: setting the classes would drop GTK's own `csd`, and with it the window's corners and shadow.
+        window.add_css_class(theme::WINDOW_CLASS);
 
         let this = Rc::new(Self {
             window,
