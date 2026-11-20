@@ -5961,12 +5961,31 @@ const SAVED_XSESSION_FILE: &str = "nekoland/xsession";
 const XSESSION_HEAD: &str = "# Written by Nekoland's Settings, for xrdp sessions.\n";
 const XRDP_INI: &str = "/etc/xrdp/xrdp.ini";
 const RDP_PORT: u16 = 3389;
+/// Installs xrdp with the X server it draws in, the tools that share the clipboard and the
+/// keyboard library Nekoland loads only when drawn in an X server, and starts it. Its PipeWire
+/// module, for sound, comes as what xrdp recommends where the release has it; apt waits for
+/// another apt's lock rather than failing. xrdp's key is the system's
+/// snakeoil one, which only `ssl-cert` reads: without it TLS fails and clients that will not
+/// fall back to RDP's own encryption cannot connect. The package started xrdp before it
+/// joined the group, so it is restarted.
+const INSTALL_XRDP: &str = r#"set -e
+apt-get -o DPkg::Lock::Timeout=600 update
+DEBIAN_FRONTEND=noninteractive apt-get -y -o DPkg::Lock::Timeout=600 install xrdp xorgxrdp wl-clipboard xclip libxkbcommon-x11-0
+usermod -aG ssl-cert xrdp
+systemctl enable xrdp
+systemctl restart xrdp
+"#;
 
 /// What other computers may reach here: the desktop over RDP, through xrdp, with the session
 /// they get, and a shell over SSH.
 fn sharing_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let rows = group("");
+    let missing = adw::ActionRow::builder().title("遠端桌面").subtitle("未安裝 xrdp").build();
+    let install = gtk::Button::builder().label("安裝").valign(gtk::Align::Center).build();
+    let installing = gtk::Spinner::builder().spinning(true).visible(false).build();
+    missing.add_suffix(&install);
+    missing.add_suffix(&installing);
     let service = adw::SwitchRow::builder().title("遠端桌面").build();
     let address = fact_row("位址", &remote_address());
     let port = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
@@ -5976,6 +5995,7 @@ fn sharing_page() -> adw::PreferencesPage {
         .model(&gtk::StringList::new(&["Nekoland", "系統預設"]))
         .selected(if xsession_is_nekoland() { 0 } else { 1 })
         .build();
+    rows.add(&missing);
     rows.add(&service);
     rows.add(&address);
     rows.add(&port);
@@ -5986,6 +6006,8 @@ fn sharing_page() -> adw::PreferencesPage {
     let showing = Rc::new(Cell::new(false));
     let show = Rc::new(glib::clone!(
         #[weak]
+        missing,
+        #[weak]
         service,
         #[weak]
         address,
@@ -5995,22 +6017,46 @@ fn sharing_page() -> adw::PreferencesPage {
         showing,
         move || {
             let running = xrdp_running();
+            missing.set_visible(running.is_none());
+            service.set_visible(running.is_some());
             showing.set(true);
             service.set_active(running == Some(true));
             showing.set(false);
             // Turned off from an xrdp session, it would end the connection it is changed over.
             let remote = std::env::var_os("XRDP_SESSION").is_some();
-            service.set_sensitive(running.is_some() && !remote);
-            service.set_subtitle(match running {
-                None => "未安裝 xrdp",
-                Some(_) if remote => "遠端連線中",
-                Some(_) => "",
-            });
+            service.set_sensitive(!remote);
+            service.set_subtitle(if remote { "遠端連線中" } else { "" });
             address.set_visible(running == Some(true));
             port.set_visible(running == Some(true));
         }
     ));
     show();
+    install.connect_clicked(glib::clone!(
+        #[weak]
+        page,
+        #[weak]
+        session,
+        #[weak]
+        installing,
+        #[strong]
+        show,
+        move |button| {
+            button.set_visible(false);
+            installing.set_visible(true);
+            let (button, show) = (button.clone(), show.clone());
+            as_root("安裝遠端桌面", &["sh", "-c", INSTALL_XRDP], None, move |worked| {
+                button.set_visible(true);
+                installing.set_visible(false);
+                if worked {
+                    // Without an `~/.xsession`, xrdp would start the system's desktop, not Nekoland.
+                    session.set_selected(0);
+                } else {
+                    alert::notice(&page, "無法安裝遠端桌面", None);
+                }
+                show();
+            });
+        }
+    ));
     service.connect_active_notify(move |row| {
         if showing.get() {
             return;

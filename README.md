@@ -486,7 +486,12 @@ manager protocol, other programs' windows, screen capture and the lock.
 
 Other computers come in over RDP through xrdp and xorgxrdp, whose X server Nekoland
 covers as a window without a frame, following its size as the client's window changes.
-Settings' 共享 page turns the `xrdp` service on and off, through `sudo -A` and
+Without xrdp, Settings' 共享 page installs it with a button: `xrdp`, `xorgxrdp` (and
+`pipewire-module-xrdp`, which xrdp recommends), `wl-clipboard`, `xclip` and
+`libxkbcommon-x11-0`, which Nekoland loads only when drawn in an X server. It adds `xrdp` to
+`ssl-cert`, without which xrdp cannot read its key and TLS fails, restarts it, and sets the
+remote session to Nekoland, which otherwise would be the system's desktop, such as Xfce.
+The page turns the `xrdp` service on and off, through `sudo -A` and
 `nekoland-askpass` (not from inside an xrdp session, which would end it), shows the
 address and port to connect to, and gives xrdp sessions Nekoland by writing `~/.xsession`, which
 xrdp's session script runs; one already there is kept in `~/.config/nekoland/xsession`
