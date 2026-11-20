@@ -1,7 +1,8 @@
 //! Runs the compositor on a display of its own, through DRM/KMS, with input from libinput.
 //!
-//! shortcut: one GPU, and the connectors found at startup; hotplug and a second GPU need
-//! the udev monitor and per-device state that Smithay's anvil has.
+//! shortcut: one GPU, and the connectors found at startup, whose modes are followed as they
+//! change; plugging in another display and a second GPU need per-device state as Smithay's
+//! anvil has.
 
 use std::{
     cell::RefCell,
@@ -34,7 +35,7 @@ use smithay::{
             ImportDma, ImportMemWl,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
-        udev::{all_gpus, primary_gpu},
+        udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     output::{Mode, Output, PhysicalProperties, Scale},
@@ -44,7 +45,7 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle,
         },
-        drm::control::{crtc, Device as _, Mode as DrmMode, ModeTypeFlags},
+        drm::control::{connector, crtc, Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
     },
@@ -73,6 +74,9 @@ type OutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
+/// A display's connector, its modes and its size in millimetres.
+type Display = (connector::Handle, Vec<DrmMode>, (u32, u32));
+
 struct Udev {
     renderer: GlesRenderer,
     manager: OutputManager,
@@ -97,8 +101,9 @@ struct Udev {
     filters: HashMap<crtc::Handle, Option<String>>,
     /// The `color_profile` setting the ramps follow, and the calibration curves read from it.
     profile: (Option<String>, Option<crate::icc::Curves>),
-    /// Each output's modes and size in millimetres, to choose from again as the settings change.
-    displays: HashMap<crtc::Handle, (Vec<DrmMode>, (u32, u32))>,
+    /// Each output's connector, modes and size in millimetres, to choose from again as the
+    /// settings or the modes change.
+    displays: HashMap<crtc::Handle, Display>,
     /// The `mode`, `scale` and `rotation` settings the outputs were last set up with.
     applied: (Option<String>, Option<f64>, Rotation, Vec<String>, String),
     /// While it is open, the power button and the lid are Nekoland's.
@@ -187,7 +192,8 @@ pub fn init_udev(
             .sum::<i32>();
         let scale = chosen_scale(&state.config, &name, mode, (width_mm, height_mm));
         info!("{name}: scale {scale}");
-        output.set_preferred(mode);
+        // What Settings offers as the default, whichever mode the settings set now.
+        output.set_preferred(preferred_mode(modes).map_or(mode, Mode::from));
         output.change_current_state(
             Some(mode),
             Some(state.config.rotation.transform()),
@@ -218,7 +224,7 @@ pub fn init_udev(
             Err(err) => warn!("{name}: no gamma: {err}"),
         }
         surfaces.insert(crtc, (surface, output));
-        displays.insert(crtc, (modes.to_vec(), (width_mm, height_mm)));
+        displays.insert(crtc, (connector.handle(), modes.to_vec(), (width_mm, height_mm)));
     }
     if surfaces.is_empty() {
         return Err("no connected display".into());
@@ -310,6 +316,17 @@ pub fn init_udev(
                 render(&udev, crtc, data, &loop_handle);
             }
             DrmEvent::Error(err) => warn!("drm: {err}"),
+        })?;
+    }
+
+    // A display's modes change under it: QEMU's follow the size of its window.
+    {
+        let udev = udev.clone();
+        let device = DrmNode::from_path(&gpu_path)?.dev_id();
+        handle.insert_source(UdevBackend::new(&seat)?, move |event, _, data| {
+            if matches!(event, UdevEvent::Changed { device_id } if device_id == device) {
+                reprobe_modes(&mut udev.borrow_mut(), &mut data.state);
+            }
         })?;
     }
 
@@ -515,7 +532,7 @@ fn render(
 }
 
 /// The mode the settings ask for, at its fastest rate unless they name one; the display's
-/// preferred one otherwise.
+/// preferred mode otherwise.
 fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode> {
     let configured = config.wanted_mode().and_then(|(size, rate)| {
         let found = modes
@@ -527,12 +544,21 @@ fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode
         }
         found
     });
-    configured
-        .or_else(|| {
+    configured.copied().or_else(|| preferred_mode(modes))
+}
+
+/// The display's preferred size at its fastest rate: a display's EDID prefers 60 Hz even
+/// where it runs at 120 or more, and every animation then gets half its frames.
+fn preferred_mode(modes: &[DrmMode]) -> Option<DrmMode> {
+    let preferred = modes.iter().find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED));
+    preferred
+        .and_then(|preferred| {
             modes
                 .iter()
-                .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+                .filter(|mode| mode.size() == preferred.size() && !mode.flags().contains(ModeFlags::INTERLACE))
+                .max_by_key(|mode| mode.vrefresh())
         })
+        .or(preferred)
         .or(modes.first())
         .copied()
 }
@@ -652,7 +678,7 @@ fn lay_out_outputs(state: &mut Nekoland) {
 fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
     udev.applied = applied_settings(&state.config);
     for (crtc, (surface, output)) in &mut udev.surfaces {
-        let Some((modes, size_mm)) = udev.displays.get(crtc) else {
+        let Some((_, modes, size_mm)) = udev.displays.get(crtc) else {
             continue;
         };
         let Some(drm_mode) = choose_mode(&output.name(), modes, &state.config) else {
@@ -682,6 +708,36 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
     state.dock.drawn = None;
     state.menu_bar.drawn = None;
     state.fit_windows_to_display();
+}
+
+/// Reads the displays' modes again, and where they changed sets the displays up from the
+/// settings again: without a mode set, each takes its new preferred one.
+fn reprobe_modes(udev: &mut Udev, state: &mut Nekoland) {
+    let mut changed = false;
+    for (crtc, (connector, modes, _)) in &mut udev.displays {
+        let Ok(info) = udev.manager.device().get_connector(*connector, true) else {
+            continue;
+        };
+        if info.modes().is_empty() || info.modes() == modes.as_slice() {
+            continue;
+        }
+        if let Some((_, output)) = udev.surfaces.get(crtc) {
+            for mode in modes.iter() {
+                output.delete_mode(Mode::from(*mode));
+            }
+            for mode in info.modes() {
+                output.add_mode(Mode::from(*mode));
+            }
+            if let Some(preferred) = preferred_mode(info.modes()) {
+                output.set_preferred(Mode::from(preferred));
+            }
+        }
+        *modes = info.modes().to_vec();
+        changed = true;
+    }
+    if changed {
+        apply_display_settings(udev, state);
+    }
 }
 
 /// Returns whether a frame was handed to the display.
