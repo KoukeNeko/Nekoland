@@ -332,6 +332,12 @@ impl Page {
             .unwrap_or_default()
     }
 
+    /// The place to show beside `title`: none when the title ends with it already, as a shell's "user@host: ~" does.
+    pub fn place_beside(&self, title: &str) -> String {
+        let place = self.place();
+        if title.ends_with(&place) { String::new() } else { place }
+    }
+
     pub fn repository(&self) -> Option<Repository> {
         self.focused_pane()?.repository()
     }

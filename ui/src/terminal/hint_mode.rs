@@ -199,7 +199,8 @@ pub fn screen_font(screen: &vte4::Terminal) -> Option<gtk::pango::FontDescriptio
     })
 }
 
-/// Where the first cell of the screen is in its widget: past its padding.
+/// Where the screen's first cell is in a layer laid over the whole screen. The screen's own drawing starts there
+/// already: GTK puts a widget's origin at its content box.
 pub fn screen_offset(screen: &vte4::Terminal) -> (f64, f64) {
     #[allow(deprecated)]
     let padding = screen.style_context().padding();

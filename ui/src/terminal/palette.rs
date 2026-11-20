@@ -80,6 +80,7 @@ impl Palette {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .min_content_height(LIST_HEIGHT)
             .max_content_height(LIST_HEIGHT)
+            .margin_bottom(PAD)
             .child(&list)
             .build();
         let widget = gtk::Box::builder()
@@ -236,7 +237,7 @@ impl Palette {
             self.list.append(&row(item));
         }
         self.count.set_text(&items.len().to_string());
-        self.empty.set_visible(items.is_empty());
+        self.empty.set_visible(items.is_empty() && !text.is_empty());
         self.list.select_row(self.list.row_at_index(0).as_ref());
         self.items.replace(items);
     }

@@ -163,7 +163,7 @@ impl Current {
         colour_dot(&self.dot, status);
         self.title.set_text(title);
         self.place
-            .set_text(&page.map(|page| page.place()).unwrap_or_default());
+            .set_text(&page.map(|page| page.place_beside(title)).unwrap_or_default());
     }
 }
 

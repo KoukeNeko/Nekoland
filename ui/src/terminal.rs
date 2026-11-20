@@ -189,18 +189,19 @@ row:hover .term-close { opacity: 1; }
 row:hover .term-state { opacity: 0; }
 .term-badge { padding: 0 4px; }
 .term-colour-bar { min-width: 3px; border-radius: 2px; }
-.term-list > row { min-height: 40px; }
+.term-list > row { min-height: 40px; padding-top: 6px; padding-bottom: 6px; }
+vte-terminal { padding: 8px 12px; }
 .term-repos > row { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
-.term-cards > row, .term-cards > row:selected, .term-cards > row:hover { background: none; padding: 3px 2px; }
+.term-cards > row, .term-cards > row:selected, .term-cards > row:hover { background: none; color: inherit; padding: 3px 2px; }
 .term-card { padding: 12px; border-radius: 8px; border: 1px solid alpha(currentColor, 0.12); background: alpha(currentColor, 0.03); }
 .term-cards > row:hover .term-card { background: alpha(currentColor, 0.07); }
 .term-cards > row:selected .term-card { border-color: var(--accent-bg-color); background: alpha(currentColor, 0.09); }
 .term-pill { padding: 1px 8px; border-radius: 9px; background: alpha(currentColor, 0.16); }
 .term-peek { padding: 6px 8px; border-radius: 6px; background: alpha(currentColor, 0.07); }
-.term-icons > row, .term-icons > row:selected, .term-icons > row:hover { background: none; padding: 4px 0; margin: 0; }
+.term-icons > row, .term-icons > row:selected, .term-icons > row:hover { background: none; color: inherit; padding: 4px 0; margin: 0; }
 .term-cell { min-width: 36px; min-height: 36px; border-radius: 10px; border: 1.5px solid transparent; }
 .term-icons > row:hover .term-cell { background: alpha(currentColor, 0.07); }
-.term-icons > row:selected .term-cell { background: alpha(currentColor, 0.12); }
+.term-icons > row:selected .term-cell { background: var(--accent-bg-color); color: var(--accent-fg-color); }
 .term-cell.ringed.warning { border-color: @warning_color; animation: term-pulse 1.4s ease-in-out infinite; }
 .term-cell.ringed.accent { border-color: var(--accent-color); }
 .term-cell.ringed.success { border-color: @success_color; }
@@ -210,6 +211,8 @@ row:hover .term-state { opacity: 0; }
 
 .term-settings-nav { background: @sidebar_bg_color; }
 .term-settings-heading { margin: 24px 0 12px; }
+.term-settings-items > .term-settings-heading:first-child { margin-top: 0; }
+.term-settings-file { font-weight: inherit; }
 .term-picture { padding: 6px; border-radius: 10px; border: 1px solid alpha(currentColor, 0.12); }
 .term-picture:checked { background: none; border: 2px solid var(--accent-bg-color); padding: 5px; }
 .term-miniature { border-radius: 6px; background: @window_bg_color; }
@@ -252,7 +255,8 @@ fn load_css() {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            // Over Nekoland's look.css, which GTK puts at the user's priority, as Nekoland's own settings do.
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
         );
         settings::show_scheme_css(&display);
     }

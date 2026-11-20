@@ -559,6 +559,7 @@ impl SettingsPage {
         header.append(&intro);
         let items = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .css_classes(["term-settings-items"])
             .build();
         let page = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -858,7 +859,7 @@ fn file_button(title: &gtk::Label) -> gtk::Button {
     content.append(title);
     let button = gtk::Button::builder()
         .child(&content)
-        .css_classes(["flat"])
+        .css_classes(["flat", "term-settings-file"])
         .margin_start(NAV_PAD - 6)
         .margin_end(NAV_PAD - 6)
         .margin_bottom(NAV_PAD)

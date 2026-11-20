@@ -18,7 +18,6 @@ use vte4::prelude::*;
 
 use super::{
     graphics_stream::Piece,
-    hint_mode::screen_offset,
     kitty_graphics::{self, Command, Decoded, Failure, LENIENT_BASE64},
     markup::html_to_markup,
     screen::Painter,
@@ -590,11 +589,10 @@ fn paint(images: &Images, screen: &vte4::Terminal, snapshot: &gtk::Snapshot, dra
         return;
     }
     let (cell_width, cell_height) = (screen.char_width() as f32, screen.char_height() as f32);
-    let (left, top) = screen_offset(screen);
     let area = |run: &Run| {
         graphene::Rect::new(
-            left as f32 + run.columns.start as f32 * cell_width,
-            top as f32 + (run.row - first) as f32 * cell_height,
+            run.columns.start as f32 * cell_width,
+            (run.row - first) as f32 * cell_height,
             run.columns.len() as f32 * cell_width,
             cell_height,
         )

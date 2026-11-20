@@ -52,7 +52,7 @@ impl Entry {
     }
 
     fn place(&self) -> String {
-        self.page.as_ref().map(|page| page.place()).unwrap_or_default()
+        self.page.as_ref().map(|page| page.place_beside(&self.title())).unwrap_or_default()
     }
 
     fn message(&self) -> Option<String> {
@@ -292,6 +292,7 @@ fn activity_line(entry: &Entry) -> gtk::Label {
         .ellipsize(pango::EllipsizeMode::End)
         .css_classes(["caption"])
         .build();
+    line.set_visible(!line.text().is_empty());
     if message.is_some() && status.is_urgent() {
         line.add_css_class(status.css_class());
     } else {
@@ -320,7 +321,6 @@ fn activity(entry: &Entry, close: impl Fn() + Clone + 'static) -> gtk::Widget {
     let text = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .hexpand(true)
-        .valign(gtk::Align::Center)
         .build();
     text.append(&first);
     text.append(&activity_line(entry));
@@ -332,7 +332,8 @@ fn activity(entry: &Entry, close: impl Fn() + Clone + 'static) -> gtk::Widget {
     if let Some(badges) = entry.badges() {
         text.append(&badges);
     }
-    let content = gtk::Box::builder().spacing(10).css_classes(["term-activity"]).build();
+    // Centred as a whole, the icon level with the first line however many lines follow it.
+    let content = gtk::Box::builder().spacing(10).valign(gtk::Align::Center).css_classes(["term-activity"]).build();
     if let Some(bar) = colour_bar(entry) {
         content.append(&bar);
     }

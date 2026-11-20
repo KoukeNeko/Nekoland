@@ -246,7 +246,8 @@ impl KeyInputState {
     /// Tells the input method where the cursor is, for its candidates.
     fn place_input_method(&self) {
         let (x, y, width, height) = self.cursor_cell();
-        self.input_method.set_cursor_location(&gdk::Rectangle::new(x, y, width, height));
+        let (left, top) = screen_offset(&self.screen);
+        self.input_method.set_cursor_location(&gdk::Rectangle::new(x - left as i32, y - top as i32, width, height));
     }
 
     fn cursor_cell(&self) -> (i32, i32, i32, i32) {

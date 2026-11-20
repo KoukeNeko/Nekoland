@@ -12,7 +12,7 @@ use vte4::prelude::*;
 
 use super::{
     config,
-    hint_mode::{screen_font, screen_offset},
+    hint_mode::screen_font,
     markup::html_to_markup,
     screen::Painter,
     screen_rows,
@@ -80,7 +80,6 @@ fn visible_runs(screen: &vte4::Terminal) -> Vec<Placed> {
     let (cursor_column, cursor_row) = screen.cursor_position();
     let cursor_column = usize::try_from(cursor_column).unwrap_or(usize::MAX);
     let (cell_width, cell_height) = (screen.char_width() as f32, screen.char_height() as f32);
-    let (left, top) = screen_offset(screen);
     let mut placed = Vec::new();
     for (index, row) in (first..first + screen.row_count()).enumerate() {
         for run in runs(&row_text(screen, row)) {
@@ -88,8 +87,8 @@ fn visible_runs(screen: &vte4::Terminal) -> Vec<Placed> {
                 continue;
             }
             let area = graphene::Rect::new(
-                left as f32 + run.start as f32 * cell_width,
-                top as f32 + index as f32 * cell_height,
+                run.start as f32 * cell_width,
+                index as f32 * cell_height,
                 (run.end - run.start) as f32 * cell_width,
                 cell_height,
             );
