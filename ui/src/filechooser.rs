@@ -1473,6 +1473,11 @@ impl Dialog {
         let mut locations = Vec::new();
         let mut first_of_section = Vec::new();
         for (title, section) in places() {
+            // A Hamasen server not mounted has no folder yet to choose in.
+            let section: Vec<_> = section
+                .into_iter()
+                .filter(|place| place.hamasen.is_none() || place.mount.is_some())
+                .collect();
             if section.is_empty() {
                 continue;
             }
@@ -1529,6 +1534,9 @@ impl Dialog {
         let mut labels: Vec<String> = Vec::new();
         for (_, section) in places() {
             for place in section {
+                if place.hamasen.is_some() && place.mount.is_none() {
+                    continue;
+                }
                 if let Location::Folder(file) = place.location {
                     files.push(file);
                     labels.push(place.label);

@@ -11,7 +11,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::{
-    browse::{places, Location, EDGE, GAP},
+    browse::{self, is_server, places, Location, EDGE, GAP},
     ops,
     pane::{trash, Where},
     tags, Window,
@@ -22,6 +22,8 @@ enum Target {
     Go(Where),
     /// A drive not mounted yet: clicking it mounts it.
     Volume(gio::Volume),
+    /// A Hamasen server not mounted yet, by id and name: clicking has Hamasen mount it.
+    Hamasen(String, String),
 }
 
 pub struct Sidebar {
@@ -36,6 +38,8 @@ pub struct Sidebar {
     volumes: gio::VolumeMonitor,
     refilling: Cell<bool>,
     rings: RefCell<Vec<Ring>>,
+    /// The Hamasen server clicked while not mounted, opened once it is.
+    opening: RefCell<Option<String>>,
 }
 
 /// A drive's ring, which takes its eject button's place while something is copied or moved
@@ -72,6 +76,7 @@ impl Sidebar {
             volumes: gio::VolumeMonitor::get(),
             refilling: Cell::new(false),
             rings: RefCell::new(Vec::new()),
+            opening: RefCell::new(None),
         });
         sidebar
             .list
@@ -179,10 +184,34 @@ impl Sidebar {
                         }
                     }
                 }
+                Some("Hamasen") => {
+                    if !section.is_empty() {
+                        headers.push((targets.len() as i32, "Hamasen"));
+                    }
+                    for place in section {
+                        let (Location::Folder(file), Some(id)) = (place.location, place.hamasen) else {
+                            continue;
+                        };
+                        if place.mount.is_none() {
+                            self.add_plain_row(&place.icon, &place.label);
+                            targets.push(Target::Hamasen(id, place.label));
+                            continue;
+                        }
+                        let to = Where::Folder(file);
+                        self.add_row(&place.icon, &place.label, place.mount.as_ref(), &to);
+                        if self.opening.borrow().as_ref() == Some(&id) {
+                            self.opening.take();
+                            if let Some(pane) = self.win.upgrade().and_then(|w| w.pane()) {
+                                pane.go(to.clone(), true);
+                            }
+                        }
+                        targets.push(Target::Go(to));
+                    }
+                }
                 Some(_) => {
                     let (local, remote): (Vec<_>, Vec<_>) = section
                         .into_iter()
-                        .partition(|place| place.mount.as_ref().is_some_and(|m| m.root().is_native()));
+                        .partition(|place| place.mount.as_ref().is_some_and(|m| !is_server(m)));
                     // Drives plugged in but not mounted yet.
                     let unmounted: Vec<gio::Volume> = gio::VolumeMonitor::get()
                         .volumes()
@@ -379,6 +408,11 @@ impl Sidebar {
                     pane.focus_content();
                 }
             }
+            Target::Hamasen(id, name) => {
+                if hamasen(&win, "mount", &id, &format!("無法掛載「{name}」")) {
+                    self.opening.replace(Some(id));
+                }
+            }
             Target::Volume(volume) => {
                 let operation = gtk::MountOperation::new(Some(&win.window));
                 let weak = Rc::downgrade(&win);
@@ -479,8 +513,46 @@ fn row_label(text: &str) -> gtk::Label {
         .build()
 }
 
+/// Has Hamasen mount or unmount one of its servers: the one running, or one started to.
+/// False when there is no Hamasen to ask, which is said.
+fn hamasen(win: &Window, action: &str, id: &str, failed: &str) -> bool {
+    let argv = gio::DesktopAppInfo::new("app.hamasen.Hamasen.desktop")
+        .and_then(|app| app.commandline())
+        .and_then(|line| glib::shell_parse_argv(line).ok());
+    let Some(mut argv) = argv else {
+        win.alert(failed, Some("沒有安裝 Hamasen。"));
+        return false;
+    };
+    // The desktop file's field codes, for files and URLs it is not given.
+    argv.retain(|arg| !arg.to_string_lossy().starts_with('%'));
+    argv.push(format!("--{action}={id}").into());
+    let argv: Vec<&std::ffi::OsStr> = argv.iter().map(|arg| arg.as_os_str()).collect();
+    match gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+        Ok(_) => true,
+        Err(err) => {
+            win.alert(failed, Some(err.message()));
+            false
+        }
+    }
+}
+
 fn eject_mount(win: &Weak<Window>, mount: &gio::Mount) {
     let Some(window) = win.upgrade() else { return };
+    // Hamasen unmounts its own servers: it waits for uploads still on their way, and takes
+    // its bookmark off.
+    let all = [mount.clone()];
+    if let Some(server) = browse::hamasen_servers()
+        .into_iter()
+        .find(|s| s.mount(&all).is_some())
+    {
+        hamasen(
+            &window,
+            "unmount",
+            &server.id,
+            &format!("無法退出「{}」", server.name),
+        );
+        return;
+    }
     let operation = gtk::MountOperation::new(Some(&window.window));
     let (win, name) = (win.clone(), mount.name());
     let done = move |result: Result<(), glib::Error>| {
