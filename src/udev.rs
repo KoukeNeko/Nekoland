@@ -48,7 +48,11 @@ use smithay::{
         rustix::fs::OFlags,
     },
     utils::{DeviceFd, IsAlive, Physical, Point},
-    wayland::{compositor::with_states, dmabuf::DmabufFeedbackBuilder},
+    wayland::{
+        compositor::with_states,
+        dmabuf::DmabufFeedbackBuilder,
+        drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
+    },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
@@ -118,6 +122,9 @@ pub fn init_udev(
         OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    if supports_syncobj_eventfd(&fd) {
+        state.syncobj_state = Some(DrmSyncobjState::new::<Nekoland>(&data.display_handle, fd.clone()));
+    }
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd)?;
 

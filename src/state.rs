@@ -138,6 +138,8 @@ pub struct Nekoland {
     pub dmabuf_state: DmabufState,
     /// Hands a client's GPU buffer to the renderer; set by a backend that takes them.
     pub dmabuf_import: Option<DmabufImport>,
+    /// Explicit sync for clients' GPU buffers; set by a backend whose GPU can wait on it.
+    pub syncobj_state: Option<smithay::wayland::drm_syncobj::DrmSyncobjState>,
     /// Switches to another virtual terminal; set by the backend that owns a session.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
     pub xwayland_shell_state: XWaylandShellState,
@@ -264,6 +266,7 @@ impl Nekoland {
             foreign_toplevels,
             dmabuf_state: DmabufState::new(),
             dmabuf_import: None,
+            syncobj_state: None,
             switch_vt: None,
             xwayland_shell_state,
             xwm: None,
