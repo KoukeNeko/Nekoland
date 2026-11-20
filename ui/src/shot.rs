@@ -1066,6 +1066,8 @@ mod tests {
                     *out.borrow_mut() = Some(Err("the window never showed".into()));
                     return app.quit();
                 };
+                // Past the window's opening animation, as a person choosing the area would be.
+                glib::timeout_future(Duration::from_millis(600)).await;
                 // Down a little at a time, as a wheel does, until the end.
                 let adj = scroller.vadjustment();
                 let moving = adj.clone();
