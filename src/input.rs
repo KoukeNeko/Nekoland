@@ -78,6 +78,10 @@ impl StickyKeys {
 
 impl Nekoland {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // What it changes is drawn once this round of events is through.
+        if let Some(redraw) = &self.redraw {
+            redraw.ping();
+        }
         self.last_input = std::time::Instant::now();
         self.screens_off = false;
         let locked = self.lock.is_some();

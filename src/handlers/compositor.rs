@@ -73,6 +73,9 @@ impl CompositorHandler for Nekoland {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        if let Some(redraw) = &self.redraw {
+            redraw.ping();
+        }
         // A drag icon moves its picture by the offset it commits, as GTK does to put its
         // hotspot under the pointer.
         if let Some((_, offset)) = self.dnd_icon.as_mut().filter(|(icon, _)| icon == surface) {

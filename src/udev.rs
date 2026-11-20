@@ -40,6 +40,7 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Scale},
     reexports::{
         calloop::{
+            ping::make_ping,
             timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle,
         },
@@ -82,6 +83,10 @@ struct Udev {
     glass: HashMap<crtc::Handle, Glass>,
     /// The outputs turned off while the screens are, to be drawn afresh when they come back.
     dark: HashSet<crtc::Handle>,
+    /// The outputs with a frame on its way to the display, drawn next at its vblank.
+    pending: HashSet<crtc::Handle>,
+    /// The outputs with a timer set to look again for something new to draw.
+    retrying: HashSet<crtc::Handle>,
     /// The outputs whose gamma can be set, by the length of their ramps.
     gamma: HashMap<crtc::Handle, u32>,
     /// The red, green and blue gains each output's ramps were last set to, and whether the
@@ -225,6 +230,8 @@ pub fn init_udev(
     state.night_shift_available = !gamma.is_empty();
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
         dark: HashSet::new(),
+        pending: HashSet::new(),
+        retrying: HashSet::new(),
         displays,
         applied: applied_settings(&state.config),
         gamma,
@@ -294,6 +301,7 @@ pub fn init_udev(
         let loop_handle = handle.clone();
         handle.insert_source(drm_notifier, move |event, _, data| match event {
             DrmEvent::VBlank(crtc) => {
+                udev.borrow_mut().pending.remove(&crtc);
                 if let Some((surface, _)) = udev.borrow().surfaces.get(&crtc) {
                     if let Err(err) = surface.frame_submitted() {
                         warn!("frame_submitted: {err}");
@@ -324,6 +332,7 @@ pub fn init_udev(
                 // Whoever had the display meanwhile may have left ramps of their own.
                 backend.ramps.clear();
                 backend.filters.clear();
+                backend.pending.clear();
                 drop(backend);
                 render_all(&udev, data, &loop_handle);
             }
@@ -331,6 +340,16 @@ pub fn init_udev(
     }
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+
+    // Input and clients' new frames draw at once, rather than when the output is next looked
+    // at, up to `IDLE_REDRAW` later: two refreshes at 120 Hz before anything reacts.
+    {
+        let udev = udev.clone();
+        let loop_handle = handle.clone();
+        let (ping, source) = make_ping()?;
+        handle.insert_source(source, move |_, _, data| render_all(&udev, data, &loop_handle))?;
+        data.state.redraw = Some(ping);
+    }
 
     let loop_handle = handle.clone();
     handle.insert_idle(move |data| render_all(&udev, data, &loop_handle));
@@ -360,6 +379,10 @@ fn render(
     data: &mut CalloopData,
     handle: &LoopHandle<'static, CalloopData>,
 ) {
+    // Its vblank draws it next.
+    if udev.borrow().pending.contains(&crtc) {
+        return;
+    }
     let state = &mut data.state;
     state.tick_overview();
     state.tick_motion();
@@ -461,20 +484,29 @@ fn render(
         })
     };
     let output = output.clone();
+    let retry = if queued {
+        guard.pending.insert(crtc);
+        false
+    } else {
+        guard.retrying.insert(crtc)
+    };
     drop(guard);
     if queued {
         state.count_frame();
     }
 
-    if !queued {
-        let udev = udev.clone();
+    // One timer an output at most, however often it is drawn in between.
+    if retry {
+        let timed = udev.clone();
         let loop_handle = handle.clone();
-        let retry = Timer::from_duration(IDLE_REDRAW);
-        if let Err(err) = handle.insert_source(retry, move |_, _, data| {
-            render(&udev, crtc, data, &loop_handle);
+        let timer = Timer::from_duration(IDLE_REDRAW);
+        if let Err(err) = handle.insert_source(timer, move |_, _, data| {
+            timed.borrow_mut().retrying.remove(&crtc);
+            render(&timed, crtc, data, &loop_handle);
             TimeoutAction::Drop
         }) {
             warn!("could not schedule a redraw: {err}");
+            udev.borrow_mut().retrying.remove(&crtc);
         }
     }
 

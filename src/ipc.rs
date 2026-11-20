@@ -162,6 +162,9 @@ fn task_windows(state: &crate::Nekoland) -> String {
 
 /// Does what a message asks; a question gets its answer back.
 fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
+    if let Some(redraw) = &state.redraw {
+        redraw.ping();
+    }
     match message {
         // The configuration changed: the settings application wrote it.
         "reload" => state.reload_config(),
