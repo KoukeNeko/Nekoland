@@ -318,9 +318,7 @@ fn add_app_actions(app: &adw::Application) {
 
     let preferences = gio::SimpleAction::new("preferences", None);
     preferences.connect_activate(|_, _| {
-        if let Some(window) = window::front_window() {
-            window.open_settings(settings::Section::Appearance, None);
-        }
+        settings::open(settings::Section::Appearance, None);
     });
     app.add_action(&preferences);
 
@@ -330,17 +328,13 @@ fn add_app_actions(app: &adw::Application) {
         let place = parameter.and_then(|parameter| parameter.str()).unwrap_or_default();
         let (id, detail) = place.split_once(':').map_or((place, None), |(id, detail)| (id, Some(detail)));
         let section = settings::Section::from_id(id).unwrap_or(settings::Section::Appearance);
-        if let Some(window) = window::front_window() {
-            window.open_settings(section, detail);
-        }
+        settings::open(section, detail);
     });
     app.add_action(&section);
 
     let about = gio::SimpleAction::new("about", None);
     about.connect_activate(|_, _| {
-        if let Some(window) = window::front_window() {
-            window.open_settings(settings::Section::About, None);
-        }
+        settings::open(settings::Section::About, None);
     });
     app.add_action(&about);
 

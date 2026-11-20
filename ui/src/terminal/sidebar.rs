@@ -24,8 +24,6 @@ const CARDS_WIDTH: f64 = 280.0;
 const REPO_WIDTH: f64 = 240.0;
 const ICONS_WIDTH: f64 = 52.0;
 const TERMINAL_ICON: &str = "utilities-terminal-symbolic";
-const SETTINGS_ICON: &str = "emblem-system-symbolic";
-const SETTINGS_TITLE: &str = "設定";
 const CLOSE_ICON: &str = "window-close-symbolic";
 /// The heading of the tabs that are in no repository, listed after the repositories.
 const LOOSE_TABS: &str = "其他";
@@ -34,63 +32,56 @@ const PEEK_LINES: i32 = 2;
 /// How wide the meter of the context is on a line under a repository.
 const REPO_METER_WIDTH: i32 = 28;
 
-/// A tab as the sidebar lists it: a terminal, or the settings, which has no pane.
+/// A tab as the sidebar lists it.
 pub struct Entry {
     pub tab: adw::TabPage,
-    pub page: Option<Rc<Page>>,
+    pub page: Rc<Page>,
 }
 
 impl Entry {
     fn status(&self) -> Status {
-        self.page.as_ref().map_or(Status::Idle, |page| page.status())
+        self.page.status()
     }
 
     pub fn title(&self) -> String {
-        self.page
-            .as_ref()
-            .map_or_else(|| tr(SETTINGS_TITLE).to_string(), |page| page.title())
+        self.page.title()
     }
 
     fn place(&self) -> String {
-        self.page.as_ref().map(|page| page.place_beside(&self.title())).unwrap_or_default()
+        self.page.place_beside(&self.title())
     }
 
     fn message(&self) -> Option<String> {
-        self.page.as_ref().and_then(|page| page.message())
+        self.page.message()
     }
 
     fn icon(&self) -> &'static str {
-        if self.page.is_some() {
-            TERMINAL_ICON
-        } else {
-            SETTINGS_ICON
-        }
+        TERMINAL_ICON
     }
 
     fn repository(&self) -> Option<String> {
-        Some(self.page.as_ref()?.repository()?.name)
+        Some(self.page.repository()?.name)
     }
 
     /// Under its repository it is known by its branch.
     fn branch_or_title(&self) -> String {
         self.page
-            .as_ref()
-            .and_then(|page| page.repository())
+            .repository()
             .and_then(|repository| repository.branch)
             .unwrap_or_else(|| self.title())
     }
 
     fn colour(&self) -> Option<&'static str> {
-        self.page.as_ref()?.colour.get()
+        self.page.colour.get()
     }
 
     fn usage(&self) -> Option<Usage> {
-        self.page.as_ref()?.usage()
+        self.page.usage()
     }
 
     /// Its pull request and ports, on a line of their own.
     fn badges(&self) -> Option<gtk::FlowBox> {
-        badges::row_line(&self.page.as_ref()?.badges())
+        badges::row_line(&self.page.badges())
     }
 }
 
@@ -237,7 +228,7 @@ fn name(entry: &Entry, text: &str) -> gtk::Box {
     }
     let line = gtk::Box::builder().spacing(6).hexpand(true).build();
     line.append(&label);
-    let running = entry.page.as_ref().and_then(|page| page.subagents()).map_or(0, |subagents| subagents.running());
+    let running = entry.page.subagents().map_or(0, |subagents| subagents.running());
     if running > 0 {
         line.append(&subagents_card::mark(running));
     }
@@ -302,7 +293,7 @@ fn activity_line(entry: &Entry) -> gtk::Label {
 }
 
 fn panes_badge(entry: &Entry) -> Option<gtk::Label> {
-    let count = entry.page.as_ref()?.pane_count();
+    let count = entry.page.pane_count();
     (count > 1).then(|| {
         gtk::Label::builder()
             .label(trf("{0} 窗格", &[&count]))

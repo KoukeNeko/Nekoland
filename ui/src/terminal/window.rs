@@ -1,6 +1,6 @@
 //! A terminal window laid out as Nekominal's: a title bar across it with the tabs on it or the
 //! name of the tab in front, a sidebar listing the tabs in the layout and style the settings
-//! choose, and a find bar. The settings open as a tab of their own. Every window and tab is
+//! choose, and a find bar. Every window and tab is
 //! kept here, so that the count, the next waiting tab and a notification's tab are found across
 //! windows, and a tab dragged out keeps its panes.
 
@@ -25,7 +25,7 @@ use super::{
     push::{self, Happening},
     scheme_import,
     restore::{self, SavedTab, SavedWindow},
-    settings::{self, Section, SettingsPage},
+    settings,
     sidebar::{self, Entry},
     subagent_drawer::Drawer,
     subagents_card::{self, Target},
@@ -35,8 +35,6 @@ use super::{
 
 const DEFAULT_WIDTH: i32 = 1180;
 const DEFAULT_HEIGHT: i32 = 760;
-const SETTINGS_ICON: &str = "emblem-system-symbolic";
-const SETTINGS_TITLE: &str = "設定";
 const FIND_PLACEHOLDER: &str = "尋找";
 /// The classes of the sidebar's list, one for each way of listing the tabs.
 const LIST_CLASSES: [&str; 4] = ["term-list", "term-cards", "term-repos", "term-icons"];
@@ -85,8 +83,6 @@ pub struct Window {
     search: gtk::SearchEntry,
     /// The tab whose menu is open, which the menu's commands act on.
     menu_tab: RefCell<Option<adw::TabPage>>,
-    /// The settings, at most one tab a window.
-    settings: RefCell<Option<(adw::TabPage, Rc<SettingsPage>)>>,
     /// Set once the user agreed to end what runs in the window.
     closing: Cell<bool>,
     /// Set while tabs close without asking, as a worktree's do once its removal was agreed to.
@@ -153,7 +149,6 @@ impl Window {
             search_bar,
             search,
             menu_tab: RefCell::default(),
-            settings: RefCell::default(),
             closing: Cell::new(false),
             quiet_close: Cell::new(false),
             palette,
@@ -229,41 +224,6 @@ impl Window {
             .collect()
     }
 
-    /// Brings up the settings tab at `section`, and in it what `detail` names, opening the tab after the one in front
-    /// when there is none.
-    pub fn open_settings(&self, section: Section, detail: Option<&str>) {
-        if let Some((tab, page)) = self.settings.borrow().as_ref() {
-            page.show_section(section);
-            if let Some(detail) = detail {
-                page.open_detail(detail);
-            }
-            self.tab_view.set_selected_page(tab);
-            return;
-        }
-        let page = SettingsPage::new(section);
-        if let Some(detail) = detail {
-            page.open_detail(detail);
-        }
-        let tab = match self.tab_view.selected_page() {
-            Some(front) => self
-                .tab_view
-                .insert(&page.widget, self.tab_view.page_position(&front) + 1),
-            None => self.tab_view.append(&page.widget),
-        };
-        tab.set_title(tr(SETTINGS_TITLE));
-        tab.set_icon(Some(&gio::ThemedIcon::new(SETTINGS_ICON)));
-        self.settings.replace(Some((tab.clone(), page)));
-        self.tab_view.set_selected_page(&tab);
-        refresh_soon();
-    }
-
-    fn is_settings(&self, tab: &adw::TabPage) -> bool {
-        self.settings
-            .borrow()
-            .as_ref()
-            .is_some_and(|(settings, _)| settings == tab)
-    }
-
     fn connect_tabs(self: &Rc<Self>) {
         let view = &self.tab_view;
         view.connect_close_page(glib::clone!(
@@ -303,17 +263,7 @@ impl Window {
             refresh_soon();
         });
         view.connect_page_attached(|_, _, _| refresh_soon());
-        // The settings dragged into another window are that window's no longer.
-        view.connect_page_detached(glib::clone!(
-            #[weak(rename_to = this)]
-            self,
-            move |_, tab, _| {
-                if this.is_settings(tab) {
-                    this.settings.take();
-                }
-                refresh_soon();
-            }
-        ));
+        view.connect_page_detached(|_, _, _| refresh_soon());
         view.connect_n_pages_notify(glib::clone!(
             #[weak(rename_to = this)]
             self,
@@ -334,9 +284,6 @@ impl Window {
 
     fn close_tab(&self, view: &adw::TabView, tab: &adw::TabPage) {
         let Some(page) = page_of(tab) else {
-            if self.is_settings(tab) {
-                self.settings.take();
-            }
             view.close_page_finish(tab, true);
             refresh_soon();
             return;
@@ -760,10 +707,6 @@ impl Window {
         self.titlebar.relabel();
         self.search.set_placeholder_text(Some(tr(FIND_PLACEHOLDER)));
         self.tab_view.set_menu_model(Some(&tab_menu()));
-        if let Some((tab, settings)) = self.settings.borrow().as_ref() {
-            tab.set_title(tr(SETTINGS_TITLE));
-            settings.relabel();
-        }
     }
 
     /// The tabs in order, with their pages.
@@ -781,12 +724,9 @@ impl Window {
             .is_some_and(|tab| self.pages().iter().any(|(listed, _)| listed == tab))
     }
 
-    /// Every tab in order: the terminals with their pages, the settings without.
+    /// Every tab in order, with its page.
     fn entries(&self) -> Vec<Entry> {
-        (0..self.tab_view.n_pages())
-            .map(|index| self.tab_view.nth_page(index))
-            .map(|tab| Entry { page: page_of(&tab), tab })
-            .collect()
+        self.pages().into_iter().map(|(tab, page)| Entry { tab, page }).collect()
     }
 
     fn refresh(&self) {
@@ -820,7 +760,7 @@ impl Window {
             .and_then(|tab| entries.iter().find(|entry| entry.tab == *tab));
         let title = front.map(Entry::title).unwrap_or_default();
         self.titlebar
-            .show_current(front.and_then(|entry| entry.page.as_deref()), &title);
+            .show_current(front.map(|entry| entry.page.as_ref()), &title);
         if front.is_some() {
             self.window.set_title(Some(&title));
         }
@@ -943,12 +883,10 @@ fn import_message(outcome: Result<Vec<String>, String>) -> String {
     }
 }
 
-/// Shows on every settings tab what changed outside it.
+/// Shows on the settings what changed outside them.
 pub fn refresh_settings() {
-    for window in all_windows() {
-        if let Some((_, settings)) = window.settings.borrow().as_ref() {
-            settings.refresh();
-        }
+    if let Some(settings) = settings::open_page() {
+        settings.refresh();
     }
 }
 
@@ -1100,10 +1038,8 @@ pub fn apply_config() {
         }
         page.refresh_tab();
     }
-    for window in WINDOWS.with_borrow(Clone::clone) {
-        if let Some((_, settings)) = window.settings.borrow().as_ref() {
-            settings.show_applies();
-        }
+    if let Some(settings) = settings::open_page() {
+        settings.show_applies();
     }
     refresh_soon();
 }
@@ -1118,6 +1054,7 @@ fn relabel_all() {
     for window in all_windows() {
         window.relabel();
     }
+    settings::relabel();
     if let Some(app) = gio::Application::default().and_downcast::<gtk::Application>() {
         app.set_menubar(Some(&crate::menubar()));
     }
@@ -1173,18 +1110,14 @@ pub fn open_first(app: &adw::Application) {
     }
 }
 
-/// The last lines that are not blank of the terminal the settings were opened from: the tab before the one in front of
-/// the window in front, or its first; for the form of a trigger to match its pattern against.
+/// The last lines that are not blank of the terminal in front of the window in front, for the form of a trigger to
+/// match its pattern against.
 pub fn sample_lines(count: usize) -> Vec<String> {
     let Some(window) = front_window() else {
         return Vec::new();
     };
-    let pages = window.pages();
-    let front = window.tab_view.selected_page();
-    let before = front
-        .map(|front| window.tab_view.page_position(&front))
-        .and_then(|position| pages.iter().rev().find(|(tab, _)| window.tab_view.page_position(tab) < position));
-    let Some(pane) = before.or(pages.first()).and_then(|(_, page)| page.focused_pane()) else {
+    let front = window.tab_view.selected_page().as_ref().and_then(page_of);
+    let Some(pane) = front.or_else(|| window.pages().into_iter().next().map(|(_, page)| page)).and_then(|page| page.focused_pane()) else {
         return Vec::new();
     };
     let text = pane.screen.text_format(vte4::Format::Text).map(|text| text.to_string()).unwrap_or_default();

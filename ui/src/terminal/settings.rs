@@ -1,4 +1,4 @@
-//! The settings as a tab of the window, laid out as Nekominal's page: a column of the sections at the left with the
+//! The settings in a window of their own, one for the app, laid out as Nekominal's page: a column of the sections at the left with the
 //! search on top and the settings file at the bottom, and the section's title over its items at the right. A search
 //! shows what it finds in every section, under the name of each. Each change is saved and shown at once.
 
@@ -24,9 +24,67 @@ use super::{
 
 const DELETE_ICON: &str = "user-trash-symbolic";
 
+const TITLE: &str = "設定";
+const WINDOW_WIDTH: i32 = 960;
+const WINDOW_HEIGHT: i32 = 720;
+
 thread_local! {
     /// The colours of the schemes' tiles, written again when a scheme comes or goes.
     static SCHEME_CSS: gtk::CssProvider = gtk::CssProvider::new();
+    /// The settings window while it is open.
+    static WINDOW: RefCell<Option<(adw::ApplicationWindow, Rc<SettingsPage>)>> = RefCell::default();
+}
+
+/// Brings up the settings window at `section`, and in it what `detail` names, opening it when it is not open.
+pub fn open(section: Section, detail: Option<&str>) {
+    let open = WINDOW.with_borrow(|open| open.clone());
+    let (window, page) = match open {
+        Some((window, page)) => {
+            page.show_section(section);
+            (window, page)
+        }
+        None => {
+            let Some(app) = gio::Application::default().and_downcast::<gtk::Application>() else {
+                return;
+            };
+            let page = SettingsPage::new(section);
+            let content = adw::ToolbarView::new();
+            content.add_top_bar(&adw::HeaderBar::new());
+            content.set_content(Some(&page.widget));
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .title(tr(TITLE))
+                .default_width(WINDOW_WIDTH)
+                .default_height(WINDOW_HEIGHT)
+                .content(&content)
+                .build();
+            window.connect_close_request(|_| {
+                WINDOW.take();
+                glib::Propagation::Proceed
+            });
+            WINDOW.replace(Some((window.clone(), page.clone())));
+            (window, page)
+        }
+    };
+    if let Some(detail) = detail {
+        page.open_detail(detail);
+    }
+    window.present();
+}
+
+/// The settings page while its window is open.
+pub fn open_page() -> Option<Rc<SettingsPage>> {
+    WINDOW.with_borrow(|open| open.as_ref().map(|(_, page)| page.clone()))
+}
+
+/// Names the window and everything on its page again in the language now chosen.
+pub fn relabel() {
+    WINDOW.with_borrow(|open| {
+        if let Some((window, page)) = open {
+            window.set_title(Some(tr(TITLE)));
+            page.relabel();
+        }
+    });
 }
 
 /// Gives the display the tiles' colours.

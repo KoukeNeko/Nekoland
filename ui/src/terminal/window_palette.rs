@@ -102,7 +102,7 @@ impl Window {
         settings::searchable()
             .into_iter()
             .map(|(label, section)| {
-                Item::new(trf("設定：{0}", &[&tr(label)]), "", self.on_this(move |this| this.open_settings(section, None)))
+                Item::new(trf("設定：{0}", &[&tr(label)]), "", self.on_this(move |_| settings::open(section, None)))
             })
             .collect()
     }
