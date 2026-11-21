@@ -13,7 +13,7 @@ use smithay::{
 use crate::{
     clockmenu::{when_text, CALENDAR_COMMAND},
     config,
-    control::{draw_panel, ease_out, OPEN_TIME},
+    control::{draw_panel, ease_out, show_line, OPEN_TIME},
     glass::Tier,
     menubar::{colors, font, show_text, text_size, Overlay, MENU_BAR_HEIGHT, MENU_RADIUS},
     system::{self, Player},
@@ -40,18 +40,6 @@ pub struct Widgets {
     /// Where the agenda is in the panel, for a click there to open the calendar.
     agenda: Option<Rectangle<i32, Logical>>,
     opened: Instant,
-}
-
-/// Cuts `text` to `room` pixels wide, with an ellipsis.
-fn fit(text: &str, font: &pango::FontDescription, room: i32) -> String {
-    if text_size(text, font).0 <= room {
-        return text.to_string();
-    }
-    let mut cut = text.to_string();
-    while !cut.is_empty() && text_size(&format!("{cut}…"), font).0 > room {
-        cut.pop();
-    }
-    cut + "…"
 }
 
 impl Nekoland {
@@ -179,15 +167,8 @@ impl Nekoland {
             let y = center(agenda_top, row as i32 + 1);
             let (when_width, _) = text_size(when, &body);
             show_text(&cr, when, &body, x, y, ink);
-            let shown = fit(what, &body, room - when_width - 12);
-            show_text(
-                &cr,
-                &shown,
-                &font("500", 10.5),
-                x + f64::from(when_width + 12),
-                y,
-                ink,
-            );
+            let at = when_width + 12;
+            show_line(&cr, what, &font("500", 10.5), (x + f64::from(at), y, f64::from(room - at)), ink);
         }
         if let Some(player) = &widgets.player {
             heading(
@@ -198,20 +179,13 @@ impl Nekoland {
                     "已暫停"
                 },
             );
-            show_text(
-                &cr,
-                &fit(&player.title, &font("500", 10.5), room),
-                &font("500", 10.5),
-                x,
-                center(player_top, 1),
-                ink,
-            );
+            show_line(&cr, &player.title, &font("500", 10.5), (x, center(player_top, 1), f64::from(room)), ink);
             let by = if player.artist.is_empty() {
                 &player.app
             } else {
                 &player.artist
             };
-            show_text(&cr, &fit(by, &body, room), &body, x, center(player_top, 2), colors.ink_3);
+            show_line(&cr, by, &body, (x, center(player_top, 2), f64::from(room)), colors.ink_3);
         }
         if let Some(battery) = battery {
             heading(battery_top, "電池");

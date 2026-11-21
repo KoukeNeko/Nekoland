@@ -13,7 +13,7 @@ use smithay::{
 };
 
 use crate::{
-    control::{draw_panel, ease_out, OPEN_TIME},
+    control::{draw_panel, ease_out, show_line, OPEN_TIME},
     menubar::{colors, font, show_text, text_size, Overlay, MENU_RADIUS},
     glass::Tier,
     text::{self, Picture},
@@ -251,17 +251,11 @@ impl Nekoland {
         }
         // The name of the one chosen, under the row, cut to the panel's width.
         let label_font = font("500", 10.5);
-        let mut label = shown[chosen].2.clone();
-        let room = width - 2 * PADDING;
-        if text_size(&label, &label_font).0 > room {
-            while !label.is_empty() && text_size(&format!("{label}…"), &label_font).0 > room {
-                label.pop();
-            }
-            label.push('…');
-        }
-        let (tw, _) = text_size(&label, &label_font);
+        let label = &shown[chosen].2;
+        let tw = text_size(label, &label_font).0.min(width - 2 * PADDING);
         let center_y = f64::from(PADDING + CELL_H + LABEL_HEIGHT / 2);
-        show_text(&cr, &label, &label_font, f64::from((width - tw) / 2), center_y, colors.ink);
+        let x = f64::from((width - tw) / 2);
+        show_line(&cr, label, &label_font, (x, center_y, f64::from(width - PADDING) - x), colors.ink);
         drop(cr);
         switcher.first = first;
         switcher.picture = text::picture(surface);
