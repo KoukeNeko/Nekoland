@@ -90,6 +90,8 @@ struct Udev {
     pending: HashSet<crtc::Handle>,
     /// The outputs with a timer set to look again for something new to draw.
     retrying: HashSet<crtc::Handle>,
+    /// The outputs whose frame on its way was drawn locked, for sleep to wait for.
+    locked_pending: HashSet<crtc::Handle>,
     /// The outputs whose gamma can be set, by the length of their ramps.
     gamma: HashMap<crtc::Handle, u32>,
     /// The red, green and blue gains each output's ramps were last set to, and whether the
@@ -161,6 +163,7 @@ pub fn init_udev(
         dark: HashSet::new(),
         pending: HashSet::new(),
         retrying: HashSet::new(),
+        locked_pending: HashSet::new(),
         displays: HashMap::new(),
         globals: HashMap::new(),
         scanner: DrmScanner::new(),
@@ -229,6 +232,12 @@ pub fn init_udev(
         handle.insert_source(drm_notifier, move |event, _, data| match event {
             DrmEvent::VBlank(crtc) => {
                 udev.borrow_mut().pending.remove(&crtc);
+                if udev.borrow_mut().locked_pending.remove(&crtc) {
+                    let output = udev.borrow().surfaces.get(&crtc).map(|(_, output)| output.clone());
+                    if let Some(output) = output {
+                        data.state.locked_frame_shown(&output);
+                    }
+                }
                 if let Some((surface, _)) = udev.borrow().surfaces.get(&crtc) {
                     if let Err(err) = surface.frame_submitted() {
                         warn!("frame_submitted: {err}");
@@ -429,6 +438,9 @@ fn render(
     let output = output.clone();
     let retry = if queued {
         guard.pending.insert(crtc);
+        if state.unshown_locked.is_some() && state.lock.is_some() {
+            guard.locked_pending.insert(crtc);
+        }
         false
     } else {
         guard.retrying.insert(crtc)

@@ -70,6 +70,8 @@ pub struct Nekoland {
     pub locker_started: Option<std::time::Instant>,
     /// When sleep was asked for, to sleep once a locker has locked the screen.
     pub sleep_asked: Option<std::time::Instant>,
+    /// The displays yet to show a locked frame before the computer sleeps.
+    pub unshown_locked: Option<std::collections::HashSet<String>>,
     pub last_input: std::time::Instant,
     /// Whether the displays are turned off, until there is input.
     pub screens_off: bool,
@@ -237,6 +239,7 @@ impl Nekoland {
             lock: None,
             locker_started: None,
             sleep_asked: None,
+            unshown_locked: None,
             last_input: start_time,
             screens_off: false,
             remote: std::env::var_os("XRDP_SESSION").is_some(),

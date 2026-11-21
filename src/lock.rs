@@ -44,6 +44,8 @@ const LOCKER_START: Duration = Duration::from_secs(3);
 /// How long sleep waits for a locker to lock: one that locks later is not followed by sleep,
 /// which would come as a surprise then.
 const SLEEP_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// The longest sleep waits for every display to show the lock: one turned off shows nothing.
+const LOCKED_FRAME_WAIT: Duration = Duration::from_secs(1);
 
 pub struct Lock {
     /// The locker's hold on the session.
@@ -117,6 +119,25 @@ pub fn tell_locker(app: &str, said: &str) {
 impl Nekoland {
     /// Starts the locker, unless one holds the screen already. swaylock is given the
     /// wallpaper, as the desktop has it; nekoland-lock reads it itself.
+    /// A frame drawn while locked has reached `output`; the computer sleeps once every
+    /// display has one.
+    pub fn locked_frame_shown(&mut self, output: &Output) {
+        let Some(unshown) = self.unshown_locked.as_mut() else {
+            return;
+        };
+        unshown.remove(&output.name());
+        if unshown.is_empty() {
+            self.suspend_once_locked();
+        }
+    }
+
+    /// Sleeps, once, for the sleep that waited for the lock to be shown.
+    fn suspend_once_locked(&mut self) {
+        if self.unshown_locked.take().is_some() {
+            config::spawn("systemctl suspend");
+        }
+    }
+
     pub fn lock_screen(&mut self) {
         // One started a moment ago is still coming up.
         let starting = self.locker_started.is_some_and(|at| at.elapsed() < LOCKER_START);
@@ -321,14 +342,24 @@ impl SessionLockHandler for Nekoland {
         // shortcut: confirmed before the next frame, the first without windows, is shown;
         // wait for that frame's presentation if a locker relies on it.
         confirmation.lock();
-        // Sleep waits for the lock, so that the computer never wakes unlocked.
+        // Sleep waits for the lock to be on the displays too, or they would wake showing the
+        // windows until they are next drawn.
         if self.sleep_asked.take().is_some_and(|at| at.elapsed() < SLEEP_LOCK_WAIT) {
-            config::spawn("systemctl suspend");
+            self.unshown_locked = Some(self.space.outputs().map(|output| output.name()).collect());
+            let inserted = self.loop_handle.insert_source(Timer::from_duration(LOCKED_FRAME_WAIT), |_, _, data| {
+                data.state.suspend_once_locked();
+                TimeoutAction::Drop
+            });
+            if let Err(err) = inserted {
+                tracing::warn!("sleeping without waiting for the lock to be shown: {err}");
+                self.suspend_once_locked();
+            }
         }
     }
 
     fn unlock(&mut self) {
         self.lock = None;
+        self.unshown_locked = None;
         if let Some(path) = locker_pin_tries() {
             if let Err(err) = std::fs::remove_file(&path) {
                 if err.kind() != std::io::ErrorKind::NotFound {
