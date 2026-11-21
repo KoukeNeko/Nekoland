@@ -312,8 +312,6 @@ struct Scroll {
     ticked: Instant,
     /// The menu bar's content as each desktop left had it, passing with its windows.
     bars: Vec<(usize, Picture)>,
-    /// Whether it was pushed past the last desktop, which it is once on its way.
-    pushed: bool,
 }
 
 #[derive(Default)]
@@ -498,15 +496,36 @@ fn desktops_in_view(view: f64) -> std::ops::RangeInclusive<usize> {
     view.floor() as usize..=view.ceil() as usize
 }
 
+/// When a view that sets off now last moved: a frame ago, so that the first frame drawn
+/// after a key is pressed has moved already.
+fn first_frame_ago() -> Instant {
+    let now = Instant::now();
+    now.checked_sub(std::time::Duration::from_millis(16)).unwrap_or(now)
+}
+
+/// The speed the view sets off at, `away` desktops from where it goes, going `speed`: one
+/// that takes it there as `away e^-rt`, quickest at first, so a key pressed moves it at once,
+/// unless it already goes that way faster.
+fn launch_speed(away: f64, speed: f64) -> f64 {
+    let toward = -SLIDE_RATE * away;
+    if toward * speed > 0.0 && speed.abs() > toward.abs() {
+        speed
+    } else {
+        toward
+    }
+}
+
 /// The speed, in desktops a second toward the push, that carries the view from `away`
 /// desktops past where it rests (less than 0 while still coming) on to `distance` past it,
-/// and back, on its spring. A spring that just does not swing past is `(away + b t) e^-rt`
-/// away at `t`, with `b = speed + rate away`; furthest at `t = 1/rate - away/b`, where it
-/// is `b/rate e^(rate away/b - 1)`, which grows with `b`, so `b` is found by halving.
+/// and back, on its spring; none past `distance` already. A spring that just does not swing
+/// past is `(away + b t) e^-rt` away at `t`, with `b = speed + rate away`; furthest at
+/// `t = 1/rate - away/b`, where it
+/// is `b/rate e^(rate away/b - 1)`, which grows with `b` from `away` at `b = rate away`,
+/// so `b` is found by halving.
 fn bump_speed(away: f64, distance: f64) -> f64 {
-    let away = away.min(0.0);
     let furthest = |b: f64| b / SLIDE_RATE * (SLIDE_RATE * away / b - 1.0).exp();
-    let (mut low, mut high) = (0.0, SLIDE_RATE * (distance - away) * 10.0);
+    let low = (SLIDE_RATE * away).max(0.0);
+    let (mut low, mut high) = (low, low + SLIDE_RATE * (distance + away.abs()) * 10.0);
     for _ in 0..60 {
         let middle = (low + high) / 2.0;
         if furthest(middle) < distance {
@@ -747,7 +766,7 @@ impl Nekoland {
 
     /// The desktop past the last one, `forward` or back, was asked for: the view is pushed
     /// that way and comes back, from wherever it is on its way, as when a key held down
-    /// runs it to the end. Once a way, so that the key repeating does not push it further.
+    /// runs it to the end; pressed again while it comes back, it goes out again.
     pub fn motion_bump(&mut self, forward: bool) {
         let width = f64::from(self.output_width());
         if !self.config.animations || self.overview.is_some() || width <= 0.0 {
@@ -757,17 +776,13 @@ impl Nekoland {
         let scroll = self.motion.scroll.get_or_insert_with(|| Scroll {
             view: active,
             speed: 0.0,
-            ticked: Instant::now(),
+            ticked: first_frame_ago(),
             bars: Vec::new(),
-            pushed: false,
         });
-        if !scroll.pushed {
-            scroll.pushed = true;
-            let direction = if forward { 1.0 } else { -1.0 };
-            let speed = bump_speed(direction * (scroll.view - active), BUMP_DISTANCE / width);
-            // Never slower than it was going that way.
-            scroll.speed = direction * speed.max(direction * scroll.speed);
-        }
+        let direction = if forward { 1.0 } else { -1.0 };
+        let speed = bump_speed(direction * (scroll.view - active), BUMP_DISTANCE / width);
+        // Never slower than it was going that way.
+        scroll.speed = direction * speed.max(direction * scroll.speed);
     }
 
     /// The desktop shown changed from `left`: when `sliding`, the view goes there past the
@@ -781,11 +796,10 @@ impl Nekoland {
         let scroll = self.motion.scroll.get_or_insert_with(|| Scroll {
             view: left as f64,
             speed: 0.0,
-            ticked: Instant::now(),
+            ticked: first_frame_ago(),
             bars: Vec::new(),
-            pushed: false,
         });
-        scroll.pushed = false;
+        scroll.speed = launch_speed(scroll.view - self.workspaces.active as f64, scroll.speed);
         scroll.bars.retain(|(desktop, _)| *desktop != left);
         scroll.bars.extend(bar.map(|bar| (left, bar)));
     }
@@ -848,8 +862,9 @@ mod tests {
     #[test]
     fn a_push_past_the_last_desktop_goes_out_that_far_and_comes_back() {
         let distance = BUMP_DISTANCE / 1920.0;
-        // From rest there, and from still coming there, as a key held down runs it.
-        for start in [3.0, 2.6] {
+        // From rest there, from still coming there, as a key held down runs it, and from
+        // on its way back, pressed again.
+        for start in [3.0, 2.6, 3.0 + distance / 2.0] {
             let (mut view, mut speed) = (start, bump_speed(start - 3.0, distance));
             let mut furthest: f64 = start;
             for _ in 0..300 {
@@ -868,6 +883,17 @@ mod tests {
         assert_eq!(desktop_x(0.5, 1, 1920), 960);
         assert_eq!(desktops_in_view(0.5), 0..=1);
         assert_eq!(desktops_in_view(2.0), 2..=2);
+    }
+
+    #[test]
+    fn a_switch_moves_the_view_a_good_way_in_the_first_frame() {
+        let (mut view, mut speed) = (0.0, launch_speed(-1.0, 0.0));
+        settle(&mut view, &mut speed, 1.0, SLIDE_RATE, 0.016);
+        assert!(view > 0.15, "{view}");
+        // Going that way faster already, it is not slowed.
+        assert_eq!(launch_speed(-1.0, 40.0), 40.0);
+        // Going the other way, it turns at once.
+        assert!(launch_speed(-1.0, -5.0) > 0.0);
     }
 
     #[test]
