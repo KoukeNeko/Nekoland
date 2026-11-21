@@ -68,6 +68,14 @@ path = "src/shot.rs"
 name = "nekoland-terminal"
 path = "src/terminal.rs"
 
+[[bin]]
+name = "nekoland-security"
+path = "src/security.rs"
+
+[[bin]]
+name = "nekoland-keyboard"
+path = "src/keyboard.rs"
+
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 async-channel = "2"
