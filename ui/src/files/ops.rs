@@ -996,6 +996,9 @@ pub fn rotate_left(win: &Rc<Window>, files: Vec<gio::File>) {
 }
 
 fn rotate(path: &Path) -> Result<(), glib::Error> {
+    let failed = |err: std::io::Error| glib::Error::new(gio::IOErrorEnum::Failed, &err.to_string());
+    // A link stays a link, to the picture turned.
+    let path = &std::fs::canonicalize(path).map_err(failed)?;
     let (format, _, _) = Pixbuf::file_info(path)
         .ok_or_else(|| glib::Error::new(gio::IOErrorEnum::NotSupported, "不是能讀取的圖片"))?;
     let kind = format.name().map(|n| n.to_string()).unwrap_or_default();
@@ -1012,9 +1015,18 @@ fn rotate(path: &Path) -> Result<(), glib::Error> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     ));
-    turned.savev(&temporary, &kind, options)?;
-    std::fs::rename(&temporary, path)
-        .map_err(|err| glib::Error::new(gio::IOErrorEnum::Failed, &err.to_string()))
+    // shortcut: gdk-pixbuf writes no EXIF, so the date taken and the like are not kept; a
+    // lossless JPEG rotation (jpegtran) if they are missed.
+    let written = turned.savev(&temporary, &kind, options).and_then(|()| {
+        // Only those who could read the picture can read it turned.
+        let permissions = std::fs::metadata(path).map_err(failed)?.permissions();
+        std::fs::set_permissions(&temporary, permissions).map_err(failed)?;
+        std::fs::rename(&temporary, path).map_err(failed)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 pub fn add_bookmark(win: &Rc<Window>, folder: &gio::File) {

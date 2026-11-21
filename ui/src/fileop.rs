@@ -656,6 +656,14 @@ impl Work {
                     let target = gio::File::for_path(&to);
                     self.retrying(from, |cancellable| target.trash(Some(cancellable)))?;
                 }
+                // A link to the very file it would replace would put itself in that file's place.
+                Answer::Replace | Answer::Retry if same_file(from, &to) => {
+                    let message = format!("無法取代「{}」：它就是要取代的檔案", display_name(&to));
+                    return match self.ask(Update::Failed { message }).0 {
+                        Answer::Stop => Err(Stopped),
+                        _ => Ok(()),
+                    };
+                }
                 Answer::Replace | Answer::Retry => overwrite = true,
             }
         }
@@ -816,6 +824,16 @@ fn inside_item(path: &Path, item: &Path) -> bool {
     real(path).starts_with(real(item))
 }
 
+/// Whether `from`, followed through a link, is the file `to` is: writing it there would empty
+/// the file it was to be read from.
+fn same_file(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(from), std::fs::symlink_metadata(to)) {
+        (Ok(from), Ok(to)) => (from.dev(), from.ino()) == (to.dev(), to.ino()),
+        _ => false,
+    }
+}
+
 /// Whether `to`'s folder is on the disk `from` is on, where a move is a rename.
 fn on_one_disk(from: &Path, to: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -862,6 +880,22 @@ mod tests {
         assert!(!inside_item(&folder, &folder.join("Photos")));
         // Only the link goes to the trash, not the folder it leads to.
         assert!(!inside_item(&folder.join("Photos"), &dir.join("連結")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_does_not_replace_the_file_it_leads_to() {
+        let dir = std::env::temp_dir().join(format!("nekoland-fileop-same-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("其他")).unwrap();
+        let file = dir.join("報告.pdf");
+        std::fs::write(&file, "內容").unwrap();
+        let link = dir.join("其他").join("報告.pdf");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(same_file(&link, &file));
+        // The other way round only the link is replaced.
+        assert!(!same_file(&file, &link));
+        std::fs::write(dir.join("另一份.pdf"), "").unwrap();
+        assert!(!same_file(&dir.join("另一份.pdf"), &file));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

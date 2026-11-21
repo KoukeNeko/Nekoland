@@ -107,8 +107,12 @@ pub fn rename_all(files: &[gio::File], new_names: &[String]) -> Result<(), glib:
 fn rename_to(current: &mut [gio::File], new_names: &[String]) -> Result<(), glib::Error> {
     let old: HashSet<String> = current.iter().map(base_name).collect();
     if new_names.iter().any(|n| old.contains(n)) {
-        for (index, file) in current.iter_mut().enumerate() {
-            rename_one(file, &format!(".nekoland-rename-{}-{index}", std::process::id()))?;
+        // One with its name already keeps it: none other takes that name, and one that cannot
+        // be renamed at all, giving names back, is then not tried again.
+        for (index, (file, name)) in current.iter_mut().zip(new_names).enumerate() {
+            if base_name(file) != *name {
+                rename_one(file, &format!(".nekoland-rename-{}-{index}", std::process::id()))?;
+            }
         }
     }
     for (file, name) in current.iter_mut().zip(new_names) {
@@ -494,6 +498,24 @@ mod tests {
         left.sort();
         assert_eq!(left, ["a", "b"]);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "A");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn one_that_cannot_be_renamed_leaves_none_hidden() {
+        let dir = std::env::temp_dir().join(format!("nekoland-rename-stuck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), "A").unwrap();
+        std::fs::write(dir.join("b"), "B").unwrap();
+        // Gone by the time it is renamed, as one that may not be renamed fails.
+        let files = ["a", "b", "c"].map(|name| gio::File::for_path(dir.join(name)));
+        assert!(rename_all(&files, &names(&["b", "a", "d"])).is_err());
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["a", "b"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
