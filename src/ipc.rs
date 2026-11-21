@@ -187,6 +187,15 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
     match message {
         // The configuration changed: the settings application wrote it.
         "reload" => state.reload_config(),
+        // `action ID`: one of the shortcuts' actions, as its keys would do it: the same
+        // actions, whatever program asks for them.
+        action if argument(action, "action").is_some() => {
+            let id = argument(action, "action")?;
+            match shortcuts::action(id) {
+                Some(action) => state.run_action(action, false),
+                None => return Some(format!("no action: {id}\n")),
+            }
+        }
         // `calendar DATE`: the clock's panel opened on a day, given as 2026-12-25 or in words.
         day if day.starts_with("calendar ") => {
             let text = day["calendar ".len()..].trim();

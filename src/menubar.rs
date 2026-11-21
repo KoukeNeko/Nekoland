@@ -23,15 +23,15 @@ use std::{
 
 use cairo::{Context, Format, ImageSurface};
 use smithay::{
-    backend::{input::KeyState, renderer::element::Id},
+    backend::renderer::element::Id,
     desktop::{Window, WindowSurface},
     output::Output,
-    input::keyboard::{FilterResult, Keycode, Keysym},
+    input::keyboard::Keysym,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    utils::{IsAlive, Logical, Point, Rectangle, Size, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::seat::WaylandFocus,
 };
 
@@ -85,15 +85,6 @@ const NETWORK_POLL: Duration = Duration::from_secs(3);
 /// What Help menus are called, by the programs that bring their own.
 const HELP_TITLES: [&str; 6] = ["help", "說明", "輔助說明", "幫助", "帮助", "ヘルプ"];
 
-// xkb key codes, which are evdev's plus 8, for the Edit menu's shortcuts.
-const KEY_CTRL: u32 = 37;
-const KEY_SHIFT: u32 = 50;
-const KEY_A: u32 = 38;
-const KEY_Z: u32 = 52;
-const KEY_X: u32 = 53;
-const KEY_C: u32 = 54;
-const KEY_V: u32 = 55;
-
 /// What choosing a menu entry does.
 #[derive(Clone, PartialEq)]
 pub enum Command {
@@ -109,8 +100,8 @@ pub enum Command {
     Action(String),
     /// An entry of a menu a program exported.
     Invoke(MenuAction),
-    /// Keys pressed together for the active window, as its own shortcut would be.
-    Keys(&'static [u32]),
+    /// An application action for the active window, by its ID in the shortcuts.
+    AppAction(&'static str),
     Hide,
     HideOthers,
     ShowAll,
@@ -1875,7 +1866,7 @@ impl Nekoland {
                 Entry::item("重新開機⋯", Command::Restart),
                 Entry::item("關機⋯", Command::ShutDown),
                 Entry::separator(),
-                Entry::item("鎖定螢幕", Command::Lock).shortcut("Super L"),
+                Entry::item("鎖定螢幕", Command::Lock).shortcut(&self.shortcut_label("lock")),
                 Entry::item("登出⋯", Command::LogOut),
             ],
             Source::App => {
@@ -1896,11 +1887,11 @@ impl Nekoland {
                 if has("preferences") || has("shortcuts") {
                     entries.push(Entry::separator());
                 }
-                entries.push(Entry::item(format!("隱藏「{name}」"), Command::Hide).shortcut("Super H"));
+                entries.push(Entry::item(format!("隱藏「{name}」"), Command::Hide).shortcut(&self.shortcut_label("minimize")));
                 entries.push(Entry::item("隱藏其他", Command::HideOthers));
                 entries.push(Entry::item("顯示全部", Command::ShowAll).enabled(!self.minimized.is_empty()));
                 entries.push(Entry::separator());
-                entries.push(Entry::item(format!("結束「{name}」"), Command::Quit));
+                entries.push(Entry::item(format!("結束「{name}」"), Command::Quit).shortcut(&self.shortcut_label("quit-app")));
                 entries
             }
             Source::AppMenu(index) => self
@@ -1915,7 +1906,7 @@ impl Nekoland {
                 }
                 entries.push(
                     Entry::item("關閉視窗", Command::CloseWindow)
-                        .shortcut("Super Q")
+                        .shortcut(&self.shortcut_label("close-window"))
                         .enabled(has_window),
                 );
                 entries
@@ -1925,32 +1916,33 @@ impl Nekoland {
                 // desktop's files, as the Finder's do.
                 let desktop = self.desktop_edit_targets().filter(|_| !has_window);
                 let chosen = desktop.map(<[_]>::to_vec).unwrap_or_default();
-                let on_desktop = |keys, command| match desktop {
+                let on_desktop = |id, command| match desktop {
                     Some(_) => Command::Desktop(command),
-                    None => Command::Keys(keys),
+                    None => Command::AppAction(id),
                 };
-                let copy = on_desktop(&[KEY_CTRL, KEY_C], DesktopCommand::Copy(chosen.clone()));
-                let paste = on_desktop(&[KEY_CTRL, KEY_V], DesktopCommand::Paste);
-                let all = on_desktop(&[KEY_CTRL, KEY_A], DesktopCommand::SelectAll);
+                let copy = on_desktop("copy", DesktopCommand::Copy(chosen.clone()));
+                let paste = on_desktop("paste", DesktopCommand::Paste);
+                let all = on_desktop("select-all", DesktopCommand::SelectAll);
+                let label = |id| self.shortcut_label(id);
                 vec![
-                    Entry::item("還原", Command::Keys(&[KEY_CTRL, KEY_Z]))
-                        .shortcut("Ctrl Z")
+                    Entry::item("還原", Command::AppAction("undo"))
+                        .shortcut(&label("undo"))
                         .enabled(has_window),
-                    Entry::item("重做", Command::Keys(&[KEY_CTRL, KEY_SHIFT, KEY_Z]))
-                        .shortcut("Shift Ctrl Z")
+                    Entry::item("重做", Command::AppAction("redo"))
+                        .shortcut(&label("redo"))
                         .enabled(has_window),
                     Entry::separator(),
-                    Entry::item("剪下", Command::Keys(&[KEY_CTRL, KEY_X]))
-                        .shortcut("Ctrl X")
+                    Entry::item("剪下", Command::AppAction("cut"))
+                        .shortcut(&label("cut"))
                         .enabled(has_window),
                     Entry::item("拷貝", copy)
-                        .shortcut("Ctrl C")
+                        .shortcut(&label("copy"))
                         .enabled(has_window || !chosen.is_empty()),
                     Entry::item("貼上", paste)
-                        .shortcut("Ctrl V")
+                        .shortcut(&label("paste"))
                         .enabled(has_window || desktop.is_some()),
                     Entry::item("全選", all)
-                        .shortcut("Ctrl A")
+                        .shortcut(&label("select-all"))
                         .enabled(has_window || desktop.is_some()),
                 ]
             }
@@ -1962,19 +1954,19 @@ impl Nekoland {
                     "進入全螢幕"
                 };
                 vec![Entry::item(label, Command::FullScreen)
-                    .shortcut("F11")
+                    .shortcut(&self.shortcut_label("fullscreen"))
                     .enabled(has_window)]
             }
             Source::Window => {
                 let mut entries = vec![
                     Entry::item("縮到最小", Command::Minimize)
-                        .shortcut("Super H")
+                        .shortcut(&self.shortcut_label("minimize"))
                         .enabled(has_window),
                     Entry::item("縮放", Command::Zoom)
-                        .shortcut("Super ↑")
+                        .shortcut(&self.shortcut_label("arrange-maximize"))
                         .enabled(has_window),
                     Entry {
-                        children: arrange_entries(),
+                        children: self.arrange_entries(),
                         ..Entry::note("移動與調整大小").enabled(has_window)
                     },
                 ];
@@ -2395,42 +2387,10 @@ impl Nekoland {
         self.run_menu_command(command);
     }
 
-    /// Presses keys for the window with the keyboard, then lets them go in reverse.
-    fn press_keys(&mut self, keys: &[u32]) {
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        let time = self.start_time.elapsed().as_millis() as u32;
-        for (state, keys) in [
-            (KeyState::Pressed, keys.to_vec()),
-            (KeyState::Released, keys.iter().rev().copied().collect()),
-        ] {
-            for key in keys {
-                keyboard.input::<(), _>(
-                    self,
-                    Keycode::new(key),
-                    state,
-                    SERIAL_COUNTER.next_serial(),
-                    time,
-                    |_, _, _| FilterResult::Forward,
-                );
-            }
-        }
-    }
-
-    /// Pastes into the active window what the launcher put on the clipboard: Ctrl+V, and
-    /// Ctrl+Shift+V for a terminal, where Ctrl+V is a key of its own.
+    /// Pastes into the active window what the launcher put on the clipboard.
     pub(crate) fn paste_into_active(&mut self) {
-        let app_id = self.focused_window().map(|window| window_names(&window).1).unwrap_or_default();
-        // shortcut: terminals known by name; read their desktop entry's TerminalEmulator
-        // category once one is missed.
-        let terminal = ["terminal", "foot", "kitty", "alacritty", "ptyxis", "konsole", "wezterm", "xterm"]
-            .iter()
-            .any(|name| app_id.to_lowercase().contains(name));
-        if terminal {
-            self.press_keys(&[KEY_CTRL, KEY_SHIFT, KEY_V]);
-        } else {
-            self.press_keys(&[KEY_CTRL, KEY_V]);
+        if let Some(paste) = shortcuts::action("paste") {
+            self.app_action(paste, false);
         }
     }
 
@@ -2531,7 +2491,11 @@ impl Nekoland {
                 }
             }
             Command::Invoke(action) => send(&self.menu_bar, Request::Invoke(action)),
-            Command::Keys(keys) => self.press_keys(keys),
+            Command::AppAction(id) => {
+                if let Some(action) = shortcuts::action(id) {
+                    self.app_action(action, false);
+                }
+            }
             Command::Hide => {
                 if let Some((app_id, _)) = app {
                     for window in self.app_windows(&app_id) {
@@ -2631,49 +2595,50 @@ impl Nekoland {
 }
 
 /// The Window menu's 移動與調整大小, in groups: each entry's label, window command and shortcut.
-const ARRANGEMENTS: [&[(&str, &str, &str)]; 5] = [
+const ARRANGEMENTS: [&[(&str, &str)]; 5] = [
     &[
-        ("左半邊", "left", "Super ←"),
-        ("右半邊", "right", "Super →"),
-        ("上半部", "top", "Super Alt ↑"),
-        ("下半部", "bottom", "Super Alt ↓"),
+        ("左半邊", "left"),
+        ("右半邊", "right"),
+        ("上半部", "top"),
+        ("下半部", "bottom"),
     ],
     &[
-        ("左上角", "top-left", "Super Alt U"),
-        ("右上角", "top-right", "Super Alt I"),
-        ("左下角", "bottom-left", "Super Alt J"),
-        ("右下角", "bottom-right", "Super Alt K"),
+        ("左上角", "top-left"),
+        ("右上角", "top-right"),
+        ("左下角", "bottom-left"),
+        ("右下角", "bottom-right"),
     ],
     &[
-        ("左邊三分之一", "first-third", "Super Alt D"),
-        ("中間三分之一", "center-third", "Super Alt F"),
-        ("右邊三分之一", "last-third", "Super Alt G"),
-        ("左邊三分之二", "first-two-thirds", "Super Alt E"),
-        ("右邊三分之二", "last-two-thirds", "Super Alt T"),
+        ("左邊三分之一", "first-third"),
+        ("中間三分之一", "center-third"),
+        ("右邊三分之一", "last-third"),
+        ("左邊三分之二", "first-two-thirds"),
+        ("右邊三分之二", "last-two-thirds"),
     ],
     &[
-        ("最大化高度", "maximize-height", "Super Alt Shift ↑"),
-        ("置中", "center", "Super Alt C"),
-        ("加大", "larger", "Super Alt ="),
-        ("縮小", "smaller", "Super Alt -"),
+        ("最大化高度", "maximize-height"),
+        ("置中", "center"),
+        ("加大", "larger"),
+        ("縮小", "smaller"),
     ],
-    &[("回到先前的大小", "restore", "Super ↓")],
+    &[("回到先前的大小", "restore")],
 ];
 
-fn arrange_entries() -> Vec<Entry> {
-    let mut entries = Vec::new();
-    for (index, group) in ARRANGEMENTS.iter().enumerate() {
-        if index > 0 {
-            entries.push(Entry::separator());
+impl Nekoland {
+    fn arrange_entries(&self) -> Vec<Entry> {
+        let mut entries = Vec::new();
+        for (index, group) in ARRANGEMENTS.iter().enumerate() {
+            if index > 0 {
+                entries.push(Entry::separator());
+            }
+            entries.extend(group.iter().map(|&(label, command)| {
+                Entry::item(label, Command::Arrange(command)).shortcut(&self.shortcut_label(&format!("arrange-{command}")))
+            }));
         }
-        entries.extend(
-            group
-                .iter()
-                .map(|&(label, command, shortcut)| Entry::item(label, Command::Arrange(command)).shortcut(shortcut)),
-        );
+        entries
     }
-    entries
 }
+
 fn is_maximized(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {

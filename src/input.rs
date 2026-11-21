@@ -5,12 +5,17 @@ use smithay::{
     },
     desktop::{LayerSurface, Window, WindowSurface},
     input::{
-        keyboard::{FilterResult, Keysym, ModifiersState},
+        keyboard::{xkb, FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, RelativeMotionEvent},
     },
     utils::{Serial, SERIAL_COUNTER},
-    wayland::shell::wlr_layer::KeyboardInteractivity,
+    wayland::{
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat, seat::WaylandFocus,
+        shell::wlr_layer::KeyboardInteractivity,
+    },
 };
+
+use shortcuts::Combo;
 
 use crate::{
     config,
@@ -349,9 +354,9 @@ impl Nekoland {
     }
 }
 
-// evdev's BTN_LEFT
 /// What Super+` runs: shows or hides the terminal's drop-down window, as Win+` does Nekominal's.
 const DROP_DOWN_TERMINAL: &str = "nekoland-terminal drop-down";
+// evdev's BTN_LEFT
 const BUTTON_LEFT: u32 = 0x110;
 const BUTTON_RIGHT: u32 = 0x111;
 
@@ -435,7 +440,6 @@ impl Nekoland {
             shift,
             ..
         } = *modifiers;
-        let focused = self.focused_window();
 
         if self.hover_key(sym, typed) {
             return true;
@@ -484,69 +488,26 @@ impl Nekoland {
             return true;
         }
 
-        if let Some(command) = arrange_shortcut(sym, logo && !ctrl, alt, shift) {
-            self.window_command(command);
+        // The only way out on a bare console, whatever the shortcuts are.
+        if sym == Keysym::BackSpace && ctrl && alt {
+            tracing::info!("quitting: Ctrl+Alt+BackSpace");
+            self.loop_signal.stop();
             return true;
         }
-        if let Some(command) = shot_shortcut(sym, ctrl, alt, logo, shift) {
-            config::spawn(command);
+        let combo = Combo {
+            ctrl,
+            alt,
+            shift,
+            logo,
+            key: xkb::keysym_get_name(sym),
+        };
+        let found = shortcuts::find(self.config.shortcut_scheme, &self.config.shortcuts, &combo);
+        if let Some((action, extended)) = found.filter(|_| !self.shortcuts_inhibited()) {
+            self.run_action(action, extended);
             return true;
         }
 
         match sym {
-            // The only way out on a bare console.
-            Keysym::BackSpace if ctrl && alt => {
-                tracing::info!("quitting: Ctrl+Alt+BackSpace");
-                self.loop_signal.stop();
-            }
-            Keysym::t if ctrl && alt => config::spawn(&self.config.terminal),
-            Keysym::Return if logo => config::spawn(&self.config.terminal),
-            Keysym::grave if logo => config::spawn(DROP_DOWN_TERMINAL),
-            Keysym::a if logo => self.show_apps(""),
-            // As Raycast opens: Alt+Space, which closes it again.
-            Keysym::space if alt && !(ctrl || logo || shift) => {
-                if focused.as_ref().is_some_and(|window| window_names(window).1 == LAUNCHER_APP_ID) {
-                    self.close_launcher_unless(None);
-                } else {
-                    config::spawn(&self.config.launcher);
-                }
-            }
-            Keysym::l if logo => self.lock_screen(),
-            Keysym::p if logo => self.next_projection(),
-            Keysym::F4 if alt => close(focused),
-            Keysym::q if logo => close(focused),
-            Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),
-            Keysym::F2 if ctrl => self.open_first_menu(),
-            Keysym::F3 if ctrl => self.focus_dock(),
-            Keysym::Up if ctrl && alt => self.toggle_overview(),
-            // Windows' keys for its desktops, Super standing for the Windows key: with Shift
-            // too, the window in front goes along.
-            Keysym::Left | Keysym::Right if logo && ctrl && shift => {
-                if let Some(window) = focused {
-                    self.carry_window_by(&window, if sym == Keysym::Left { -1 } else { 1 });
-                }
-            }
-            Keysym::Left if logo && ctrl => self.switch_workspace_by(-1),
-            Keysym::Right if logo && ctrl => self.switch_workspace_by(1),
-            Keysym::d if logo && ctrl => self.add_and_show_workspace(),
-            Keysym::F4 if logo && ctrl => self.remove_workspace(self.workspaces.active),
-            Keysym::Left if ctrl && alt => self.switch_workspace_by(-1),
-            Keysym::Right if ctrl && alt => self.switch_workspace_by(1),
-            Keysym::Page_Up if logo => self.switch_workspace_by(-1),
-            Keysym::Page_Down if logo => self.switch_workspace_by(1),
-            // Screen zoom; Super Alt, as the Mac's Option Command, resizes windows here.
-            Keysym::equal | Keysym::plus if logo && ctrl => self.zoom_by(crate::render::ZOOM_STEP),
-            Keysym::minus if logo && ctrl => self.zoom_by(-crate::render::ZOOM_STEP),
-            Keysym::h if logo => {
-                if let Some(window) = focused {
-                    self.minimize(&window);
-                }
-            }
-            Keysym::F11 if !(ctrl || alt || logo) => {
-                if let Some(window) = focused {
-                    self.toggle_fullscreen(&window);
-                }
-            }
             Keysym::XF86_AudioRaiseVolume => config::spawn(&self.config.volume_up),
             Keysym::XF86_AudioLowerVolume => config::spawn(&self.config.volume_down),
             Keysym::XF86_AudioMute => config::spawn(&self.config.volume_mute),
@@ -556,6 +517,167 @@ impl Nekoland {
             _ => return false,
         }
         true
+    }
+
+    /// Whether the window that has the keyboard asked for every key, shortcuts too.
+    fn shortcuts_inhibited(&self) -> bool {
+        let focus = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus());
+        let surface = focus.as_ref().and_then(|focus| focus.wl_surface());
+        surface.is_some_and(|surface| {
+            self.seat.keyboard_shortcuts_inhibitor_for_surface(&surface).is_some_and(|inhibitor| inhibitor.is_active())
+        })
+    }
+
+    /// Does an action: a system one here, an application one in the window that has the
+    /// keyboard; `extended` adds Shift to the application's keys, as selecting does to moving.
+    pub fn run_action(&mut self, action: &shortcuts::Action, extended: bool) {
+        if action.is_app() {
+            self.app_action(action, extended);
+            return;
+        }
+        let focused = self.focused_window();
+        match action.id {
+            // As Raycast opens: its key closes it again.
+            "launcher" => {
+                if focused.as_ref().is_some_and(|window| window_names(window).1 == LAUNCHER_APP_ID) {
+                    self.close_launcher_unless(None);
+                } else {
+                    config::spawn(&self.config.launcher);
+                }
+            }
+            "apps" => self.show_apps(""),
+            "terminal" => config::spawn(&self.config.terminal),
+            "drop-down-terminal" => config::spawn(DROP_DOWN_TERMINAL),
+            "settings" => config::spawn("nekoland-settings"),
+            "lock" => self.lock_screen(),
+            "projection" => self.next_projection(),
+            "menu-bar" => self.open_first_menu(),
+            "dock" => self.focus_dock(),
+            "zoom-in" => self.zoom_by(crate::render::ZOOM_STEP),
+            "zoom-out" => self.zoom_by(-crate::render::ZOOM_STEP),
+            "switch-window" => self.focus_next_window(),
+            "overview" => self.toggle_overview(),
+            "close-window" => close(focused),
+            "quit-app" => {
+                if let Some(window) = focused {
+                    self.quit_app(&window_names(&window).1);
+                }
+            }
+            "minimize" => {
+                if let Some(window) = focused {
+                    self.minimize(&window);
+                }
+            }
+            "fullscreen" => {
+                if let Some(window) = focused {
+                    self.toggle_fullscreen(&window);
+                }
+            }
+            "workspace-left" => self.switch_workspace_by(-1),
+            "workspace-right" => self.switch_workspace_by(1),
+            "new-workspace" => self.add_and_show_workspace(),
+            "close-workspace" => self.remove_workspace(self.workspaces.active),
+            "carry-left" | "carry-right" => {
+                if let Some(window) = focused {
+                    self.carry_window_by(&window, if action.id == "carry-left" { -1 } else { 1 });
+                }
+            }
+            id => {
+                if let Some(command) = id.strip_prefix("arrange-") {
+                    self.window_command(command);
+                } else if let Some(kind) = id.strip_prefix("shot-") {
+                    config::spawn(&format!("nekoland-shot {kind}"));
+                } else {
+                    tracing::warn!("no way to do the action {id}");
+                }
+            }
+        }
+    }
+
+    /// Asks the window that has the keyboard to do an application action, with the keys its
+    /// application does it with; `shift` adds Shift to them.
+    pub fn app_action(&mut self, action: &shortcuts::Action, shift: bool) {
+        let app_id = self.focused_window().map(|window| window_names(&window).1).unwrap_or_default();
+        for combo in shortcuts::native(action, &app_id, &self.config.app_shortcuts) {
+            self.send_combo(&if shift { combo.with_shift() } else { combo });
+        }
+    }
+
+    /// What a menu shows for an action's keys: the first the shortcuts give it, or else the
+    /// keys applications do an application action with by themselves.
+    pub fn shortcut_label(&self, id: &str) -> String {
+        let scheme = self.config.shortcut_scheme;
+        let native = || {
+            let action = shortcuts::action(id)?;
+            shortcuts::native(action, "", &self.config.app_shortcuts).into_iter().next()
+        };
+        shortcuts::keys(scheme, &self.config.shortcuts, id)
+            .into_iter()
+            .next()
+            .or_else(native)
+            .map(|combo| combo.label(scheme))
+            .unwrap_or_default()
+    }
+
+    /// Presses and lets go `combo` for the window that has the keyboard: the modifiers held
+    /// are let go meanwhile and pressed again after, so that it sees those keys alone.
+    fn send_combo(&mut self, combo: &Combo) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let pressed = keyboard.pressed_keys();
+        let wanted = [
+            (combo.ctrl, "Control_L"),
+            (combo.alt, "Alt_L"),
+            (combo.shift, "Shift_L"),
+            (combo.logo, "Super_L"),
+            (true, combo.key.as_str()),
+        ];
+        let (held, codes) = keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().unwrap();
+            // SAFETY: the keymap is only read, while its lock is held, and nothing of it is kept.
+            let keymap = unsafe { xkb.keymap() };
+            let layout = xkb.active_layout().0;
+            let held: Vec<Keycode> = pressed
+                .iter()
+                .copied()
+                .filter(|code| {
+                    let symbol = keymap.key_get_syms_by_level(*code, layout, 0).first().copied();
+                    symbol.and_then(StickyKeys::modifier).is_some()
+                })
+                .collect();
+            let code_of = |name: &str| {
+                let sym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+                (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+                    .map(Keycode::new)
+                    .find(|code| sym.raw() != 0 && keymap.key_get_syms_by_level(*code, layout, 0).contains(&sym))
+            };
+            let codes: Option<Vec<Keycode>> =
+                wanted.iter().filter(|(on, _)| *on).map(|(_, name)| code_of(name)).collect();
+            (held, codes)
+        });
+        let Some(codes) = codes else {
+            tracing::warn!("no key for {combo} in this keymap");
+            return;
+        };
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let send = |state: &mut Self, code: Keycode, key_state: KeyState| {
+            keyboard.input::<(), _>(state, code, key_state, SERIAL_COUNTER.next_serial(), time, |_, _, _| {
+                FilterResult::Forward
+            });
+        };
+        for code in &held {
+            send(self, *code, KeyState::Released);
+        }
+        for code in &codes {
+            send(self, *code, KeyState::Pressed);
+        }
+        for code in codes.iter().rev() {
+            send(self, *code, KeyState::Released);
+        }
+        for code in &held {
+            send(self, *code, KeyState::Pressed);
+        }
     }
 
     /// Ctrl+Alt+F1 and so on, which the keymap turns into these, switch the virtual
@@ -571,73 +693,19 @@ impl Nekoland {
         true
     }
 
-    /// Super pressed and let go by itself opens the overview.
+    /// Super pressed and let go by itself does what the shortcuts give it.
     fn key_released(&mut self, sym: Keysym) {
         if matches!(sym, Keysym::Alt_L | Keysym::Alt_R) {
             self.dock_menu_alt(false);
         }
-        if self.super_tap && matches!(sym, Keysym::Super_L | Keysym::Super_R) {
+        if self.super_tap && matches!(sym, Keysym::Super_L | Keysym::Super_R) && !self.shortcuts_inhibited() {
             self.super_tap = false;
-            self.toggle_overview();
+            let alone = Combo::parse(shortcuts::SUPER_ALONE).expect("Super alone is a combination");
+            if let Some((action, _)) = shortcuts::find(self.config.shortcut_scheme, &self.config.shortcuts, &alone) {
+                self.run_action(action, false);
+            }
         }
     }
-}
-
-/// The window command a shortcut with Super stands for: the arrows alone halve, maximize and
-/// restore, as on GNOME; with Alt too, Rectangle's keys, its Ctrl and Option being Super and
-/// Alt here, since Ctrl+Alt with the arrows switches desktops.
-fn arrange_shortcut(sym: Keysym, logo: bool, alt: bool, shift: bool) -> Option<&'static str> {
-    if !logo {
-        return None;
-    }
-    let command = match sym {
-        Keysym::Left => "left",
-        Keysym::Right => "right",
-        Keysym::Up if alt && shift => "maximize-height",
-        Keysym::Up if alt => "top",
-        Keysym::Down if alt => "bottom",
-        Keysym::Up => "maximize",
-        Keysym::Down => "restore",
-        _ if !alt => return None,
-        Keysym::u => "top-left",
-        Keysym::i => "top-right",
-        Keysym::j => "bottom-left",
-        Keysym::k => "bottom-right",
-        Keysym::d => "first-third",
-        Keysym::f => "center-third",
-        Keysym::g => "last-third",
-        Keysym::e => "first-two-thirds",
-        Keysym::t => "last-two-thirds",
-        Keysym::Return => "maximize",
-        Keysym::c => "center",
-        Keysym::BackSpace => "restore",
-        Keysym::equal => "larger",
-        Keysym::minus => "smaller",
-        _ => return None,
-    };
-    Some(command)
-}
-
-/// 截圖's command for a key: Super Shift with the numbers macOS takes pictures of the screen
-/// with, and a letter for each other way of taking one; Print Screen alone takes an area.
-fn shot_shortcut(sym: Keysym, ctrl: bool, alt: bool, logo: bool, shift: bool) -> Option<&'static str> {
-    if sym == Keysym::Print && !(ctrl || alt || logo) {
-        return Some("nekoland-shot area");
-    }
-    if !(logo && shift) || ctrl || alt {
-        return None;
-    }
-    Some(match sym {
-        Keysym::_3 => "nekoland-shot full",
-        Keysym::_4 => "nekoland-shot area",
-        Keysym::_5 => "nekoland-shot window",
-        Keysym::_6 => "nekoland-shot scroll",
-        Keysym::r => "nekoland-shot repeat",
-        Keysym::o => "nekoland-shot ocr",
-        Keysym::v => "nekoland-shot clipboard",
-        Keysym::d => "nekoland-shot delay",
-        _ => return None,
-    })
 }
 
 fn close(window: Option<Window>) {
@@ -681,53 +749,23 @@ mod tests {
     }
 
     #[test]
-    fn super_with_the_arrows_halves_maximizes_and_restores() {
-        assert_eq!(arrange_shortcut(Keysym::Left, true, false, false), Some("left"));
-        assert_eq!(arrange_shortcut(Keysym::Right, true, false, false), Some("right"));
-        assert_eq!(arrange_shortcut(Keysym::Up, true, false, false), Some("maximize"));
-        assert_eq!(arrange_shortcut(Keysym::Down, true, false, false), Some("restore"));
-        assert_eq!(arrange_shortcut(Keysym::Left, false, false, false), None);
-    }
-
-    #[test]
-    fn super_alt_takes_rectangles_keys_and_leaves_super_alone() {
-        assert_eq!(arrange_shortcut(Keysym::Up, true, true, false), Some("top"));
-        assert_eq!(arrange_shortcut(Keysym::Up, true, true, true), Some("maximize-height"));
-        assert_eq!(arrange_shortcut(Keysym::u, true, true, false), Some("top-left"));
-        assert_eq!(arrange_shortcut(Keysym::g, true, true, false), Some("last-third"));
-        assert_eq!(arrange_shortcut(Keysym::BackSpace, true, true, false), Some("restore"));
-        assert_eq!(arrange_shortcut(Keysym::minus, true, true, false), Some("smaller"));
-        // Super alone keeps its own: H minimizes, Return opens a terminal.
-        assert_eq!(arrange_shortcut(Keysym::h, true, false, false), None);
-        assert_eq!(arrange_shortcut(Keysym::Return, true, false, false), None);
-        assert_eq!(arrange_shortcut(Keysym::u, true, false, false), None);
-    }
-
-    #[test]
-    fn super_shift_with_a_number_takes_a_screenshot() {
-        assert_eq!(shot_shortcut(Keysym::_3, false, false, true, true), Some("nekoland-shot full"));
-        assert_eq!(shot_shortcut(Keysym::_4, false, false, true, true), Some("nekoland-shot area"));
-        assert_eq!(shot_shortcut(Keysym::_6, false, false, true, true), Some("nekoland-shot scroll"));
-        assert_eq!(shot_shortcut(Keysym::o, false, false, true, true), Some("nekoland-shot ocr"));
-        assert_eq!(shot_shortcut(Keysym::Print, false, false, false, false), Some("nekoland-shot area"));
-        // Without Shift, or with Ctrl or Alt too, the keys are others'.
-        assert_eq!(shot_shortcut(Keysym::_3, false, false, true, false), None);
-        assert_eq!(shot_shortcut(Keysym::d, true, false, true, true), None);
-        assert_eq!(shot_shortcut(Keysym::_4, false, true, true, true), None);
-        assert_eq!(shot_shortcut(Keysym::Print, false, false, true, false), None);
-        // None of them is one of the window shortcuts, which are looked at first.
-        for key in [Keysym::_3, Keysym::_4, Keysym::_5, Keysym::_6, Keysym::r, Keysym::o, Keysym::v, Keysym::d] {
-            assert_eq!(arrange_shortcut(key, true, false, true), None);
+    fn every_window_arrangement_action_names_a_window_command() {
+        for action in shortcuts::actions() {
+            if let Some(command) = action.id.strip_prefix("arrange-") {
+                assert!(command == "restore" || crate::arrange::arrangement(command).is_some(), "{command}");
+            }
         }
     }
 
     #[test]
-    fn every_shortcut_names_a_window_command() {
-        let keys = [Keysym::u, Keysym::i, Keysym::j, Keysym::k, Keysym::d, Keysym::f, Keysym::g, Keysym::e,
-            Keysym::t, Keysym::Return, Keysym::c, Keysym::equal, Keysym::minus, Keysym::Up, Keysym::Down];
-        for key in keys {
-            let command = arrange_shortcut(key, true, true, false).expect("a shortcut");
-            assert!(command == "restore" || crate::arrange::arrangement(command).is_some(), "{command}");
+    fn every_key_the_schemes_give_is_one_xkb_knows() {
+        for scheme in shortcuts::Scheme::ALL {
+            for action in shortcuts::actions() {
+                for combo in action.defaults(scheme).into_iter().filter(|combo| combo.key != shortcuts::SUPER_ALONE) {
+                    let sym = xkb::keysym_from_name(&combo.key, xkb::KEYSYM_NO_FLAGS);
+                    assert_ne!(sym.raw(), 0, "{combo} of {}", action.id);
+                }
+            }
         }
     }
 }

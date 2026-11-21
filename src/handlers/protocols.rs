@@ -3,7 +3,8 @@
 use smithay::{
     delegate_data_control, delegate_fractional_scale, delegate_input_method_manager,
     delegate_primary_selection, delegate_single_pixel_buffer, delegate_text_input_manager,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation, delegate_xdg_decoration,
+    delegate_keyboard_shortcuts_inhibit, delegate_viewporter, delegate_virtual_keyboard_manager,
+    delegate_xdg_activation, delegate_xdg_decoration,
     desktop::{PopupKind, PopupManager},
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
@@ -14,6 +15,9 @@ use smithay::{
         compositor::with_states,
         fractional_scale::{with_fractional_scale, FractionalScaleHandler, FractionalScaleManagerState},
         idle_inhibit::IdleInhibitManagerState,
+        keyboard_shortcuts_inhibit::{
+            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
+        },
         security_context::SecurityContextState,
         session_lock::SessionLockManagerState,
         input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as ImePopupSurface},
@@ -52,6 +56,7 @@ pub struct Protocols {
     _security_context: SecurityContextState,
     pub session_lock: SessionLockManagerState,
     _idle_inhibit: IdleInhibitManagerState,
+    shortcuts_inhibit: KeyboardShortcutsInhibitState,
 }
 
 impl Protocols {
@@ -75,6 +80,7 @@ impl Protocols {
             _security_context: SecurityContextState::new::<Nekoland, _>(dh, unsandboxed),
             session_lock: SessionLockManagerState::new::<Nekoland, _>(dh, unsandboxed),
             _idle_inhibit: IdleInhibitManagerState::new::<Nekoland>(dh),
+            shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<Nekoland>(dh),
         }
     }
 }
@@ -191,6 +197,19 @@ impl InputMethodHandler for Nekoland {
 delegate_input_method_manager!(Nekoland);
 delegate_text_input_manager!(Nekoland);
 delegate_virtual_keyboard_manager!(Nekoland);
+
+// A window that asks for every key gets them, Nekoland's shortcuts too, while it has the
+// keyboard: a virtual machine, a remote desktop, or Settings taking a shortcut's new keys.
+impl KeyboardShortcutsInhibitHandler for Nekoland {
+    fn keyboard_shortcuts_inhibit_state(&mut self) -> &mut KeyboardShortcutsInhibitState {
+        &mut self.protocols.shortcuts_inhibit
+    }
+
+    fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
+        inhibitor.activate();
+    }
+}
+delegate_keyboard_shortcuts_inhibit!(Nekoland);
 
 delegate_viewporter!(Nekoland);
 delegate_single_pixel_buffer!(Nekoland);

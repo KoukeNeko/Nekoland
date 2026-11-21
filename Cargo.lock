@@ -3209,6 +3209,7 @@ dependencies = [
  "gio",
  "libc",
  "nekoland-calendar-data",
+ "nekoland-shortcuts",
  "pango",
  "pangocairo",
  "serde",
@@ -3254,6 +3255,13 @@ name = "nekoland-menus"
 version = "0.1.0"
 
 [[package]]
+name = "nekoland-shortcuts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "nekoland-ui"
 version = "0.1.0"
 dependencies = [
@@ -3265,6 +3273,7 @@ dependencies = [
  "libadwaita",
  "libc",
  "nekoland-calendar-data",
+ "nekoland-shortcuts",
  "pangocairo",
  "png",
  "poppler-rs",

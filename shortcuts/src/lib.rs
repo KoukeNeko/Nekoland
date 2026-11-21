@@ -1,0 +1,1082 @@
+//! Nekoland's shortcuts, one table the compositor acts on and Settings shows and edits.
+//!
+//! An action is something Nekoland does: a system one it does itself, as switching windows,
+//! or an application one it asks the window in front to do, as copying, by pressing the keys
+//! that application does it with. A scheme gives the actions the keys macOS, Windows or a
+//! Linux desktop has for them; the configuration can give any action other keys, scheme by
+//! scheme, and an application other keys for its actions.
+
+use std::collections::{BTreeMap, HashSet};
+use std::fmt;
+
+/// Whose keys the actions take.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Scheme {
+    #[default]
+    Linux,
+    Macos,
+    Windows,
+}
+
+impl Scheme {
+    /// As Settings lists them.
+    pub const ALL: [Scheme; 3] = [Scheme::Macos, Scheme::Windows, Scheme::Linux];
+
+    /// As the configuration writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Scheme::Linux => "linux",
+            Scheme::Macos => "macos",
+            Scheme::Windows => "windows",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Scheme::Linux => "Linux",
+            Scheme::Macos => "macOS",
+            Scheme::Windows => "Windows",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Scheme::Linux => 0,
+            Scheme::Macos => 1,
+            Scheme::Windows => 2,
+        }
+    }
+}
+
+/// The configuration's own keys for actions, by scheme and then by action, as `shortcuts`
+/// has them: an empty list leaves the action without keys.
+pub type Custom = BTreeMap<Scheme, BTreeMap<String, Vec<String>>>;
+
+/// The keys applications do actions with where they are not the usual ones, by application
+/// ID and then by action, as `app_shortcuts` has them: an empty string for none.
+pub type AppKeys = BTreeMap<String, BTreeMap<String, String>>;
+
+/// What a combination is when it is Super pressed and let go by itself.
+pub const SUPER_ALONE: &str = "Super";
+
+/// Modifiers and a key, the key named as XKB names its symbol: `a`, `3`, `Return`, `Left`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Combo {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+    pub key: String,
+}
+
+/// Other names keys are written with, lowercase, and XKB's.
+const KEY_NAMES: [(&str, &str); 44] = [
+    ("enter", "Return"),
+    ("return", "Return"),
+    ("space", "space"),
+    ("esc", "Escape"),
+    ("escape", "Escape"),
+    ("tab", "Tab"),
+    ("backspace", "BackSpace"),
+    ("delete", "Delete"),
+    ("del", "Delete"),
+    ("insert", "Insert"),
+    ("home", "Home"),
+    ("end", "End"),
+    ("pageup", "Page_Up"),
+    ("page_up", "Page_Up"),
+    ("pagedown", "Page_Down"),
+    ("page_down", "Page_Down"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("up", "Up"),
+    ("down", "Down"),
+    ("print", "Print"),
+    ("printscreen", "Print"),
+    ("=", "equal"),
+    ("equal", "equal"),
+    ("-", "minus"),
+    ("minus", "minus"),
+    ("plus", "plus"),
+    ("`", "grave"),
+    ("grave", "grave"),
+    (",", "comma"),
+    ("comma", "comma"),
+    (".", "period"),
+    ("period", "period"),
+    ("/", "slash"),
+    ("slash", "slash"),
+    (";", "semicolon"),
+    ("semicolon", "semicolon"),
+    ("'", "apostrophe"),
+    ("[", "bracketleft"),
+    ("bracketleft", "bracketleft"),
+    ("]", "bracketright"),
+    ("bracketright", "bracketright"),
+    ("\\", "backslash"),
+    ("backslash", "backslash"),
+];
+
+/// How keys whose names say little are shown, everywhere and on macOS.
+const KEY_LABELS: [(&str, &str, &str); 20] = [
+    ("Left", "←", "←"),
+    ("Right", "→", "→"),
+    ("Up", "↑", "↑"),
+    ("Down", "↓", "↓"),
+    ("Return", "Enter", "↩"),
+    ("space", "Space", "Space"),
+    ("BackSpace", "Backspace", "⌫"),
+    ("Delete", "Delete", "⌦"),
+    ("Tab", "Tab", "⇥"),
+    ("Escape", "Esc", "⎋"),
+    ("Page_Up", "PageUp", "PageUp"),
+    ("Page_Down", "PageDown", "PageDown"),
+    ("Print", "Print Screen", "Print Screen"),
+    ("equal", "=", "="),
+    ("minus", "-", "-"),
+    ("plus", "+", "+"),
+    ("grave", "`", "`"),
+    ("comma", ",", ","),
+    ("bracketleft", "[", "["),
+    ("bracketright", "]", "]"),
+];
+
+fn key_name(token: &str) -> Option<String> {
+    let lower = token.to_lowercase();
+    if let Some((_, name)) = KEY_NAMES.iter().find(|(written, _)| *written == lower) {
+        return Some(name.to_string());
+    }
+    let mut chars = token.chars();
+    match (chars.next(), chars.next()) {
+        (Some(only), None) if only.is_ascii_alphanumeric() => {
+            return Some(only.to_ascii_lowercase().to_string())
+        }
+        _ => {}
+    }
+    if let Some(number) = lower
+        .strip_prefix('f')
+        .and_then(|number| number.parse::<u8>().ok())
+    {
+        return (1..=35).contains(&number).then(|| format!("F{number}"));
+    }
+    // Any other symbol by its XKB name, as XF86AudioMute; the compositor knows whether it is one.
+    (!token.is_empty() && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then(|| token.to_string())
+}
+
+impl Combo {
+    /// `Ctrl+Shift+C`, `Super+Left`, or `Super` alone; None for what is not a combination.
+    pub fn parse(text: &str) -> Option<Combo> {
+        let tokens: Vec<&str> = text.split('+').map(str::trim).collect();
+        let (key, modifiers) = tokens.split_last()?;
+        let mut combo = Combo {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            logo: false,
+            key: String::new(),
+        };
+        for modifier in modifiers {
+            match modifier.to_lowercase().as_str() {
+                "ctrl" | "control" => combo.ctrl = true,
+                "alt" | "option" => combo.alt = true,
+                "shift" => combo.shift = true,
+                "super" | "win" | "cmd" | "command" | "logo" | "meta" => combo.logo = true,
+                _ => return None,
+            }
+        }
+        combo.key = match key.to_lowercase().as_str() {
+            "super" | "win" | "cmd" | "command" | "logo" | "meta" if modifiers.is_empty() => {
+                SUPER_ALONE.into()
+            }
+            "ctrl" | "control" | "alt" | "option" | "shift" | "super" | "win" | "cmd" | "command"
+            | "logo" | "meta" => return None,
+            _ => key_name(key)?,
+        };
+        Some(combo)
+    }
+
+    /// How it is shown: `Super Shift 3`, or with macOS's symbols, `⇧⌘3`.
+    pub fn label(&self, scheme: Scheme) -> String {
+        let mac = scheme == Scheme::Macos;
+        if self.key == SUPER_ALONE {
+            return if mac { "⌘" } else { "Super" }.into();
+        }
+        let key = KEY_LABELS
+            .iter()
+            .find(|(name, ..)| *name == self.key)
+            .map(|(_, usual, macos)| if mac { *macos } else { *usual }.to_string())
+            .unwrap_or_else(|| {
+                let mut chars = self.key.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(only), None) => only.to_uppercase().to_string(),
+                    _ => self.key.clone(),
+                }
+            });
+        if mac {
+            let mut label = String::new();
+            for (on, symbol) in [
+                (self.ctrl, "⌃"),
+                (self.alt, "⌥"),
+                (self.shift, "⇧"),
+                (self.logo, "⌘"),
+            ] {
+                if on {
+                    label.push_str(symbol);
+                }
+            }
+            label + &key
+        } else {
+            let mut words: Vec<&str> = [
+                (self.logo, "Super"),
+                (self.ctrl, "Ctrl"),
+                (self.alt, "Alt"),
+                (self.shift, "Shift"),
+            ]
+            .into_iter()
+            .filter_map(|(on, word)| on.then_some(word))
+            .collect();
+            words.push(&key);
+            words.join(" ")
+        }
+    }
+
+    fn without_shift(&self) -> Combo {
+        Combo {
+            shift: false,
+            ..self.clone()
+        }
+    }
+
+    /// The same keys with Shift too.
+    pub fn with_shift(&self) -> Combo {
+        Combo {
+            shift: true,
+            ..self.clone()
+        }
+    }
+}
+
+/// As the configuration writes it: `Ctrl+Alt+Shift+Super+key`.
+impl fmt::Display for Combo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (on, word) in [
+            (self.ctrl, "Ctrl"),
+            (self.alt, "Alt"),
+            (self.shift, "Shift"),
+            (self.logo, "Super"),
+        ] {
+            if on {
+                write!(f, "{word}+")?;
+            }
+        }
+        f.write_str(&self.key)
+    }
+}
+
+/// Where Settings lists an action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    General,
+    Windows,
+    Arrange,
+    Desktops,
+    Screenshots,
+    Editing,
+    Text,
+}
+
+impl Group {
+    pub const ALL: [Group; 7] = [
+        Group::General,
+        Group::Windows,
+        Group::Arrange,
+        Group::Desktops,
+        Group::Screenshots,
+        Group::Editing,
+        Group::Text,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::General => "一般",
+            Group::Windows => "視窗",
+            Group::Arrange => "視窗排列",
+            Group::Desktops => "桌面",
+            Group::Screenshots => "截圖",
+            Group::Editing => "編輯",
+            Group::Text => "文字游標",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Action {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub group: Group,
+    /// The keys each scheme gives it: Linux's, macOS's and Windows'.
+    keys: [&'static [&'static str]; 3],
+    /// For an application action, the keys applications do it with and the keys terminals
+    /// do, where Ctrl with a letter goes to the program running in them: combinations one
+    /// after another, separated by spaces, or none.
+    native: Option<(&'static str, &'static str)>,
+    /// Whether its keys with Shift too do it with Shift too, as moving the cursor does selecting.
+    pub extends: bool,
+}
+
+impl Action {
+    /// Whether the window in front does it, rather than Nekoland.
+    pub fn is_app(&self) -> bool {
+        self.native.is_some()
+    }
+
+    /// The keys `scheme` gives it.
+    pub fn defaults(&self, scheme: Scheme) -> Vec<Combo> {
+        self.keys[scheme.index()]
+            .iter()
+            .filter_map(|text| Combo::parse(text))
+            .collect()
+    }
+}
+
+const fn system(
+    id: &'static str,
+    title: &'static str,
+    group: Group,
+    keys: [&'static [&'static str]; 3],
+) -> Action {
+    Action {
+        id,
+        title,
+        group,
+        keys,
+        native: None,
+        extends: false,
+    }
+}
+
+/// An application action, with keys on macOS alone: elsewhere applications take Ctrl with
+/// the letter themselves.
+const fn app(
+    id: &'static str,
+    title: &'static str,
+    group: Group,
+    mac: &'static [&'static str],
+    usual: &'static str,
+    terminal: &'static str,
+) -> Action {
+    Action {
+        id,
+        title,
+        group,
+        keys: [&[], mac, &[]],
+        native: Some((usual, terminal)),
+        extends: false,
+    }
+}
+
+/// A cursor movement, which Shift turns into selecting.
+const fn moving(
+    id: &'static str,
+    title: &'static str,
+    mac: &'static [&'static str],
+    usual: &'static str,
+    terminal: &'static str,
+) -> Action {
+    let mut action = app(id, title, Group::Text, mac, usual, terminal);
+    action.extends = true;
+    action
+}
+
+use Group::*;
+
+static ACTIONS: &[Action] = &[
+    system(
+        "launcher",
+        "啟動器",
+        General,
+        [
+            &["Alt+Space"],
+            &["Super+Space", "Alt+Space"],
+            &["Super+S", "Alt+Space"],
+        ],
+    ),
+    system(
+        "apps",
+        "所有應用程式",
+        General,
+        [&["Super+A"], &["F4"], &["Super"]],
+    ),
+    system(
+        "terminal",
+        "終端機",
+        General,
+        [&["Super+Return", "Ctrl+Alt+T"], &[], &["Ctrl+Alt+T"]],
+    ),
+    system(
+        "drop-down-terminal",
+        "下拉式終端機",
+        General,
+        [&["Super+grave"], &["Ctrl+grave"], &["Super+grave"]],
+    ),
+    system("settings", "設定", General, [&[], &[], &["Super+I"]]),
+    system(
+        "lock",
+        "鎖定螢幕",
+        General,
+        [&["Super+L"], &["Ctrl+Super+Q"], &["Super+L"]],
+    ),
+    system("projection", "投影", General, [&["Super+P"], &[], &["Super+P"]]),
+    system(
+        "menu-bar",
+        "選單列",
+        General,
+        [&["Ctrl+F2"], &["Ctrl+F2"], &["Ctrl+F2"]],
+    ),
+    system(
+        "dock",
+        "Dock",
+        General,
+        [&["Ctrl+F3"], &["Ctrl+F3"], &["Ctrl+F3"]],
+    ),
+    system(
+        "zoom-in",
+        "放大螢幕",
+        General,
+        [
+            &["Ctrl+Super+equal", "Ctrl+Super+plus"],
+            &["Alt+Super+equal"],
+            &["Super+equal"],
+        ],
+    ),
+    system(
+        "zoom-out",
+        "縮小螢幕",
+        General,
+        [&["Ctrl+Super+minus"], &["Alt+Super+minus"], &["Super+minus"]],
+    ),
+    system(
+        "switch-window",
+        "切換視窗",
+        Windows,
+        [&["Alt+Tab", "Super+Tab"], &["Super+Tab"], &["Alt+Tab"]],
+    ),
+    system(
+        "overview",
+        "所有視窗",
+        Windows,
+        [&["Ctrl+Alt+Up", "Super"], &["Ctrl+Up", "F3"], &["Super+Tab"]],
+    ),
+    system(
+        "close-window",
+        "關閉視窗",
+        Windows,
+        [&["Alt+F4", "Super+Q"], &[], &["Alt+F4"]],
+    ),
+    system("quit-app", "結束應用程式", Windows, [&[], &["Super+Q"], &[]]),
+    system(
+        "minimize",
+        "最小化",
+        Windows,
+        [&["Super+H"], &["Super+M", "Super+H"], &["Super+M"]],
+    ),
+    system(
+        "fullscreen",
+        "全螢幕",
+        Windows,
+        [&["F11"], &["Ctrl+Super+F"], &["F11"]],
+    ),
+    // Windows' keys for the halves and the rest as Linux's; macOS's are Rectangle's.
+    system(
+        "arrange-left",
+        "左半邊",
+        Arrange,
+        [&["Super+Left"], &["Ctrl+Alt+Left"], &["Super+Left"]],
+    ),
+    system(
+        "arrange-right",
+        "右半邊",
+        Arrange,
+        [&["Super+Right"], &["Ctrl+Alt+Right"], &["Super+Right"]],
+    ),
+    system(
+        "arrange-top",
+        "上半部",
+        Arrange,
+        [&["Alt+Super+Up"], &["Ctrl+Alt+Up"], &["Alt+Super+Up"]],
+    ),
+    system(
+        "arrange-bottom",
+        "下半部",
+        Arrange,
+        [&["Alt+Super+Down"], &["Ctrl+Alt+Down"], &["Alt+Super+Down"]],
+    ),
+    system(
+        "arrange-maximize",
+        "最大化",
+        Arrange,
+        [
+            &["Super+Up", "Alt+Super+Return"],
+            &["Ctrl+Alt+Return"],
+            &["Super+Up", "Alt+Super+Return"],
+        ],
+    ),
+    system(
+        "arrange-maximize-height",
+        "最大化高度",
+        Arrange,
+        [
+            &["Alt+Shift+Super+Up"],
+            &["Ctrl+Alt+Shift+Up"],
+            &["Alt+Shift+Super+Up"],
+        ],
+    ),
+    // Rectangle's Ctrl+Option+Delete is the way out of Nekoland, Ctrl+Alt+Backspace, here.
+    system(
+        "arrange-restore",
+        "回到先前的大小",
+        Arrange,
+        [
+            &["Super+Down", "Alt+Super+BackSpace"],
+            &["Ctrl+Alt+Shift+Down"],
+            &["Super+Down", "Alt+Super+BackSpace"],
+        ],
+    ),
+    system(
+        "arrange-top-left",
+        "左上角",
+        Arrange,
+        [&["Alt+Super+U"], &["Ctrl+Alt+U"], &["Alt+Super+U"]],
+    ),
+    system(
+        "arrange-top-right",
+        "右上角",
+        Arrange,
+        [&["Alt+Super+I"], &["Ctrl+Alt+I"], &["Alt+Super+I"]],
+    ),
+    system(
+        "arrange-bottom-left",
+        "左下角",
+        Arrange,
+        [&["Alt+Super+J"], &["Ctrl+Alt+J"], &["Alt+Super+J"]],
+    ),
+    system(
+        "arrange-bottom-right",
+        "右下角",
+        Arrange,
+        [&["Alt+Super+K"], &["Ctrl+Alt+K"], &["Alt+Super+K"]],
+    ),
+    system(
+        "arrange-first-third",
+        "左三分之一",
+        Arrange,
+        [&["Alt+Super+D"], &["Ctrl+Alt+D"], &["Alt+Super+D"]],
+    ),
+    system(
+        "arrange-center-third",
+        "中間三分之一",
+        Arrange,
+        [&["Alt+Super+F"], &["Ctrl+Alt+F"], &["Alt+Super+F"]],
+    ),
+    system(
+        "arrange-last-third",
+        "右三分之一",
+        Arrange,
+        [&["Alt+Super+G"], &["Ctrl+Alt+G"], &["Alt+Super+G"]],
+    ),
+    system(
+        "arrange-first-two-thirds",
+        "左三分之二",
+        Arrange,
+        [&["Alt+Super+E"], &["Ctrl+Alt+E"], &["Alt+Super+E"]],
+    ),
+    system(
+        "arrange-last-two-thirds",
+        "右三分之二",
+        Arrange,
+        [&["Alt+Super+T"], &["Ctrl+Alt+T"], &["Alt+Super+T"]],
+    ),
+    system(
+        "arrange-center",
+        "置中",
+        Arrange,
+        [&["Alt+Super+C"], &["Ctrl+Alt+C"], &["Alt+Super+C"]],
+    ),
+    system(
+        "arrange-larger",
+        "加大",
+        Arrange,
+        [&["Alt+Super+equal"], &["Ctrl+Alt+equal"], &["Alt+Super+equal"]],
+    ),
+    system(
+        "arrange-smaller",
+        "縮小",
+        Arrange,
+        [&["Alt+Super+minus"], &["Ctrl+Alt+minus"], &["Alt+Super+minus"]],
+    ),
+    system(
+        "workspace-left",
+        "上一個桌面",
+        Desktops,
+        [
+            &["Ctrl+Super+Left", "Ctrl+Alt+Left", "Super+Page_Up"],
+            &["Ctrl+Left"],
+            &["Ctrl+Super+Left"],
+        ],
+    ),
+    system(
+        "workspace-right",
+        "下一個桌面",
+        Desktops,
+        [
+            &["Ctrl+Super+Right", "Ctrl+Alt+Right", "Super+Page_Down"],
+            &["Ctrl+Right"],
+            &["Ctrl+Super+Right"],
+        ],
+    ),
+    system(
+        "new-workspace",
+        "新增桌面",
+        Desktops,
+        [&["Ctrl+Super+D"], &[], &["Ctrl+Super+D"]],
+    ),
+    system(
+        "close-workspace",
+        "關閉桌面",
+        Desktops,
+        [&["Ctrl+Super+F4"], &[], &["Ctrl+Super+F4"]],
+    ),
+    system(
+        "carry-left",
+        "視窗移到上一個桌面",
+        Desktops,
+        [
+            &["Ctrl+Shift+Super+Left"],
+            &["Ctrl+Shift+Left"],
+            &["Ctrl+Shift+Super+Left"],
+        ],
+    ),
+    system(
+        "carry-right",
+        "視窗移到下一個桌面",
+        Desktops,
+        [
+            &["Ctrl+Shift+Super+Right"],
+            &["Ctrl+Shift+Right"],
+            &["Ctrl+Shift+Super+Right"],
+        ],
+    ),
+    system(
+        "shot-full",
+        "全螢幕截圖",
+        Screenshots,
+        [
+            &["Shift+Super+3", "Shift+Print"],
+            &["Shift+Super+3"],
+            &["Super+Print"],
+        ],
+    ),
+    system(
+        "shot-area",
+        "截取範圍",
+        Screenshots,
+        [
+            &["Shift+Super+4", "Print"],
+            &["Shift+Super+4", "Print"],
+            &["Shift+Super+S", "Print"],
+        ],
+    ),
+    system(
+        "shot-window",
+        "截取視窗",
+        Screenshots,
+        [
+            &["Shift+Super+5", "Alt+Print"],
+            &["Shift+Super+5"],
+            &["Alt+Print"],
+        ],
+    ),
+    system(
+        "shot-scroll",
+        "捲動截圖",
+        Screenshots,
+        [&["Shift+Super+6"], &["Shift+Super+6"], &[]],
+    ),
+    system(
+        "shot-repeat",
+        "重複上次截圖",
+        Screenshots,
+        [&["Shift+Super+R"], &["Shift+Super+R"], &[]],
+    ),
+    system(
+        "shot-ocr",
+        "擷取文字",
+        Screenshots,
+        [&["Shift+Super+O"], &["Shift+Super+O"], &["Shift+Super+T"]],
+    ),
+    system(
+        "shot-clipboard",
+        "截圖到剪貼簿",
+        Screenshots,
+        [&["Shift+Super+V"], &["Shift+Super+V"], &[]],
+    ),
+    system(
+        "shot-delay",
+        "延遲截圖",
+        Screenshots,
+        [&["Shift+Super+D"], &["Shift+Super+D"], &[]],
+    ),
+    app("copy", "拷貝", Editing, &["Super+C"], "Ctrl+C", "Ctrl+Shift+C"),
+    app("cut", "剪下", Editing, &["Super+X"], "Ctrl+X", ""),
+    app("paste", "貼上", Editing, &["Super+V"], "Ctrl+V", "Ctrl+Shift+V"),
+    app("undo", "還原", Editing, &["Super+Z"], "Ctrl+Z", ""),
+    app("redo", "重做", Editing, &["Shift+Super+Z"], "Ctrl+Shift+Z", ""),
+    app(
+        "select-all",
+        "全選",
+        Editing,
+        &["Super+A"],
+        "Ctrl+A",
+        "Ctrl+Shift+A",
+    ),
+    app("find", "尋找", Editing, &["Super+F"], "Ctrl+F", "Ctrl+Shift+F"),
+    app("save", "儲存", Editing, &["Super+S"], "Ctrl+S", ""),
+    app("open", "打開", Editing, &["Super+O"], "Ctrl+O", ""),
+    app("new", "新增", Editing, &["Super+N"], "Ctrl+N", "Ctrl+Shift+N"),
+    app(
+        "new-tab",
+        "新增分頁",
+        Editing,
+        &["Super+T"],
+        "Ctrl+T",
+        "Ctrl+Shift+T",
+    ),
+    app(
+        "reopen-tab",
+        "重新打開分頁",
+        Editing,
+        &["Shift+Super+T"],
+        "Ctrl+Shift+T",
+        "",
+    ),
+    app(
+        "close",
+        "關閉分頁或視窗",
+        Editing,
+        &["Super+W"],
+        "Ctrl+W",
+        "Ctrl+Shift+W",
+    ),
+    app("print", "列印", Editing, &["Super+P"], "Ctrl+P", ""),
+    app("reload", "重新載入", Editing, &["Super+R"], "Ctrl+R", ""),
+    app("address", "網址列", Editing, &["Super+L"], "Ctrl+L", ""),
+    app("back", "上一頁", Editing, &["Super+bracketleft"], "Alt+Left", ""),
+    app(
+        "forward",
+        "下一頁",
+        Editing,
+        &["Super+bracketright"],
+        "Alt+Right",
+        "",
+    ),
+    app(
+        "preferences",
+        "偏好設定",
+        Editing,
+        &["Super+comma"],
+        "Ctrl+comma",
+        "Ctrl+comma",
+    ),
+    moving("line-start", "行首", &["Super+Left"], "Home", "Home"),
+    moving("line-end", "行尾", &["Super+Right"], "End", "End"),
+    moving("document-start", "文件開頭", &["Super+Up"], "Ctrl+Home", ""),
+    moving("document-end", "文件結尾", &["Super+Down"], "Ctrl+End", ""),
+    moving("word-left", "上一個字", &["Alt+Left"], "Ctrl+Left", "Ctrl+Left"),
+    moving(
+        "word-right",
+        "下一個字",
+        &["Alt+Right"],
+        "Ctrl+Right",
+        "Ctrl+Right",
+    ),
+    app(
+        "delete-word",
+        "刪除前一個字",
+        Text,
+        &["Alt+BackSpace"],
+        "Ctrl+BackSpace",
+        "Ctrl+W",
+    ),
+    app(
+        "delete-line",
+        "刪除到行首",
+        Text,
+        &["Super+BackSpace"],
+        "Shift+Home BackSpace",
+        "Ctrl+U",
+    ),
+];
+
+/// Every action, as Settings lists them within their groups.
+pub fn actions() -> &'static [Action] {
+    ACTIONS
+}
+
+pub fn action(id: &str) -> Option<&'static Action> {
+    ACTIONS.iter().find(|action| action.id == id)
+}
+
+/// Every action with its keys in `scheme`, the configuration's first: a key the
+/// configuration gives one action is taken from the action the scheme gave it to.
+pub fn bindings(scheme: Scheme, custom: &Custom) -> Vec<(&'static Action, Vec<Combo>)> {
+    let own = custom.get(&scheme);
+    let own_keys = |action: &Action| -> Option<Vec<Combo>> {
+        own?.get(action.id)
+            .map(|keys| keys.iter().filter_map(|text| Combo::parse(text)).collect())
+    };
+    let taken: HashSet<Combo> = ACTIONS.iter().filter_map(own_keys).flatten().collect();
+    ACTIONS
+        .iter()
+        .map(|action| {
+            let keys = own_keys(action).unwrap_or_else(|| {
+                action
+                    .defaults(scheme)
+                    .into_iter()
+                    .filter(|combo| !taken.contains(combo))
+                    .collect()
+            });
+            (action, keys)
+        })
+        .collect()
+}
+
+/// The keys `id` has in `scheme`.
+pub fn keys(scheme: Scheme, custom: &Custom, id: &str) -> Vec<Combo> {
+    bindings(scheme, custom)
+        .into_iter()
+        .find(|(action, _)| action.id == id)
+        .map(|(_, keys)| keys)
+        .unwrap_or_default()
+}
+
+/// Whether the configuration gives `id` keys of its own in `scheme`.
+pub fn is_custom(scheme: Scheme, custom: &Custom, id: &str) -> bool {
+    custom.get(&scheme).is_some_and(|own| own.contains_key(id))
+}
+
+/// The action `combo` does in `scheme`, and whether it was found as one that Shift extends,
+/// with Shift added to its keys.
+pub fn find(scheme: Scheme, custom: &Custom, combo: &Combo) -> Option<(&'static Action, bool)> {
+    let bindings = bindings(scheme, custom);
+    let bound = |combo: &Combo| {
+        bindings
+            .iter()
+            .find(|(_, keys)| keys.contains(combo))
+            .map(|(action, _)| *action)
+    };
+    if let Some(action) = bound(combo) {
+        return Some((action, false));
+    }
+    combo
+        .shift
+        .then(|| bound(&combo.without_shift()))
+        .flatten()
+        .filter(|action| action.extends)
+        .map(|action| (action, true))
+}
+
+/// Terminals, by what their application IDs have in them, where Ctrl with a letter goes
+/// to the program running in them.
+// shortcut: known by name; read their desktop entry's TerminalEmulator category once one
+// is missed.
+const TERMINALS: [&str; 12] = [
+    "terminal",
+    "foot",
+    "kitty",
+    "alacritty",
+    "ptyxis",
+    "konsole",
+    "wezterm",
+    "xterm",
+    "ghostty",
+    "tilix",
+    "terminator",
+    "org.gnome.console",
+];
+
+pub fn is_terminal(app_id: &str) -> bool {
+    let app_id = app_id.to_lowercase();
+    TERMINALS.iter().any(|name| app_id.contains(name))
+}
+
+/// The keys the application `app_id` does an application action with, one combination
+/// after another: none for a system action, or one the application has no keys for.
+pub fn native(action: &Action, app_id: &str, apps: &AppKeys) -> Vec<Combo> {
+    let Some((usual, terminal)) = action.native else {
+        return Vec::new();
+    };
+    let keys = match apps.get(app_id).and_then(|keys| keys.get(action.id)) {
+        Some(own) => own.as_str(),
+        None if is_terminal(app_id) => terminal,
+        None => usual,
+    };
+    keys.split_whitespace().filter_map(Combo::parse).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn combo(text: &str) -> Combo {
+        Combo::parse(text).unwrap()
+    }
+
+    #[test]
+    fn combinations_are_read_in_any_spelling_and_written_one_way() {
+        assert_eq!(combo("cmd+shift+3"), combo("Shift+Super+3"));
+        assert_eq!(combo("Ctrl+Alt+Enter").key, "Return");
+        assert_eq!(combo("Super+=").key, "equal");
+        assert_eq!(combo("Win+PageUp").to_string(), "Super+Page_Up");
+        assert_eq!(
+            combo("Super+Ctrl+Shift+Left").to_string(),
+            "Ctrl+Shift+Super+Left"
+        );
+        assert_eq!(combo("Super").key, SUPER_ALONE);
+        assert_eq!(Combo::parse("Ctrl+Shift"), None);
+        assert_eq!(Combo::parse("Hyper+A"), None);
+        assert_eq!(Combo::parse(""), None);
+    }
+
+    #[test]
+    fn labels_follow_the_scheme() {
+        assert_eq!(combo("Shift+Super+3").label(Scheme::Macos), "⇧⌘3");
+        assert_eq!(combo("Ctrl+Alt+Return").label(Scheme::Macos), "⌃⌥↩");
+        assert_eq!(combo("Ctrl+Super+Left").label(Scheme::Linux), "Super Ctrl ←");
+        assert_eq!(combo("Super").label(Scheme::Windows), "Super");
+    }
+
+    #[test]
+    fn every_scheme_gives_each_combination_to_one_action() {
+        for scheme in Scheme::ALL {
+            let mut seen = HashSet::new();
+            for action in ACTIONS {
+                assert_eq!(
+                    action.keys[scheme.index()].len(),
+                    action.defaults(scheme).len(),
+                    "{}",
+                    action.id
+                );
+                for combo in action.defaults(scheme) {
+                    assert!(seen.insert(combo.clone()), "{} twice in {scheme:?}", combo);
+                }
+            }
+        }
+        let ids: HashSet<&str> = ACTIONS.iter().map(|action| action.id).collect();
+        assert_eq!(ids.len(), ACTIONS.len());
+    }
+
+    #[test]
+    fn natives_parse() {
+        for action in ACTIONS {
+            if let Some((usual, terminal)) = action.native {
+                for keys in [usual, terminal] {
+                    assert_eq!(
+                        keys.split_whitespace().count(),
+                        native_of(keys).len(),
+                        "{}",
+                        action.id
+                    );
+                }
+            }
+        }
+    }
+
+    fn native_of(keys: &str) -> Vec<Combo> {
+        keys.split_whitespace().filter_map(Combo::parse).collect()
+    }
+
+    #[test]
+    fn linux_keeps_ctrl_for_applications_and_macos_takes_super() {
+        let none = Custom::new();
+        assert_eq!(
+            find(Scheme::Linux, &none, &combo("Ctrl+C")).map(|(action, _)| action.id),
+            None
+        );
+        assert_eq!(
+            find(Scheme::Macos, &none, &combo("Super+C")).map(|(action, _)| action.id),
+            Some("copy")
+        );
+        assert_eq!(
+            find(Scheme::Linux, &none, &combo("Super+Left")).map(|(action, _)| action.id),
+            Some("arrange-left")
+        );
+        assert_eq!(
+            find(Scheme::Macos, &none, &combo("Super+Left")).map(|(action, _)| action.id),
+            Some("line-start")
+        );
+        assert_eq!(
+            find(Scheme::Windows, &none, &combo("Super")).map(|(action, _)| action.id),
+            Some("apps")
+        );
+    }
+
+    #[test]
+    fn shift_extends_a_movement_only() {
+        let none = Custom::new();
+        let found =
+            find(Scheme::Macos, &none, &combo("Shift+Super+Left")).map(|(action, shift)| (action.id, shift));
+        assert_eq!(found, Some(("line-start", true)));
+        assert_eq!(find(Scheme::Macos, &none, &combo("Shift+Super+C")), None);
+    }
+
+    #[test]
+    fn a_key_given_in_the_configuration_is_taken_from_the_action_that_had_it() {
+        let custom: Custom = [(
+            Scheme::Linux,
+            [("lock".to_string(), vec!["Super+Q".to_string()])].into(),
+        )]
+        .into();
+        assert_eq!(
+            find(Scheme::Linux, &custom, &combo("Super+Q")).map(|(action, _)| action.id),
+            Some("lock")
+        );
+        assert_eq!(
+            keys(Scheme::Linux, &custom, "close-window"),
+            vec![combo("Alt+F4")]
+        );
+        assert_eq!(find(Scheme::Linux, &custom, &combo("Super+L")), None);
+        // Only in the scheme it was given in.
+        assert_eq!(
+            find(Scheme::Windows, &custom, &combo("Super+L")).map(|(action, _)| action.id),
+            Some("lock")
+        );
+        let off: Custom = [(Scheme::Linux, [("lock".to_string(), vec![])].into())].into();
+        assert!(keys(Scheme::Linux, &off, "lock").is_empty());
+        assert!(is_custom(Scheme::Linux, &off, "lock"));
+    }
+
+    #[test]
+    fn terminals_and_applications_named_in_the_configuration_get_their_own_keys() {
+        let copy = action("copy").unwrap();
+        let none = AppKeys::new();
+        assert_eq!(native(copy, "org.gnome.TextEditor", &none), vec![combo("Ctrl+C")]);
+        assert_eq!(
+            native(copy, "io.github.koukeneko.Nekoland.Terminal", &none),
+            vec![combo("Ctrl+Shift+C")]
+        );
+        assert!(native(action("undo").unwrap(), "kitty", &none).is_empty());
+        let line = native(action("delete-line").unwrap(), "firefox", &none);
+        assert_eq!(line, vec![combo("Shift+Home"), combo("BackSpace")]);
+        let apps: AppKeys = [(
+            "emacs".to_string(),
+            [("copy".to_string(), "Alt+W".to_string())].into(),
+        )]
+        .into();
+        assert_eq!(native(copy, "emacs", &apps), vec![combo("Alt+W")]);
+        assert!(native(action("lock").unwrap(), "firefox", &none).is_empty());
+    }
+}

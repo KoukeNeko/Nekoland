@@ -9,6 +9,7 @@ mod bluetooth;
 mod display;
 mod focus;
 mod imagegen;
+mod keys;
 mod network;
 mod printers;
 mod region;
@@ -3073,54 +3074,6 @@ fn on_off(on: bool) -> String {
     if on { "開啟" } else { "關閉" }.into()
 }
 
-/// The window arrangement shortcuts, as the compositor takes them, by what they do.
-const ARRANGE_SHORTCUTS: [(&str, &str); 10] = [
-    ("左半邊、右半邊", "Super ← →"),
-    ("上半部、下半部", "Super Alt ↑ ↓"),
-    ("四個角", "Super Alt U I J K"),
-    ("三分之一", "Super Alt D F G"),
-    ("三分之二", "Super Alt E T"),
-    ("最大化", "Super ↑"),
-    ("最大化高度", "Super Alt Shift ↑"),
-    ("置中", "Super Alt C"),
-    ("加大、縮小", "Super Alt = -"),
-    ("回到先前的大小", "Super ↓"),
-];
-
-/// The compositor's own shortcuts, as src/input.rs takes them, by what they do; the window
-/// arrangement's are on 視窗.
-const SYSTEM_SHORTCUTS: [(&str, &str); 18] = [
-    ("啟動器", "Alt Space"),
-    ("所有應用程式", "Super A"),
-    ("終端機", "Super Enter"),
-    ("切換視窗", "Alt Tab"),
-    ("關閉視窗", "Super Q"),
-    ("最小化視窗", "Super H"),
-    ("全螢幕", "F11"),
-    ("所有視窗", "Ctrl Alt ↑"),
-    ("切換桌面", "Super Ctrl ← →"),
-    ("新增桌面", "Super Ctrl D"),
-    ("關閉桌面", "Super Ctrl F4"),
-    ("視窗移到旁邊的桌面", "Super Ctrl Shift ← →"),
-    ("選單列", "Ctrl F2"),
-    ("Dock", "Ctrl F3"),
-    ("鎖定螢幕", "Super L"),
-    ("登出", "Ctrl Alt Backspace"),
-    ("放大螢幕", "Super Ctrl ="),
-    ("縮小螢幕", "Super Ctrl -"),
-];
-
-/// A group of shortcuts, by what they do, with their keys beside.
-fn shortcuts_group(title: &str, shortcuts: &[(&str, &str)]) -> adw::PreferencesGroup {
-    let shown = group(title);
-    for (title, keys) in shortcuts {
-        let row = adw::ActionRow::builder().title(*title).build();
-        row.add_suffix(&gtk::Label::builder().label(*keys).css_classes(["dim-label"]).build());
-        shown.add(&row);
-    }
-    shown
-}
-
 fn windows_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
 
@@ -3160,8 +3113,6 @@ fn windows_page(config: &Config) -> adw::PreferencesPage {
     let focus = group("焦點");
     focus.add(&switch_row(config, "焦點跟隨游標", "focus_follows_pointer"));
     page.add(&focus);
-
-    page.add(&shortcuts_group("鍵盤快速鍵", &ARRANGE_SHORTCUTS));
     page
 }
 
@@ -4591,9 +4542,8 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     );
     blink.bind_property("active", &blink_time, "visible").sync_create().build();
     typing.add(&blink_time);
-    let shortcuts = shortcuts_group("", &SYSTEM_SHORTCUTS);
-    let count = format!("{} 個", SYSTEM_SHORTCUTS.len());
-    typing.add(&subpage_row("鍵盤快速鍵", move || count.clone(), page_of_groups(&[shortcuts])));
+    let (shortcuts, scheme) = keys::shortcuts_page(config);
+    typing.add(&subpage_row("鍵盤快速鍵", scheme, shortcuts));
     page.add(&typing);
     page
 }

@@ -1,0 +1,11 @@
+[package]
+name = "nekoland-shortcuts"
+version = "0.1.0"
+edition = "2021"
+description = "What the compositor and Settings share about shortcuts: the actions, the keys macOS, Windows and Linux give them, and the keys each application does them with"
+
+[lib]
+name = "shortcuts"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

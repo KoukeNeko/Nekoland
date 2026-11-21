@@ -327,6 +327,14 @@ pub struct Config {
     /// Milliseconds a key is held before it counts, for a hand that brushes keys; a key held
     /// that long is sent when it is let go. 0 for every press.
     pub slow_keys_ms: u32,
+    /// Whose shortcuts Nekoland takes: `macos`, `windows` or `linux`; see the shortcuts crate.
+    pub shortcut_scheme: shortcuts::Scheme,
+    /// Keys of the configuration's own for actions, by scheme and then by action:
+    /// `{ macos = { lock = ["Ctrl+Super+Q"] } }`; an empty list leaves the action without keys.
+    pub shortcuts: shortcuts::Custom,
+    /// The keys an application does actions with where they are not the usual ones, by
+    /// application ID: `{ emacs = { copy = "Alt+W" } }`; an empty string for none.
+    pub app_shortcuts: shortcuts::AppKeys,
     /// Whether the displays' colours are inverted, through their gamma ramps, so that it takes
     /// a display whose gamma can be set.
     pub invert_colors: bool,
@@ -885,6 +893,9 @@ impl Default for Config {
             bounce_keys_ms: 0,
             sticky_keys: false,
             slow_keys_ms: 0,
+            shortcut_scheme: shortcuts::Scheme::default(),
+            shortcuts: shortcuts::Custom::new(),
+            app_shortcuts: shortcuts::AppKeys::new(),
             invert_colors: false,
             color_filter: "none".into(),
         }

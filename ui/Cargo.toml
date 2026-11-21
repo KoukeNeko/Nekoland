@@ -77,6 +77,7 @@ flate2 = "1"
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
 libc = "0.2"
 nekoland-calendar-data = { path = "../calendar-data" }
+nekoland-shortcuts = { path = "../shortcuts" }
 pangocairo = "0.20"
 poppler-rs = "0.24"
 png = "0.18"
