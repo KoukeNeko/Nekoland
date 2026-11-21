@@ -32,6 +32,27 @@ const APP_ID: &str = "io.github.koukeneko.Nekoland.Disks";
 /// How often the drives are read again, to show a drive plugged in or a mount made elsewhere.
 const REFRESH: Duration = Duration::from_secs(3);
 const MIB: u64 = 1 << 20;
+/// Why a change asked for is not made: the drive is not the one it was asked for.
+const CHANGED: &str = "磁碟已拔除或已變更";
+
+/// The drive as it is now, if it is still the one asked about: one plugged in meanwhile can
+/// take an unplugged one's device name. What is mounted is as it is now.
+fn disk_now(disk: &Disk) -> Option<Disk> {
+    let layout = |disk: &Disk| -> Vec<(String, String, u64)> {
+        disk.parts.iter().map(|part| (part.kname.clone(), part.uuid.clone(), part.size)).collect()
+    };
+    let now = model::read().ok()?.into_iter().find(|now| now.kname == disk.kname)?;
+    (now.size == disk.size && now.name == disk.name && layout(&now) == layout(disk)).then_some(now)
+}
+
+/// The partition as it is now, if it is still the one asked about.
+fn part_now(part: &Part) -> Option<Part> {
+    model::read()
+        .ok()?
+        .into_iter()
+        .flat_map(|disk| disk.parts)
+        .find(|now| now.kname == part.kname && now.uuid == part.uuid && now.size == part.size)
+}
 /// How wide the columns of amounts are.
 const COLUMN_WIDTHS: [i32; 4] = [110, 170, 90, 100];
 
@@ -934,6 +955,10 @@ impl Window {
             "格式化",
             true,
             move || {
+                let Some(part) = part_now(&part) else {
+                    this.failed(&format!("無法格式化「{name_text}」"), CHANGED);
+                    return;
+                };
                 let fstype = ops::FILE_SYSTEMS[fs.selected() as usize].0;
                 let job = ops::format(&part, fstype, name.text().as_str(), wipe.selected() == 1);
                 this.run_job(&format!("格式化「{name_text}」"), format!("無法格式化「{name_text}」"), job);
@@ -963,6 +988,10 @@ impl Window {
         let extra = form(&[kind.upcast_ref()]);
         let this = self.clone();
         self.ask("建立分割表", Some("磁碟上的所有資料會被清除，無法復原。"), &extra, "建立", true, move || {
+            let Some(disk) = disk_now(&disk) else {
+                this.failed("無法建立分割表", CHANGED);
+                return;
+            };
             let kind = if kind.selected() == 0 { "gpt" } else { "msdos" };
             this.run_job("建立分割表", "無法建立分割表".into(), ops::make_table(&disk, kind));
         });
@@ -975,6 +1004,10 @@ impl Window {
         let this = self.clone();
         let title = disk.title();
         self.ask(&format!("清除「{title}」？"), Some("磁碟上的所有分割區與資料會被清除，無法復原。"), &extra, "清除", true, move || {
+            let Some(disk) = disk_now(&disk) else {
+                this.failed(&format!("無法清除「{title}」"), CHANGED);
+                return;
+            };
             let table = [Some("gpt"), Some("msdos"), None][table.selected() as usize];
             let job = ops::wipe(&disk, how.selected() == 1, table);
             this.run_job(&format!("清除「{title}」"), format!("無法清除「{title}」"), job);
@@ -1001,6 +1034,10 @@ impl Window {
         extra.append(&scale);
         let this = self.clone();
         self.ask("新增分割區", None, &extra, "新增", false, move || {
+            let Some(disk) = disk_now(&disk) else {
+                this.failed("無法新增分割區", CHANGED);
+                return;
+            };
             let wanted = adjustment.value();
             let bytes = if wanted >= top - 0.05 { free } else { ((wanted * 1e9) as u64 / MIB * MIB).max(MIB) };
             let fstype = ops::FILE_SYSTEMS[fs.selected() as usize].0;
@@ -1024,6 +1061,10 @@ impl Window {
         let this = self.clone();
         let name = part.label();
         self.ask(&format!("調整「{name}」大小"), None, &extra, "調整大小", false, move || {
+            let (Some(disk), Some(part)) = (disk_now(&disk), part_now(&part)) else {
+                this.failed(&format!("無法調整「{name}」大小"), CHANGED);
+                return;
+            };
             let wanted = adjustment.value();
             let bytes = if (wanted - high_gb).abs() < 0.05 { high } else { ((wanted * 1e9) as u64).clamp(low, high) };
             let job = ops::resize(&disk, &part, kind, bytes);
@@ -1070,6 +1111,10 @@ impl Window {
             let disk = disk.clone();
             let again = this.clone();
             again.ask("還原磁碟映像檔", Some("目標磁碟上的所有資料會被覆寫，無法復原。"), &extra, "還原", true, move || {
+                let Some(disk) = disk_now(&disk) else {
+                    this.failed(&format!("無法還原「{title}」"), CHANGED);
+                    return;
+                };
                 let job = ops::image_restore(&path, &disk);
                 this.run_job(&format!("還原「{title}」"), format!("無法還原「{title}」"), job);
             });

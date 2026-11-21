@@ -565,10 +565,13 @@ pub fn image_create(disk: &Disk, file: &Path, zstd: bool) -> Job {
 }
 
 pub fn image_restore(file: &Path, disk: &Disk) -> Job {
-    // The shell tells only how dd did, so a broken archive is tested before the disk is written.
-    let script = "case \"$1\" in *.zst) zstd -tq -- \"$1\" || exit 1 ;; esac; case \"$1\" in *.zst) zstd -dc -- \"$1\" ;; *) cat -- \"$1\" ;; esac | dd of=\"$2\" bs=4M status=none conv=fsync";
+    // A broken archive is found before the disk is written; one that stops being read partway
+    // fails the pipe, as pipefail tells of zstd too and not only of dd.
+    let script = "set -o pipefail; case \"$1\" in \
+        *.zst) zstd -tq -- \"$1\" && zstd -dc -- \"$1\" | dd of=\"$2\" bs=4M status=none conv=fsync ;; \
+        *) dd if=\"$1\" of=\"$2\" bs=4M status=none conv=fsync ;; esac";
     let mut steps = unmount_all(disk);
-    steps.push(Step::root(&["sh", "-c", script, "sh", &file.to_string_lossy(), &disk.path]));
+    steps.push(Step::root(&["bash", "-c", script, "bash", &file.to_string_lossy(), &disk.path]));
     steps.push(Step::root(&["partprobe", &disk.path]).tolerated());
     Job::new(&format!("還原「{}」", disk.title()), steps)
 }
