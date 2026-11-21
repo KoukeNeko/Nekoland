@@ -177,6 +177,10 @@ pub fn parse(answer: &str) -> Vec<Theme> {
                 return None;
             }
             let id = text(&item["id"]);
+            // It names a folder in the cache, so a store's answer must not lead out of it.
+            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
             let folders = installed_folders(&manifest, &id, look);
             Some(Theme {
                 look,
@@ -548,7 +552,8 @@ mod tests {
              "downloadname3": "Ice", "downloadlink3": "https://github.com/x"},
             {"id": 2, "typeid": "107", "name": "Link only", "downloadname1": "site", "downloadlink1": "https://x"},
             {"id": 3, "typeid": "132", "name": "Hidden", "ghns_excluded": "1",
-             "downloadname1": "a.tar.gz", "downloadlink1": "https://x/3"}
+             "downloadname1": "a.tar.gz", "downloadlink1": "https://x/3"},
+            {"id": "../../4", "typeid": "107", "name": "Away", "downloadname1": "a.tar.gz", "downloadlink1": "https://x/4"}
         ]}"#;
         let found = parse(answer);
         assert_eq!(found.len(), 1);
