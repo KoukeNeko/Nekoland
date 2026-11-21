@@ -742,7 +742,7 @@ impl Default for Config {
             notifications_off: Vec::new(),
             focus_follows_pointer: false,
             edge_tiling: true,
-            animations: true,
+            animations: !in_xrdp_session(),
             window_gap: 0,
             night_shift: NightShift::Off,
             // The Mac's custom schedule.
@@ -919,6 +919,13 @@ pub fn xkb([layout, variant, options]: &[String; 3]) -> smithay::input::keyboard
         options: Some(options.clone()).filter(|options| !options.is_empty()),
         ..Default::default()
     }
+}
+
+/// Over RDP each frame of a motion that covers the screen is copied, converted and encoded
+/// whole by xorgxrdp and xrdp, which at four 4K displays manage about two a second: there
+/// things jump to where they go unless `animations` is set.
+fn in_xrdp_session() -> bool {
+    std::env::var_os("XRDP_SESSION").is_some()
 }
 
 fn config_path() -> Option<PathBuf> {

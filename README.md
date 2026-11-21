@@ -512,7 +512,10 @@ programs name show as they are, and one a program draws itself as the arrow. Wit
 other; other kinds of content stay where they were copied. Sound needs xrdp's PipeWire
 module, `pipewire-module-xrdp`.
 
-xrdp draws in software, so glass is slower than on a console. In a Hyper-V VM given a
+xrdp draws in software, so glass is slower than on a console. A change that covers the
+screen is copied, converted and encoded whole by xorgxrdp and xrdp, at four 4K displays
+about two frames a second, so there windows, desktops and menus jump to where they go
+unless `animations` is set in the configuration. In a Hyper-V VM given a
 GPU partition, with `dxgkrnl` loaded and the host's D3D12 libraries in `/usr/lib/wsl` as
 WSL lays them out, Nekoland sets `GALLIUM_DRIVER=d3d12` in xrdp sessions when `/dev/dxg`
 is there and none was chosen, and draws, as the programs it starts do, on the host's GPU.
