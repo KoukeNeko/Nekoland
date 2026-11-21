@@ -252,6 +252,9 @@ fn center(rect: Rectangle<i32, Logical>) -> Point<i32, Logical> {
 
 /// Where a window is drawn in a frame: `shown`, in place of `actual`, where it is and
 /// where clicks reach it, and how much of it is there to see.
+/// How much of a window shows while the desktop is peeked at: its outline, as Windows' does.
+const PEEK_ALPHA: f32 = 0.12;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub actual: Rectangle<i32, Logical>,
@@ -557,6 +560,10 @@ impl Nekoland {
         }
         if let Some(slide) = &self.motion.slide {
             shown.loc.x += slide.offsets(self.output_width()).0;
+        }
+        // Super+, shows the desktop through the windows while it is held.
+        if self.peeking && crate::windows::is_managed(window) {
+            alpha *= PEEK_ALPHA;
         }
         Some(Pose { actual, shown, alpha })
     }

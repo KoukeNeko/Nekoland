@@ -131,6 +131,9 @@ pub enum Command {
     VolumeUp,
     VolumeDown,
     Mute,
+    /// Starts a program, by the command line it is started with.
+    Spawn(String),
+    ShowDesktop,
 }
 
 #[derive(Clone)]
@@ -1418,6 +1421,9 @@ impl Nekoland {
         self.menu_bar.agenda.refresh();
         self.refresh_clock_panel();
         self.refresh_alert();
+        self.refresh_switcher();
+        self.refresh_snap_layouts();
+        self.refresh_widgets();
     }
 
     /// What the bar and its open menus put on screen, front first.
@@ -1441,6 +1447,12 @@ impl Nekoland {
                 }
             }
         }
+        // Over a fullscreen window too, as the bar is not.
+        if let Some(switcher) = self.switcher_overlay() {
+            overlays.insert(0, switcher);
+        }
+        overlays.extend(self.snap_layouts_overlay());
+        overlays.extend(self.widgets_overlay());
         if !self.menu_bar_shown() {
             return overlays;
         }
@@ -1762,6 +1774,35 @@ impl Nekoland {
         });
     }
 
+    /// Opens the 視窗 menu at the top left of the window in front, with moving, resizing and
+    /// closing it too, as Alt+Space does on Windows.
+    pub(crate) fn open_window_menu(&mut self) {
+        let Some(window) = self.focused_window().filter(is_managed) else {
+            return;
+        };
+        let Some(at) = self.space.element_location(&window).and_then(|at| self.local(at.to_f64())) else {
+            return;
+        };
+        let mut entries = self.menu_entries(&Source::Window);
+        entries.extend([
+            Entry::separator(),
+            Entry::item("關閉視窗", Command::CloseWindow).shortcut(&self.shortcut_label("close-window")),
+        ]);
+        self.open_menu_at(entries, at);
+        self.highlight_first_entry();
+    }
+
+    /// Highlights the first entry that can be chosen in a menu opened from the keyboard,
+    /// for the arrow keys to go on from.
+    pub(crate) fn highlight_first_entry(&mut self) {
+        if let Some(level) = self.menu_bar.open.as_mut().and_then(|open| open.levels.first_mut()) {
+            level.highlighted = level
+                .entries
+                .iter()
+                .position(|entry| entry.enabled && (entry.command.is_some() || !entry.children.is_empty()));
+        }
+    }
+
     /// Opens a menu of these entries with a corner at `point`, as a right click on the
     /// desktop does: its top left one, or, where it would not fit, the one on the other
     /// side, as the Mac's menus turn.
@@ -2043,7 +2084,7 @@ impl Nekoland {
                         entries.push(Entry::separator());
                     }
                     for window in windows {
-                        let title = window_names(&window).0;
+                        let title = crate::windows::title_without_app(&window_names(&window).0, &name);
                         let title = if title.is_empty() { name.clone() } else { title };
                         let current = focused.as_ref() == Some(&window);
                         entries.push(Entry::item(title, Command::Focus(window)).checked(current));
@@ -2630,6 +2671,8 @@ impl Nekoland {
             Command::VolumeUp => config::spawn(&self.config.volume_up),
             Command::VolumeDown => config::spawn(&self.config.volume_down),
             Command::Mute => config::spawn(&self.config.volume_mute),
+            Command::Spawn(command) => config::spawn(&command),
+            Command::ShowDesktop => self.toggle_show_desktop(),
         }
     }
 }
@@ -2675,6 +2718,12 @@ impl Nekoland {
                 Entry::item(label, Command::Arrange(command)).shortcut(&self.shortcut_label(&format!("arrange-{command}")))
             }));
         }
+        // Moving and sizing with the arrow keys, as Windows' and GNOME's window menus offer.
+        entries.extend([
+            Entry::separator(),
+            Entry::item("以方向鍵移動", Command::Arrange("move")).shortcut(&self.shortcut_label("move-window")),
+            Entry::item("以方向鍵調整大小", Command::Arrange("resize")).shortcut(&self.shortcut_label("resize-window")),
+        ]);
         entries
     }
 }

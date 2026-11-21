@@ -4973,6 +4973,13 @@ fn mouse_page(config: &Config) -> adw::PreferencesPage {
     pointer.add(&gsettings_switch("中鍵貼上", INTERFACE, "gtk-enable-primary-paste"));
     page.add(&pointer);
     let touchpad = group("觸控板");
+    // On unless turned off, as the compositor has it.
+    let using = adw::SwitchRow::builder()
+        .title("使用觸控板")
+        .active(config.0.get("touchpad").and_then(toml::Value::as_bool).unwrap_or(true))
+        .build();
+    using.connect_active_notify(|row| set(&format!("touchpad = {}", row.is_active())));
+    touchpad.add(&using);
     touchpad.add(&switch_row(config, "輕觸以點按", "tap_to_click"));
     touchpad.add(&switch_row(config, "打字時停用", "disable_while_typing"));
     page.add(&touchpad);

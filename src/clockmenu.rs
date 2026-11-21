@@ -83,7 +83,7 @@ const NO_EVENTS: &str = "沒有行程";
 const ALL_DAY: &str = "整天";
 const OVERDUE: &str = "逾期";
 const REPEATS: &str = "↻";
-const CALENDAR_COMMAND: &str = "nekoland-calendar";
+pub(crate) const CALENDAR_COMMAND: &str = "nekoland-calendar";
 const DATE_TIME_COMMAND: &str = "NEKOLAND_SETTINGS_PAGE=日期與時間 nekoland-settings";
 const MINUTES_IN_HOUR: u32 = 60;
 const SECONDS_IN_MINUTE: u32 = 60;
@@ -247,7 +247,7 @@ fn time_text((hour, minute): (u32, u32)) -> String {
 }
 
 /// When an event is, as the list says it.
-fn when_text(event: &Event) -> String {
+pub(crate) fn when_text(event: &Event) -> String {
     match (event.start, event.end) {
         (None, _) => ALL_DAY.to_string(),
         (Some(start), Some(end)) => format!("{} – {}", time_text(start), time_text(end)),

@@ -121,7 +121,7 @@ const KEY_NAMES: [(&str, &str); 44] = [
 ];
 
 /// How keys whose names say little are shown, everywhere and on macOS.
-const KEY_LABELS: [(&str, &str, &str); 20] = [
+const KEY_LABELS: [(&str, &str, &str); 23] = [
     ("Left", "←", "←"),
     ("Right", "→", "→"),
     ("Up", "↑", "↑"),
@@ -140,6 +140,9 @@ const KEY_LABELS: [(&str, &str, &str); 20] = [
     ("plus", "+", "+"),
     ("grave", "`", "`"),
     ("comma", ",", ","),
+    ("period", ".", "."),
+    ("semicolon", ";", ";"),
+    ("XF86Eject", "Eject", "⏏"),
     ("bracketleft", "[", "["),
     ("bracketright", "]", "]"),
 ];
@@ -395,6 +398,18 @@ const fn moving(
     action
 }
 
+/// A system action whose keys with Shift do it the other way round.
+const fn moving_system(
+    id: &'static str,
+    title: &'static str,
+    group: Group,
+    keys: [&'static [&'static str]; 3],
+) -> Action {
+    let mut action = system(id, title, group, keys);
+    action.extends = true;
+    action
+}
+
 use Group::*;
 
 static ACTIONS: &[Action] = &[
@@ -405,14 +420,14 @@ static ACTIONS: &[Action] = &[
         [
             &["Alt+Space", "Alt+F2"],
             &["Super+Space", "Alt+Space"],
-            &["Super+S", "Alt+Space", "Super+R"],
+            &["Super+S", "Super+R", "Super+Q"],
         ],
     ),
     system(
         "apps",
         "所有應用程式",
         General,
-        [&["Super+A"], &["F4"], &["Super"]],
+        [&["Super+A"], &["F4"], &["Super", "Ctrl+Escape"]],
     ),
     system(
         "terminal",
@@ -438,19 +453,19 @@ static ACTIONS: &[Action] = &[
         "menu-bar",
         "選單列",
         General,
-        [&["Ctrl+F2"], &["Ctrl+F2"], &["Ctrl+F2"]],
+        [&["Ctrl+F2", "F10"], &["Ctrl+F2"], &["Ctrl+F2"]],
     ),
     system(
         "dock",
         "Dock",
         General,
-        [&["Ctrl+F3"], &["Ctrl+F3"], &["Ctrl+F3"]],
+        [&["Ctrl+F3"], &["Ctrl+F3"], &["Ctrl+F3", "Super+T"]],
     ),
     system(
         "control-center",
         "控制中心",
         General,
-        [&["Super+S"], &[], &["Super+A"]],
+        [&["Super+S"], &["Ctrl+F8"], &["Super+A"]],
     ),
     system(
         "notification-center",
@@ -503,7 +518,7 @@ static ACTIONS: &[Action] = &[
         "放大螢幕",
         General,
         [
-            &["Ctrl+Super+equal", "Ctrl+Super+plus"],
+            &["Alt+Super+equal", "Alt+Super+plus"],
             &["Alt+Super+equal"],
             &["Super+equal"],
         ],
@@ -512,14 +527,100 @@ static ACTIONS: &[Action] = &[
         "zoom-out",
         "縮小螢幕",
         General,
-        [&["Ctrl+Super+minus"], &["Alt+Super+minus"], &["Super+minus"]],
+        [&["Alt+Super+minus"], &["Alt+Super+minus"], &["Super+minus"]],
     ),
     system(
+        "emoji",
+        "表情符號",
+        General,
+        [
+            &["Super+period"],
+            &["Ctrl+Super+space"],
+            &["Super+period", "Super+semicolon"],
+        ],
+    ),
+    system("clipboard-history", "剪貼簿歷史", General, [&[], &[], &["Super+V"]]),
+    system("quick-link", "快速連結", General, [&[], &[], &["Super+X"]]),
+    system("widgets", "小工具", General, [&[], &[], &["Super+W"]]),
+    system("quick-note", "快速備忘錄", General, [&[], &[], &[]]),
+    system("date-time", "日期與時間", General, [&[], &[], &["Alt+Super+D"]]),
+    system("do-not-disturb", "勿擾", General, [&[], &[], &[]]),
+    system("dock-autohide", "自動隱藏 Dock", General, [&[], &["Alt+Super+D"], &[]]),
+    system(
+        "record-screen",
+        "錄製螢幕",
+        General,
+        [&["Ctrl+Alt+Shift+R"], &[], &["Shift+Super+R"]],
+    ),
+    system("dictation", "語音輸入", General, [&[], &[], &["Super+H"]]),
+    system("cast", "投放到無線顯示器", General, [&[], &[], &["Super+K"]]),
+    system("rotation-lock", "旋轉鎖定", General, [&[], &[], &["Super+O"]]),
+    system(
+        "on-screen-keyboard",
+        "螢幕鍵盤",
+        General,
+        [&[], &[], &["Ctrl+Super+O"]],
+    ),
+    system(
+        "invert-colors",
+        "反轉顏色",
+        General,
+        [&[], &["Ctrl+Alt+Super+8"], &["Ctrl+Super+C"]],
+    ),
+    system(
+        "accessibility",
+        "協助工具",
+        General,
+        [&[], &["Alt+Super+F5"], &["Super+U"]],
+    ),
+    // GNOME's: takes the keys back from a window that asked for all of them.
+    system(
+        "restore-shortcuts",
+        "取回系統快速鍵",
+        General,
+        [&["Super+Escape"], &[], &[]],
+    ),
+    system("about", "關於這部電腦", General, [&[], &[], &["Super+Pause"]]),
+    system("security", "安全選項", General, [&[], &[], &["Ctrl+Alt+Delete"]]),
+    system("sleep", "睡眠", General, [&[], &["Alt+Super+XF86Eject"], &[]]),
+    system("restart", "重新開機", General, [&[], &["Ctrl+Super+XF86Eject"], &[]]),
+    system(
+        "shut-down",
+        "關機",
+        General,
+        [&[], &["Ctrl+Alt+Super+XF86Eject"], &[]],
+    ),
+    system("screens-off", "關閉螢幕", General, [&[], &["Ctrl+Shift+XF86Eject"], &[]]),
+    // Shift goes the other way, as it does on each of them.
+    moving_system(
         "switch-window",
         "切換視窗",
         Windows,
         [&["Alt+Tab", "Super+Tab"], &["Super+Tab"], &["Alt+Tab"]],
     ),
+    system(
+        "switch-window-held",
+        "切換視窗（不需按住）",
+        Windows,
+        [&[], &[], &["Ctrl+Alt+Tab"]],
+    ),
+    moving_system(
+        "cycle-windows",
+        "依序切換視窗",
+        Windows,
+        [&["Alt+Escape"], &["Ctrl+F4"], &["Alt+Escape"]],
+    ),
+    // KDE's Alt+F3, as Alt+Space is the launcher's there.
+    system(
+        "window-menu",
+        "視窗選單",
+        Windows,
+        [&["Alt+F3"], &[], &["Alt+space"]],
+    ),
+    system("move-window", "移動視窗", Windows, [&["Alt+F7"], &[], &[]]),
+    system("resize-window", "調整視窗大小", Windows, [&["Alt+F8"], &[], &[]]),
+    system("peek-desktop", "預覽桌面", Windows, [&[], &[], &["Super+comma"]]),
+    system("snap-layouts", "貼齊版面", Windows, [&[], &[], &["Super+Z"]]),
     system(
         "overview",
         "所有視窗",
@@ -610,7 +711,7 @@ static ACTIONS: &[Action] = &[
         [
             &["Alt+Shift+Super+Up"],
             &["Ctrl+Alt+Shift+Up"],
-            &["Alt+Shift+Super+Up"],
+            &["Alt+Shift+Super+Up", "Shift+Super+Up"],
         ],
     ),
     // Rectangle's Ctrl+Option+Delete is the way out of Nekoland, Ctrl+Alt+Backspace, here.
@@ -652,6 +753,18 @@ static ACTIONS: &[Action] = &[
         ],
     ),
     system(
+        "arrange-display-up",
+        "移到上方的顯示器",
+        Arrange,
+        [&["Shift+Super+Up"], &["Ctrl+Alt+Super+Up"], &[]],
+    ),
+    system(
+        "arrange-display-down",
+        "移到下方的顯示器",
+        Arrange,
+        [&["Shift+Super+Down"], &["Ctrl+Alt+Super+Down"], &[]],
+    ),
+    system(
         "arrange-top-left",
         "左上角",
         Arrange,
@@ -679,7 +792,8 @@ static ACTIONS: &[Action] = &[
         "arrange-first-third",
         "左三分之一",
         Arrange,
-        [&["Alt+Super+D"], &["Ctrl+Alt+D"], &["Alt+Super+D"]],
+        // Windows' Alt+Super+D is the clock's, so its thirds start a key along.
+        [&["Alt+Super+D"], &["Ctrl+Alt+D"], &["Alt+Super+A"]],
     ),
     system(
         "arrange-center-third",
@@ -715,13 +829,21 @@ static ACTIONS: &[Action] = &[
         "arrange-larger",
         "加大",
         Arrange,
-        [&["Alt+Super+equal"], &["Ctrl+Alt+equal"], &["Alt+Super+equal"]],
+        [
+            &["Alt+Shift+Super+equal"],
+            &["Ctrl+Alt+equal"],
+            &["Alt+Super+equal"],
+        ],
     ),
     system(
         "arrange-smaller",
         "縮小",
         Arrange,
-        [&["Alt+Super+minus"], &["Ctrl+Alt+minus"], &["Alt+Super+minus"]],
+        [
+            &["Alt+Shift+Super+minus"],
+            &["Ctrl+Alt+minus"],
+            &["Alt+Super+minus"],
+        ],
     ),
     system(
         "workspace-left",
@@ -781,7 +903,11 @@ static ACTIONS: &[Action] = &[
         "視窗移到上一個桌面",
         Desktops,
         [
-            &["Ctrl+Shift+Super+Left"],
+            &[
+                "Ctrl+Shift+Super+Left",
+                "Shift+Super+Page_Up",
+                "Ctrl+Alt+Shift+Left",
+            ],
             &["Ctrl+Shift+Left"],
             &["Ctrl+Shift+Super+Left"],
         ],
@@ -791,10 +917,26 @@ static ACTIONS: &[Action] = &[
         "視窗移到下一個桌面",
         Desktops,
         [
-            &["Ctrl+Shift+Super+Right"],
+            &[
+                "Ctrl+Shift+Super+Right",
+                "Shift+Super+Page_Down",
+                "Ctrl+Alt+Shift+Right",
+            ],
             &["Ctrl+Shift+Right"],
             &["Ctrl+Shift+Super+Right"],
         ],
+    ),
+    system(
+        "carry-first",
+        "視窗移到第一個桌面",
+        Desktops,
+        [&["Shift+Super+Home"], &[], &[]],
+    ),
+    system(
+        "carry-last",
+        "視窗移到最後一個桌面",
+        Desktops,
+        [&["Shift+Super+End"], &[], &[]],
     ),
     system(
         "dock-1",
@@ -851,6 +993,114 @@ static ACTIONS: &[Action] = &[
         [&["Super+9"], &[], &["Super+9"]],
     ),
     system(
+        "dock-new-1",
+        "第 1 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+1"]],
+    ),
+    system(
+        "dock-new-2",
+        "第 2 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+2"]],
+    ),
+    system(
+        "dock-new-3",
+        "第 3 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+3"]],
+    ),
+    system(
+        "dock-new-4",
+        "第 4 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+4"]],
+    ),
+    system(
+        "dock-new-5",
+        "第 5 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+5"]],
+    ),
+    system(
+        "dock-new-6",
+        "第 6 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+6"]],
+    ),
+    system(
+        "dock-new-7",
+        "第 7 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+7"]],
+    ),
+    system(
+        "dock-new-8",
+        "第 8 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+8"]],
+    ),
+    system(
+        "dock-new-9",
+        "第 9 個應用程式的新視窗",
+        Dock,
+        [&[], &[], &["Shift+Super+9"]],
+    ),
+    system(
+        "dock-menu-1",
+        "第 1 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+1"]],
+    ),
+    system(
+        "dock-menu-2",
+        "第 2 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+2"]],
+    ),
+    system(
+        "dock-menu-3",
+        "第 3 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+3"]],
+    ),
+    system(
+        "dock-menu-4",
+        "第 4 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+4"]],
+    ),
+    system(
+        "dock-menu-5",
+        "第 5 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+5"]],
+    ),
+    system(
+        "dock-menu-6",
+        "第 6 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+6"]],
+    ),
+    system(
+        "dock-menu-7",
+        "第 7 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+7"]],
+    ),
+    system(
+        "dock-menu-8",
+        "第 8 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+8"]],
+    ),
+    system(
+        "dock-menu-9",
+        "第 9 個應用程式的選單",
+        Dock,
+        [&[], &[], &["Alt+Super+9"]],
+    ),
+    system(
         "shot-full",
         "全螢幕截圖",
         Screenshots,
@@ -866,7 +1116,7 @@ static ACTIONS: &[Action] = &[
         Screenshots,
         [
             &["Shift+Super+4", "Print"],
-            &["Shift+Super+4", "Print"],
+            &["Shift+Super+4", "Shift+Super+5", "Print"],
             &["Shift+Super+S", "Print"],
         ],
     ),
@@ -876,7 +1126,7 @@ static ACTIONS: &[Action] = &[
         Screenshots,
         [
             &["Shift+Super+5", "Alt+Print"],
-            &["Shift+Super+5"],
+            &[],
             &["Alt+Print"],
         ],
     ),

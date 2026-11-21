@@ -205,10 +205,8 @@ pub fn scene_elements(
             popups_of: &windows,
             without_top_panel: false,
         };
-        let mut elements: Vec<SceneElement> = state
-            .desktop_front_elements(renderer, output_geometry.loc, scale)
-            .into_iter()
-            .collect();
+        let mut elements = switcher_front(state, renderer, output_geometry.loc, scale);
+        elements.extend(state.desktop_front_elements(renderer, output_geometry.loc, scale));
         elements.extend(dock_front(state, renderer, output_geometry.loc, scale));
         elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
@@ -485,6 +483,36 @@ fn desktop_thumbnails(
             let placed = RelocateRenderElement::from_element(scaled, offset, Relocate::Relative);
             CropRenderElement::from_element(placed, scale, crop).map(SceneElement::Desktop)
         }));
+    }
+    elements
+}
+
+/// The switcher's windows, small in their cells, each with its icon in front of it.
+fn switcher_front(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output_loc: Point<i32, Logical>,
+    scale: f64,
+) -> Vec<SceneElement> {
+    let thumbnails = state.switcher_thumbnails();
+    let mut elements: Vec<SceneElement> = thumbnails
+        .iter()
+        .filter_map(|(_, _, icon, at)| {
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (*at - output_loc).to_f64().to_physical(scale),
+                &icon.as_ref()?.buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture)
+        })
+        .collect();
+    for (window, rect, _, _) in thumbnails {
+        elements.extend(window_fitted(renderer, window, *rect, output_loc, scale));
     }
     elements
 }

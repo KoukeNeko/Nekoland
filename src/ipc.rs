@@ -196,6 +196,14 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                 None => return Some(format!("no action: {id}\n")),
             }
         }
+        // `key COMBO`: keys pressed for the window in front, as the on-screen keyboard sends.
+        key if argument(key, "key").is_some() => {
+            let text = argument(key, "key")?;
+            match shortcuts::Combo::parse(text) {
+                Some(combo) => state.send_combo(&combo),
+                None => return Some(format!("no key: {text}\n")),
+            }
+        }
         // `calendar DATE`: the clock's panel opened on a day, given as 2026-12-25 or in words.
         day if day.starts_with("calendar ") => {
             let text = day["calendar ".len()..].trim();

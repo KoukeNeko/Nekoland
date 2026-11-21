@@ -96,6 +96,12 @@ pub struct Nekoland {
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
     /// The windows Show Desktop minimized, which it brings back when given again.
     pub desktop_shown: Vec<Window>,
+    pub keyboard_frame: Option<crate::windows::KeyboardFrame>,
+    /// Whether the windows are see-through, for as long as Super+, is held.
+    pub peeking: bool,
+    pub switcher: Option<crate::switcher::Switcher>,
+    pub widgets: Option<crate::widgets::Widgets>,
+    pub snap_layouts: Option<crate::snap_layouts::SnapLayouts>,
     /// Which way up iio-sensor-proxy last said the computer is held.
     pub orientation: Option<String>,
     /// The turn last given the computer's own display for it, which the rotation lock holds.
@@ -245,6 +251,11 @@ impl Nekoland {
             space,
             minimized: Vec::new(),
             desktop_shown: Vec::new(),
+            keyboard_frame: None,
+            peeking: false,
+            switcher: None,
+            widgets: None,
+            snap_layouts: None,
             orientation: None,
             turned: None,
             connected_outputs: Vec::new(),
@@ -574,6 +585,14 @@ impl Nekoland {
         });
         let _ = device.config_left_handed_set(self.config.left_handed);
         let _ = device.config_dwt_set_enabled(self.config.disable_while_typing);
+        // A touchpad is what taps can be set on.
+        if device.config_tap_finger_count() > 0 {
+            let _ = device.config_send_events_set_mode(if self.config.touchpad {
+                smithay::reexports::input::SendEventsMode::ENABLED
+            } else {
+                smithay::reexports::input::SendEventsMode::DISABLED
+            });
+        }
         self.pointer_devices.retain(|known| *known != device);
         self.pointer_devices.push(device);
     }

@@ -44,7 +44,7 @@ use crate::{
     menubar::{close, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
-    windows::{is_managed, window_names, CONFIRM_APP_ID, LAUNCHER_APP_ID},
+    windows::{is_managed, window_names, CONFIRM_APP_ID, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
     Nekoland,
 };
 
@@ -879,7 +879,7 @@ impl Nekoland {
             for window in windows.filter(|window| is_managed(window)) {
                 let app_id = window_names(window).1;
                 // Nekoland's own launcher and dialogs are part of the desktop, not applications.
-                let own = app_id == LAUNCHER_APP_ID || app_id == CONFIRM_APP_ID;
+                let own = [LAUNCHER_APP_ID, CONFIRM_APP_ID, KEYBOARD_APP_ID].contains(&app_id.as_str());
                 if !app_id.is_empty() && !own && !apps.contains(&app_id) {
                     apps.push(app_id);
                 }
@@ -2912,6 +2912,72 @@ impl Nekoland {
             .nth(number.saturating_sub(1));
         if let Some(tile) = tile {
             self.open_tile(tile);
+        }
+    }
+
+    /// Opens the menu of what a computer is looked after with over the Dock's applications
+    /// tile, as Super+X does over Windows' Start button.
+    pub fn open_quick_link_menu(&mut self) {
+        let settings = |label: &str, page| Entry::item(label, Command::SettingsPage(page));
+        let run = |label: &str, command: &str| Entry::item(label, Command::Spawn(command.into()));
+        let entries = vec![
+            settings("應用程式", "一般"),
+            settings("電源選項", "電源"),
+            settings("系統", "關於"),
+            settings("網路連線", "網路"),
+            run("磁碟管理", "nekoland-disks"),
+            Entry::separator(),
+            run("終端機", &self.config.terminal),
+            run("工作管理員", "nekoland-tasks"),
+            Entry::item("設定", Command::Settings),
+            run("檔案", "nekoland-files"),
+            run("搜尋", "nekoland-launcher"),
+            Entry::separator(),
+            Entry::submenu(
+                "關機或登出",
+                vec![
+                    Entry::item("登出", Command::LogOut),
+                    Entry::item("睡眠", Command::Sleep).enabled(!self.remote),
+                    Entry::item("關機", Command::ShutDown),
+                    Entry::item("重新開機", Command::Restart),
+                ],
+            ),
+            Entry::item("顯示桌面", Command::ShowDesktop),
+        ];
+        let apps = self.dock.tiles.iter().position(|tile| matches!(tile, Tile::Apps));
+        match apps {
+            Some(index) => self.open_tile_menu(index, entries),
+            None => self.open_menu_at(entries, Point::from((0, MENU_BAR_HEIGHT))),
+        }
+        self.highlight_first_entry();
+    }
+
+    /// Opens another window of the `number`th application in the Dock, as Shift+Super+N
+    /// does on Windows, or its menu, as Alt+Super+N does.
+    pub fn dock_app_command(&mut self, number: usize, menu: bool) {
+        let app_id = self
+            .dock_tiles()
+            .into_iter()
+            .filter_map(|tile| match tile {
+                Tile::App { app_id, .. } => Some(app_id),
+                _ => None,
+            })
+            .nth(number.saturating_sub(1));
+        let Some(app_id) = app_id else {
+            return;
+        };
+        if !menu {
+            self.launch_app(&app_id);
+            return;
+        }
+        let index = self
+            .dock
+            .tiles
+            .iter()
+            .position(|tile| matches!(tile, Tile::App { app_id: id, .. } if *id == app_id));
+        if let Some(index) = index {
+            self.open_menu_of_tile(index);
+            self.highlight_first_entry();
         }
     }
 

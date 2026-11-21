@@ -22,7 +22,7 @@ use crate::{
     grabs::MoveSurfaceGrab,
     menubar::Command,
     state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
-    windows::{window_names, LAUNCHER_APP_ID},
+    windows::{window_names, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
 };
 
 /// Sticky keys: a modifier let go with no other key pressed between stays on for the next key
@@ -89,7 +89,10 @@ impl Nekoland {
             redraw.ping();
         }
         self.last_input = std::time::Instant::now();
-        self.screens_off = false;
+        let released = matches!(&event, InputEvent::Keyboard { event } if event.state() == KeyState::Released);
+        if !released {
+            self.screens_off = false;
+        }
         let locked = self.lock.is_some();
         match event {
             InputEvent::Keyboard { event, .. } => {
@@ -172,6 +175,7 @@ impl Nekoland {
                                     return FilterResult::Forward;
                                 }
                                 state.key_released(keysym.modified_sym());
+                                state.switcher_modifiers(modifiers.ctrl, modifiers.alt, modifiers.logo);
                                 state.suppressed_keys.remove(&code)
                             }
                         };
@@ -213,6 +217,7 @@ impl Nekoland {
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
+                    self.snap_layouts_motion(pos);
                 }
                 let under = self.surface_under(pos);
                 self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
@@ -255,6 +260,7 @@ impl Nekoland {
                     self.notice_motion(pos);
                     self.overview_motion(pos);
                     self.corner_motion(pos);
+                    self.snap_layouts_motion(pos);
                 }
                 let under = self.surface_under(pos);
                 self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
@@ -361,6 +367,17 @@ const DROP_DOWN_TERMINAL: &str = "nekoland-terminal drop-down";
 const SCREEN_READER_TOGGLE: &str = "key=org.gnome.desktop.a11y.applications; \
     if pkill -x orca; then gsettings set $key screen-reader-enabled false; \
     else gsettings set $key screen-reader-enabled true; exec orca; fi";
+/// A note kept in Documents, opened in the text editor.
+const QUICK_NOTE: &str = "note=\"$(xdg-user-dir DOCUMENTS 2>/dev/null || echo $HOME/Documents)/快速備忘錄.txt\"; \
+    mkdir -p \"$(dirname \"$note\")\" && touch \"$note\" && exec gio open \"$note\"";
+/// GNOME's Miracast sender, as Windows' Super+K finds wireless displays.
+const CAST: &str = "command -v gnome-network-displays >/dev/null && exec gnome-network-displays; \
+    notify-send -i video-display-symbolic '無法投放' '需要 gnome-network-displays'";
+const KEYBOARD_LIGHT_UP: &str = "brightnessctl -d '*::kbd_backlight' set 33%+";
+const KEYBOARD_LIGHT_DOWN: &str = "brightnessctl -d '*::kbd_backlight' set 33%-";
+/// Every radio off, or every one back on when Wi-Fi is off already.
+const AIRPLANE_MODE: &str = "if [ \"$(nmcli radio wifi)\" = enabled ]; then nmcli radio all off; bluetoothctl power off; \
+    else nmcli radio all on; bluetoothctl power on; fi";
 // evdev's BTN_LEFT
 const BUTTON_LEFT: u32 = 0x110;
 const BUTTON_RIGHT: u32 = 0x111;
@@ -372,6 +389,9 @@ impl Nekoland {
         let pos = pointer.current_location();
 
         if self.hover_press(pos) {
+            return;
+        }
+        if self.switcher_press(pos) || self.snap_layouts_press(pos) || self.widgets_press(pos) {
             return;
         }
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
@@ -400,6 +420,10 @@ impl Nekoland {
         } else if self.frame_press(pos, button, serial) {
             // A title bar or grip of an X11 window.
         } else if let Some((window, location)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
+            // The on-screen keyboard types into the window in front, so never takes its place.
+            if window_names(&window).1 == KEYBOARD_APP_ID {
+                return;
+            }
             self.focus_window(&window);
 
             let logo = self
@@ -434,6 +458,7 @@ impl Nekoland {
     /// Runs the shortcut a key press stands for. Returns whether there was one.
     fn key_pressed(&mut self, modifiers: &ModifiersState, sym: Keysym, typed: Option<char>) -> bool {
         self.super_tap = matches!(sym, Keysym::Super_L | Keysym::Super_R);
+        self.peeking = false;
         if matches!(sym, Keysym::Alt_L | Keysym::Alt_R) {
             self.dock_menu_alt(true);
         }
@@ -447,6 +472,12 @@ impl Nekoland {
         } = *modifiers;
 
         if self.hover_key(sym, typed) {
+            return true;
+        }
+        if self.keyboard_frame_key(sym, ctrl) {
+            return true;
+        }
+        if self.switcher_key(sym, shift) || self.snap_layouts_key(sym) || self.widgets_key(sym) {
             return true;
         }
         if self.alert_shown() && sym == Keysym::Escape {
@@ -517,7 +548,9 @@ impl Nekoland {
                 && !(combo.alt || combo.logo)
                 && app_id.as_deref().is_some_and(shortcuts::is_terminal)
         };
-        if let Some((action, extended)) = found.filter(|(action, _)| !inhibited && !terminal_own(action)) {
+        // Super+Esc is how the keys come back from a window that took them all.
+        let allowed = |action: &shortcuts::Action| !inhibited || action.id == "restore-shortcuts";
+        if let Some((action, extended)) = found.filter(|(action, _)| allowed(action) && !terminal_own(action)) {
             self.run_action(action, extended);
             return true;
         }
@@ -532,7 +565,31 @@ impl Nekoland {
             return true;
         }
 
+        let player = |method: &'static str| {
+            std::thread::spawn(move || {
+                if let Some(player) = crate::system::read_player() {
+                    crate::system::player_command(&player.bus, method);
+                }
+            });
+        };
         match sym {
+            Keysym::XF86_AudioPlay | Keysym::XF86_AudioPause => player("PlayPause"),
+            Keysym::XF86_AudioNext => player("Next"),
+            Keysym::XF86_AudioPrev => player("Previous"),
+            Keysym::XF86_AudioStop => player("Stop"),
+            Keysym::XF86_AudioMicMute => config::spawn("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"),
+            Keysym::XF86_KbdBrightnessUp => config::spawn(KEYBOARD_LIGHT_UP),
+            Keysym::XF86_KbdBrightnessDown => config::spawn(KEYBOARD_LIGHT_DOWN),
+            Keysym::XF86_TouchpadToggle => self.toggle_setting("touchpad", !self.config.touchpad),
+            Keysym::XF86_TouchpadOn => self.toggle_setting("touchpad", true),
+            Keysym::XF86_TouchpadOff => self.toggle_setting("touchpad", false),
+            Keysym::XF86_Calculator => config::spawn("gnome-calculator"),
+            Keysym::XF86_RFKill => config::spawn(AIRPLANE_MODE),
+            Keysym::XF86_Sleep => self.run_menu_command(Command::Sleep),
+            Keysym::XF86_ScreenSaver => self.lock_screen(),
+            Keysym::XF86_Display => self.next_projection(),
+            Keysym::XF86_Search => config::spawn(&self.config.launcher),
+            Keysym::XF86_Explorer | Keysym::XF86_MyComputer => config::spawn("nekoland-files"),
             Keysym::XF86_AudioRaiseVolume => config::spawn(&self.config.volume_up),
             Keysym::XF86_AudioLowerVolume => config::spawn(&self.config.volume_down),
             Keysym::XF86_AudioMute => config::spawn(&self.config.volume_mute),
@@ -542,6 +599,24 @@ impl Nekoland {
             _ => return false,
         }
         true
+    }
+
+    /// Writes a setting and takes the configuration in again.
+    pub(crate) fn toggle_setting(&mut self, key: &str, on: bool) {
+        match config::set(&format!("{key} = {on}")) {
+            Ok(()) => self.reload_config(),
+            Err(err) => tracing::warn!("{key}: {err}"),
+        }
+    }
+
+    /// Lets the window that has the keyboard no longer take the shortcuts' keys.
+    fn restore_shortcuts(&mut self) {
+        let focus = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus());
+        if let Some(surface) = focus.as_ref().and_then(|focus| focus.wl_surface()) {
+            if let Some(inhibitor) = self.seat.keyboard_shortcuts_inhibitor_for_surface(&surface) {
+                inhibitor.inactivate();
+            }
+        }
     }
 
     /// Whether the window that has the keyboard asked for every key, shortcuts too.
@@ -580,7 +655,18 @@ impl Nekoland {
             "dock" => self.focus_dock(),
             "zoom-in" => self.zoom_by(crate::render::ZOOM_STEP),
             "zoom-out" => self.zoom_by(-crate::render::ZOOM_STEP),
-            "switch-window" => self.focus_next_window(),
+            "switch-window" => self.switch(extended, true),
+            "switch-window-held" => self.switch(extended, false),
+            "cycle-windows" => self.cycle_windows(extended),
+            "window-menu" => self.open_window_menu(),
+            "peek-desktop" => self.peeking = true,
+            "snap-layouts" => self.toggle_snap_layouts(),
+            "move-window" => {
+                self.window_command("move");
+            }
+            "resize-window" => {
+                self.window_command("resize");
+            }
             "overview" => self.toggle_overview(),
             "close-window" => close(focused),
             "quit-app" => {
@@ -632,17 +718,60 @@ impl Nekoland {
             "sticky" => self.run_menu_command(Command::ShowOnAllDesktops),
             "workspace-first" => self.show_workspace(0, true),
             "workspace-last" => self.show_workspace(self.workspaces.count().saturating_sub(1), true),
-            "carry-left" | "carry-right" => {
+            "carry-left" | "carry-right" | "carry-first" | "carry-last" => {
                 if let Some(window) = focused {
-                    self.carry_window_by(&window, if action.id == "carry-left" { -1 } else { 1 });
+                    let last = self.workspaces.count().saturating_sub(1) as isize;
+                    let active = self.workspaces.active as isize;
+                    let step = match action.id {
+                        "carry-left" => -1,
+                        "carry-right" => 1,
+                        "carry-first" => -active,
+                        _ => last - active,
+                    };
+                    self.carry_window_by(&window, step);
                 }
             }
+            "emoji" => config::spawn("nekoland-launcher --open=emoji"),
+            "clipboard-history" => config::spawn("nekoland-launcher --open=clipboard"),
+            "quick-note" => config::spawn(QUICK_NOTE),
+            "quick-link" => self.open_quick_link_menu(),
+            "widgets" => self.toggle_widgets(),
+            "date-time" => {
+                if let Some(anchor) = self.clock_title_rect() {
+                    self.toggle_clock_panel(anchor);
+                }
+            }
+            "do-not-disturb" => self.notices.quiet = !self.notices.quiet,
+            "dock-autohide" => self.toggle_setting("dock_autohide", !self.config.dock_autohide),
+            "invert-colors" => self.toggle_setting("invert_colors", !self.config.invert_colors),
+            "accessibility" => self.run_menu_command(Command::SettingsPage("協助工具")),
+            "about" => self.run_menu_command(Command::SettingsPage("關於")),
+            "restore-shortcuts" => self.restore_shortcuts(),
+            "sleep" => self.run_menu_command(Command::Sleep),
+            "restart" => self.run_menu_command(Command::Restart),
+            "shut-down" => self.run_menu_command(Command::ShutDown),
+            "screens-off" => self.screens_off = true,
+            "dictation" => config::spawn(&self.config.dictation),
+            "rotation-lock" => self.toggle_setting("rotation_lock", !self.config.rotation_lock),
+            "cast" => config::spawn(CAST),
+            "security" => config::spawn("nekoland-security"),
+            // Started again, it goes away.
+            "on-screen-keyboard" => config::spawn("nekoland-keyboard"),
+            // GNOME records the whole screen at once; Windows' Snipping Tool asks for an area.
+            "record-screen" => config::spawn(match self.config.shortcut_scheme {
+                shortcuts::Scheme::Windows => "nekoland-shot record-area",
+                _ => "nekoland-shot record",
+            }),
             id => {
                 let number = |prefix: &str| id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok());
                 if let Some(number) = number("workspace-") {
                     if number <= self.workspaces.count() {
                         self.show_workspace(number - 1, true);
                     }
+                } else if let Some(number) = number("dock-new-") {
+                    self.dock_app_command(number, false);
+                } else if let Some(number) = number("dock-menu-") {
+                    self.dock_app_command(number, true);
                 } else if let Some(number) = number("dock-") {
                     self.open_dock_app(number);
                 } else if let Some(command) = id.strip_prefix("arrange-") {
@@ -683,7 +812,7 @@ impl Nekoland {
 
     /// Presses and lets go `combo` for the window that has the keyboard: the modifiers held
     /// are let go meanwhile and pressed again after, so that it sees those keys alone.
-    fn send_combo(&mut self, combo: &Combo) {
+    pub(crate) fn send_combo(&mut self, combo: &Combo) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -757,6 +886,9 @@ impl Nekoland {
 
     /// Super pressed and let go by itself does what the shortcuts give it.
     fn key_released(&mut self, sym: Keysym) {
+        if matches!(sym, Keysym::Super_L | Keysym::Super_R) {
+            self.peeking = false;
+        }
         if matches!(sym, Keysym::Alt_L | Keysym::Alt_R) {
             self.dock_menu_alt(false);
         }

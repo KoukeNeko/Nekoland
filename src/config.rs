@@ -311,6 +311,10 @@ pub struct Config {
     pub disable_while_typing: bool,
     /// Whether the computer's own display stays as it is, rather than turning as it is held.
     pub rotation_lock: bool,
+    /// Whether touchpads are on, as the touchpad key turns them off and on again.
+    pub touchpad: bool,
+    /// What starts dictation, or stops it, for Windows' Super+H.
+    pub dictation: String,
     /// The XKB layout keys are read with, and its variant and options, as setxkbmap takes
     /// them: `us`, `dvorak`, `ctrl:nocaps`.
     pub keyboard_layout: String,
@@ -887,6 +891,8 @@ impl Default for Config {
             left_handed: false,
             disable_while_typing: true,
             rotation_lock: false,
+            touchpad: true,
+            dictation: DICTATION.into(),
             keyboard_layout: "us".into(),
             keyboard_variant: String::new(),
             keyboard_options: String::new(),
@@ -1139,6 +1145,14 @@ pub fn expand_home(path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     path.replacen('~', &home, 1)
 }
+
+/// nerd-dictation, offline: started by the key, ended by it again.
+// It types through wtype, which reaches Wayland windows by the virtual keyboard protocol;
+// the cookie it leaves in the temporary folder holds the process listening, if one still is.
+const DICTATION: &str = "if ! command -v nerd-dictation >/dev/null || ! command -v wtype >/dev/null; then \
+    notify-send -i audio-input-microphone-symbolic '無法語音輸入' '需要 nerd-dictation 與 wtype'; \
+    elif kill -0 \"$(cat \"${TMPDIR:-/tmp}/nerd-dictation.cookie\" 2>/dev/null)\" 2>/dev/null; then nerd-dictation end; \
+    else exec nerd-dictation begin --simulate-input-tool=WTYPE; fi";
 
 /// Starts a shell command as a client of this compositor.
 pub fn spawn(command: &str) {

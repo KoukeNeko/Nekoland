@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use smithay::{
     backend::renderer::element::Id,
     desktop::{find_popup_root_surface, layer_map_for_output, Window, WindowSurface},
+    input::keyboard::Keysym,
     output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
@@ -35,6 +36,20 @@ pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
 /// The title of 截圖's full-screen window for choosing what to take: it shows a still
 /// picture of the screen, so it appears and goes at once, without the windows' motion.
 pub const SHOT_OVERLAY_TITLE: &str = "截圖範圍";
+/// The application ID of the on-screen keyboard, kept in front and never given the keyboard.
+pub const KEYBOARD_APP_ID: &str = "io.github.koukeneko.Nekoland.Keyboard";
+/// A window's title without the application's name it ends in, for where the application is
+/// already shown: "Cargo.toml - Text Editor" under Text Editor's icon or in its menu.
+pub fn title_without_app(title: &str, app: &str) -> String {
+    [" - ", " — "]
+        .iter()
+        .find_map(|dash| title.strip_suffix(&format!("{dash}{app}")))
+        .unwrap_or(title)
+        .to_string()
+}
+
+/// Between the on-screen keyboard and the Dock under it.
+const KEYBOARD_GAP: i32 = 12;
 /// The application ID of a picture 截圖 pinned to the screen, kept in front of the windows.
 pub const PIN_APP_ID: &str = "io.github.koukeneko.Nekoland.ShotPin";
 
@@ -296,7 +311,7 @@ impl Nekoland {
             root = parent;
         }
         if let Some(window) = self.window_for_surface(&root).filter(is_managed) {
-            if self.focused_window().as_ref() != Some(&window) {
+            if self.focused_window().as_ref() != Some(&window) && window_names(&window).1 != KEYBOARD_APP_ID {
                 self.set_keyboard_focus(Some(key_focus_of(&window)));
             }
         }
@@ -386,13 +401,21 @@ impl Nekoland {
             let _ = xwm.raise_window(surface);
         }
         self.raise_pins();
-        self.set_keyboard_focus(Some(key_focus_of(window)));
+        // The on-screen keyboard types into the window that has the keyboard, so it never
+        // takes it, whatever asks: a click, its own activation, the switcher.
+        if window_names(window).1 != KEYBOARD_APP_ID {
+            self.set_keyboard_focus(Some(key_focus_of(window)));
+        }
     }
 
     /// Puts the pictures 截圖 pinned back in front of whatever was raised.
     pub fn raise_pins(&mut self) {
-        let pins: Vec<Window> =
-            self.space.elements().filter(|window| window_names(window).1 == PIN_APP_ID).cloned().collect();
+        let pins: Vec<Window> = self
+            .space
+            .elements()
+            .filter(|window| [PIN_APP_ID, KEYBOARD_APP_ID].contains(&window_names(window).1.as_str()))
+            .cloned()
+            .collect();
         for pin in &pins {
             self.space.raise_element(pin, false);
         }
@@ -404,7 +427,7 @@ impl Nekoland {
             .space
             .elements()
             .rev()
-            .find(|window| window.alive() && is_managed(window))
+            .find(|window| window.alive() && is_managed(window) && window_names(window).1 != KEYBOARD_APP_ID)
             .cloned();
         match top {
             Some(window) => self.focus_window(&window),
@@ -425,9 +448,13 @@ impl Nekoland {
         let free = matches!(placement_of(window), Placement::Free | Placement::Arranged);
         if let Some(area) = self.usable_area().filter(|_| free) {
             let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
-            // The launcher opens down from a fifth of the way, as its results come.
-            let y = if window_names(window).1 == LAUNCHER_APP_ID {
+            let app_id = window_names(window).1;
+            // The launcher opens down from a fifth of the way, as its results come; the
+            // on-screen keyboard sits at the bottom, over the Dock.
+            let y = if app_id == LAUNCHER_APP_ID {
                 area.loc.y + area.size.h / 5
+            } else if app_id == KEYBOARD_APP_ID {
+                area.loc.y + (area.size.h - size.h - KEYBOARD_GAP).max(0)
             } else {
                 area.loc.y + (area.size.h - size.h).max(0) / 2
             };
@@ -524,8 +551,19 @@ impl Nekoland {
                     self.minimize(window);
                 }
             }
-            "display-left" => self.move_to_display(window, -1),
-            "display-right" => self.move_to_display(window, 1),
+            "display-left" => self.move_to_display(window, (-1, 0)),
+            "display-right" => self.move_to_display(window, (1, 0)),
+            "display-up" => self.move_to_display(window, (0, -1)),
+            "display-down" => self.move_to_display(window, (0, 1)),
+            "move" | "resize" => {
+                if let Some(start) = self.frame(window).filter(|_| command == "move" || !has_fixed_size(window)) {
+                    self.keyboard_frame = Some(KeyboardFrame {
+                        window: window.clone(),
+                        resize: command == "resize",
+                        start,
+                    });
+                }
+            }
             "fullscreen" => self.toggle_fullscreen(window),
             "close" => crate::menubar::close(window),
             _ => {
@@ -802,22 +840,30 @@ impl Nekoland {
         true
     }
 
-    /// Moves a window to the display `step` to the right or the left of its own, at the same
-    /// place on it, smaller where it does not fit; a maximized or fullscreen one fills the
-    /// other display instead.
-    fn move_to_display(&mut self, window: &Window, step: isize) {
+    /// Moves a window to the nearest display that way of its own, at the same place on it,
+    /// smaller where it does not fit; a maximized or fullscreen one fills the other display
+    /// instead.
+    fn move_to_display(&mut self, window: &Window, (dx, dy): (i32, i32)) {
         let Some(from) = self.output_of(window) else {
             return;
         };
-        let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        outputs.sort_by_key(|output| self.space.output_geometry(output).map_or(0, |geometry| geometry.loc.x));
-        let Some(to) = outputs
-            .iter()
-            .position(|output| *output == from)
-            .and_then(|at| at.checked_add_signed(step))
-            .and_then(|at| outputs.get(at))
-            .cloned()
-        else {
+        let center = |output: &Output| self.space.output_geometry(output).map(|geometry| geometry.loc + geometry.size.downscale(2).to_point());
+        let Some(here) = center(&from) else {
+            return;
+        };
+        // Mostly that way: more along it than across it.
+        let to = self
+            .space
+            .outputs()
+            .filter(|output| **output != from)
+            .filter_map(|output| Some((output, center(output)? - here)))
+            .filter(|(_, d)| {
+                (dx != 0 && d.x.signum() == dx && d.x.abs() >= d.y.abs())
+                    || (dy != 0 && d.y.signum() == dy && d.y.abs() >= d.x.abs())
+            })
+            .min_by_key(|(_, d)| i64::from(d.x).pow(2) + i64::from(d.y).pow(2))
+            .map(|(output, _)| output.clone());
+        let Some(to) = to else {
             return;
         };
         let (Some(old), Some(new), Some(frame)) = (self.usable_area_on(&from), self.usable_area_on(&to), self.frame(window))
@@ -884,6 +930,65 @@ impl Nekoland {
         }
     }
 
+    /// Takes an arrow key, Return or Esc for the window being moved or resized with the
+    /// keyboard: ten points a press, one with Ctrl. Returns whether there is one.
+    pub fn keyboard_frame_key(&mut self, sym: Keysym, ctrl: bool) -> bool {
+        let Some(frame) = self.keyboard_frame.as_ref() else {
+            return false;
+        };
+        let (window, resize, start) = (frame.window.clone(), frame.resize, frame.start);
+        let step = if ctrl { 1 } else { 10 };
+        let (dx, dy) = match sym {
+            Keysym::Left => (-step, 0),
+            Keysym::Right => (step, 0),
+            Keysym::Up => (0, -step),
+            Keysym::Down => (0, step),
+            Keysym::Escape => {
+                self.keyboard_frame = None;
+                self.reframe(&window, start, false);
+                return true;
+            }
+            _ => {
+                // Return, or any other key, keeps it where it is.
+                self.keyboard_frame = None;
+                return matches!(sym, Keysym::Return | Keysym::KP_Enter | Keysym::space);
+            }
+        };
+        let Some(mut rect) = self.frame(&window).filter(|_| window.alive()) else {
+            self.keyboard_frame = None;
+            return false;
+        };
+        if resize {
+            let (least, most) = size_limits(&window);
+            let limit = |length: i32, least: i32, most: i32| length.max(least.max(1)).min(if most > 0 { most } else { i32::MAX });
+            rect.size = Size::from((limit(rect.size.w + dx, least.w, most.w), limit(rect.size.h + dy, least.h, most.h)));
+        } else {
+            rect.loc += Point::from((dx, dy));
+        }
+        self.reframe(&window, rect, false);
+        true
+    }
+
+    /// Sends the window in front to the back and brings forward the one under it, as
+    /// Alt+Esc does; `back` brings forward the one at the back instead.
+    pub fn cycle_windows(&mut self, back: bool) {
+        let stack: Vec<Window> = self.space.elements().filter(|window| is_managed(window)).cloned().collect();
+        let [.., under, _] = stack.as_slice() else {
+            return;
+        };
+        let next = if back {
+            stack[0].clone()
+        } else {
+            let under = under.clone();
+            // Raised in their order, all but the front one end up over it.
+            for window in &stack[..stack.len() - 1] {
+                self.space.raise_element(window, false);
+            }
+            under
+        };
+        self.focus_window(&next);
+    }
+
     /// Moves on to the next window: minimized ones first, then the one at the bottom of the stack.
     // shortcut: a round robin over the stack, not most-recently-used order with a switcher.
     pub fn focus_next_window(&mut self) {
@@ -930,7 +1035,7 @@ impl Nekoland {
 const DRAG_START_DISTANCE: f64 = 4.0;
 
 /// What a window command does besides putting the window in a part of the display.
-pub(crate) const OTHER_COMMANDS: [&str; 7] = [
+pub(crate) const OTHER_COMMANDS: [&str; 11] = [
     "restore",
     "minimize",
     "fullscreen",
@@ -938,7 +1043,19 @@ pub(crate) const OTHER_COMMANDS: [&str; 7] = [
     "restore-or-minimize",
     "display-left",
     "display-right",
+    "display-up",
+    "display-down",
+    "move",
+    "resize",
 ];
+
+/// A window moved or resized with the arrow keys, as Alt+F7 and Alt+F8 start, and where it
+/// was, for Esc to put it back.
+pub struct KeyboardFrame {
+    pub window: Window,
+    pub resize: bool,
+    start: Rectangle<i32, Logical>,
+}
 
 fn mark(window: &Window, arranged: Option<Arranged>, snapped: bool) {
     *data(window).arranged.borrow_mut() = arranged;
@@ -979,5 +1096,17 @@ mod tests {
         assert_eq!(keep_inside(rect(100, 100, 2400, 1300), portrait), rect(0, 100, 1440, 1300));
         assert_eq!(keep_inside(rect(100, 100, 400, 300), portrait), rect(100, 100, 400, 300));
         assert_eq!(keep_inside(rect(-50, 0, 400, 300), portrait), rect(0, 30, 400, 300));
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::title_without_app;
+
+    #[test]
+    fn drops_only_the_trailing_app_name() {
+        assert_eq!(title_without_app("Cargo.toml (~/Nekoland) - Text Editor", "Text Editor"), "Cargo.toml (~/Nekoland)");
+        assert_eq!(title_without_app("Text Editor - notes", "Text Editor"), "Text Editor - notes");
+        assert_eq!(title_without_app("Calculator", "Calculator"), "Calculator");
     }
 }
