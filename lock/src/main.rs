@@ -78,6 +78,10 @@ use wayland_client::{
 
 use draw::{Align, Button, Effect, Facts, Hit, Look, Moment, Notices, Playing, Style};
 
+/// Room kept for the password as it is typed, so that it is not moved, leaving copies
+/// behind, however long it gets in practice.
+const PASSWORD_ROOM: usize = 256;
+
 /// How long the wrong password's shake lasts.
 const SHAKE: Duration = Duration::from_millis(360);
 /// How often the screens are drawn again while something moves.
@@ -223,6 +227,11 @@ fn main() {
             preview(file, width, height, style.first().map(String::as_str));
         }
     }
+    // A core dump of the locker would have the password typed into it.
+    // SAFETY: only sets a flag of this process.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        eprintln!("nekoland-lock: could not keep from dumping core: {}", std::io::Error::last_os_error());
+    }
     let conn = Connection::connect_to_env().unwrap_or_else(|err| fail(&format!("no Wayland display: {err}")));
     let (globals, queue) = registry_queue_init(&conn).unwrap_or_else(|err| fail(&err.to_string()));
     let qh: QueueHandle<Locker> = queue.handle();
@@ -249,7 +258,7 @@ fn main() {
         playing: Arc::default(),
         look,
         user,
-        password: String::new(),
+        password: String::with_capacity(PASSWORD_ROOM),
         pin_tries: Arc::new(AtomicU32::new(read_pin_tries())),
         caps_lock: false,
         checking: None,
@@ -1178,8 +1187,12 @@ impl Locker {
             Finger::Matched => {
                 self.error = None;
                 self.password.clear();
-                self.opened = Some(Instant::now());
                 self.finger_seen = Some((Instant::now(), true));
+                // Unlocked once the account may be, as for the password.
+                let (sender, receiver) = channel::channel();
+                let user = self.user.clone();
+                std::thread::spawn(move || drop(sender.send(pam::account(&user))));
+                self.when_checked(receiver);
             }
             Finger::Wrong => {
                 self.error = Some(("指紋不符", Instant::now()));
@@ -1233,7 +1246,8 @@ impl Locker {
             return;
         }
         let (sender, receiver) = channel::channel();
-        let (user, password) = (self.user.clone(), std::mem::take(&mut self.password));
+        let password = std::mem::replace(&mut self.password, String::with_capacity(PASSWORD_ROOM));
+        let user = self.user.clone();
         // Its dots stay, dimmed, while it is checked.
         self.checking = Some(password.chars().count());
         let tries = self.pin_tries.clone();
@@ -1242,7 +1256,8 @@ impl Locker {
             // possibly a password of digits, as the password.
             if pin::is_valid(&password) && tries.load(Ordering::Relaxed) < pin::TRIES && pin::is_set() {
                 if pin::check(&password) {
-                    let _ = sender.send(Ok(()));
+                    pam::wipe(password);
+                    let _ = sender.send(pam::account(&user));
                     return;
                 }
                 let wrong = tries.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1253,7 +1268,14 @@ impl Locker {
                 }
             }
             let _ = sender.send(pam::check(&user, &password));
+            pam::wipe(password);
         });
+        self.when_checked(receiver);
+        self.redraw();
+    }
+
+    /// Unlocks once what was given is found right, or tells why not.
+    fn when_checked(&mut self, receiver: channel::Channel<Result<(), pam::Failure>>) {
         let watched = self.handle.insert_source(receiver, |event, _, locker| {
             let channel::Event::Msg(result) = event else {
                 return;
@@ -1276,7 +1298,6 @@ impl Locker {
         if let Err(err) = watched {
             eprintln!("nekoland-lock: {err}");
         }
-        self.redraw();
     }
 }
 

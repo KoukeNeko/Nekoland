@@ -10,6 +10,8 @@ const SERVICE: &str = "nekoland-lock";
 const PAM_SUCCESS: c_int = 0;
 const PAM_BUF_ERR: c_int = 5;
 const PAM_AUTH_ERR: c_int = 7;
+/// The password has aged out: it is still the right one, and changing it is for later.
+const PAM_NEW_AUTHTOK_REQD: c_int = 12;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
 const PAM_PROMPT_ECHO_ON: c_int = 2;
 const PAM_REFRESH_CRED: c_int = 0x0010;
@@ -85,13 +87,35 @@ extern "C" fn converse(
 
 /// Whether `password` is `user`'s. Blocks for as long as PAM takes, seconds when wrong.
 pub fn check(user: &str, password: &str) -> Result<(), Failure> {
+    let password = CString::new(password).map_err(|_| Failure::Wrong)?;
+    let result = run(user, &password, true);
+    wipe(password.into_bytes());
+    result
+}
+
+/// Whether `user`'s account may unlock, for what unlocks without the password, a PIN or a
+/// finger: one that has expired or been locked may not.
+pub fn account(user: &str) -> Result<(), Failure> {
+    run(user, &CString::default(), false)
+}
+
+/// Overwrites a password's bytes before they are freed, so that a copy of the memory, as a
+/// core dump is, does not have it.
+pub fn wipe(bytes: impl Into<Vec<u8>>) {
+    let mut bytes = bytes.into();
+    for byte in bytes.iter_mut() {
+        // SAFETY: a byte of the vector, written in place; volatile, so it is not left out.
+        unsafe { ptr::write_volatile(byte, 0) };
+    }
+}
+
+fn run(user: &str, password: &CString, authenticate: bool) -> Result<(), Failure> {
     let unable = |why: &str| Failure::Unable(why.to_string());
     let service = CString::new(SERVICE).expect("no NUL in the name");
     let user = CString::new(user).map_err(|_| unable("user name has a NUL"))?;
-    let password = CString::new(password).map_err(|_| Failure::Wrong)?;
     let conversation = Conversation {
         converse,
-        data: &password as *const CString as *mut c_void,
+        data: password as *const CString as *mut c_void,
     };
     let mut handle = ptr::null_mut();
     // SAFETY: every pointer lives until `pam_end`, which is called whatever happens.
@@ -108,13 +132,13 @@ pub fn check(user: &str, password: &str) -> Result<(), Failure> {
                 std::ffi::CStr::from_ptr(text).to_string_lossy().into_owned()
             })
         };
-        let mut status = pam_authenticate(handle, 0);
+        let mut status = if authenticate { pam_authenticate(handle, 0) } else { PAM_SUCCESS };
         let result = match status {
             PAM_SUCCESS => {
                 // The right password of an account that has expired or been locked does not
-                // unlock, as it would not log in.
+                // unlock, as it would not log in; one only due to be changed does.
                 status = pam_acct_mgmt(handle, 0);
-                if status == PAM_SUCCESS {
+                if matches!(status, PAM_SUCCESS | PAM_NEW_AUTHTOK_REQD) {
                     // Renews Kerberos tickets and the like; failing to is no reason to stay locked.
                     pam_setcred(handle, PAM_REFRESH_CRED);
                     Ok(())
