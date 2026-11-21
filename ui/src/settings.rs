@@ -89,6 +89,12 @@ fn run(program: &str, args: &[&str]) {
     }
 }
 
+/// `text` as a TOML string, for a setting: Rust's own quoting writes some characters as TOML
+/// does not read them, such as accents of their own.
+fn toml_string(text: &str) -> String {
+    toml::Value::from(text).to_string()
+}
+
 /// Changes one of the compositor's settings; it answers only when the change is refused.
 fn set(line: &str) {
     change(&format!("set {line}"));
@@ -1131,7 +1137,7 @@ fn text_row(config: &Config, title: &str, key: &'static str) -> adw::EntryRow {
         .text(config.word(key))
         .show_apply_button(true)
         .build();
-    row.connect_apply(move |row| set(&format!("{key} = {:?}", row.text().as_str())));
+    row.connect_apply(move |row| set(&format!("{key} = {}", toml_string(row.text().as_str()))));
     row
 }
 
@@ -1408,7 +1414,7 @@ fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw:
     }
     let autostart = autostart.clone();
     let use_wallpaper = Rc::new(move |path: &Path| {
-        set(&format!("wallpaper = {:?}", path.to_string_lossy()));
+        set(&format!("wallpaper = {}", toml_string(&path.to_string_lossy())));
         // A wallpaper started at login would stay under this one; it is not started again.
         // shortcut: the one running now stays until the session ends; stopping it needs its process.
         let mut commands = autostart.borrow_mut();
@@ -3957,7 +3963,7 @@ fn fonts_page(look: &gtk::CssProvider) -> adw::PreferencesPage {
     let look = look.clone();
     faces.add(&font_row("介面", false, &family, move |font| {
         let Some(family) = font.family() else { return };
-        set(&format!("font = {:?}", family.as_str()));
+        set(&format!("font = {}", toml_string(family.as_str())));
         // GNOME's setting keeps its size; GTK takes the family from it without the look.
         let mut name = gtk::pango::FontDescription::from_string(&interface_setting("font-name"));
         name.set_family(&family);
@@ -4164,7 +4170,7 @@ fn theme_row(config: &Config, title: &str, key: &'static str, gsetting: &'static
         }
         Some(at) => {
             if let Some(theme) = themes.get(at as usize) {
-                set(&format!("{key} = {theme:?}"));
+                set(&format!("{key} = {}", toml_string(theme)));
                 set_interface(gsetting, &format!("'{theme}'"));
             }
         }
@@ -5863,7 +5869,7 @@ fn default_apps_page(config: &Config) -> adw::PreferencesPage {
         let row = app_row("終端機", &terminals, |app| app.executable().as_os_str() == command.as_str());
         row.connect_selected_notify(move |row| {
             if let Some(app) = terminals.get(row.selected() as usize) {
-                set(&format!("terminal = {:?}", app.executable().to_string_lossy()));
+                set(&format!("terminal = {}", toml_string(&app.executable().to_string_lossy())));
             }
         });
         apps.add(&row);
@@ -8733,12 +8739,21 @@ fn desktop_glass() -> gtk::Box {
 }
 
 fn save_autostart(autostart: &[String]) {
-    let quoted: Vec<String> = autostart.iter().map(|command| format!("{command:?}")).collect();
+    let quoted: Vec<String> = autostart.iter().map(|command| toml_string(command)).collect();
     set(&format!("autostart = [{}]", quoted.join(", ")));
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_setting_keeps_accents_and_emoji_of_their_own() {
+        for text in ["/home/me/cafe\u{301}.jpg", "相片 ❤\u{fe0f}", "say \"hi\" \\ there"] {
+            let line = format!("wallpaper = {}", super::toml_string(text));
+            let table: toml::Table = toml::from_str(&line).unwrap();
+            assert_eq!(table["wallpaper"].as_str(), Some(text), "{line}");
+        }
+    }
+
     #[test]
     fn apt_history_lists_the_runs_that_changed_packages_newest_first() {
         let text = "Start-Date: 2026-11-01  10:00:00\nCommandline: apt install foo\nInstall: foo:arm64 (1.0), libfoo:arm64 (1.0, automatic)\nEnd-Date: 2026-11-01  10:00:05\n\n\

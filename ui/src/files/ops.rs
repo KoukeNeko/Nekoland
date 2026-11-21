@@ -954,7 +954,7 @@ pub fn edit_tags(win: &Rc<Window>, chosen: Vec<gio::FileInfo>) {
 /// Uses a picture as the desktop's, as Settings does.
 pub fn set_wallpaper(win: &Rc<Window>, file: &gio::File) {
     let Some(path) = file.path() else { return };
-    let command = format!("set wallpaper = {:?}", path.to_string_lossy());
+    let command = format!("set wallpaper = {}", toml::Value::from(path.to_string_lossy().as_ref()).to_string());
     match std::process::Command::new("nekoland")
         .args(["msg", &command])
         .output()

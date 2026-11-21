@@ -265,7 +265,7 @@ fn setting(key: &str) -> Option<toml::Value> {
 
 /// Sets the theme for the compositor and for GNOME's settings together, as Settings does.
 pub fn apply(look: Look, folder: &str) -> Result<(), String> {
-    let reply = ipc::msg(&format!("set {} = {folder:?}", look.key())).ok_or("無法連線到 Nekoland")?;
+    let reply = ipc::msg(&format!("set {} = {}", look.key(), toml::Value::from(folder))).ok_or("無法連線到 Nekoland")?;
     if !reply.trim().is_empty() {
         return Err(reply.trim().to_string());
     }
