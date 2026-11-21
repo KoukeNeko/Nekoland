@@ -1047,6 +1047,17 @@ pub fn unset(key: &str) -> Result<(), String> {
     save_setting(key.trim(), "")
 }
 
+/// Whether `changed`, which `with_setting` made line by line from `text`, differs from it in
+/// `key` alone, set as `line` says; a file that was not TOML before is not compared.
+fn changes_only(text: &str, changed: &str, key: &str, line: &str) -> bool {
+    let (Ok(mut old), Ok(mut new)) = (text.parse::<toml::Table>(), changed.parse::<toml::Table>()) else {
+        return true;
+    };
+    let wanted = line.parse::<toml::Table>().ok().and_then(|mut table| table.remove(key));
+    old.remove(key);
+    new.remove(key) == wanted && old == new
+}
+
 /// Puts `line` in the configuration file in place of the setting `key`, or before its
 /// first table, if the file still reads as a configuration with it.
 // shortcut: edits the file as text, so a setting written across several lines other than
@@ -1061,6 +1072,9 @@ fn save_setting(key: &str, line: &str) -> Result<(), String> {
     };
     let changed = with_setting(&text, key, line);
     toml::from_str::<Config>(&changed).map_err(|err| format!("{line}: {err}"))?;
+    if !changes_only(&text, &changed, key, line) {
+        return Err(format!("{line}: the configuration file could not be changed for it alone"));
+    }
     write_whole(&path, &changed).map_err(failed)
 }
 
@@ -1174,6 +1188,17 @@ pub fn spawn(command: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_written_in_another_text_is_not_taken_for_one() {
+        let text = "note = \"\"\"\ndock = [\"a\"]\n\"\"\"\n";
+        let changed = with_setting(text, "dock", "dock = [\"b\"]");
+        assert!(!changes_only(text, &changed, "dock", "dock = [\"b\"]"));
+        let text = "dock = [\"a\"]\nterminal = \"foot\"\n";
+        let changed = with_setting(text, "dock", "dock = [\"b\"]");
+        assert!(changes_only(text, &changed, "dock", "dock = [\"b\"]"));
+        assert!(changes_only(text, &with_setting(text, "dock", ""), "dock", ""));
+    }
 
     #[test]
     fn the_dock_line_is_replaced_where_it_is() {
