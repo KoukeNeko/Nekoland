@@ -618,6 +618,12 @@ impl Nekoland {
             .collect()
     }
 
+    /// The panel goes, as on a press elsewhere: the file it was about is gone from view.
+    pub fn hover_dismiss(&mut self) {
+        self.hover.hide();
+        self.hover.resting = None;
+    }
+
     /// A press: in the panel while it takes the pointer, a click on the note types in it,
     /// and with Alt held, one on a value copies it; anywhere else, the panel goes. Returns
     /// whether it was in the panel.
@@ -626,8 +632,7 @@ impl Nekoland {
             .hover_area()
             .filter(|area| self.hover_keeps() && area.to_f64().contains(pos));
         let Some(area) = area else {
-            self.hover.hide();
-            self.hover.resting = None;
+            self.hover_dismiss();
             return false;
         };
         let local = pos - area.loc.to_f64();

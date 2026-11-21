@@ -213,6 +213,7 @@ impl Nekoland {
             .cloned()
             .collect();
         leaving.iter().for_each(|window| self.space.unmap_elem(window));
+        self.hover_dismiss();
 
         let wallpaper = self.desktop_wallpaper(self.workspaces.active);
         let previous = std::mem::replace(&mut self.workspaces.active, index);
