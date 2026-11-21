@@ -275,6 +275,8 @@ thread_local! {
     static UI_FONT: RefCell<String> = RefCell::new("Ubuntu Sans".into());
     /// The settings Settings changed itself, which its pages already show.
     static WROTE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Every page one level down, with the row that opens it, for search to look in.
+    static SUBPAGES: RefCell<Vec<(glib::WeakRef<adw::ActionRow>, adw::NavigationPage)>> = RefCell::default();
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -315,12 +317,16 @@ fn bring_into_view(target: &gtk::Widget) {
     target.grab_focus();
 }
 
-/// The title of each setting on a page, with the row that shows it.
+/// The title of each setting on a page and on the pages its rows open, with the row that
+/// shows it.
 fn setting_rows(widget: &gtk::Widget, found: &mut Vec<(String, gtk::Widget)>) {
     if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
         if widget.is_visible() && !row.title().is_empty() {
             found.push((row.title().to_string(), widget.clone()));
         }
+    }
+    if let Some(subpage) = subpage_of(widget) {
+        setting_rows(subpage.upcast_ref(), found);
     }
     let mut child = widget.first_child();
     while let Some(next) = child {
@@ -328,6 +334,81 @@ fn setting_rows(widget: &gtk::Widget, found: &mut Vec<(String, gtk::Widget)>) {
         child = next.next_sibling();
     }
 }
+
+/// A row opening `page` one level down, under `title`; its subtitle, from `summary`, tells
+/// how the page is set and is read again as the page is left.
+fn subpage_row(title: &str, summary: impl Fn() -> String + 'static, page: impl IsA<gtk::Widget>) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(summary())
+        .activatable(true)
+        .build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&page));
+    let subpage = adw::NavigationPage::builder().title(title).child(&view).build();
+    subpage.connect_hidden(glib::clone!(
+        #[weak]
+        row,
+        move |_| row.set_subtitle(&summary())
+    ));
+    row.connect_activated(glib::clone!(
+        #[strong]
+        subpage,
+        move |row| {
+            let navigation = row.ancestor(adw::NavigationView::static_type()).and_downcast::<adw::NavigationView>();
+            // Already shown, it is not opened twice.
+            if let Some(navigation) = navigation.filter(|_| subpage.parent().is_none()) {
+                navigation.push(&subpage);
+            }
+        }
+    ));
+    SUBPAGES.with_borrow_mut(|subpages| {
+        subpages.retain(|(row, _)| row.upgrade().is_some());
+        subpages.push((row.downgrade(), subpage));
+    });
+    row
+}
+
+fn subpage_of(widget: &gtk::Widget) -> Option<adw::NavigationPage> {
+    let row = widget.downcast_ref::<adw::ActionRow>()?;
+    SUBPAGES.with_borrow(|subpages| {
+        subpages
+            .iter()
+            .find(|(opener, _)| opener.upgrade().as_ref() == Some(row))
+            .map(|(_, subpage)| subpage.clone())
+    })
+}
+
+fn open_subpage(row: &adw::ActionRow) {
+    row.emit_by_name::<()>("activated", &[]);
+}
+
+/// Opens the page one level down that `widget` is on, if it is on one.
+fn open_subpage_holding(widget: &gtk::Widget) {
+    let opener = SUBPAGES.with_borrow(|subpages| {
+        subpages
+            .iter()
+            .find(|(_, subpage)| widget.is_ancestor(subpage))
+            .and_then(|(row, _)| row.upgrade())
+    });
+    if let Some(row) = opener {
+        open_subpage(&row);
+    }
+}
+
+/// Pages that are now a row of another, by their old names, as programs still open them.
+const MOVED_PAGES: [(&str, &str); 8] = [
+    ("設計語言", "關於"),
+    ("桌面", "桌布"),
+    ("視窗", "桌面與 Dock"),
+    ("字型", "外觀"),
+    ("預設應用程式", "一般"),
+    ("啟動項目", "一般"),
+    ("語言與地區", "一般"),
+    ("日期與時間", "一般"),
+];
 
 fn build(app: &adw::Application) {
     // Opened again, it shows the window it has.
@@ -367,11 +448,11 @@ fn build(app: &adw::Application) {
                 "藍牙" => bluetooth::bluetooth_page().upcast(),
                 "網路" => network::network_page().upcast(),
                 "外觀" => appearance_page(config, &look).upcast(),
-                "字型" => fonts_page(&look).upcast(),
                 "協助工具" => accessibility_page(config).upcast(),
                 "隱私" => privacy_page().upcast(),
-                "桌面" => desktop_page(config, &autostart).upcast(),
-                "視窗" => windows_page(config).upcast(),
+                "桌布" => wallpaper_page(config, &autostart).upcast(),
+                "桌面與 Dock" => desktop_page(config).upcast(),
+                "選單列" => menu_bar_page(config).upcast(),
                 "鎖定畫面" => lock_page(config).upcast(),
                 "懸停資訊" => hover_page(config).upcast(),
                 "通知" => notifications_page(config).upcast(),
@@ -381,16 +462,12 @@ fn build(app: &adw::Application) {
                 "鍵盤" => keyboard_page(config).upcast(),
                 "滑鼠與觸控板" => mouse_page(config).upcast(),
                 "使用者" => users::users_page().upcast(),
-                "語言與地區" => region::region_page().upcast(),
+                "一般" => general_page(config, &autostart).upcast(),
                 "印表機" => printers::printers_page().upcast(),
                 "軟體更新" => updates_page().upcast(),
                 "備份" => backup::backup_page().upcast(),
-                "日期與時間" => date_time_page().upcast(),
-                "預設應用程式" => default_apps_page(config).upcast(),
-                "啟動項目" => startup_page(&autostart).upcast(),
                 "共享" => sharing_page().upcast(),
                 "關於" => about_page().upcast(),
-                "設計語言" => design_page().upcast(),
                 _ => unreachable!("no page named {name}"),
             }
         })
@@ -409,10 +486,10 @@ fn build(app: &adw::Application) {
             .collect(),
         vec![
             ("外觀", "preferences-desktop-appearance-symbolic"),
-            ("桌面", "user-desktop-symbolic"),
-            ("字型", "preferences-desktop-font-symbolic"),
+            ("桌布", "preferences-desktop-wallpaper-symbolic"),
+            ("桌面與 Dock", "user-desktop-symbolic"),
+            ("選單列", "preferences-desktop-multitasking-symbolic"),
             ("鎖定畫面", "system-lock-screen-symbolic"),
-            ("視窗", "preferences-desktop-multitasking-symbolic"),
             ("懸停資訊", "document-properties-symbolic"),
         ],
         vec![
@@ -424,11 +501,8 @@ fn build(app: &adw::Application) {
             ("電源", "battery-level-100-symbolic"),
         ],
         vec![
+            ("一般", "preferences-system-symbolic"),
             ("通知", "preferences-system-notifications-symbolic"),
-            ("預設應用程式", "preferences-desktop-apps-symbolic"),
-            ("啟動項目", "system-run-symbolic"),
-            ("語言與地區", "preferences-desktop-locale-symbolic"),
-            ("日期與時間", "preferences-system-time-symbolic"),
             ("軟體更新", "software-update-available-symbolic"),
             ("備份", "document-save-symbolic"),
         ],
@@ -437,10 +511,7 @@ fn build(app: &adw::Application) {
             ("隱私", "preferences-system-privacy-symbolic"),
             ("協助工具", "preferences-desktop-accessibility-symbolic"),
         ],
-        vec![
-            ("關於", "help-about-symbolic"),
-            ("設計語言", "applications-graphics-symbolic"),
-        ],
+        vec![("關於", "help-about-symbolic")],
     ];
     const GROUP_NAMES: [&str; 6] = ["連線", "個人化", "裝置", "系統", "帳號與安全", "關於"];
     let crumbs: Vec<String> = groups
@@ -519,7 +590,15 @@ fn build(app: &adw::Application) {
     let content_view = adw::ToolbarView::new();
     content_view.add_top_bar(&adw::HeaderBar::new());
     content_view.set_content(Some(&stack));
-    content.set_child(Some(&content_view));
+    // Pages one level down are pushed over the page shown, with a way back to it.
+    let shown_page = adw::NavigationPage::builder()
+        .title(pages[0].0)
+        .tag(SHOWN_PAGE)
+        .child(&content_view)
+        .build();
+    let navigation = adw::NavigationView::new();
+    navigation.add(&shown_page);
+    content.set_child(Some(&navigation));
 
     let sidebar_view = adw::ToolbarView::new();
     sidebar_view.add_top_bar(&adw::HeaderBar::new());
@@ -566,27 +645,47 @@ fn build(app: &adw::Application) {
 
     let names: Vec<&str> = pages.iter().map(|(name, ..)| *name).collect();
     let page_names = names.clone();
-    let first = std::env::var(PAGE_ENV)
-        .ok()
+    let asked = std::env::var(PAGE_ENV).ok();
+    std::env::remove_var(PAGE_ENV);
+    // A page that moved is opened where it is now.
+    let moved = asked
+        .as_deref()
+        .and_then(|asked| MOVED_PAGES.iter().find(|(old, _)| *old == asked));
+    let first = asked
+        .as_deref()
+        .map(|asked| moved.map_or(asked, |(_, now)| *now))
         .and_then(|page| names.iter().position(|name| *name == page))
         .unwrap_or(0);
-    std::env::remove_var(PAGE_ENV);
     sidebar.connect_row_selected(glib::clone!(
         #[weak]
         stack,
         #[weak]
         content,
+        #[weak]
+        shown_page,
+        #[weak]
+        navigation,
         #[strong]
         page_of,
         move |_, row| {
             if let Some(name) = row.and_then(|row| names.get(row.index() as usize)) {
+                navigation.pop_to_tag(SHOWN_PAGE);
                 page_of(&stack, name);
                 stack.set_visible_child_name(name);
                 content.set_title(name);
+                shown_page.set_title(name);
             }
         }
     ));
     sidebar.select_row(sidebar.row_at_index(first as i32).as_ref());
+    if let (Some((old, _)), Some(page)) = (moved, stack.visible_child()) {
+        let mut rows = Vec::new();
+        setting_rows(&page, &mut rows);
+        if let Some(row) = rows.iter().find(|(title, _)| title == old).and_then(|(_, row)| row.downcast_ref::<adw::ActionRow>()) {
+            let row = row.clone();
+            glib::idle_add_local_once(move || open_subpage(&row));
+        }
+    }
 
     // Search: the pages' names and every setting's title, over the pages as they are now.
     let hits: Rc<RefCell<Vec<(usize, Option<gtk::Widget>)>>> = Rc::default();
@@ -665,6 +764,7 @@ fn build(app: &adw::Application) {
             sidebar.select_row(sidebar.row_at_index(at as i32).as_ref());
             split.set_show_content(true);
             if let Some(target) = target {
+                open_subpage_holding(&target);
                 // The page is laid out once it is shown, so the row is brought into view
                 // again as it settles.
                 for wait in [100, 400] {
@@ -765,13 +865,13 @@ fn build(app: &adw::Application) {
 
 /// The pages that show settings another program can change. 聲音 follows its devices on
 /// its own, and the rest show nothing that changes.
-const REBUILT_PAGES: [&str; 15] = [
+const REBUILT_PAGES: [&str; 14] = [
     "外觀",
-    "字型",
     "協助工具",
     "隱私",
-    "桌面",
-    "視窗",
+    "桌布",
+    "桌面與 Dock",
+    "選單列",
     "鎖定畫面",
     "懸停資訊",
     "通知",
@@ -779,9 +879,11 @@ const REBUILT_PAGES: [&str; 15] = [
     "電源",
     "鍵盤",
     "滑鼠與觸控板",
-    "預設應用程式",
-    "啟動項目",
+    "一般",
 ];
+
+/// The tag of the page the sidebar shows, under the pages one level down.
+const SHOWN_PAGE: &str = "shown";
 
 /// Whether the design language's look was on as Settings started, when GTK read it.
 fn look_read_at_start() -> bool {
@@ -1086,7 +1188,9 @@ fn group(title: &str) -> adw::PreferencesGroup {
 }
 
 /// The applications, the Dock, the menu bar and the wallpaper, a group each.
-fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::PreferencesPage {
+/// 桌面與 Dock: the applications' view and the Dock, with the Dock's less used switches, the
+/// windows and the hot corners a page each one level down.
+fn desktop_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
 
     let apps = group("應用程式");
@@ -1115,7 +1219,6 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         &["左", "下", "右"],
     ));
     dock.add(&switch_row(config, "自動隱藏", "dock_autohide"));
-    dock.add(&switch_row(config, "毛玻璃", "dock_glass"));
     let magnify = switch_row(config, "放大", "dock_magnify");
     dock.add(&magnify);
     let scale = scale_row(
@@ -1130,8 +1233,6 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         .sync_create()
         .build();
     dock.add(&scale);
-    dock.add(&switch_row(config, "執行中指示燈", "dock_indicators"));
-    dock.add(&switch_row(config, "開啟動畫", "dock_bounce"));
     dock.add(&choice_row(
         config,
         "最小化效果",
@@ -1139,12 +1240,61 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         &MINIMIZE_EFFECTS,
         &["精靈效果", "縮放效果"],
     ));
-    dock.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
-    dock.add(&switch_row(config, "最近使用的應用程式", "dock_recents"));
-    dock.add(&switch_row(config, "只顯示目前桌面的視窗", "dock_this_desktop"));
+    let others = group("");
+    others.add(&switch_row(config, "毛玻璃", "dock_glass"));
+    others.add(&switch_row(config, "執行中指示燈", "dock_indicators"));
+    others.add(&switch_row(config, "開啟動畫", "dock_bounce"));
+    others.add(&switch_row(config, "最小化至應用程式圖示", "dock_minimize_into_app"));
+    others.add(&switch_row(config, "最近使用的應用程式", "dock_recents"));
+    others.add(&switch_row(config, "只顯示目前桌面的視窗", "dock_this_desktop"));
+    dock.add(&subpage_row("其他選項", String::new, page_of_groups(&[others])));
     page.add(&dock);
 
-    let bar = group("選單列");
+    let corners = group("");
+    for (title, key) in HOT_CORNER_KEYS {
+        corners.add(&choice_row(config, title, key, &HOT_CORNERS, &HOT_CORNER_NAMES));
+    }
+    let more = group("");
+    more.add(&subpage_row("視窗", String::new, windows_page(config)));
+    more.add(&subpage_row("熱點", hot_corners_summary, page_of_groups(&[corners])));
+    page.add(&more);
+    page
+}
+
+/// The corners set to do something, or 無.
+fn hot_corners_summary() -> String {
+    let config = Config::load();
+    let set: Vec<&str> = HOT_CORNER_KEYS
+        .iter()
+        .filter(|(_, key)| !matches!(config.word(key), "" | "none"))
+        .map(|(title, _)| *title)
+        .collect();
+    if set.is_empty() { "無".into() } else { set.join("、") }
+}
+
+/// A page holding `groups`, for a row to open one level down.
+fn page_of_groups(groups: &[adw::PreferencesGroup]) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    for group in groups {
+        page.add(group);
+    }
+    page
+}
+
+/// 選單列: which status icons it shows, with its clock, month and day a page each one level
+/// down.
+fn menu_bar_page(config: &Config) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let icons = group("狀態圖示");
+    icons.add(&switch_row(config, "網路", "menu_bar_network"));
+    icons.add(&switch_row(config, "音量", "menu_bar_sound"));
+    if !batteries().is_empty() {
+        icons.add(&switch_row(config, "電池", "menu_bar_battery"));
+        icons.add(&switch_row(config, "電池百分比", "menu_bar_battery_percent"));
+    }
+    page.add(&icons);
+
+    let bar = group("");
     let hours = adw::ComboRow::builder()
         .title("時制")
         .model(&gtk::StringList::new(&["24 小時", "12 小時"]))
@@ -1156,29 +1306,35 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
     bar.add(&switch_row(config, "星期", "clock_weekday"));
     bar.add(&switch_row(config, "秒數", "clock_seconds"));
     bar.add(&switch_row(config, "閃爍時間分隔符號", "clock_flash"));
-    bar.add(&switch_row(config, "網路", "menu_bar_network"));
-    bar.add(&switch_row(config, "音量", "menu_bar_sound"));
-    if !batteries().is_empty() {
-        bar.add(&switch_row(config, "電池", "menu_bar_battery"));
-        bar.add(&switch_row(config, "電池百分比", "menu_bar_battery_percent"));
-    }
-    page.add(&bar);
-    page.add(&clock_group(config));
-    page.add(&calendar_month_group(config));
-    page.add(&calendar_day_group(config));
+    // Each page's title is its groups' too.
+    let untitled = |group: adw::PreferencesGroup| {
+        group.set_title("");
+        group
+    };
+    let clock = page_of_groups(&[bar, untitled(clock_group(config))]);
+    let more = group("");
+    more.add(&subpage_row("時鐘", menu_bar_clock_summary, clock));
+    more.add(&subpage_row("月曆", String::new, page_of_groups(&[untitled(calendar_month_group(config))])));
+    more.add(&subpage_row("當天行程", String::new, page_of_groups(&[untitled(calendar_day_group(config))])));
+    page.add(&more);
+    page
+}
 
-    let corners = group("熱點");
-    for (title, key) in [
-        ("左上角", "hot_corner_top_left"),
-        ("右上角", "hot_corner_top_right"),
-        ("左下角", "hot_corner_bottom_left"),
-        ("右下角", "hot_corner_bottom_right"),
-    ] {
-        corners.add(&choice_row(config, title, key, &HOT_CORNERS, &["無", "所有視窗", "應用程式", "鎖定螢幕"]));
+fn menu_bar_clock_summary() -> String {
+    let config = Config::load();
+    let mut parts = vec![if config.flag("clock_24h") { "24 小時" } else { "12 小時" }];
+    for (key, name) in [("clock_date", "日期"), ("clock_weekday", "星期"), ("clock_seconds", "秒數")] {
+        if config.flag(key) {
+            parts.push(name);
+        }
     }
-    page.add(&corners);
+    parts.join("・")
+}
 
-    let wall = group("桌布");
+/// 桌布: the pictures to pick from, how one fills the desktop, and the desktop's items.
+fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let wall = group("");
     // Without a wallpaper of Nekoland's own, the one swaybg is started with at login.
     let current = config
         .0
@@ -1292,6 +1448,13 @@ fn desktop_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
 /// A wallpaper as the 桌布 group shows it to be chosen.
 const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
 const HOT_CORNERS: [&str; 4] = ["none", "overview", "apps", "lock"];
+const HOT_CORNER_NAMES: [&str; 4] = ["無", "所有視窗", "應用程式", "鎖定螢幕"];
+const HOT_CORNER_KEYS: [(&str, &str); 4] = [
+    ("左上角", "hot_corner_top_left"),
+    ("右上角", "hot_corner_top_right"),
+    ("左下角", "hot_corner_bottom_left"),
+    ("右下角", "hot_corner_bottom_right"),
+];
 const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
 /// What clicking a GTK title bar does, as GNOME names it.
 const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
@@ -1438,6 +1601,11 @@ const WEATHER_PLACES: [(&str, [f64; 2]); 14] = [
 ];
 /// As many shortcuts as the lock shows in a row.
 const LOCK_ROW_SHORTCUTS: usize = 6;
+/// The widgets the lock can show, by name, with their titles.
+const LOCK_WIDGETS: [(&str, &str); 5] =
+    [("battery", "電池"), ("playing", "正在播放"), ("calendar", "今天的行程"), ("world_clock", "世界時鐘"), ("weather", "天氣")];
+/// How tall the clock's page draws the lock.
+const LOCK_SUBPAGE_PREVIEW: i32 = 180;
 
 /// A button that asks for a picture, and gives its path to `chosen`.
 fn picture_button(chosen: impl Fn(std::path::PathBuf) + 'static) -> gtk::Button {
@@ -1816,11 +1984,23 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     let shown = group("");
     shown.add(&preview);
     page.add(&shown);
+    // What is set less often, a page each one level down; the clock's has a preview of its own.
+    let clock_page = adw::PreferencesPage::new();
+    let (clock_preview, refresh_clock) = lock_preview(None, LOCK_SUBPAGE_PREVIEW);
+    clock_preview.add_css_class("card");
+    let clock_shown = group("");
+    clock_shown.add(&clock_preview);
+    clock_page.add(&clock_shown);
+    let widgets_page = adw::PreferencesPage::new();
+    let locked_page = adw::PreferencesPage::new();
+    let always_page = adw::PreferencesPage::new();
+    let background_page = adw::PreferencesPage::new();
+    let unlock_page = adw::PreferencesPage::new();
 
     // Each style, drawn small as it would look picked: the way to pick one.
     let styles = gtk::Box::builder().spacing(12).homogeneous(true).build();
     let mut buttons: Vec<gtk::ToggleButton> = Vec::new();
-    let mut refreshes = vec![refresh_preview];
+    let mut refreshes = vec![refresh_preview, refresh_clock];
     for (name, label) in LOCK_STYLES.into_iter().zip(["靜", "海報", "錶面"]) {
         let (thumbnail, refresh_thumbnail) = lock_preview(Some(name), 110);
         refreshes.push(refresh_thumbnail);
@@ -1865,7 +2045,6 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
         }
     });
     when.add(&screen_off);
-    page.add(&when);
 
     // Each change is drawn into the preview once it is written.
     let changed = |line: String, refresh: &Rc<dyn Fn()>| {
@@ -1874,9 +2053,10 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     };
 
     // A group shows its rows before anything else, so the pictures get one of their own.
-    let picker = group("樣式");
+    let picker = group("");
     picker.add(&styles);
     page.add(&picker);
+    page.add(&when);
     let look = group("");
     let selected = config.choice(&LOCK_STYLES, "lock_style");
     let weight = adw::ComboRow::builder()
@@ -2141,33 +2321,26 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     look.add(&hands);
     look.add(&label);
     look.add(&badge);
-    page.add(&look);
+    clock_page.add(&look);
 
     // Where the clock, the notices and the message stand, as LockStar lets them be moved.
     let places = group("自訂位置");
     places.add(&lock_place_row(config, "時鐘", "lock_clock_at", [0.5, 0.3], &refresh));
     places.add(&lock_place_row(config, "通知", "lock_notices_at", [0.5, 0.55], &refresh));
     places.add(&lock_place_row(config, "訊息", "lock_message_at", [0.5, 0.08], &refresh));
-    page.add(&places);
+    clock_page.add(&places);
 
     let widgets = group("小工具");
-    let listed: Vec<String> = config
-        .0
-        .get("lock_widgets")
-        .and_then(toml::Value::as_array)
-        .map_or_else(|| vec!["battery".into(), "playing".into()], |listed| {
-            listed.iter().filter_map(toml::Value::as_str).map(String::from).collect()
-        });
-    let shown_widget = |title: &str, name: &str| {
-        adw::SwitchRow::builder().title(title).active(listed.iter().any(|listed| listed == name)).build()
-    };
-    let rows: Rc<Vec<(adw::SwitchRow, &str)>> = Rc::new(vec![
-        (shown_widget("電池", "battery"), "battery"),
-        (shown_widget("正在播放", "playing"), "playing"),
-        (shown_widget("今天的行程", "calendar"), "calendar"),
-        (shown_widget("世界時鐘", "world_clock"), "world_clock"),
-        (shown_widget("天氣", "weather"), "weather"),
-    ]);
+    let listed = lock_widgets(config);
+    let rows: Rc<Vec<(adw::SwitchRow, &str)>> = Rc::new(
+        LOCK_WIDGETS
+            .iter()
+            .map(|&(name, title)| {
+                let row = adw::SwitchRow::builder().title(title).active(listed.iter().any(|listed| listed == name)).build();
+                (row, name)
+            })
+            .collect(),
+    );
     let zone = adw::ComboRow::builder()
         .title("時鐘城市")
         .model(&gtk::StringList::new(&WORLD_CLOCKS.map(|(_, city)| city)))
@@ -2234,7 +2407,7 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     }
     widgets.add(&zone);
     widgets.add(&place);
-    page.add(&widgets);
+    widgets_page.add(&widgets);
 
     // Two apps at the lock's foot, left and right, as One UI has them, or a row of them, as
     // Good Lock's LockStar has.
@@ -2336,7 +2509,7 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
         .build();
     unlocked.connect_active_notify(|row| set(&format!("lock_shortcuts_unlocked = {}", row.is_active())));
     shortcuts.add(&unlocked);
-    page.add(&shortcuts);
+    widgets_page.add(&shortcuts);
 
     let locked = group("鎖定時");
     let notices = adw::ComboRow::builder()
@@ -2448,17 +2621,19 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     locked.add(&icon);
     locked.add(&icon_picture);
     locked.add(&icon_colour);
-    locked.add(&always_on);
-    locked.add(&always_widgets);
-    locked.add(&always_stickers);
-    locked.add(&always_bright);
     locked.add(&power);
     locked.add(&message);
     locked.add(&message_size);
     locked.add(&message_colour);
     locked.add(&message_opacity);
-    page.add(&locked);
-    page.add(&fingerprint_group(lock_switch("以指紋解鎖", "lock_fingerprint", true)));
+    locked_page.add(&locked);
+    let always = group("");
+    always.add(&always_on);
+    always.add(&always_widgets);
+    always.add(&always_stickers);
+    always.add(&always_bright);
+    always_page.add(&always);
+    unlock_page.add(&fingerprint_group(lock_switch("以指紋解鎖", "lock_fingerprint", true)));
 
     let background = group("背景");
     let wallpaper = adw::SwitchRow::builder()
@@ -2736,12 +2911,12 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
             move |share| changed(format!("lock_dim = {}", (share * 100.0).round() as i64), &refresh)
         ),
     ));
-    page.add(&background);
+    background_page.add(&background);
 
     // Pictures placed anywhere on the lock, as LockStar's stickers are.
     let sticker = group("貼圖");
     fill_stickers(&sticker, &Stickers::read(config, &refresh));
-    page.add(&sticker);
+    background_page.add(&sticker);
 
     // How the lock goes once the password is given, as LockStar's unlock effects.
     let unlock = group("解鎖");
@@ -2780,8 +2955,84 @@ fn lock_page(config: &Config) -> adw::PreferencesPage {
     });
     unlock.add(&speed);
     unlock.add(&lock_choice("指紋效果", "lock_fingerprint_effect", &LOCK_FINGER_EFFECTS, &["漣漪", "光暈", "無"], 0));
-    page.add(&unlock);
+    unlock_page.add(&unlock);
+
+    let more = group("");
+    let clock = subpage_row("時鐘", lock_clock_summary, clock_page);
+    more.add(&clock);
+    more.add(&subpage_row("小工具與捷徑", lock_widgets_summary, widgets_page));
+    more.add(&subpage_row("背景", lock_background_summary, background_page));
+    more.add(&subpage_row("鎖定時", lock_notices_summary, locked_page));
+    more.add(&subpage_row("全天候顯示", || on_off(Config::load().flag("lock_always_on")), always_page));
+    more.add(&subpage_row("解鎖", lock_unlock_summary, unlock_page));
+    page.add(&more);
+    // The preview's clock leads to the clock's settings too.
+    let press = gtk::GestureClick::new();
+    press.connect_released(glib::clone!(
+        #[weak]
+        clock,
+        move |_, _, _, _| open_subpage(&clock)
+    ));
+    preview.add_controller(press);
+    preview.set_cursor_from_name(Some("pointer"));
     page
+}
+
+/// The widgets the lock shows, by name.
+fn lock_widgets(config: &Config) -> Vec<String> {
+    config
+        .0
+        .get("lock_widgets")
+        .and_then(toml::Value::as_array)
+        .map_or_else(|| vec!["battery".into(), "playing".into()], |listed| {
+            listed.iter().filter_map(toml::Value::as_str).map(String::from).collect()
+        })
+}
+
+fn lock_clock_summary() -> String {
+    let config = Config::load();
+    let label = |names: &[&str], labels: [&'static str; 3], key: &str| {
+        names.iter().position(|name| *name == config.word(key)).map_or(labels[1], |at| labels[at])
+    };
+    let size = label(&LOCK_CLOCK_SIZES, ["小", "中", "大"], "lock_clock_size");
+    let align = label(&LOCK_CLOCK_ALIGNS, ["靠左", "置中", "靠右"], "lock_clock_align");
+    [config.word("lock_clock_font"), size, align].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("・")
+}
+
+fn lock_widgets_summary() -> String {
+    let listed = lock_widgets(&Config::load());
+    let titles: Vec<&str> = LOCK_WIDGETS
+        .iter()
+        .filter(|(name, _)| listed.iter().any(|listed| listed == name))
+        .map(|(_, title)| *title)
+        .collect();
+    if titles.is_empty() { "無".into() } else { titles.join("、") }
+}
+
+fn lock_background_summary() -> String {
+    let config = Config::load();
+    let on = |key: &str| config.0.get(key).and_then(toml::Value::as_bool);
+    match (on("lock_wallpaper").unwrap_or(true), on("lock_blur").unwrap_or(false)) {
+        (false, _) => "不顯示桌布".into(),
+        (true, true) => "桌布・模糊".into(),
+        (true, false) => "桌布".into(),
+    }
+}
+
+fn lock_notices_summary() -> String {
+    let config = Config::load();
+    let at = LOCK_NOTICES.iter().position(|name| *name == config.word("lock_notices")).unwrap_or(1);
+    format!("通知{}", ["不顯示", "只顯示數量", "顯示內容"][at])
+}
+
+fn lock_unlock_summary() -> String {
+    let config = Config::load();
+    let at = LOCK_EFFECTS.iter().position(|name| *name == config.word("lock_unlock_effect")).unwrap_or(0);
+    LOCK_EFFECT_NAMES[at].into()
+}
+
+fn on_off(on: bool) -> String {
+    if on { "開啟" } else { "關閉" }.into()
 }
 
 /// The window arrangement shortcuts, as the compositor takes them, by what they do.
@@ -2878,6 +3129,15 @@ fn windows_page(config: &Config) -> adw::PreferencesPage {
 
 /// The hover panel: when it shows, where, how it looks and which fields, a group each, as
 /// FinderHover's settings have them.
+fn hover_place_summary() -> String {
+    let config = Config::load();
+    if config.flag("hover_follow") {
+        return "跟隨指標".into();
+    }
+    let offset = |key: &str| config.number(key, 15.0);
+    format!("偏移 {:.0}・{:.0} px", offset("hover_offset_x"), offset("hover_offset_y"))
+}
+
 fn hover_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
 
@@ -2918,7 +3178,7 @@ fn hover_page(config: &Config) -> adw::PreferencesPage {
     }
     page.add(&general);
 
-    let place = group("位置");
+    let place = group("");
     place.add(&switch_row(config, "跟隨指標", "hover_follow"));
     for (title, key) in [("水平偏移", "hover_offset_x"), ("垂直偏移", "hover_offset_y")] {
         place.add(&scale_row(
@@ -2929,7 +3189,6 @@ fn hover_page(config: &Config) -> adw::PreferencesPage {
             move |offset| set(&format!("{key} = {offset:.0}")),
         ));
     }
-    page.add(&place);
 
     let look = group("外觀");
     look.add(&choice_row(
@@ -2971,9 +3230,12 @@ fn hover_page(config: &Config) -> adw::PreferencesPage {
         |size| set(&format!("hover_font_size = {size:.1}")),
     ));
     page.add(&look);
+    let more = group("");
+    more.add(&subpage_row("位置", hover_place_summary, page_of_groups(&[place])));
+    page.add(&more);
 
     // With the panel off, only the switch that brings it back is left.
-    rows.extend([place.upcast(), look.upcast()]);
+    rows.extend([more.upcast(), look.upcast()]);
     for widget in rows {
         shown
             .bind_property("active", &widget, "visible")
@@ -3871,11 +4133,11 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
     themes.add(&theme_row(config, "游標主題", "cursor_theme", "cursor-theme", true));
     page.add(&themes);
 
+    let fonts = fonts_page(&glass_look);
     let bars = glass_group(config, "選單列與 Dock", ("bar", 0.5), |_| {});
     bars.add(&switch_row(config, "選單列背景", "menu_bar_background"));
-    page.add(&bars);
     // GTK's menus and sidebars take their tint from the look, written again as it changes.
-    page.add(&glass_group(config, "毛玻璃", ("glass", 0.8), move |opacity| {
+    let glass = glass_group(config, "選單、通知與視窗", ("glass", 0.8), move |opacity| {
         GLASS_OPACITY.set(opacity);
         if gtk_look_on() {
             if let Err(err) = set_gtk_look(true) {
@@ -3883,7 +4145,15 @@ fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> adw::Prefere
             }
             glass_look.load_from_string(&look_for(adw::StyleManager::default().is_dark()));
         }
-    }));
+    });
+    let more = group("");
+    more.add(&subpage_row("字型", || UI_FONT.with_borrow(Clone::clone), fonts));
+    more.add(&subpage_row(
+        "毛玻璃",
+        || format!("不透明度 {:.0}%", GLASS_OPACITY.get() * 100.0),
+        page_of_groups(&[bars, glass]),
+    ));
+    page.add(&more);
     page
 }
 
@@ -4283,8 +4553,10 @@ fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     );
     blink.bind_property("active", &blink_time, "visible").sync_create().build();
     typing.add(&blink_time);
+    let shortcuts = shortcuts_group("", &SYSTEM_SHORTCUTS);
+    let count = format!("{} 個", SYSTEM_SHORTCUTS.len());
+    typing.add(&subpage_row("鍵盤快速鍵", move || count.clone(), page_of_groups(&[shortcuts])));
     page.add(&typing);
-    page.add(&shortcuts_group("鍵盤快速鍵", &SYSTEM_SHORTCUTS));
     page
 }
 
@@ -5537,6 +5809,24 @@ const DEFAULT_APPS: [(&str, &[&str]); 8] = [
     ("音樂", &["audio/mpeg", "audio/flac", "audio/ogg", "audio/x-wav"]),
     ("影片", &["video/mp4", "video/webm", "video/x-matroska"]),
 ];
+
+/// 一般: settings that are a page each, one level down, as the Mac's General has them.
+fn general_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let pages = group("");
+    for (title, icon, subpage) in [
+        ("日期與時間", "preferences-system-time-symbolic", date_time_page()),
+        ("語言與地區", "preferences-desktop-locale-symbolic", region::region_page()),
+        ("預設應用程式", "preferences-desktop-apps-symbolic", default_apps_page(config)),
+        ("啟動項目", "system-run-symbolic", startup_page(autostart)),
+    ] {
+        let row = subpage_row(title, String::new, subpage);
+        row.add_prefix(&gtk::Image::from_icon_name(icon));
+        pages.add(&row);
+    }
+    page.add(&pages);
+    page
+}
 
 fn default_apps_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
@@ -6832,14 +7122,14 @@ const PERMISSION_STORE_PATH: &str = "/org/freedesktop/impl/portal/PermissionStor
 
 /// What the portals let each application use, by the table and entry the permission store
 /// keeps it under. Only sandboxed applications, as Flatpak's, are asked and held to it.
-const PERMISSIONS: [(&str, &str, &str); 7] = [
-    ("相機", "devices", "camera"),
-    ("麥克風", "devices", "microphone"),
-    ("喇叭", "devices", "speakers"),
-    ("定位服務", "location", "location"),
-    ("螢幕擷取", "screenshot", "screenshot"),
-    ("背景執行", "background", "background"),
-    ("通知", "notifications", "notification"),
+const PERMISSIONS: [(&str, &str, &str, &str); 7] = [
+    ("相機", "devices", "camera", "camera-web-symbolic"),
+    ("麥克風", "devices", "microphone", "audio-input-microphone-symbolic"),
+    ("喇叭", "devices", "speakers", "audio-speakers-symbolic"),
+    ("定位服務", "location", "location", "find-location-symbolic"),
+    ("螢幕擷取", "screenshot", "screenshot", "applets-screenshooter-symbolic"),
+    ("背景執行", "background", "background", "system-run-symbolic"),
+    ("通知", "notifications", "notification", "preferences-system-notifications-symbolic"),
 ];
 
 /// The applications that asked for each permission, with whether they have it.
@@ -6850,9 +7140,13 @@ fn privacy_page() -> adw::PreferencesPage {
         .ok();
     // shortcut: read once, as the page is made; an application that asks while Settings is
     // open shows when it opens again.
-    for (title, table, id) in PERMISSIONS {
-        let rows = group(title);
+    // Each permission a row telling how many applications asked for it; they are listed one
+    // level down.
+    let permissions = group("");
+    for (title, table, id, icon) in PERMISSIONS {
+        let rows = group("");
         let apps = bus.as_ref().map(|bus| app_permissions(bus, table, id)).unwrap_or_default();
+        let asked = if apps.is_empty() { "沒有應用程式".to_string() } else { format!("{} 個應用程式", apps.len()) };
         if apps.is_empty() {
             rows.add(&adw::ActionRow::builder().title("沒有應用程式").css_classes(["dim-label"]).build());
         }
@@ -6888,8 +7182,11 @@ fn privacy_page() -> adw::PreferencesPage {
             });
             rows.add(&row);
         }
-        page.add(&rows);
+        let row = subpage_row(title, move || asked.clone(), page_of_groups(&[rows]));
+        row.add_prefix(&gtk::Image::from_icon_name(icon));
+        permissions.add(&row);
     }
+    page.add(&permissions);
     let history = group("");
     history.add(&gsettings_switch(
         "記錄最近使用的檔案",
@@ -7047,8 +7344,10 @@ fn updates_page() -> adw::PreferencesPage {
         updates.add(&pause_row());
     }
     page.add(&updates);
-    if let Some(history) = history_group() {
-        page.add(&history);
+    if let Some((history, latest)) = history_group() {
+        let more = group("");
+        more.add(&subpage_row("更新記錄", move || latest.clone(), page_of_groups(&[history])));
+        page.add(&more);
     }
     page
 }
@@ -7147,25 +7446,30 @@ fn parse_apt_history(text: &str) -> Vec<AptRun> {
 }
 
 /// 更新記錄: what apt installed, upgraded and removed, latest first; none without a history.
-fn history_group() -> Option<adw::PreferencesGroup> {
+/// The latest apt runs, with the newest told in a line.
+fn history_group() -> Option<(adw::PreferencesGroup, String)> {
     let runs = parse_apt_history(&std::fs::read_to_string(APT_HISTORY).ok()?);
     if runs.is_empty() {
         return None;
     }
-    let history = group("更新記錄");
+    let history = group("");
+    let mut latest = String::new();
     for run in runs.iter().take(HISTORY_ENTRIES) {
         let counts: Vec<String> = [("升級", run.upgraded), ("安裝", run.installed), ("移除", run.removed)]
             .into_iter()
             .filter(|(_, count)| *count > 0)
             .map(|(what, count)| format!("{what} {count} 個"))
             .collect();
+        if latest.is_empty() {
+            latest = format!("{}・{}", run.date, counts.join("、"));
+        }
         let row = adw::ExpanderRow::builder().title(run.date.as_str()).subtitle(counts.join("、")).build();
         for package in &run.packages {
             row.add_row(&adw::ActionRow::builder().title(package.as_str()).build());
         }
         history.add(&row);
     }
-    Some(history)
+    Some((history, latest))
 }
 
 /// How many packages `apt list --upgradable` lists, past its "Listing..." line.
@@ -7260,6 +7564,9 @@ fn about_page() -> adw::PreferencesPage {
     if let Some(storage) = storage_group() {
         page.add(&storage);
     }
+    let design = group("");
+    design.add(&subpage_row("設計語言", String::new, design_page()));
+    page.add(&design);
     page
 }
 

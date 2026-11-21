@@ -1093,7 +1093,7 @@ impl Nekoland {
                     tracing::warn!("{err}");
                 }
             }
-            DesktopCommand::Wallpaper => config::spawn("NEKOLAND_SETTINGS_PAGE=桌面 nekoland-settings"),
+            DesktopCommand::Wallpaper => config::spawn("NEKOLAND_SETTINGS_PAGE=桌布 nekoland-settings"),
         }
     }
 }
