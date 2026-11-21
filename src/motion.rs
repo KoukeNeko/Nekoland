@@ -161,6 +161,10 @@ const CLOSE: Spring = Spring::new(0.24, 1.0);
 const CLOSE_SCALE: f64 = 0.9;
 /// One desktop sliding out as the next slides in.
 const SLIDE: Spring = Spring::new(0.42, 1.0);
+/// Asked for the desktop past the last one, the one shown is pushed that way a little and
+/// comes back, for there is none there: how far, and how long it takes.
+const BUMP_DISTANCE: f64 = 60.0;
+const BUMP_SECONDS: f64 = 0.32;
 /// A menu growing out of what it was opened from.
 const POPUP: Spring = Spring::new(0.22, 0.85);
 const POPUP_SCALE: f64 = 0.92;
@@ -313,6 +317,8 @@ pub struct Motion {
     morphing: Vec<Morph>,
     ghosts: Vec<Ghost>,
     slide: Option<Slide>,
+    /// When the desktop shown was pushed past the last one, and whether to the right.
+    bump: Option<(Instant, bool)>,
 }
 
 /// A window as it was last drawn, with the part of it the picture covers, from where its
@@ -496,6 +502,22 @@ fn slide_offsets(progress: f64, width: i32, forward: bool) -> (i32, i32) {
     )
 }
 
+/// How far right the desktop is drawn `seconds` into a push toward `forward`: out quickly,
+/// back more slowly, and still at both ends.
+fn bump_offset(seconds: f64, forward: bool) -> i32 {
+    let progress = (seconds / BUMP_SECONDS).clamp(0.0, 1.0);
+    let out = 0.3;
+    let shape = if progress < out {
+        let t = progress / out;
+        t * (2.0 - t)
+    } else {
+        let t = (progress - out) / (1.0 - out);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    };
+    let direction = if forward { -1.0 } else { 1.0 };
+    (direction * BUMP_DISTANCE * shape).round() as i32
+}
+
 impl Nekoland {
     /// Lets go of the animations that have come to rest, and of windows that went meanwhile;
     /// called before each frame.
@@ -515,12 +537,16 @@ impl Nekoland {
         {
             motion.slide = None;
         }
+        if motion.bump.is_some_and(|(started, _)| seconds_since(started) >= BUMP_SECONDS) {
+            motion.bump = None;
+        }
     }
 
     /// Whether a window is drawn somewhere other than where it is, or is about to be.
     pub fn motion_moves(&self, window: &Window) -> bool {
         let motion = &self.motion;
         motion.slide.is_some()
+            || motion.bump.is_some()
             || motion.opening.iter().any(|opening| &opening.window == window)
             || motion.morphing.iter().any(|morph| &morph.window == window)
     }
@@ -564,6 +590,7 @@ impl Nekoland {
         if let Some(slide) = &self.motion.slide {
             shown.loc.x += slide.offsets(self.output_width()).0;
         }
+        shown.loc.x += self.bump_offset();
         // Super+, shows the desktop through the windows while it is held.
         if self.peeking && crate::windows::is_managed(window) {
             alpha *= PEEK_ALPHA;
@@ -574,6 +601,9 @@ impl Nekoland {
     /// While the desktops slide past each other on a display `width` wide: how far right the
     /// menu bar's content is drawn, and the desktop left's content with how far right it is.
     pub fn menu_bar_slide(&self, width: i32) -> Option<(i32, Option<(&Picture, i32)>)> {
+        if self.motion.bump.is_some() {
+            return Some((self.bump_offset(), None));
+        }
         let slide = self.motion.slide.as_ref()?;
         let (coming, going) = slide.offsets(width);
         Some((coming, slide.bar.as_ref().map(|bar| (bar, going))))
@@ -710,6 +740,22 @@ impl Nekoland {
         });
     }
 
+    /// The desktop past the last one, `forward` or back, was asked for: the one shown is
+    /// pushed toward it and comes back.
+    pub fn motion_bump(&mut self, forward: bool) {
+        if !self.config.animations || self.overview.is_some() || self.motion.slide.is_some() {
+            return;
+        }
+        self.motion.bump = Some((Instant::now(), forward));
+    }
+
+    /// How far right the desktop shown is pushed now.
+    fn bump_offset(&self) -> i32 {
+        self.motion
+            .bump
+            .map_or(0, |(started, forward)| bump_offset(seconds_since(started), forward))
+    }
+
     /// The desktop shown changed: the windows `leaving` slide out as the others slide in,
     /// from the right when the desktop gone to is `forward` of the one left.
     pub fn motion_slide(&mut self, leaving: Vec<(Window, Point<i32, Logical>)>, forward: bool) {
@@ -778,6 +824,14 @@ mod tests {
         assert_eq!(lerp(from, to, 0.0), from);
         assert_eq!(lerp(from, to, 1.0), to);
         assert_eq!(lerp(from, to, 0.5), rect(50, 100, 200, 300));
+    }
+
+    #[test]
+    fn a_push_past_the_last_desktop_goes_out_that_way_and_comes_back() {
+        assert_eq!(bump_offset(0.0, true), 0);
+        assert_eq!(bump_offset(BUMP_SECONDS * 0.3, true), -BUMP_DISTANCE as i32);
+        assert_eq!(bump_offset(BUMP_SECONDS * 0.3, false), BUMP_DISTANCE as i32);
+        assert_eq!(bump_offset(BUMP_SECONDS, true), 0);
     }
 
     #[test]

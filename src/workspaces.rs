@@ -389,8 +389,9 @@ impl Nekoland {
 
     /// The desktop to the left or to the right of the one shown, if there is one.
     pub fn switch_workspace_by(&mut self, step: isize) {
-        if let Some(index) = self.workspaces.active.checked_add_signed(step) {
-            self.switch_workspace(index);
+        match self.workspaces.active.checked_add_signed(step) {
+            Some(index) if index < self.workspaces.count() => self.switch_workspace(index),
+            _ => self.motion_bump(step > 0),
         }
     }
 
