@@ -266,6 +266,8 @@ const PAUSE_WEEKS: [u32; 4] = [0, 1, 2, 5];
 /// The page a restarted Settings opens on.
 const PAGE_ENV: &str = "NEKOLAND_SETTINGS_PAGE";
 
+type OpenPage = Box<dyn Fn(&str) -> bool>;
+
 thread_local! {
     /// Set when Settings is to start again once it has closed, on the page named.
     static RESTART: RefCell<Option<&'static str>> = const { RefCell::new(None) };
@@ -277,6 +279,8 @@ thread_local! {
     static WROTE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Every page one level down, with the row that opens it, for search to look in.
     static SUBPAGES: RefCell<Vec<(glib::WeakRef<adw::ActionRow>, adw::NavigationPage)>> = RefCell::default();
+    /// Shows the page named in the open window; false for a name it has no page for.
+    static OPEN_PAGE: RefCell<Option<OpenPage>> = RefCell::default();
     /// The `pw-dump --monitor` the sound page follows, stopped as Settings ends.
     static SOUND_MONITOR: RefCell<Option<gio::Subprocess>> = const { RefCell::new(None) };
 }
@@ -286,8 +290,19 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(backup::BACKUP_FLAG) {
         return backup::back_up_now();
     }
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // The environment comes along so that a page asked for while Settings is open is shown.
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::SEND_ENVIRONMENT)
+        .build();
     app.connect_activate(build);
+    app.connect_command_line(|app, line| {
+        if let Some(page) = line.getenv(PAGE_ENV) {
+            std::env::set_var(PAGE_ENV, page);
+        }
+        app.activate();
+        0
+    });
     let code = app.run();
     for monitor in SOUND_MONITOR.take().into_iter().chain(wifi::NETWORK_MONITORS.take()) {
         monitor.force_exit();
@@ -413,6 +428,10 @@ const MOVED_PAGES: [(&str, &str); 8] = [
 fn build(app: &adw::Application) {
     // Opened again, it shows the window it has.
     if let Some(window) = app.active_window() {
+        if let Ok(asked) = std::env::var(PAGE_ENV) {
+            std::env::remove_var(PAGE_ENV);
+            OPEN_PAGE.with_borrow(|open_page| open_page.as_ref().map(|open_page| open_page(&asked)));
+        }
         window.present();
         return;
     }
@@ -645,17 +664,7 @@ fn build(app: &adw::Application) {
 
     let names: Vec<&str> = pages.iter().map(|(name, ..)| *name).collect();
     let page_names = names.clone();
-    let asked = std::env::var(PAGE_ENV).ok();
-    std::env::remove_var(PAGE_ENV);
-    // A page that moved is opened where it is now.
-    let moved = asked
-        .as_deref()
-        .and_then(|asked| MOVED_PAGES.iter().find(|(old, _)| *old == asked));
-    let first = asked
-        .as_deref()
-        .map(|asked| moved.map_or(asked, |(_, now)| *now))
-        .and_then(|page| names.iter().position(|name| *name == page))
-        .unwrap_or(0);
+    let asked_names = names.clone();
     sidebar.connect_row_selected(glib::clone!(
         #[weak]
         stack,
@@ -677,15 +686,44 @@ fn build(app: &adw::Application) {
             }
         }
     ));
-    sidebar.select_row(sidebar.row_at_index(first as i32).as_ref());
-    if let (Some((old, _)), Some(page)) = (moved, stack.visible_child()) {
-        let mut rows = Vec::new();
-        setting_rows(&page, &mut rows);
-        if let Some(row) = rows.iter().find(|(title, _)| title == old).and_then(|(_, row)| row.downcast_ref::<adw::ActionRow>()) {
-            let row = row.clone();
-            glib::idle_add_local_once(move || open_subpage(&row));
+    let open_page: OpenPage = Box::new(glib::clone!(
+        #[weak]
+        sidebar,
+        #[weak]
+        stack,
+        #[weak]
+        navigation,
+        #[weak]
+        search,
+        #[upgrade_or]
+        false,
+        move |asked: &str| {
+            // A page that moved is opened where it is now.
+            let moved = MOVED_PAGES.iter().find(|(old, _)| *old == asked);
+            let page = moved.map_or(asked, |(_, now)| *now);
+            let Some(at) = asked_names.iter().position(|name| *name == page) else {
+                return false;
+            };
+            search.set_text("");
+            navigation.pop_to_tag(SHOWN_PAGE);
+            sidebar.select_row(sidebar.row_at_index(at as i32).as_ref());
+            if let (Some((old, _)), Some(page)) = (moved, stack.visible_child()) {
+                let mut rows = Vec::new();
+                setting_rows(&page, &mut rows);
+                if let Some(row) = rows.iter().find(|(title, _)| title == old).and_then(|(_, row)| row.downcast_ref::<adw::ActionRow>()) {
+                    let row = row.clone();
+                    glib::idle_add_local_once(move || open_subpage(&row));
+                }
+            }
+            true
         }
+    ));
+    let asked = std::env::var(PAGE_ENV).ok();
+    std::env::remove_var(PAGE_ENV);
+    if !asked.is_some_and(|asked| open_page(&asked)) {
+        sidebar.select_row(sidebar.row_at_index(0).as_ref());
     }
+    OPEN_PAGE.set(Some(open_page));
 
     // Search: the pages' names and every setting's title, over the pages as they are now.
     let hits: Rc<RefCell<Vec<(usize, Option<gtk::Widget>)>>> = Rc::default();
