@@ -164,10 +164,9 @@ const CLOSE_SCALE: f64 = 0.9;
 const SLIDE_RATE: f64 = TAU / 0.42;
 /// How near the desktop shown the view comes, in desktops, before it is there.
 const SLIDE_SETTLED: f64 = 1e-4;
-/// Asked for the desktop past the last one, the one shown is pushed that way a little and
-/// comes back, for there is none there: how far, and how long it takes.
+/// Asked for the desktop past the last one, the view is pushed that far past it, in points,
+/// and comes back, for there is none there.
 const BUMP_DISTANCE: f64 = 60.0;
-const BUMP_SECONDS: f64 = 0.32;
 /// A menu growing out of what it was opened from.
 const POPUP: Spring = Spring::new(0.22, 0.85);
 const POPUP_SCALE: f64 = 0.92;
@@ -313,6 +312,8 @@ struct Scroll {
     ticked: Instant,
     /// The menu bar's content as each desktop left had it, passing with its windows.
     bars: Vec<(usize, Picture)>,
+    /// Whether it was pushed past the last desktop, which it is once on its way.
+    pushed: bool,
 }
 
 #[derive(Default)]
@@ -321,8 +322,6 @@ pub struct Motion {
     morphing: Vec<Morph>,
     ghosts: Vec<Ghost>,
     scroll: Option<Scroll>,
-    /// When the desktop shown was pushed past the last one, and whether to the right.
-    bump: Option<(Instant, bool)>,
 }
 
 /// A window as it was last drawn, with the part of it the picture covers, from where its
@@ -499,20 +498,24 @@ fn desktops_in_view(view: f64) -> std::ops::RangeInclusive<usize> {
     view.floor() as usize..=view.ceil() as usize
 }
 
-/// How far right the desktop is drawn `seconds` into a push toward `forward`: out quickly,
-/// back more slowly, and still at both ends.
-fn bump_offset(seconds: f64, forward: bool) -> i32 {
-    let progress = (seconds / BUMP_SECONDS).clamp(0.0, 1.0);
-    let out = 0.3;
-    let shape = if progress < out {
-        let t = progress / out;
-        t * (2.0 - t)
-    } else {
-        let t = (progress - out) / (1.0 - out);
-        1.0 - t * t * (3.0 - 2.0 * t)
-    };
-    let direction = if forward { -1.0 } else { 1.0 };
-    (direction * BUMP_DISTANCE * shape).round() as i32
+/// The speed, in desktops a second toward the push, that carries the view from `away`
+/// desktops past where it rests (less than 0 while still coming) on to `distance` past it,
+/// and back, on its spring. A spring that just does not swing past is `(away + b t) e^-rt`
+/// away at `t`, with `b = speed + rate away`; furthest at `t = 1/rate - away/b`, where it
+/// is `b/rate e^(rate away/b - 1)`, which grows with `b`, so `b` is found by halving.
+fn bump_speed(away: f64, distance: f64) -> f64 {
+    let away = away.min(0.0);
+    let furthest = |b: f64| b / SLIDE_RATE * (SLIDE_RATE * away / b - 1.0).exp();
+    let (mut low, mut high) = (0.0, SLIDE_RATE * (distance - away) * 10.0);
+    for _ in 0..60 {
+        let middle = (low + high) / 2.0;
+        if furthest(middle) < distance {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    high - SLIDE_RATE * away
 }
 
 impl Nekoland {
@@ -537,16 +540,12 @@ impl Nekoland {
                 motion.scroll = None;
             }
         }
-        if motion.bump.is_some_and(|(started, _)| seconds_since(started) >= BUMP_SECONDS) {
-            motion.bump = None;
-        }
     }
 
     /// Whether a window is drawn somewhere other than where it is, or is about to be.
     pub fn motion_moves(&self, window: &Window) -> bool {
         let motion = &self.motion;
         motion.scroll.is_some()
-            || motion.bump.is_some()
             || motion.opening.iter().any(|opening| &opening.window == window)
             || motion.morphing.iter().any(|morph| &morph.window == window)
     }
@@ -590,7 +589,6 @@ impl Nekoland {
         if let Some(scroll) = &self.motion.scroll {
             shown.loc.x += desktop_x(scroll.view, self.workspaces.active, self.output_width());
         }
-        shown.loc.x += self.bump_offset();
         // Super+, shows the desktop through the windows while it is held.
         if self.peeking && crate::windows::is_managed(window) {
             alpha *= PEEK_ALPHA;
@@ -601,9 +599,6 @@ impl Nekoland {
     /// While the desktops slide past on a display `width` wide: how far right the menu bar's
     /// content is drawn, and that of the other desktops in view, as each had it, with theirs.
     pub fn menu_bar_slide(&self, width: i32) -> Option<(i32, Vec<(&Picture, i32)>)> {
-        if self.motion.bump.is_some() {
-            return Some((self.bump_offset(), Vec::new()));
-        }
         let scroll = self.motion.scroll.as_ref()?;
         let active = self.workspaces.active;
         let others = desktops_in_view(scroll.view)
@@ -750,20 +745,29 @@ impl Nekoland {
         });
     }
 
-    /// The desktop past the last one, `forward` or back, was asked for: the one shown is
-    /// pushed toward it and comes back.
+    /// The desktop past the last one, `forward` or back, was asked for: the view is pushed
+    /// that way and comes back, from wherever it is on its way, as when a key held down
+    /// runs it to the end. Once a way, so that the key repeating does not push it further.
     pub fn motion_bump(&mut self, forward: bool) {
-        if !self.config.animations || self.overview.is_some() || self.motion.scroll.is_some() {
+        let width = f64::from(self.output_width());
+        if !self.config.animations || self.overview.is_some() || width <= 0.0 {
             return;
         }
-        self.motion.bump = Some((Instant::now(), forward));
-    }
-
-    /// How far right the desktop shown is pushed now.
-    fn bump_offset(&self) -> i32 {
-        self.motion
-            .bump
-            .map_or(0, |(started, forward)| bump_offset(seconds_since(started), forward))
+        let active = self.workspaces.active as f64;
+        let scroll = self.motion.scroll.get_or_insert_with(|| Scroll {
+            view: active,
+            speed: 0.0,
+            ticked: Instant::now(),
+            bars: Vec::new(),
+            pushed: false,
+        });
+        if !scroll.pushed {
+            scroll.pushed = true;
+            let direction = if forward { 1.0 } else { -1.0 };
+            let speed = bump_speed(direction * (scroll.view - active), BUMP_DISTANCE / width);
+            // Never slower than it was going that way.
+            scroll.speed = direction * speed.max(direction * scroll.speed);
+        }
     }
 
     /// The desktop shown changed from `left`: when `sliding`, the view goes there past the
@@ -773,14 +777,15 @@ impl Nekoland {
             self.motion.scroll = None;
             return;
         }
-        self.motion.bump = None;
         let bar = self.menu_bar_picture().cloned();
         let scroll = self.motion.scroll.get_or_insert_with(|| Scroll {
             view: left as f64,
             speed: 0.0,
             ticked: Instant::now(),
             bars: Vec::new(),
+            pushed: false,
         });
+        scroll.pushed = false;
         scroll.bars.retain(|(desktop, _)| *desktop != left);
         scroll.bars.extend(bar.map(|bar| (left, bar)));
     }
@@ -841,11 +846,19 @@ mod tests {
     }
 
     #[test]
-    fn a_push_past_the_last_desktop_goes_out_that_way_and_comes_back() {
-        assert_eq!(bump_offset(0.0, true), 0);
-        assert_eq!(bump_offset(BUMP_SECONDS * 0.3, true), -BUMP_DISTANCE as i32);
-        assert_eq!(bump_offset(BUMP_SECONDS * 0.3, false), BUMP_DISTANCE as i32);
-        assert_eq!(bump_offset(BUMP_SECONDS, true), 0);
+    fn a_push_past_the_last_desktop_goes_out_that_far_and_comes_back() {
+        let distance = BUMP_DISTANCE / 1920.0;
+        // From rest there, and from still coming there, as a key held down runs it.
+        for start in [3.0, 2.6] {
+            let (mut view, mut speed) = (start, bump_speed(start - 3.0, distance));
+            let mut furthest: f64 = start;
+            for _ in 0..300 {
+                settle(&mut view, &mut speed, 3.0, SLIDE_RATE, 0.004);
+                furthest = furthest.max(view);
+            }
+            assert!((furthest - 3.0 - distance).abs() < distance * 0.01, "{start}: {furthest}");
+            assert!((view - 3.0).abs() < SLIDE_SETTLED);
+        }
     }
 
     #[test]
