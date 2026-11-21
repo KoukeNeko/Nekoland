@@ -37,6 +37,11 @@ pub struct Workspaces {
 }
 
 impl Workspaces {
+    /// The windows of a desktop not shown, bottom of the stack first, with where they go.
+    pub fn parked_on(&self, index: usize) -> &[(Window, Point<i32, Logical>)] {
+        self.parked.get(index).map_or(&[], Vec::as_slice)
+    }
+
     /// The desktops kept from the last session, or one.
     pub fn new() -> Self {
         let saved: Saved = config::config_file(SAVED)
@@ -220,9 +225,7 @@ impl Nekoland {
         if self.desktop_wallpaper(index) != wallpaper {
             self.show_wallpaper();
         }
-        if sliding {
-            self.motion_slide(shown.clone(), index > previous);
-        }
+        self.motion_slide(previous, sliding);
         self.workspaces.parked[previous] = shown;
         for (window, location) in std::mem::take(&mut self.workspaces.parked[index]) {
             self.space.map_element(window, location, false);

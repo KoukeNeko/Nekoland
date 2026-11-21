@@ -532,19 +532,21 @@ fn menu_bar_sliding(
         return Vec::new();
     }
     let width = output_geometry.size.w;
-    let Some((coming, going)) = state.menu_bar_slide(width) else {
+    let Some((coming, others)) = state.menu_bar_slide(width) else {
         return Vec::new();
     };
     state
         .menu_bar_picture()
         .map(|bar| (bar, coming))
         .into_iter()
-        .chain(going)
+        .chain(others)
         .filter_map(|(bar, offset)| {
-            let shown = Size::from(((bar.size.w - offset.abs()).min(width - offset.max(0)), bar.size.h));
-            if shown.w <= 0 {
+            // A desktop further than a screen away, as the view hurries past, shows none.
+            let shown_width = (bar.size.w - offset.abs()).min(width - offset.max(0));
+            if shown_width <= 0 {
                 return None;
             }
+            let shown = Size::from((shown_width, bar.size.h));
             MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 Point::<i32, Logical>::from((offset.max(0), 0)).to_f64().to_physical(scale),
