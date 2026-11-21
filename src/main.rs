@@ -150,6 +150,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
                 data.state.notice_event(&event);
                 data.state.menu_bar_event(event);
+                // What it changed is drawn at once, rather than at the next look.
+                if let Some(redraw) = &data.state.redraw {
+                    redraw.ping();
+                }
             }
         })
         .map_err(|err| err.error)?;

@@ -1325,21 +1325,21 @@ impl Nekoland {
                 bus.send(Request::Actions(app_id.clone()));
             }
         }
-        // The file names the recorder's process first; one that ended leaves the file behind.
-        let recording = std::env::var_os("XDG_RUNTIME_DIR")
-            .and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(RECORDING_FILE)).ok())
-            .and_then(|text| text.lines().next()?.trim().parse::<u32>().ok())
-            .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
-        if recording != self.menu_bar.recording {
-            self.menu_bar.recording = recording;
-            self.menu_bar.items_revision += 1;
-        }
         if self
             .menu_bar
             .network_read
             .is_none_or(|read| read.elapsed() >= NETWORK_POLL)
         {
             self.menu_bar.network_read = Some(Instant::now());
+            // The file names the recorder's process first; one that ended leaves the file behind.
+            let recording = std::env::var_os("XDG_RUNTIME_DIR")
+                .and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(RECORDING_FILE)).ok())
+                .and_then(|text| text.lines().next()?.trim().parse::<u32>().ok())
+                .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
+            if recording != self.menu_bar.recording {
+                self.menu_bar.recording = recording;
+                self.menu_bar.items_revision += 1;
+            }
             let network = system::read_network();
             if network != self.menu_bar.network {
                 self.menu_bar.network = network;

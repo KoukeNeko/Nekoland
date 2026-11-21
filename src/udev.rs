@@ -7,7 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::Mutex,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smithay::{
@@ -68,6 +68,12 @@ use crate::{
 
 // How soon to look again when a frame had nothing new to show.
 const IDLE_REDRAW: Duration = Duration::from_millis(16);
+/// How long nothing new has to be drawn before the outputs are looked at less often, every
+/// `QUIET_REDRAW`: input, clients' frames, IPC and D-Bus draw at once, so what waits for the
+/// next look is what the compositor finds by itself, as the clock does.
+// Well under a second, for the outputs to be quiet between the ticks of a clock showing seconds.
+const QUIET_AFTER: Duration = Duration::from_millis(100);
+const QUIET_REDRAW: Duration = Duration::from_millis(100);
 
 type OutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
@@ -90,6 +96,8 @@ struct Udev {
     pending: HashSet<crtc::Handle>,
     /// The outputs with a timer set to look again for something new to draw.
     retrying: HashSet<crtc::Handle>,
+    /// When a frame last had something new, for the outputs to be looked at less often after.
+    last_drawn: Instant,
     /// The outputs whose frame on its way was drawn locked, for sleep to wait for.
     locked_pending: HashSet<crtc::Handle>,
     /// The outputs whose gamma can be set, by the length of their ramps.
@@ -163,6 +171,7 @@ pub fn init_udev(
         dark: HashSet::new(),
         pending: HashSet::new(),
         retrying: HashSet::new(),
+        last_drawn: Instant::now(),
         locked_pending: HashSet::new(),
         displays: HashMap::new(),
         globals: HashMap::new(),
@@ -436,7 +445,9 @@ fn render(
         })
     };
     let output = output.clone();
+    let idle = if guard.last_drawn.elapsed() < QUIET_AFTER { IDLE_REDRAW } else { QUIET_REDRAW };
     let retry = if queued {
+        guard.last_drawn = Instant::now();
         guard.pending.insert(crtc);
         if state.unshown_locked.is_some() && state.lock.is_some() {
             guard.locked_pending.insert(crtc);
@@ -454,7 +465,7 @@ fn render(
     if retry {
         let timed = udev.clone();
         let loop_handle = handle.clone();
-        let timer = Timer::from_duration(IDLE_REDRAW);
+        let timer = Timer::from_duration(idle);
         if let Err(err) = handle.insert_source(timer, move |_, _, data| {
             timed.borrow_mut().retrying.remove(&crtc);
             render(&timed, crtc, data, &loop_handle);
