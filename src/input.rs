@@ -193,6 +193,10 @@ impl Nekoland {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
+                // With every display unplugged there is nowhere for the pointer to be.
+                let Some(first) = self.space.outputs().next().cloned() else {
+                    return;
+                };
                 let pointer = self.seat.get_pointer().unwrap();
                 let from = pointer.current_location();
                 let geometry = |output| self.space.output_geometry(output).unwrap().to_f64();
@@ -202,7 +206,7 @@ impl Nekoland {
                 let on_an_output = |pos| self.space.outputs().any(|output| geometry(output).contains(pos));
                 if !on_an_output(pos) {
                     let output = self.space.outputs().find(|output| geometry(output).contains(from));
-                    let bounds = geometry(output.or(self.space.outputs().next()).unwrap());
+                    let bounds = geometry(output.unwrap_or(&first));
                     pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
                     if !on_an_output(pos) {
                         pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
@@ -242,7 +246,9 @@ impl Nekoland {
                 pointer.frame(self);
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let output = self.space.outputs().next().unwrap();
+                let Some(output) = self.space.outputs().next() else {
+                    return;
+                };
 
                 let output_geo = self.space.output_geometry(output).unwrap();
 
@@ -951,6 +957,30 @@ mod tests {
                     "{command}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_system_action_is_done_by_something() {
+        // The ids `run_action` names, each before its `=>`, and those it takes by their prefix.
+        let source = include_str!("input.rs");
+        let start = source.find("        match action.id {").unwrap();
+        let end = start + source[start..].find("            id => {").unwrap();
+        let named: Vec<&str> = source[start..end]
+            .lines()
+            .filter_map(|line| line.split_once("=>").map(|(before, _)| before))
+            .flat_map(|before| before.split('"').skip(1).step_by(2))
+            .collect();
+        let numbered = |id: &str, prefix: &str| id.strip_prefix(prefix).is_some_and(|n| n.parse::<usize>().is_ok());
+        for action in shortcuts::actions().iter().filter(|action| !action.is_app()) {
+            let id = action.id;
+            assert!(
+                named.contains(&id)
+                    || ["workspace-", "dock-new-", "dock-menu-", "dock-"].iter().any(|prefix| numbered(id, prefix))
+                    || id.starts_with("arrange-")
+                    || id.starts_with("shot-"),
+                "nothing does {id}"
+            );
         }
     }
 
