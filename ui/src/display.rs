@@ -1,5 +1,6 @@
-//! Settings' 顯示 page, laid out as the Mac's Displays: the display, the sizes it can look
-//! like, its brightness, refresh rate and rotation, and Night Shift in a dialog of its own.
+//! Settings' 顯示 page: with more than one display, their picture and how they are used;
+//! the chosen display's own settings, the sizes it can look like first as on the Mac; then
+//! what every display shares, Night Shift in a dialog of its own.
 
 use std::{
     cell::{Cell, RefCell},
@@ -38,7 +39,6 @@ const DRM: &str = "/sys/class/drm";
 /// The connector kinds of a panel built into the computer.
 const BUILT_IN: [&str; 3] = ["eDP", "LVDS", "DSI"];
 const VIRTUAL: &str = "Virtual";
-const DISPLAY_ICON_SIZE: i32 = 96;
 const SMALL_SUN: i32 = 12;
 const LARGE_SUN: i32 = 18;
 const SLIDER_WIDTH: i32 = 220;
@@ -406,10 +406,9 @@ struct Resolution {
     modes: Vec<(Size, Vec<u32>)>,
     /// The scale each size is drawn at when the settings name none.
     scales: Vec<(Size, f64)>,
-    group: adw::PreferencesGroup,
     /// The looks of the display's own mode, each a picture to press, as the Mac has them,
-    /// in a group of their own over the list.
-    pictures: adw::PreferencesGroup,
+    /// over the list.
+    looks_row: gtk::ListBoxRow,
     looks: gtk::Box,
     /// Every size it can show, opened up under them.
     all: adw::ExpanderRow,
@@ -434,16 +433,14 @@ impl Resolution {
             display: RefCell::new(display),
             modes,
             scales,
-            group: group(""),
             rows: RefCell::default(),
-            pictures: group(""),
-            looks: gtk::Box::builder().spacing(12).homogeneous(true).build(),
+            looks_row: card_row(),
+            looks: gtk::Box::builder().spacing(12).homogeneous(true).margin_top(12).margin_bottom(12).margin_start(12).margin_end(12).build(),
             all: adw::ExpanderRow::builder().title("所有解析度").build(),
             rate: adw::ComboRow::builder().title("更新頻率").build(),
             filling_rates: Cell::new(false),
         });
-        resolution.pictures.add(&resolution.looks);
-        resolution.group.add(&resolution.all);
+        resolution.looks_row.set_child(Some(&resolution.looks));
         let weak = Rc::downgrade(&resolution);
         resolution.rate.connect_selected_notify(move |row| {
             if let Some(resolution) = weak.upgrade() {
@@ -468,7 +465,7 @@ impl Resolution {
         let current = current_choice(&display);
         let looks = looks(&display);
         // One look is no choice.
-        self.pictures.set_visible(looks.len() > 1);
+        self.looks_row.set_visible(looks.len() > 1);
         let mut first: Option<gtk::ToggleButton> = None;
         // A look with no name keeps the line of one, so that the sizes under them line up.
         let names = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
@@ -632,29 +629,6 @@ fn edid_inches(edid: &[u8]) -> Option<f64> {
     (width > 0 && height > 0).then(|| f64::from(width).hypot(f64::from(height)) / CM_AN_INCH)
 }
 
-/// The display's picture and name, over the page as the Mac's.
-fn header(target: &Target) -> adw::PreferencesGroup {
-    let (name, size) = display_identity(target);
-    let column = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .halign(gtk::Align::Center)
-        .build();
-    column.append(
-        &gtk::Image::builder()
-            .icon_name("video-display-symbolic")
-            .pixel_size(DISPLAY_ICON_SIZE)
-            .build(),
-    );
-    column.append(&gtk::Label::builder().label(&name).css_classes(["title-3"]).build());
-    if let Some(size) = size {
-        column.append(&gtk::Label::builder().label(&size).css_classes(["dim-label"]).build());
-    }
-    let header = group("");
-    header.add(&column);
-    header
-}
-
 /// A display as `nekoland msg displays` tells it: where it is on the desktop, in points, and
 /// whether the projection shows it.
 #[derive(Clone, PartialEq, Debug)]
@@ -716,6 +690,11 @@ const LINE_UP_WITHIN: i32 = 64;
 const LEAST_SHARED: i32 = 64;
 const PICTURE_HEIGHT: i32 = 200;
 const PICTURE_PADDING: f64 = 16.0;
+/// How much of a display's picture its menu bar takes, and the sizes its name is drawn at and
+/// needs.
+const MENU_BAR_SHARE: f64 = 0.06;
+const NAME_SIZE: f64 = 11.0;
+const NAMED_HEIGHT: f64 = 70.0;
 
 /// Where a display dropped at its place goes: against an edge of another, the nearest such
 /// place where it covers none of them, its edges lined up with that one's when near.
@@ -761,25 +740,37 @@ struct Drag {
     origin: (f64, f64),
 }
 
+/// Told of the display picked, by name, and whether with the keyboard.
+type Picked = Box<dyn Fn(&str, bool)>;
+
 /// The displays drawn where they are, numbered as `nekoland msg identify` numbers them, to be
 /// picked and, while they extend the desktop, dragged to where they are beside each other.
 struct Arrangement {
     screens: RefCell<Vec<Screen>>,
+    /// Each display's own name, from its EDID, in the order of `screens`.
+    names: Vec<String>,
     selected: RefCell<String>,
     area: gtk::DrawingArea,
     dragging: Cell<Option<Drag>>,
     /// Whether the display pressed is another than the one chosen before, told as it is let go.
     picked_another: Cell<bool>,
     movable: bool,
-    picked: Box<dyn Fn(&str)>,
+    picked: Picked,
 }
 
 impl Arrangement {
-    fn new(screens: Vec<Screen>, selected: String, movable: bool, picked: impl Fn(&str) + 'static) -> Rc<Self> {
+    fn new(screens: Vec<Screen>, selected: String, movable: bool, picked: impl Fn(&str, bool) + 'static) -> Rc<Self> {
+        let names = screens.iter().map(|screen| display_identity(&Target::Display(screen.name.clone())).0).collect();
         let arrangement = Rc::new(Arrangement {
             screens: RefCell::new(screens),
+            names,
             selected: RefCell::new(selected),
-            area: gtk::DrawingArea::builder().content_height(PICTURE_HEIGHT).hexpand(true).build(),
+            area: gtk::DrawingArea::builder()
+                .content_height(PICTURE_HEIGHT)
+                .hexpand(true)
+                .focusable(true)
+                .accessible_role(gtk::AccessibleRole::Img)
+                .build(),
             dragging: Cell::new(None),
             picked_another: Cell::new(false),
             movable,
@@ -811,7 +802,58 @@ impl Arrangement {
             }
         });
         arrangement.area.add_controller(drag);
+        // The arrow keys pick the display before or after the one chosen.
+        let keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&arrangement);
+        keys.connect_key_pressed(move |_, key, _, _| {
+            let step = match key {
+                gtk::gdk::Key::Left | gtk::gdk::Key::Up => -1,
+                gtk::gdk::Key::Right | gtk::gdk::Key::Down => 1,
+                _ => return glib::Propagation::Proceed,
+            };
+            if let Some(arrangement) = weak.upgrade() {
+                arrangement.step(step);
+            }
+            glib::Propagation::Stop
+        });
+        arrangement.area.add_controller(keys);
+        let focus = gtk::EventControllerFocus::new();
+        let area = arrangement.area.downgrade();
+        focus.connect_enter(move |_| {
+            if let Some(area) = area.upgrade() {
+                area.queue_draw();
+            }
+        });
+        let area = arrangement.area.downgrade();
+        focus.connect_leave(move |_| {
+            if let Some(area) = area.upgrade() {
+                area.queue_draw();
+            }
+        });
+        arrangement.area.add_controller(focus);
+        arrangement.describe();
         arrangement
+    }
+
+    /// Tells a screen reader which display is chosen, by its number.
+    fn describe(&self) {
+        let screens = self.screens.borrow();
+        let index = screens.iter().position(|screen| screen.name == *self.selected.borrow()).unwrap_or(0);
+        let name = self.names.get(index).map_or("", String::as_str);
+        self.area.update_property(&[gtk::accessible::Property::Label(&format!("顯示器 {} {name}", index + 1))]);
+    }
+
+    fn step(&self, step: isize) {
+        let name = {
+            let screens = self.screens.borrow();
+            let count = screens.len() as isize;
+            let index = screens.iter().position(|screen| screen.name == *self.selected.borrow()).unwrap_or(0) as isize;
+            screens[(index + step).rem_euclid(count) as usize].name.clone()
+        };
+        self.selected.replace(name.clone());
+        self.describe();
+        self.area.queue_draw();
+        (self.picked)(&name, true);
     }
 
     /// The scale the displays are drawn at and where the desktop's origin is drawn, to fit.
@@ -857,7 +899,7 @@ impl Arrangement {
                 None => drawn.push(((screen.x, screen.y), number)),
             }
         }
-        for screen in screens.iter() {
+        for (index, screen) in screens.iter().enumerate() {
             let (x, y) = (ox + f64::from(screen.x) * scale, oy + f64::from(screen.y) * scale);
             let (w, h) = (f64::from(screen.size.width) * scale, f64::from(screen.size.height) * scale);
             let chosen = screen.name == selected;
@@ -871,17 +913,37 @@ impl Arrangement {
             paint(if chosen { 1.0 } else { 0.3 });
             cr.set_line_width(if chosen { 3.0 } else { 1.0 });
             let _ = cr.stroke();
+            // The main display carries the menu bar, as on the Mac's picture.
+            if index == 0 {
+                cr.rectangle(x + 2.0, y + 2.0, w - 4.0, (h * MENU_BAR_SHARE).clamp(4.0, 8.0));
+                paint(0.75);
+                let _ = cr.fill();
+            }
             let Some((_, numbers)) = drawn.iter().find(|(at, _)| *at == (screen.x, screen.y)) else {
                 continue;
             };
-            let layout = area.create_pango_layout(Some(numbers));
-            let mut font = gtk::pango::FontDescription::from_string("Sans Bold");
-            font.set_absolute_size((h * 0.4).clamp(10.0, 48.0) * f64::from(gtk::pango::SCALE));
-            layout.set_font_description(Some(&font));
-            let (text_w, text_h) = layout.pixel_size();
-            cr.move_to(x + (w - f64::from(text_w)) / 2.0, y + (h - f64::from(text_h)) / 2.0);
+            let number = text_layout(area, numbers, "Sans Bold", (h * 0.3).clamp(10.0, 40.0));
+            // A place shared by more than one display, or one too small, goes without a name.
+            let name = (!numbers.contains('|') && h > NAMED_HEIGHT)
+                .then(|| text_layout(area, &self.names[index], "Sans", NAME_SIZE))
+                .filter(|name| f64::from(name.pixel_size().0) < w - 8.0);
+            let (number_w, number_h) = number.pixel_size();
+            let name_h = name.as_ref().map_or(0, |name| name.pixel_size().1);
+            let top = y + (h - f64::from(number_h + name_h)) / 2.0;
+            cr.move_to(x + (w - f64::from(number_w)) / 2.0, top);
             paint(if screen.on { 0.9 } else { 0.4 });
-            pangocairo::functions::show_layout(cr, &layout);
+            pangocairo::functions::show_layout(cr, &number);
+            if let Some(name) = name {
+                cr.move_to(x + (w - f64::from(name.pixel_size().0)) / 2.0, top + f64::from(number_h));
+                paint(if screen.on { 0.7 } else { 0.35 });
+                pangocairo::functions::show_layout(cr, &name);
+            }
+        }
+        if area.has_focus() {
+            cr.rectangle(1.0, 1.0, f64::from(width) - 2.0, f64::from(height) - 2.0);
+            cr.set_line_width(2.0);
+            paint(0.5);
+            let _ = cr.stroke();
         }
     }
 
@@ -905,6 +967,7 @@ impl Arrangement {
         if *self.selected.borrow() != name {
             self.selected.replace(name);
             self.picked_another.set(true);
+            self.describe();
         }
         if self.movable {
             let (scale, origin) = self.transform();
@@ -931,7 +994,7 @@ impl Arrangement {
             self.place(index, from);
         }
         if self.picked_another.take() {
-            (self.picked)(&self.selected.borrow());
+            (self.picked)(&self.selected.borrow(), false);
         }
     }
 
@@ -965,26 +1028,26 @@ fn refill_soon(page: &Weak<DisplayPage>) {
     });
 }
 
-/// 排列: the displays' picture, with the button that numbers them on their screens; then how
-/// more than one of them is used, which one the settings under it are for, and whether it is
-/// the main one.
-fn arrangement_groups(page: &Rc<DisplayPage>, config: &Config, screens: &[Screen], selected: &str) -> [adw::PreferencesGroup; 2] {
-    let picture = group("排列");
+/// 排列: the displays' picture, with the button that numbers them on their screens, and how
+/// more than one of them is used.
+fn arrangement_group(page: &Rc<DisplayPage>, config: &Config, screens: &[Screen], selected: &str) -> adw::PreferencesGroup {
+    let group = group("排列");
     let identify = gtk::Button::builder().label("識別").valign(gtk::Align::Center).build();
     identify.connect_clicked(|_| run("nekoland", &["msg", "identify"]));
-    picture.set_header_suffix(Some(&identify));
-    let group = group("");
+    group.set_header_suffix(Some(&identify));
 
     let current = projection(config);
     let weak = Rc::downgrade(page);
-    let arrangement = Arrangement::new(screens.to_vec(), selected.to_string(), current == EXTEND, move |name| {
+    let arrangement = Arrangement::new(screens.to_vec(), selected.to_string(), current == EXTEND, move |name, by_key| {
         if let Some(page) = weak.upgrade() {
             page.selected.replace(Some(name.to_string()));
+            page.focus_picture.set(by_key);
             refill_soon(&weak);
         }
     });
-    let frame = gtk::Frame::builder().child(&arrangement.area).css_classes(["view"]).build();
-    picture.add(&frame);
+    let picture = card_row();
+    picture.set_child(Some(&arrangement.area));
+    group.add(&picture);
     page.arrangement.replace(Some(arrangement));
 
     let labels: Vec<&str> = PROJECTIONS.iter().map(|(_, label)| *label).collect();
@@ -1003,29 +1066,12 @@ fn arrangement_groups(page: &Rc<DisplayPage>, config: &Config, screens: &[Screen
         refill_soon(&weak);
     });
     group.add(&row);
+    group
+}
 
-    let names: Vec<String> = screens.iter().enumerate().map(|(index, screen)| format!("{} {}", index + 1, screen.name)).collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let chosen = screens.iter().position(|screen| screen.name == selected).unwrap_or(0);
-    let which = adw::ComboRow::builder()
-        .title("顯示器")
-        .model(&gtk::StringList::new(&names))
-        .selected(chosen as u32)
-        .build();
-    let (weak, all) = (Rc::downgrade(page), screens.to_vec());
-    which.connect_selected_notify(move |row| {
-        if let (Some(page), Some(screen)) = (weak.upgrade(), all.get(row.selected() as usize)) {
-            page.selected.replace(Some(screen.name.clone()));
-            page.fill();
-        }
-    });
-    group.add(&which);
-
-    let main = adw::SwitchRow::builder()
-        .title("主要顯示器")
-        .active(chosen == 0)
-        .sensitive(chosen != 0)
-        .build();
+/// Makes the chosen display the main one; the main one itself has none to offer.
+fn main_display_row(page: &Rc<DisplayPage>, screens: &[Screen], selected: &str) -> adw::SwitchRow {
+    let main = adw::SwitchRow::builder().title("主要顯示器").build();
     let (weak, all, name) = (Rc::downgrade(page), screens.to_vec(), selected.to_string());
     main.connect_active_notify(move |row| {
         if !row.is_active() {
@@ -1038,8 +1084,20 @@ fn arrangement_groups(page: &Rc<DisplayPage>, config: &Config, screens: &[Screen
         set(&format!("display_order = [{}]", order.join(", ")));
         refill_soon(&weak);
     });
-    group.add(&main);
-    [picture, group]
+    main
+}
+
+/// A row of a boxed list holding something other than a setting, as a picture.
+fn card_row() -> gtk::ListBoxRow {
+    gtk::ListBoxRow::builder().activatable(false).selectable(false).build()
+}
+
+fn text_layout(area: &gtk::DrawingArea, text: &str, font: &str, size: f64) -> gtk::pango::Layout {
+    let layout = area.create_pango_layout(Some(text));
+    let mut font = gtk::pango::FontDescription::from_string(font);
+    font.set_absolute_size(size * f64::from(gtk::pango::SCALE));
+    layout.set_font_description(Some(&font));
+    layout
 }
 
 /// The page, built again as the displays and the one chosen change.
@@ -1049,6 +1107,8 @@ struct DisplayPage {
     /// The display the settings under the picture are for, by name.
     selected: RefCell<Option<String>>,
     arrangement: RefCell<Option<Rc<Arrangement>>>,
+    /// Whether the picture had the keyboard's focus as the page was built again, to keep it.
+    focus_picture: Cell<bool>,
 }
 
 thread_local! {
@@ -1064,8 +1124,11 @@ impl DisplayPage {
         let config = Config::load();
         let screens = parse_displays(&output("nekoland", &["msg", "displays"]).unwrap_or_default());
         let mut groups = Vec::new();
-        let target = if screens.len() < 2 {
-            Target::All
+        let (target, display) = if screens.len() < 2 {
+            let (name, size) = display_identity(&Target::All);
+            let display = group(&name);
+            display.set_description(size.as_deref());
+            (Target::All, display)
         } else {
             let selected = self
                 .selected
@@ -1073,34 +1136,54 @@ impl DisplayPage {
                 .clone()
                 .filter(|name| screens.iter().any(|screen| screen.name == *name))
                 .unwrap_or_else(|| screens[0].name.clone());
-            groups.extend(arrangement_groups(self, &config, &screens, &selected));
-            Target::Display(selected)
+            groups.push(arrangement_group(self, &config, &screens, &selected));
+            let target = Target::Display(selected.clone());
+            let number = screens.iter().position(|screen| screen.name == selected).unwrap_or(0) + 1;
+            let (name, size) = display_identity(&target);
+            let display = group(&format!("顯示器 {number}"));
+            display.set_description(Some(&[Some(name), size].into_iter().flatten().collect::<Vec<_>>().join("・")));
+            (target, display)
         };
-        groups.push(header(&target));
-        let resolution = Resolution::new(target.clone());
-        if let Some(resolution) = &resolution {
-            groups.push(resolution.pictures.clone());
-            groups.push(resolution.group.clone());
+        if let Some(resolution) = Resolution::new(target.clone()) {
+            display.add(&resolution.looks_row);
+            display.add(&resolution.all);
+            display.add(&resolution.rate);
         }
-        groups.extend(brightness_group());
-        let picture = group("");
-        if let Some(resolution) = &resolution {
-            picture.add(&resolution.rate);
+        display.add(&rotation_row(&config, &target));
+        // The backlight is the built-in panel's.
+        let built_in = match &target {
+            Target::All => true,
+            Target::Display(name) => BUILT_IN.iter().any(|kind| name.starts_with(kind)),
+        };
+        if let Some(brightness) = brightness_row().filter(|_| built_in) {
+            display.add(&brightness);
         }
-        picture.add(&rotation_row(&config, &target));
-        picture.add(&switch_row(&config, "顯示 FPS", "show_fps"));
-        picture.add(&super::colour_profile_row(&config));
-        groups.push(picture);
-        groups.push(buttons());
+        if let Target::Display(name) = &target {
+            if *name != screens[0].name {
+                display.add(&main_display_row(self, &screens, name));
+            }
+        }
+        groups.push(display);
+
+        let shared = group("");
+        shared.add(&night_shift_entry(&config));
+        shared.add(&super::colour_profile_row(&config));
+        shared.add(&switch_row(&config, "顯示 FPS", "show_fps"));
+        groups.push(shared);
         for group in &groups {
             self.page.add(group);
         }
         self.groups.replace(groups);
+        if self.focus_picture.take() {
+            if let Some(arrangement) = self.arrangement.borrow().as_ref() {
+                arrangement.area.grab_focus();
+            }
+        }
     }
 }
 
 /// The backlight's slider, between a small sun and a large one; none without a backlight.
-fn brightness_group() -> Option<adw::PreferencesGroup> {
+fn brightness_row() -> Option<adw::ActionRow> {
     let info = output("brightnessctl", &[BACKLIGHT, "-m", "info"])?;
     // device,class,current,percent,max
     let percent: f64 = info.lines().next()?.split(',').nth(3)?.trim_end_matches('%').parse().ok()?;
@@ -1118,9 +1201,7 @@ fn brightness_group() -> Option<adw::PreferencesGroup> {
         (sun(SMALL_SUN), sun(LARGE_SUN)),
         |percent| run("brightnessctl", &[BACKLIGHT, "-q", "set", &format!("{}%", percent.round())]),
     );
-    let brightness = group("");
-    brightness.add(&row);
-    Some(brightness)
+    Some(row)
 }
 
 /// A row with a slider from `range`'s least to its most by its step, between two ends that
@@ -1314,7 +1395,24 @@ fn warmth_row(config: &Config) -> adw::ActionRow {
     )
 }
 
-fn night_shift_dialog(parent: &gtk::Button) {
+/// 夜覽, with how it is set, opening its dialog.
+fn night_shift_entry(config: &Config) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title("夜覽")
+        .subtitle(night_shift_label(config))
+        .activatable(true)
+        .build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    row.connect_activated(night_shift_dialog);
+    row
+}
+
+fn night_shift_label(config: &Config) -> &'static str {
+    let current = config.word("night_shift");
+    NIGHT_SHIFT.iter().position(|name| *name == current).map_or(NIGHT_SHIFT_LABELS[0], |index| NIGHT_SHIFT_LABELS[index])
+}
+
+fn night_shift_dialog(parent: &adw::ActionRow) {
     let config = Config::load();
     let (shift, names) = night_shift_row(&config);
     let from = time_row(&config, "開始", "night_shift_from");
@@ -1339,26 +1437,20 @@ fn night_shift_dialog(parent: &gtk::Button) {
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
     view.set_content(Some(&page));
-    adw::Dialog::builder()
+    let dialog = adw::Dialog::builder()
         .title("夜覽")
         .content_width(NIGHT_SHIFT_WIDTH)
         // Tall enough for the custom hours too, so that choosing them does not push the
         // warmth out of sight.
         .content_height(NIGHT_SHIFT_HEIGHT)
         .child(&view)
-        .build()
-        .present(Some(parent));
-}
-
-/// The buttons under the page, at its right, as the Mac's.
-fn buttons() -> adw::PreferencesGroup {
-    let night_shift = gtk::Button::builder().label("夜覽⋯").build();
-    night_shift.connect_clicked(night_shift_dialog);
-    let row = gtk::Box::builder().halign(gtk::Align::End).spacing(8).build();
-    row.append(&night_shift);
-    let buttons = group("");
-    buttons.add(&row);
-    buttons
+        .build();
+    dialog.connect_closed(glib::clone!(
+        #[weak]
+        parent,
+        move |_| parent.set_subtitle(night_shift_label(&Config::load()))
+    ));
+    dialog.present(Some(parent));
 }
 
 pub fn display_page(_config: &Config) -> adw::PreferencesPage {
@@ -1367,6 +1459,7 @@ pub fn display_page(_config: &Config) -> adw::PreferencesPage {
         groups: RefCell::default(),
         selected: RefCell::default(),
         arrangement: RefCell::default(),
+        focus_picture: Cell::new(false),
     });
     page.fill();
     PAGE.replace(Some(page.clone()));
