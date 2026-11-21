@@ -7,6 +7,7 @@ use std::{
     path::PathBuf,
 };
 
+use smithay::output::Output;
 use smithay::reexports::calloop::{
     generic::Generic,
     timer::{TimeoutAction, Timer},
@@ -160,6 +161,24 @@ fn task_windows(state: &crate::Nekoland) -> String {
     lines.concat()
 }
 
+/// What follows `command` in `message`, empty when it is the command alone.
+fn argument<'a>(message: &'a str, command: &str) -> Option<&'a str> {
+    let rest = message.strip_prefix(command)?;
+    if rest.is_empty() {
+        Some(rest)
+    } else {
+        rest.strip_prefix(' ')
+    }
+}
+
+/// The display of that name, shown or not, or the main one for no name.
+fn display_named(state: &crate::Nekoland, name: &str) -> Option<Output> {
+    if name.is_empty() {
+        return state.space.outputs().next().cloned();
+    }
+    state.connected_outputs.iter().chain(state.space.outputs()).find(|output| output.name() == name).cloned()
+}
+
 /// Does what a message asks; a question gets its answer back.
 fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
     if let Some(redraw) = &state.redraw {
@@ -184,9 +203,10 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         // GNOME's settings changed, which X11 programs are given.
         "xsettings" => crate::xsettings::sync(),
-        // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ.
-        "modes" => {
-            let output = state.space.outputs().next()?;
+        // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ; the main
+        // display's, or with a name that display's.
+        modes if argument(modes, "modes").is_some() => {
+            let output = display_named(state, argument(modes, "modes")?)?;
             let name = |mode: smithay::output::Mode| {
                 format!("{}x{}@{}", mode.size.w, mode.size.h, (mode.refresh + 500) / 1000)
             };
@@ -202,8 +222,8 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         // Each size the output has a mode of, one a line, and the scale it is drawn at when
         // the settings name none: `WIDTHxHEIGHT SCALE`.
-        "scales" => {
-            let output = state.space.outputs().next()?;
+        scales if argument(scales, "scales").is_some() => {
+            let output = display_named(state, argument(scales, "scales")?)?;
             let size_mm = output.physical_properties().size;
             let mut lines: Vec<String> = Vec::new();
             for mode in output.modes() {
@@ -220,24 +240,34 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             }
             return Some(lines.concat());
         }
-        // Every output, one a line, left to right: its name, its size in points, and where
-        // its left edge is.
+        // Every display, one a line, the main one first: its name, its size in points, where
+        // its left and top edges are, and whether it is `on` or left dark by the projection.
+        // Each display's number on it for a while, as Settings numbers them.
+        "identify" => state.identify_displays(),
         "displays" => {
+            let outputs: Vec<Output> = if state.connected_outputs.is_empty() {
+                state.space.outputs().cloned().collect()
+            } else {
+                state.connected_outputs.clone()
+            };
             return Some(
-                state
-                    .space
-                    .outputs()
-                    .filter_map(|output| {
-                        let area = state.space.output_geometry(output)?;
-                        Some(format!("{}\t{}x{}\t{}\n", output.name(), area.size.w, area.size.h, area.loc.x))
+                outputs
+                    .iter()
+                    .map(|output| {
+                        let size = crate::udev::logical_size(output);
+                        let (place, on) = match state.space.output_geometry(output) {
+                            Some(area) => (area.loc, "on"),
+                            None => (output.current_location(), "off"),
+                        };
+                        format!("{}\t{}x{}\t{}\t{}\t{on}\n", output.name(), size.w, size.h, place.x, place.y)
                     })
                     .collect(),
             );
         }
         // The output as Settings shows it: `current` and `preferred` modes as WIDTHxHEIGHT@HZ,
         // the `scale` drawn with and the `density_scale` used when the settings name none.
-        "display" => {
-            let output = state.space.outputs().next()?;
+        display if argument(display, "display").is_some() => {
+            let output = display_named(state, argument(display, "display")?)?;
             let name = |mode: smithay::output::Mode| {
                 format!("{}x{}@{}", mode.size.w, mode.size.h, (mode.refresh + 500) / 1000)
             };

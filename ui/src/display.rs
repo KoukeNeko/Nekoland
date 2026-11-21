@@ -57,6 +57,72 @@ const EDID_WIDTH_CM: usize = 21;
 const EDID_HEIGHT_CM: usize = 22;
 const CM_AN_INCH: f64 = 2.54;
 
+/// Where a display's mode, scale and rotation are kept: in the settings every display
+/// shares while there is one, in its own entry of their tables while there are more.
+#[derive(Clone, PartialEq, Debug)]
+enum Target {
+    All,
+    Display(String),
+}
+
+impl Target {
+    /// How `nekoland msg` is asked about the display.
+    fn query(&self, what: &str) -> Option<String> {
+        match self {
+            Target::All => output("nekoland", &["msg", what]),
+            Target::Display(name) => output("nekoland", &["msg", &format!("{what} {name}")]),
+        }
+    }
+
+    /// Sets `key`, or for one display its entry of `table`, to a TOML value.
+    fn set(&self, (key, table): (&str, &str), value: &str) {
+        match self {
+            Target::All => set(&format!("{key} = {value}")),
+            Target::Display(name) => set_display_entry(table, name, Some(value)),
+        }
+    }
+
+    fn unset(&self, (key, table): (&str, &str)) {
+        match self {
+            Target::All => unset(key),
+            Target::Display(name) => set_display_entry(table, name, None),
+        }
+    }
+
+    /// What the settings hold for the display: its own entry, else the shared setting.
+    fn value(&self, config: &Config, (key, table): (&str, &str)) -> Option<toml::Value> {
+        let own = match self {
+            Target::All => None,
+            Target::Display(name) => config.0.get(table).and_then(toml::Value::as_table).and_then(|entries| entries.get(name)),
+        };
+        own.or_else(|| config.0.get(key)).cloned()
+    }
+}
+
+const MODE: (&str, &str) = ("mode", "display_modes");
+const SCALE: (&str, &str) = ("scale", "display_scales");
+const ROTATION: (&str, &str) = ("rotation", "display_rotations");
+
+/// Sets one display's entry of a setting kept by display name, or takes it out.
+fn set_display_entry(table: &str, name: &str, value: Option<&str>) {
+    let mut entries: BTreeMap<String, String> = Config::load()
+        .0
+        .get(table)
+        .and_then(toml::Value::as_table)
+        .map(|entries| entries.iter().map(|(name, value)| (name.clone(), value.to_string())).collect())
+        .unwrap_or_default();
+    match value {
+        Some(value) => entries.insert(name.to_string(), value.to_string()),
+        None => entries.remove(name),
+    };
+    if entries.is_empty() {
+        unset(table);
+    } else {
+        let entries: Vec<String> = entries.iter().map(|(name, value)| format!("{name:?} = {value}")).collect();
+        set(&format!("{table} = {{ {} }}", entries.join(", ")));
+    }
+}
+
 /// A size in pixels or in points.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Size {
@@ -320,21 +386,22 @@ fn choice_label(choice: Choice, display: &Display) -> String {
 
 /// Puts a choice in effect: the display's own mode and a mode's own scale are left unset, to
 /// follow the display.
-fn apply_choice(choice: Choice, display: &Display, scales: &[(Size, f64)]) {
+fn apply_choice(target: &Target, choice: Choice, display: &Display, scales: &[(Size, f64)]) {
     if choice.mode == display.preferred {
-        unset("mode");
+        target.unset(MODE);
     } else {
-        set(&format!("mode = {:?}", choice.mode.setting()));
+        target.set(MODE, &format!("{:?}", choice.mode.setting()));
     }
     if (choice.scale - own_scale(display, scales, choice.mode)).abs() < SAME_SCALE {
-        unset("scale");
+        target.unset(SCALE);
     } else {
-        set(&format!("scale = {:?}", choice.scale));
+        target.set(SCALE, &format!("{:?}", choice.scale));
     }
 }
 
 /// The resolution list, with the refresh rate that follows the mode chosen in it.
 struct Resolution {
+    target: Target,
     display: RefCell<Display>,
     modes: Vec<(Size, Vec<u32>)>,
     /// The scale each size is drawn at when the settings name none.
@@ -358,11 +425,12 @@ thread_local! {
 }
 
 impl Resolution {
-    fn new() -> Option<Rc<Self>> {
-        let display = parse_display(&output("nekoland", &["msg", "display"])?)?;
-        let modes = mode_rates(&output("nekoland", &["msg", "modes"]).unwrap_or_default());
-        let scales = mode_scales(&output("nekoland", &["msg", "scales"]).unwrap_or_default());
+    fn new(target: Target) -> Option<Rc<Self>> {
+        let display = parse_display(&target.query("display")?)?;
+        let modes = mode_rates(&target.query("modes").unwrap_or_default());
+        let scales = mode_scales(&target.query("scales").unwrap_or_default());
         let resolution = Rc::new(Resolution {
+            target,
             display: RefCell::new(display),
             modes,
             scales,
@@ -460,7 +528,7 @@ impl Resolution {
         if choice.is(current_choice(&display)) {
             return;
         }
-        apply_choice(choice, &display, &self.scales);
+        apply_choice(&self.target, choice, &display, &self.scales);
         {
             let mut display = self.display.borrow_mut();
             let fastest = self.rates_of(choice.mode).first().copied().unwrap_or(display.current.1);
@@ -501,21 +569,25 @@ impl Resolution {
         let Some(&hz) = self.rates_of(mode).get(index as usize) else {
             return;
         };
-        set(&format!("mode = \"{}@{hz}\"", mode.setting()));
+        self.target.set(MODE, &format!("\"{}@{hz}\"", mode.setting()));
         self.display.borrow_mut().current.1 = hz;
     }
 }
 
-/// The connected display's name and size, from its EDID; a display that gives none, as a
-/// virtual machine's, is named by how it is connected.
-// shortcut: the first connected display, which is the one the page sets while the settings
-// are the same for every display.
-fn display_identity() -> (String, Option<String>) {
+/// A connected display's name and size, from its EDID; a display that gives none, as a
+/// virtual machine's, is named by how it is connected. The first connected one for `All`.
+fn display_identity(target: &Target) -> (String, Option<String>) {
     let connector = std::fs::read_dir(DRM).ok().and_then(|entries| {
         entries
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.join("status").is_file())
+            .filter(|path| match target {
+                Target::All => true,
+                Target::Display(name) => {
+                    path.file_name().and_then(|file| file.to_str()).is_some_and(|file| file.ends_with(&format!("-{name}")))
+                }
+            })
             .find(|path| std::fs::read_to_string(path.join("status")).is_ok_and(|status| status.trim() == "connected"))
     });
     let Some(connector) = connector else {
@@ -561,8 +633,8 @@ fn edid_inches(edid: &[u8]) -> Option<f64> {
 }
 
 /// The display's picture and name, over the page as the Mac's.
-fn header() -> adw::PreferencesGroup {
-    let (name, size) = display_identity();
+fn header(target: &Target) -> adw::PreferencesGroup {
+    let (name, size) = display_identity(target);
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
@@ -583,118 +655,447 @@ fn header() -> adw::PreferencesGroup {
     header
 }
 
-/// The displays left to right, as `nekoland msg displays` has them: name and size in points.
-fn parse_displays(text: &str) -> Vec<(String, String)> {
+/// A display as `nekoland msg displays` tells it: where it is on the desktop, in points, and
+/// whether the projection shows it.
+#[derive(Clone, PartialEq, Debug)]
+struct Screen {
+    name: String,
+    size: Size,
+    x: i32,
+    y: i32,
+    on: bool,
+}
+
+impl Screen {
+    fn overlaps(&self, other: &Screen) -> bool {
+        self.x < other.x + other.size.width
+            && other.x < self.x + self.size.width
+            && self.y < other.y + other.size.height
+            && other.y < self.y + self.size.height
+    }
+}
+
+/// The displays, the main one first, as `nekoland msg displays` has them.
+fn parse_displays(text: &str) -> Vec<Screen> {
     text.lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
-            let (name, size) = (fields.next()?, Size::parse(fields.next()?)?);
-            Some((name.to_string(), size.label()))
+            let name = fields.next()?.to_string();
+            let size = Size::parse(fields.next()?)?;
+            let x = fields.next()?.parse().ok()?;
+            let y = fields.next()?.parse().ok()?;
+            let on = fields.next()? == "on";
+            Some(Screen { name, size, x, y, on })
         })
         .collect()
 }
 
-/// The displays in the order they are side by side, to be moved left and right; the leftmost
-/// is the main one, with the menu bar and the Dock. None while there is one.
-/// The scales a display may be given on its own, as the Mac's list of looks has them.
-const DISPLAY_SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+/// Windows' four ways of using more than one display, as `projection` names them, in the
+/// order its Win+P shows them.
+const PROJECTIONS: [(&str, &str); 4] = [
+    ("main-only", "僅主要顯示器"),
+    ("duplicate", "同步顯示"),
+    ("extend", "延伸"),
+    ("second-only", "僅其他顯示器"),
+];
+const EXTEND: &str = "extend";
+const DUPLICATE: &str = "duplicate";
 
-/// 各顯示器縮放: each display's own scale, or the one all share when it has none; none while
-/// there is one display.
-fn display_scales_group(config: &Config) -> Option<adw::PreferencesGroup> {
-    let displays = parse_displays(&output("nekoland", &["msg", "displays"])?);
-    if displays.len() < 2 {
-        return None;
+/// The projection in effect: `mirror_displays`, as it was written before, duplicates.
+fn projection(config: &Config) -> &str {
+    match config.word("projection") {
+        "" | EXTEND if config.flag("mirror_displays") => DUPLICATE,
+        "" => EXTEND,
+        projection => projection,
     }
-    let chosen: BTreeMap<String, f64> = config
-        .0
-        .get("display_scales")
-        .and_then(toml::Value::as_table)
-        .map(|table| table.iter().filter_map(|(name, scale)| Some((name.clone(), scale.as_float()?))).collect())
-        .unwrap_or_default();
-    let chosen = Rc::new(RefCell::new(chosen));
-    let scales = group("縮放");
-    for (name, _) in displays {
-        let labels: Vec<String> =
-            std::iter::once("預設".to_string()).chain(DISPLAY_SCALES.iter().map(|scale| format!("{scale}×"))).collect();
-        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let current = chosen.borrow().get(&name).and_then(|scale| DISPLAY_SCALES.iter().position(|s| s == scale));
-        let row = adw::ComboRow::builder()
-            .title(name.as_str())
-            .model(&gtk::StringList::new(&labels))
-            .selected(current.map_or(0, |index| index as u32 + 1))
-            .build();
-        let chosen = chosen.clone();
-        row.connect_selected_notify(move |row| {
-            let mut chosen = chosen.borrow_mut();
-            match (row.selected() as usize).checked_sub(1).and_then(|index| DISPLAY_SCALES.get(index)) {
-                Some(scale) => chosen.insert(name.clone(), *scale),
-                None => chosen.remove(&name),
-            };
-            if chosen.is_empty() {
-                unset("display_scales");
-            } else {
-                let table: Vec<String> = chosen.iter().map(|(name, scale)| format!("{name:?} = {scale:?}")).collect();
-                set(&format!("display_scales = {{ {} }}", table.join(", ")));
+}
+
+/// Within how many points of lining up a dropped display's edges line up, as Windows snaps.
+const LINE_UP_WITHIN: i32 = 64;
+/// How much of an edge two displays side by side share at least, for the pointer to cross.
+const LEAST_SHARED: i32 = 64;
+const PICTURE_HEIGHT: i32 = 200;
+const PICTURE_PADDING: f64 = 16.0;
+
+/// Where a display dropped at its place goes: against an edge of another, the nearest such
+/// place where it covers none of them, its edges lined up with that one's when near.
+fn snap(screens: &[Screen], index: usize) -> (i32, i32) {
+    let moved = &screens[index];
+    let others: Vec<&Screen> = screens.iter().enumerate().filter(|(other, _)| *other != index).map(|(_, screen)| screen).collect();
+    let (w, h) = (moved.size.width, moved.size.height);
+    let line_up = |at: i32, low: i32, high: i32| {
+        if (at - low).abs() <= LINE_UP_WITHIN {
+            low
+        } else if (at - high).abs() <= LINE_UP_WITHIN {
+            high
+        } else {
+            at
+        }
+    };
+    let mut places = Vec::new();
+    for other in &others {
+        let (ox, oy, ow, oh) = (other.x, other.y, other.size.width, other.size.height);
+        let across = |at: i32, start: i32, length: i32, own: i32| {
+            let at = at.clamp(start - own + LEAST_SHARED.min(own), start + length - LEAST_SHARED.min(length));
+            line_up(at, start, start + length - own)
+        };
+        let y = across(moved.y, oy, oh, h);
+        let x = across(moved.x, ox, ow, w);
+        places.extend([(ox + ow, y), (ox - w, y), (x, oy + oh), (x, oy - h)]);
+    }
+    let free = |&(x, y): &(i32, i32)| {
+        let placed = Screen { x, y, ..moved.clone() };
+        !others.iter().any(|other| placed.overlaps(other))
+    };
+    let distance = |&(x, y): &(i32, i32)| i64::from(x - moved.x).pow(2) + i64::from(y - moved.y).pow(2);
+    places.into_iter().filter(free).min_by_key(distance).unwrap_or((moved.x, moved.y))
+}
+
+/// A display being dragged: which, where it was, and the drawing's scale and origin then,
+/// kept while it moves so that the picture does not shift under the pointer.
+#[derive(Clone, Copy)]
+struct Drag {
+    index: usize,
+    from: (i32, i32),
+    scale: f64,
+    origin: (f64, f64),
+}
+
+/// The displays drawn where they are, numbered as `nekoland msg identify` numbers them, to be
+/// picked and, while they extend the desktop, dragged to where they are beside each other.
+struct Arrangement {
+    screens: RefCell<Vec<Screen>>,
+    selected: RefCell<String>,
+    area: gtk::DrawingArea,
+    dragging: Cell<Option<Drag>>,
+    /// Whether the display pressed is another than the one chosen before, told as it is let go.
+    picked_another: Cell<bool>,
+    movable: bool,
+    picked: Box<dyn Fn(&str)>,
+}
+
+impl Arrangement {
+    fn new(screens: Vec<Screen>, selected: String, movable: bool, picked: impl Fn(&str) + 'static) -> Rc<Self> {
+        let arrangement = Rc::new(Arrangement {
+            screens: RefCell::new(screens),
+            selected: RefCell::new(selected),
+            area: gtk::DrawingArea::builder().content_height(PICTURE_HEIGHT).hexpand(true).build(),
+            dragging: Cell::new(None),
+            picked_another: Cell::new(false),
+            movable,
+            picked: Box::new(picked),
+        });
+        let weak = Rc::downgrade(&arrangement);
+        arrangement.area.set_draw_func(move |area, cr, width, height| {
+            if let Some(arrangement) = weak.upgrade() {
+                arrangement.draw(area, cr, width, height);
             }
         });
-        scales.add(&row);
-    }
-    Some(scales)
-}
-
-fn arrangement_group(config: &Config) -> Option<adw::PreferencesGroup> {
-    let displays = parse_displays(&output("nekoland", &["msg", "displays"])?);
-    if displays.len() < 2 {
-        return None;
-    }
-    let arrangement = group("排列");
-    arrangement.add(&switch_row(config, "鏡像顯示", "mirror_displays"));
-    let order = Rc::new(RefCell::new(displays));
-    let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
-    fill_arrangement(&arrangement, &order, &rows);
-    Some(arrangement)
-}
-
-fn fill_arrangement(
-    arrangement: &adw::PreferencesGroup,
-    order: &Rc<RefCell<Vec<(String, String)>>>,
-    rows: &Rc<RefCell<Vec<adw::ActionRow>>>,
-) {
-    for row in rows.take() {
-        arrangement.remove(&row);
-    }
-    let last = order.borrow().len() - 1;
-    for (position, (name, size)) in order.borrow().iter().enumerate() {
-        let row = adw::ActionRow::builder()
-            .title(name.as_str())
-            .subtitle(if position == 0 { format!("{size} · 主要") } else { size.clone() })
-            .build();
-        let moves = [
-            ("go-previous-symbolic", "左移", position.checked_sub(1)),
-            ("go-next-symbolic", "右移", Some(position + 1).filter(|to| *to <= last)),
-        ];
-        for (icon, tooltip, target) in moves {
-            let button = gtk::Button::builder()
-                .icon_name(icon)
-                .tooltip_text(tooltip)
-                .valign(gtk::Align::Center)
-                .css_classes(["flat"])
-                .sensitive(target.is_some())
-                .build();
-            if let Some(to) = target {
-                let (arrangement, order, rows) = (arrangement.clone(), order.clone(), rows.clone());
-                button.connect_clicked(move |_| {
-                    order.borrow_mut().swap(position, to);
-                    let names: Vec<String> = order.borrow().iter().map(|(name, _)| format!("{name:?}")).collect();
-                    set(&format!("display_order = [{}]", names.join(", ")));
-                    fill_arrangement(&arrangement, &order, &rows);
-                });
+        let drag = gtk::GestureDrag::new();
+        let weak = Rc::downgrade(&arrangement);
+        drag.connect_drag_begin(move |_, x, y| {
+            if let Some(arrangement) = weak.upgrade() {
+                arrangement.begin(x, y);
             }
-            row.add_suffix(&button);
+        });
+        let weak = Rc::downgrade(&arrangement);
+        drag.connect_drag_update(move |_, dx, dy| {
+            if let Some(arrangement) = weak.upgrade() {
+                arrangement.drag(dx, dy);
+            }
+        });
+        let weak = Rc::downgrade(&arrangement);
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(arrangement) = weak.upgrade() {
+                arrangement.release();
+            }
+        });
+        arrangement.area.add_controller(drag);
+        arrangement
+    }
+
+    /// The scale the displays are drawn at and where the desktop's origin is drawn, to fit.
+    fn fit(&self, width: f64, height: f64) -> (f64, (f64, f64)) {
+        let screens = self.screens.borrow();
+        let left = screens.iter().map(|screen| screen.x).min().unwrap_or(0);
+        let top = screens.iter().map(|screen| screen.y).min().unwrap_or(0);
+        let right = screens.iter().map(|screen| screen.x + screen.size.width).max().unwrap_or(1);
+        let bottom = screens.iter().map(|screen| screen.y + screen.size.height).max().unwrap_or(1);
+        let (across, down) = (f64::from((right - left).max(1)), f64::from((bottom - top).max(1)));
+        let scale = ((width - PICTURE_PADDING * 2.0) / across).min((height - PICTURE_PADDING * 2.0) / down);
+        let origin = (
+            (width - across * scale) / 2.0 - f64::from(left) * scale,
+            (height - down * scale) / 2.0 - f64::from(top) * scale,
+        );
+        (scale, origin)
+    }
+
+    fn transform(&self) -> (f64, (f64, f64)) {
+        match self.dragging.get() {
+            Some(drag) => (drag.scale, drag.origin),
+            None => self.fit(f64::from(self.area.width()), f64::from(self.area.height())),
         }
-        arrangement.add(&row);
-        rows.borrow_mut().push(row);
+    }
+
+    fn draw(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: i32, height: i32) {
+        let (scale, (ox, oy)) = match self.dragging.get() {
+            Some(drag) => (drag.scale, drag.origin),
+            None => self.fit(f64::from(width), f64::from(height)),
+        };
+        let ink = area.color();
+        let paint = |alpha: f32| {
+            cr.set_source_rgba(f64::from(ink.red()), f64::from(ink.green()), f64::from(ink.blue()), f64::from(ink.alpha() * alpha));
+        };
+        let selected = self.selected.borrow().clone();
+        let screens = self.screens.borrow();
+        // Displays showing the same picture share a place, and its number names them all.
+        let mut drawn: Vec<((i32, i32), String)> = Vec::new();
+        for (index, screen) in screens.iter().enumerate() {
+            let number = (index + 1).to_string();
+            match drawn.iter_mut().find(|(at, _)| *at == (screen.x, screen.y)) {
+                Some((_, numbers)) => *numbers = format!("{numbers} | {number}"),
+                None => drawn.push(((screen.x, screen.y), number)),
+            }
+        }
+        for screen in screens.iter() {
+            let (x, y) = (ox + f64::from(screen.x) * scale, oy + f64::from(screen.y) * scale);
+            let (w, h) = (f64::from(screen.size.width) * scale, f64::from(screen.size.height) * scale);
+            let chosen = screen.name == selected;
+            cr.rectangle(x + 2.0, y + 2.0, w - 4.0, h - 4.0);
+            paint(match (chosen, screen.on) {
+                (true, _) => 0.3,
+                (false, true) => 0.12,
+                (false, false) => 0.05,
+            });
+            let _ = cr.fill_preserve();
+            paint(if chosen { 1.0 } else { 0.3 });
+            cr.set_line_width(if chosen { 3.0 } else { 1.0 });
+            let _ = cr.stroke();
+            let Some((_, numbers)) = drawn.iter().find(|(at, _)| *at == (screen.x, screen.y)) else {
+                continue;
+            };
+            let layout = area.create_pango_layout(Some(numbers));
+            let mut font = gtk::pango::FontDescription::from_string("Sans Bold");
+            font.set_absolute_size((h * 0.4).clamp(10.0, 48.0) * f64::from(gtk::pango::SCALE));
+            layout.set_font_description(Some(&font));
+            let (text_w, text_h) = layout.pixel_size();
+            cr.move_to(x + (w - f64::from(text_w)) / 2.0, y + (h - f64::from(text_h)) / 2.0);
+            paint(if screen.on { 0.9 } else { 0.4 });
+            pangocairo::functions::show_layout(cr, &layout);
+        }
+    }
+
+    fn at(&self, x: f64, y: f64) -> Option<usize> {
+        let (scale, (ox, oy)) = self.transform();
+        let (px, py) = ((x - ox) / scale, (y - oy) / scale);
+        // Front first: the last drawn is over the others.
+        self.screens.borrow().iter().rposition(|screen| {
+            px >= f64::from(screen.x)
+                && py >= f64::from(screen.y)
+                && px < f64::from(screen.x + screen.size.width)
+                && py < f64::from(screen.y + screen.size.height)
+        })
+    }
+
+    fn begin(&self, x: f64, y: f64) {
+        let Some(index) = self.at(x, y) else {
+            return;
+        };
+        let name = self.screens.borrow()[index].name.clone();
+        if *self.selected.borrow() != name {
+            self.selected.replace(name);
+            self.picked_another.set(true);
+        }
+        if self.movable {
+            let (scale, origin) = self.transform();
+            let screen = &self.screens.borrow()[index];
+            self.dragging.set(Some(Drag { index, from: (screen.x, screen.y), scale, origin }));
+        }
+        self.area.queue_draw();
+    }
+
+    fn drag(&self, dx: f64, dy: f64) {
+        let Some(drag) = self.dragging.get() else {
+            return;
+        };
+        let screen = &mut self.screens.borrow_mut()[drag.index];
+        screen.x = drag.from.0 + (dx / drag.scale).round() as i32;
+        screen.y = drag.from.1 + (dy / drag.scale).round() as i32;
+        self.area.queue_draw();
+    }
+
+    /// Puts a dragged display where it goes and keeps the places, then tells of the display
+    /// picked: the page is built again for it, which this picture goes with.
+    fn release(&self) {
+        if let Some(Drag { index, from, .. }) = self.dragging.take() {
+            self.place(index, from);
+        }
+        if self.picked_another.take() {
+            (self.picked)(&self.selected.borrow());
+        }
+    }
+
+    fn place(&self, index: usize, from: (i32, i32)) {
+        let place = snap(&self.screens.borrow(), index);
+        self.screens.borrow_mut()[index].x = place.0;
+        self.screens.borrow_mut()[index].y = place.1;
+        self.area.queue_draw();
+        if place == from {
+            return;
+        }
+        let places: Vec<String> = self
+            .screens
+            .borrow()
+            .iter()
+            .filter(|screen| screen.on)
+            .map(|screen| format!("{:?} = [{}, {}]", screen.name, screen.x, screen.y))
+            .collect();
+        set(&format!("display_positions = {{ {} }}", places.join(", ")));
+    }
+}
+
+/// Builds the page again, after a change to the displays has been put in effect.
+fn refill_soon(page: &Weak<DisplayPage>) {
+    let page = page.clone();
+    // The compositor lays the displays out as it next draws.
+    glib::timeout_add_local_once(Duration::from_millis(300), move || {
+        if let Some(page) = page.upgrade() {
+            page.fill();
+        }
+    });
+}
+
+/// 排列: the displays' picture, with the button that numbers them on their screens; then how
+/// more than one of them is used, which one the settings under it are for, and whether it is
+/// the main one.
+fn arrangement_groups(page: &Rc<DisplayPage>, config: &Config, screens: &[Screen], selected: &str) -> [adw::PreferencesGroup; 2] {
+    let picture = group("排列");
+    let identify = gtk::Button::builder().label("識別").valign(gtk::Align::Center).build();
+    identify.connect_clicked(|_| run("nekoland", &["msg", "identify"]));
+    picture.set_header_suffix(Some(&identify));
+    let group = group("");
+
+    let current = projection(config);
+    let weak = Rc::downgrade(page);
+    let arrangement = Arrangement::new(screens.to_vec(), selected.to_string(), current == EXTEND, move |name| {
+        if let Some(page) = weak.upgrade() {
+            page.selected.replace(Some(name.to_string()));
+            refill_soon(&weak);
+        }
+    });
+    let frame = gtk::Frame::builder().child(&arrangement.area).css_classes(["view"]).build();
+    picture.add(&frame);
+    page.arrangement.replace(Some(arrangement));
+
+    let labels: Vec<&str> = PROJECTIONS.iter().map(|(_, label)| *label).collect();
+    let row = adw::ComboRow::builder()
+        .title("多部顯示器")
+        .model(&gtk::StringList::new(&labels))
+        .selected(PROJECTIONS.iter().position(|(name, _)| *name == current).unwrap_or(2) as u32)
+        .build();
+    let weak = Rc::downgrade(page);
+    keep_or_revert(&row, "保留這些顯示設定？", move |index| {
+        let Some((name, _)) = PROJECTIONS.get(index as usize) else {
+            return;
+        };
+        unset("mirror_displays");
+        set(&format!("projection = {name:?}"));
+        refill_soon(&weak);
+    });
+    group.add(&row);
+
+    let names: Vec<String> = screens.iter().enumerate().map(|(index, screen)| format!("{} {}", index + 1, screen.name)).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let chosen = screens.iter().position(|screen| screen.name == selected).unwrap_or(0);
+    let which = adw::ComboRow::builder()
+        .title("顯示器")
+        .model(&gtk::StringList::new(&names))
+        .selected(chosen as u32)
+        .build();
+    let (weak, all) = (Rc::downgrade(page), screens.to_vec());
+    which.connect_selected_notify(move |row| {
+        if let (Some(page), Some(screen)) = (weak.upgrade(), all.get(row.selected() as usize)) {
+            page.selected.replace(Some(screen.name.clone()));
+            page.fill();
+        }
+    });
+    group.add(&which);
+
+    let main = adw::SwitchRow::builder()
+        .title("主要顯示器")
+        .active(chosen == 0)
+        .sensitive(chosen != 0)
+        .build();
+    let (weak, all, name) = (Rc::downgrade(page), screens.to_vec(), selected.to_string());
+    main.connect_active_notify(move |row| {
+        if !row.is_active() {
+            return;
+        }
+        let order: Vec<String> = std::iter::once(&name)
+            .chain(all.iter().map(|screen| &screen.name).filter(|other| **other != name))
+            .map(|name| format!("{name:?}"))
+            .collect();
+        set(&format!("display_order = [{}]", order.join(", ")));
+        refill_soon(&weak);
+    });
+    group.add(&main);
+    [picture, group]
+}
+
+/// The page, built again as the displays and the one chosen change.
+struct DisplayPage {
+    page: adw::PreferencesPage,
+    groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// The display the settings under the picture are for, by name.
+    selected: RefCell<Option<String>>,
+    arrangement: RefCell<Option<Rc<Arrangement>>>,
+}
+
+thread_local! {
+    /// The page built last, the one that can be on screen; its widgets hold it only weakly.
+    static PAGE: RefCell<Option<Rc<DisplayPage>>> = const { RefCell::new(None) };
+}
+
+impl DisplayPage {
+    fn fill(self: &Rc<Self>) {
+        for group in self.groups.take() {
+            self.page.remove(&group);
+        }
+        let config = Config::load();
+        let screens = parse_displays(&output("nekoland", &["msg", "displays"]).unwrap_or_default());
+        let mut groups = Vec::new();
+        let target = if screens.len() < 2 {
+            Target::All
+        } else {
+            let selected = self
+                .selected
+                .borrow()
+                .clone()
+                .filter(|name| screens.iter().any(|screen| screen.name == *name))
+                .unwrap_or_else(|| screens[0].name.clone());
+            groups.extend(arrangement_groups(self, &config, &screens, &selected));
+            Target::Display(selected)
+        };
+        groups.push(header(&target));
+        let resolution = Resolution::new(target.clone());
+        if let Some(resolution) = &resolution {
+            groups.push(resolution.pictures.clone());
+            groups.push(resolution.group.clone());
+        }
+        groups.extend(brightness_group());
+        let picture = group("");
+        if let Some(resolution) = &resolution {
+            picture.add(&resolution.rate);
+        }
+        picture.add(&rotation_row(&config, &target));
+        picture.add(&switch_row(&config, "顯示 FPS", "show_fps"));
+        picture.add(&super::colour_profile_row(&config));
+        groups.push(picture);
+        groups.push(buttons());
+        for group in &groups {
+            self.page.add(group);
+        }
+        self.groups.replace(groups);
     }
 }
 
@@ -741,36 +1142,29 @@ fn slider_row(
     row
 }
 
-fn apply_rotation(degrees: i64) {
-    if degrees == 0 {
-        unset("rotation");
+fn apply_rotation(target: &Target, degrees: i64) {
+    if degrees == 0 && *target == Target::All {
+        target.unset(ROTATION);
     } else {
-        set(&format!("rotation = {degrees}"));
+        target.set(ROTATION, &degrees.to_string());
     }
 }
 
 /// The picture's rotation; a new one is turned back unless it is kept in time.
-fn rotation_row(config: &Config) -> adw::ComboRow {
-    let current = config.number("rotation", 0.0) as i64;
+fn rotation_row(config: &Config, target: &Target) -> adw::ComboRow {
+    let current = target.value(config, ROTATION).and_then(|value| value.as_integer()).unwrap_or(0);
     let labels: Vec<&str> = ROTATIONS.iter().map(|(label, _)| *label).collect();
-    let kept = ROTATIONS.iter().position(|(_, degrees)| *degrees == current).unwrap_or(0) as u32;
+    let selected = ROTATIONS.iter().position(|(_, degrees)| *degrees == current).unwrap_or(0) as u32;
     let row = adw::ComboRow::builder()
         .title("旋轉")
         .model(&gtk::StringList::new(&labels))
-        .selected(kept)
+        .selected(selected)
         .build();
-    let kept = Rc::new(Cell::new(kept));
-    // Set while the row is put back, which is not a choice of a rotation.
-    let reverting = Rc::new(Cell::new(false));
-    row.connect_selected_notify(move |row| {
-        if reverting.get() || row.selected() == kept.get() {
-            return;
+    let target = target.clone();
+    keep_or_revert(&row, "保留這個旋轉方向？", move |index| {
+        if let Some(&(_, degrees)) = ROTATIONS.get(index as usize) {
+            apply_rotation(&target, degrees);
         }
-        let Some(&(_, degrees)) = ROTATIONS.get(row.selected() as usize) else {
-            return;
-        };
-        apply_rotation(degrees);
-        ask_to_keep_rotation(row, kept.clone(), reverting.clone());
     });
     row
 }
@@ -779,8 +1173,30 @@ fn countdown_text(seconds: u32) -> String {
     format!("{seconds} 秒後還原。")
 }
 
-fn ask_to_keep_rotation(row: &adw::ComboRow, kept: Rc<Cell<u32>>, reverting: Rc<Cell<bool>>) {
-    let alert = adw::AlertDialog::new(Some("保留這個旋轉方向？"), Some(&countdown_text(KEEP_ROTATION_WITHIN)));
+/// Puts in effect each choice made in `row`, turned back unless it is kept in time, as a
+/// picture that cannot be read may follow it.
+fn keep_or_revert(row: &adw::ComboRow, question: &'static str, apply: impl Fn(u32) + 'static) {
+    let kept = Rc::new(Cell::new(row.selected()));
+    // Set while the row is put back, which is not a choice.
+    let reverting = Rc::new(Cell::new(false));
+    let apply = Rc::new(apply);
+    row.connect_selected_notify(move |row| {
+        if reverting.get() || row.selected() == kept.get() {
+            return;
+        }
+        apply(row.selected());
+        ask_to_keep(row, question, kept.clone(), reverting.clone(), apply.clone());
+    });
+}
+
+fn ask_to_keep(
+    row: &adw::ComboRow,
+    question: &str,
+    kept: Rc<Cell<u32>>,
+    reverting: Rc<Cell<bool>>,
+    apply: Rc<dyn Fn(u32)>,
+) {
+    let alert = adw::AlertDialog::new(Some(question), Some(&countdown_text(KEEP_ROTATION_WITHIN)));
     alert.add_responses(&[("revert", "還原"), ("keep", "保留")]);
     alert.set_default_response(Some("keep"));
     alert.set_close_response("revert");
@@ -796,9 +1212,7 @@ fn ask_to_keep_rotation(row: &adw::ComboRow, kept: Rc<Cell<u32>>, reverting: Rc<
                 kept.set(row.selected());
                 return;
             }
-            if let Some(&(_, degrees)) = ROTATIONS.get(kept.get() as usize) {
-                apply_rotation(degrees);
-            }
+            apply(kept.get());
             reverting.set(true);
             row.set_selected(kept.get());
             reverting.set(false);
@@ -947,33 +1361,16 @@ fn buttons() -> adw::PreferencesGroup {
     buttons
 }
 
-pub fn display_page(config: &Config) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
-    page.add(&header());
-    if let Some(arrangement) = arrangement_group(config) {
-        page.add(&arrangement);
-    }
-    if let Some(scales) = display_scales_group(config) {
-        page.add(&scales);
-    }
-    let resolution = Resolution::new();
-    if let Some(resolution) = &resolution {
-        page.add(&resolution.pictures);
-        page.add(&resolution.group);
-    }
-    if let Some(brightness) = brightness_group() {
-        page.add(&brightness);
-    }
-    let picture = group("");
-    if let Some(resolution) = &resolution {
-        picture.add(&resolution.rate);
-    }
-    picture.add(&rotation_row(config));
-    picture.add(&switch_row(config, "顯示 FPS", "show_fps"));
-    picture.add(&super::colour_profile_row(config));
-    page.add(&picture);
-    page.add(&buttons());
-    page
+pub fn display_page(_config: &Config) -> adw::PreferencesPage {
+    let page = Rc::new(DisplayPage {
+        page: adw::PreferencesPage::new(),
+        groups: RefCell::default(),
+        selected: RefCell::default(),
+        arrangement: RefCell::default(),
+    });
+    page.fill();
+    PAGE.replace(Some(page.clone()));
+    page.page.clone()
 }
 
 #[cfg(test)]
@@ -985,12 +1382,27 @@ mod tests {
     }
 
     #[test]
-    fn displays_are_read_left_to_right() {
-        let text = "eDP-1\t1536x864\t0\nHDMI-A-1\t1920x1080\t1536\nbroken\n";
+    fn displays_are_read_main_first() {
+        let text = "eDP-1\t1536x864\t0\t0\ton\nHDMI-A-1\t1920x1080\t1536\t-200\toff\nbroken\n";
+        let size = |width, height| Size { width, height };
         assert_eq!(
             parse_displays(text),
-            [("eDP-1".to_string(), "1536 × 864".to_string()), ("HDMI-A-1".to_string(), "1920 × 1080".to_string())]
+            [
+                Screen { name: "eDP-1".into(), size: size(1536, 864), x: 0, y: 0, on: true },
+                Screen { name: "HDMI-A-1".into(), size: size(1920, 1080), x: 1536, y: -200, on: false },
+            ]
         );
+    }
+
+    #[test]
+    fn a_dropped_display_goes_against_the_nearest_edge() {
+        let screen = |name: &str, x, y| Screen { name: name.into(), size: Size { width: 1920, height: 1080 }, x, y, on: true };
+        // Dropped over the other, a little to the right: to its right, tops lined up.
+        assert_eq!(snap(&[screen("A", 0, 0), screen("B", 1500, 30)], 1), (1920, 0));
+        // Dropped far below: under it, sharing the edge.
+        assert_eq!(snap(&[screen("A", 0, 0), screen("B", 300, 1500)], 1), (300, 1080));
+        // Dropped off to the side: still against it, sharing enough of the edge to cross.
+        assert_eq!(snap(&[screen("A", 0, 0), screen("B", 3000, 1050)], 1), (1920, 1080 - LEAST_SHARED));
     }
 
     #[test]

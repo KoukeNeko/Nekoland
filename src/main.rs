@@ -29,6 +29,7 @@ mod menubar;
 mod motion;
 mod nautilus;
 mod fps;
+mod identify;
 mod night;
 mod notices;
 mod notification_center;

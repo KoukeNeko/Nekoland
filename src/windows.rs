@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use smithay::{
     backend::renderer::element::Id,
     desktop::{find_popup_root_surface, layer_map_for_output, Window, WindowSurface},
+    output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
         wayland_server::{protocol::wl_surface::WlSurface, Resource},
@@ -216,10 +217,26 @@ pub fn is_managed(window: &Window) -> bool {
 }
 
 impl Nekoland {
-    /// The part of the first output that panels leave free.
-    // shortcut: one output; several need the output a window is on.
+    /// The output `point` is on, or the main one off them all.
+    pub fn output_at(&self, point: Point<f64, Logical>) -> Option<Output> {
+        self.space.output_under(point).next().or_else(|| self.space.outputs().next()).cloned()
+    }
+
+    /// The output the middle of a window is on, or the main one.
+    pub(crate) fn output_of(&self, window: &Window) -> Option<Output> {
+        let frame = self.frame(window)?;
+        self.output_at((frame.loc + frame.size.downscale(2).to_point()).to_f64())
+    }
+
+    /// The part of the output under the pointer that panels leave free, where new windows open.
     pub fn usable_area(&self) -> Option<Rectangle<i32, Logical>> {
-        let output = self.space.outputs().next()?;
+        let pointer = self.seat.get_pointer()?.current_location();
+        self.usable_area_on(&self.output_at(pointer)?)
+    }
+
+    /// The part of `output` that panels leave free; every output has a menu bar, the main
+    /// one the Dock as well.
+    pub fn usable_area_on(&self, output: &Output) -> Option<Rectangle<i32, Logical>> {
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
         let mut area = Rectangle::new(geometry.loc + zone.loc, zone.size);
@@ -228,6 +245,9 @@ impl Nekoland {
         if area.loc.y < below_bar {
             area.size.h -= below_bar - area.loc.y;
             area.loc.y = below_bar;
+        }
+        if self.space.outputs().next() != Some(output) {
+            return Some(area);
         }
         // A Dock that hides leaves its edge to windows, as on the Mac.
         let dock = if self.config.dock_autohide {
@@ -458,7 +478,8 @@ impl Nekoland {
     }
 
     pub fn maximize(&mut self, window: &Window) {
-        let Some(area) = self.usable_area().filter(|_| !has_fixed_size(window)) else {
+        let area = self.output_of(window).and_then(|output| self.usable_area_on(&output));
+        let Some(area) = area.filter(|_| !has_fixed_size(window)) else {
             return;
         };
         self.remember_place(window);
@@ -509,7 +530,8 @@ impl Nekoland {
     }
 
     fn apply_arrangement(&mut self, window: &Window, command: &str, arrangement: Arrangement, cycle: bool) {
-        let (Some(area), Some(frame)) = (self.usable_area(), self.frame(window)) else {
+        let area = self.output_of(window).and_then(|output| self.usable_area_on(&output));
+        let (Some(area), Some(frame)) = (area, self.frame(window)) else {
             return;
         };
         let inner = arrange::inset(area, self.window_gap());
@@ -601,10 +623,8 @@ impl Nekoland {
 
     pub fn fullscreen(&mut self, window: &Window) {
         let Some(geometry) = self
-            .space
-            .outputs()
-            .next()
-            .and_then(|output| self.space.output_geometry(output))
+            .output_of(window)
+            .and_then(|output| self.space.output_geometry(&output))
             .filter(|_| !has_fixed_size(window))
         else {
             return;
@@ -618,12 +638,15 @@ impl Nekoland {
     /// to, are moved and shrunk to lie inside it, so that none is left partly off screen.
     // shortcut: windows on the workspaces not shown are fitted only as they are put back.
     pub fn fit_windows_to_display(&mut self) {
-        let display = self.space.outputs().next().and_then(|output| self.space.output_geometry(output));
-        let (Some(display), Some(area)) = (display, self.usable_area()) else {
-            return;
-        };
         let windows: Vec<Window> = self.space.elements().filter(|window| is_managed(window)).cloned().collect();
         for window in &windows {
+            // One left on no output, its display unplugged, goes to the main one.
+            let output = self.output_of(window);
+            let display = output.as_ref().and_then(|output| self.space.output_geometry(output));
+            let area = output.as_ref().and_then(|output| self.usable_area_on(output));
+            let (Some(display), Some(area)) = (display, area) else {
+                continue;
+            };
             match placement_of(window) {
                 Placement::Fullscreen => self.put_window(window, display, &[ToplevelState::Fullscreen]),
                 Placement::Maximized => self.put_window(window, area, &[ToplevelState::Maximized]),
@@ -643,8 +666,13 @@ impl Nekoland {
                 *rect = keep_inside(*rect, area);
             }
         }
-        for (window, location) in &mut self.minimized {
-            *location = keep_inside(Rectangle::new(*location, window.geometry().size), area).loc;
+        let minimized: Vec<(Window, Point<i32, Logical>)> = self.minimized.clone();
+        for (index, (window, location)) in minimized.iter().enumerate() {
+            let rect = Rectangle::new(*location, window.geometry().size);
+            let middle = (rect.loc + rect.size.downscale(2).to_point()).to_f64();
+            if let Some(area) = self.output_at(middle).and_then(|output| self.usable_area_on(&output)) {
+                self.minimized[index].1 = keep_inside(rect, area).loc;
+            }
         }
     }
 
@@ -714,10 +742,10 @@ impl Nekoland {
         if !self.config.edge_tiling {
             return None;
         }
-        let output = self.space.outputs().next()?;
-        let display = self.space.output_geometry(output)?;
+        let output = self.output_at(pos)?;
+        let display = self.space.output_geometry(&output)?;
         let command = arrange::snap_command(display.to_f64(), pos)?;
-        let area = self.usable_area()?;
+        let area = self.usable_area_on(&output)?;
         let rect = match arrange::arrangement(command)? {
             Arrangement::Part(part) => arrange::part_rect(area, part, self.window_gap()),
             _ => area,

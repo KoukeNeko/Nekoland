@@ -1022,7 +1022,7 @@ impl Nekoland {
         if self.menu_bar.clock_panel.take().is_some() {
             return;
         }
-        let Some(output) = self.output_area() else {
+        let Some(output) = self.bar_area() else {
             return;
         };
         let options = Options::from_config(&self.config);
@@ -1084,7 +1084,7 @@ impl Nekoland {
     }
 
     pub(crate) fn clock_panel_overlay(&self) -> Option<Overlay<'_>> {
-        let output = self.output_area()?;
+        let output = self.bar_area()?;
         let panel = self.menu_bar.clock_panel.as_ref()?;
         let picture = panel.picture.as_ref()?;
         Some(Overlay {

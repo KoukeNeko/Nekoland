@@ -967,7 +967,7 @@ impl Nekoland {
         self.menu_bar.control = match self.menu_bar.control {
             Some(_) => None,
             None => {
-                let width = self.output_area().map_or(0, |area| area.size.w);
+                let width = self.bar_area().map_or(0, |area| area.size.w);
                 Some(ControlCenter::new(anchor, width))
             }
         };
@@ -1028,7 +1028,7 @@ impl Nekoland {
     }
 
     pub(crate) fn control_center_overlay(&self) -> Option<Overlay<'_>> {
-        let output = self.output_area()?;
+        let output = self.bar_area()?;
         let control = self.menu_bar.control.as_ref()?;
         let picture = control.picture.as_ref()?;
         let size = picture.size;

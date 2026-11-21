@@ -192,6 +192,7 @@ pub fn scene_elements(
         backdrop.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
         under.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed, backdrop));
         let mut overlays = state.fps_overlays();
+        overlays.extend(state.identify_overlays());
         overlays.extend(state.hover_overlays());
         overlays.extend(state.menu_bar_overlays());
         overlays.extend(state.notice_overlays());

@@ -94,6 +94,9 @@ pub struct Nekoland {
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
+    /// Every display plugged in, the main one first, shown or not; empty where the backend has
+    /// only the outputs on the desktop.
+    pub connected_outputs: Vec<Output>,
     /// Where the window being dragged goes if it is let go of now.
     pub snap: crate::windows::SnapPreview,
     pub overview: Option<Overview>,
@@ -109,6 +112,7 @@ pub struct Nekoland {
     pub hover: crate::hover::Hover,
     pub notices: Notices,
     pub fps: crate::fps::FpsMeter,
+    pub identify: crate::identify::Identify,
     pub workspaces: Workspaces,
     /// Names and icons of applications, for the overview.
     pub apps: Apps,
@@ -234,6 +238,7 @@ impl Nekoland {
 
             space,
             minimized: Vec::new(),
+            connected_outputs: Vec::new(),
             snap: Default::default(),
             overview: None,
             app_stock: Default::default(),
@@ -245,6 +250,7 @@ impl Nekoland {
             hover: Default::default(),
             notices: Notices::default(),
             fps: Default::default(),
+            identify: Default::default(),
             workspaces: Workspaces::new(),
             apps: Apps::default(),
             super_tap: false,
@@ -464,6 +470,22 @@ impl ClientData for ClientState {
 impl Nekoland {
     /// Reads the configuration again and applies what changed that is not read anew each
     /// time it is used: the wallpaper, the keyboard and the pointing devices.
+    /// Goes on to the next of Windows' four projections, as its Win+P does, and keeps it.
+    pub fn next_projection(&mut self) {
+        let all = crate::config::Projection::ALL;
+        let now = all.iter().position(|projection| *projection == self.config.projection()).unwrap_or(0);
+        let next = all[(now + 1) % all.len()];
+        let Some(name) = toml::Value::try_from(next).ok().and_then(|value| value.as_str().map(str::to_owned)) else {
+            return;
+        };
+        // Left on, it would read the projection put back to extending as duplicating.
+        let kept = crate::config::unset("mirror_displays").and_then(|()| crate::config::set(&format!("projection = {name:?}")));
+        if let Err(err) = kept {
+            tracing::warn!("could not keep the projection: {err}");
+        }
+        self.reload_config();
+    }
+
     pub fn reload_config(&mut self) {
         let old_wallpaper = (self.desktop_wallpaper(self.workspaces.active), self.config.wallpaper_mode);
         let old_keyboard = self.config.keyboard();

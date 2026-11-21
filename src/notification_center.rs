@@ -454,7 +454,7 @@ impl Nekoland {
         }
         let dark = self.menu_bar.dark;
         self.refresh_kept_icons(dark);
-        let room = self.output_size().h - (MENU_BAR_HEIGHT + GAP_BELOW_BAR) - notices::MARGIN;
+        let room = self.bar_size().h - (MENU_BAR_HEIGHT + GAP_BELOW_BAR) - notices::MARGIN;
         let previews = self.config.notification_previews;
         let revision = self.notices.kept_revision;
         let kept = &self.notices.kept;
@@ -486,7 +486,7 @@ impl Nekoland {
     }
 
     pub(crate) fn notification_center_overlay(&self) -> Option<Overlay<'_>> {
-        let output = self.output_area()?;
+        let output = self.bar_area()?;
         let center = self.menu_bar.notification_center.as_ref()?;
         let picture = center.picture.as_ref()?;
         let fade = if self.config.animations {
@@ -509,7 +509,7 @@ impl Nekoland {
     fn notification_center_at(&self, local: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
         let center = self.menu_bar.notification_center.as_ref()?;
         let size = center.picture.as_ref()?.size;
-        let at = local - panel_origin(self.output_size().w);
+        let at = local - panel_origin(self.bar_size().w);
         Rectangle::new((0, 0).into(), size)
             .contains(at)
             .then(|| at + Point::from((0, center.scroll)))

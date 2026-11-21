@@ -187,12 +187,16 @@ impl Nekoland {
                 let from = pointer.current_location();
                 let geometry = |output| self.space.output_geometry(output).unwrap().to_f64();
                 let mut pos = from + event.delta();
-                // It goes on to the output it moves onto, or stops at the edge of the one it is on.
-                if !self.space.outputs().any(|output| geometry(output).contains(pos)) {
+                // It goes on to the output it moves onto, or stops at the edge of the one it is on,
+                // sliding along it: moved up and across at the top, it still crosses to the next.
+                let on_an_output = |pos| self.space.outputs().any(|output| geometry(output).contains(pos));
+                if !on_an_output(pos) {
                     let output = self.space.outputs().find(|output| geometry(output).contains(from));
                     let bounds = geometry(output.or(self.space.outputs().next()).unwrap());
-                    pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
                     pos.y = pos.y.clamp(bounds.loc.y, bounds.loc.y + bounds.size.h - 1.0);
+                    if !on_an_output(pos) {
+                        pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
+                    }
                 }
 
                 if !locked {
@@ -363,6 +367,7 @@ impl Nekoland {
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
         self.close_launcher_unless(clicked.as_ref());
         self.desktop_pointer_pressed(pos);
+        self.menu_bar_claim(pos);
         if self.menu_bar_press(pos) {
             return;
         }
@@ -507,6 +512,7 @@ impl Nekoland {
                 }
             }
             Keysym::l if logo => self.lock_screen(),
+            Keysym::p if logo => self.next_projection(),
             Keysym::F4 if alt => close(focused),
             Keysym::q if logo => close(focused),
             Keysym::Tab if (alt || logo) && !shift => self.focus_next_window(),

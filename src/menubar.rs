@@ -25,6 +25,7 @@ use cairo::{Context, Format, ImageSurface};
 use smithay::{
     backend::{input::KeyState, renderer::element::Id},
     desktop::{Window, WindowSurface},
+    output::Output,
     input::keyboard::{FilterResult, Keycode, Keysym},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
@@ -52,6 +53,8 @@ use crate::{
 
 pub const MENU_BAR_HEIGHT: i32 = 30;
 const TITLE_PADDING: i32 = 8;
+/// How strongly a bar not in use, on another display, shows its content.
+const INACTIVE_BAR_ALPHA: f32 = 0.5;
 const TITLE_HIGHLIGHT_HEIGHT: i32 = 22;
 /// How far the clock's highlight goes past its text, each side.
 const CLOCK_PADDING: i32 = 8;
@@ -312,6 +315,8 @@ pub(crate) struct Drawn {
     background: bool,
     minute: i64,
     items: u64,
+    /// The widths of the other displays, whose bars are drawn alike, dimmed.
+    others: Vec<i32>,
 }
 
 pub struct MenuBar {
@@ -343,6 +348,12 @@ pub struct MenuBar {
     pub(crate) agenda: crate::agenda::Agenda,
     pub(crate) clock_bar: crate::clockbar::ClockBar,
     picture: Option<Picture>,
+    /// The bar as the other displays show it, by their width.
+    other_pictures: Vec<(i32, Picture, Id)>,
+    /// The display whose bar is the one to use, by name; None for the main one.
+    display: Option<String>,
+    /// The window the bar went to the display of when it was given the keyboard.
+    followed: Option<Window>,
     pub(crate) drawn: Option<Drawn>,
     /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
     /// the output's size it was found for.
@@ -378,6 +389,9 @@ impl Default for MenuBar {
             agenda: Default::default(),
             clock_bar: Default::default(),
             picture: None,
+            other_pictures: Vec::new(),
+            display: None,
+            followed: None,
             drawn: None,
             wallpaper_dark: None,
             bar_id: Id::new(),
@@ -1043,9 +1057,41 @@ impl MenuBar {
 }
 
 impl Nekoland {
+    /// The main display, where the Dock, the desktop's icons and the overview are.
     pub(crate) fn output_area(&self) -> Option<Rectangle<i32, Logical>> {
         let output = self.space.outputs().next()?;
         self.space.output_geometry(output)
+    }
+
+    /// The display whose bar is the one to use, as on the Mac: that of the window last given
+    /// the keyboard, or of the bar last clicked. Its menus and panels open there.
+    fn bar_output(&self) -> Option<Output> {
+        let named = self.menu_bar.display.as_deref();
+        self.space
+            .outputs()
+            .find(|output| Some(output.name().as_str()) == named)
+            .or_else(|| self.space.outputs().next())
+            .cloned()
+    }
+
+    pub(crate) fn bar_area(&self) -> Option<Rectangle<i32, Logical>> {
+        self.space.output_geometry(&self.bar_output()?)
+    }
+
+    /// Makes the bar of the display clicked at `pos` the one to use, if it is another's.
+    pub fn menu_bar_claim(&mut self, pos: Point<f64, Logical>) {
+        let Some(output) = self.space.output_under(pos).next().cloned() else {
+            return;
+        };
+        let Some(area) = self.space.output_geometry(&output) else {
+            return;
+        };
+        if pos.y >= f64::from(area.loc.y + MENU_BAR_HEIGHT) || Some(&output) == self.bar_output().as_ref() {
+            return;
+        }
+        self.close_menu();
+        self.menu_bar.display = Some(output.name());
+        self.refresh_menu_bar();
     }
 
     /// The active application: its ID and the name it goes by.
@@ -1127,7 +1173,7 @@ impl Nekoland {
     /// Whether the bar or an open menu is at a position, so that it is not a window's. A
     /// menu opened by a right click is there in the overview too, where the bar is not.
     pub fn menu_bar_covers(&self, pos: Point<f64, Logical>) -> bool {
-        let Some(output) = self.output_area() else {
+        let Some(output) = self.bar_area() else {
             return false;
         };
         // A pinned panel only takes what is on it, so the windows under it keep working.
@@ -1241,9 +1287,27 @@ impl Nekoland {
 
     pub fn refresh_menu_bar(&mut self) {
         self.refresh_sharing();
-        let Some(output) = self.output_area() else {
+        // The bar goes to the display of a window given the keyboard.
+        let focused = self.focused_window().filter(is_managed);
+        if focused != self.menu_bar.followed {
+            if let Some(output) = focused.as_ref().and_then(|window| self.output_of(window)) {
+                if self.menu_bar.display.as_ref() != Some(&output.name()) {
+                    self.close_menu();
+                    self.menu_bar.display = Some(output.name());
+                }
+            }
+            self.menu_bar.followed = focused;
+        }
+        let Some(output) = self.bar_area() else {
             return;
         };
+        let others: Vec<i32> = self
+            .space
+            .outputs()
+            .filter_map(|other| self.space.output_geometry(other))
+            .filter(|other| *other != output)
+            .map(|other| other.size.w)
+            .collect();
         let app = self.active_app();
         if let (Some((app_id, _)), Some(bus)) = (&app, &self.menu_bar.bus) {
             if !self.menu_bar.actions.contains_key(app_id) {
@@ -1288,6 +1352,7 @@ impl Nekoland {
             background,
             minute: clock.key,
             items: self.menu_bar.items_revision,
+            others,
         };
         if self.menu_bar.drawn.as_ref() != Some(&drawn) || self.menu_bar.picture.is_none() {
             // A menu of an application that is no longer active goes with it.
@@ -1300,6 +1365,21 @@ impl Nekoland {
                 self.menu_bar.open = None;
             }
             let titles = self.left_titles();
+            // Drawn first, as drawing the bar keeps where its titles are, and without the
+            // open menu's title lit, which is the bar in use's.
+            let open = self.menu_bar.open.take();
+            let mut others = Vec::new();
+            for &width in &drawn.others {
+                if others.iter().any(|(drawn, _, _)| *drawn == width) {
+                    continue;
+                }
+                self.menu_bar.draw_bar(width, titles.clone(), &clock, (dark, background), &self.config);
+                if let Some(picture) = self.menu_bar.picture.take() {
+                    others.push((width, picture, Id::new()));
+                }
+            }
+            self.menu_bar.other_pictures = others;
+            self.menu_bar.open = open;
             self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, background), &self.config);
             self.menu_bar.drawn = Some(Drawn {
                 open: self.menu_bar.open.as_ref().and_then(|open| open.title),
@@ -1326,7 +1406,7 @@ impl Nekoland {
 
     /// What the bar and its open menus put on screen, front first.
     pub fn menu_bar_overlays(&self) -> Vec<Overlay<'_>> {
-        let Some(output) = self.output_area() else {
+        let Some(output) = self.bar_area() else {
             return Vec::new();
         };
         let bar = &self.menu_bar;
@@ -1362,6 +1442,23 @@ impl Nekoland {
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
                 glass: self.config.menu_bar_background.then_some((Tier::Bar, 0)),
                 alpha: 1.0,
+                picture,
+            });
+        }
+        // The other displays' bars are dimmed, as on the Mac.
+        for other in self.space.outputs().filter_map(|other| self.space.output_geometry(other)) {
+            let Some((_, picture, id)) = bar.other_pictures.iter().find(|(width, _, _)| *width == other.size.w) else {
+                continue;
+            };
+            if other == output {
+                continue;
+            }
+            overlays.push(Overlay {
+                fade: 1.0,
+                id,
+                rect: Rectangle::new(other.loc, (other.size.w, MENU_BAR_HEIGHT).into()),
+                glass: self.config.menu_bar_background.then_some((Tier::Bar, 0)),
+                alpha: INACTIVE_BAR_ALPHA,
                 picture,
             });
         }
@@ -1485,7 +1582,7 @@ impl Nekoland {
     }
 
     pub(crate) fn local(&self, pos: Point<f64, Logical>) -> Option<Point<i32, Logical>> {
-        let output = self.output_area()?;
+        let output = self.bar_area()?;
         Some(pos.to_i32_floor() - output.loc)
     }
 
@@ -1521,8 +1618,14 @@ impl Nekoland {
         self.menu_bar.clock_panel = None;
     }
 
+    /// The main display's size.
     pub(crate) fn output_size(&self) -> Size<i32, Logical> {
         self.output_area().map(|area| area.size).unwrap_or_default()
+    }
+
+    /// The size of the display whose bar is the one to use.
+    pub(crate) fn bar_size(&self) -> Size<i32, Logical> {
+        self.bar_area().map(|area| area.size).unwrap_or_default()
     }
 
     /// Opens the menu of a title, or for a status item without one, activates it.
@@ -1582,7 +1685,7 @@ impl Nekoland {
             (String::new(), base)
         });
         let anchor = self.menu_bar.titles[title].rect;
-        let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, self.output_size());
+        let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, self.bar_size());
         let highlighted = highlight_first
             .then(|| entries.iter().position(Entry::reachable))
             .flatten();
@@ -1604,7 +1707,7 @@ impl Nekoland {
     /// Opens a menu of these entries beside `anchor`, the strip across the Dock at an icon,
     /// on the side away from the Dock's edge.
     pub fn open_dock_menu(&mut self, entries: Vec<Entry>, anchor: Rectangle<i32, Logical>, gap: i32) {
-        let output = self.output_size();
+        let output = self.bar_size();
         let (rect, rows) = MenuBar::place_menu(&entries, anchor, false, output);
         let loc = crate::dock::beside(
             self.config.dock_position,
@@ -1636,7 +1739,7 @@ impl Nekoland {
     /// desktop does: its top left one, or, where it would not fit, the one on the other
     /// side, as the Mac's menus turn.
     pub fn open_menu_at(&mut self, entries: Vec<Entry>, point: Point<i32, Logical>) {
-        let output = self.output_size();
+        let output = self.bar_size();
         let (rect, rows) =
             MenuBar::place_menu(&entries, Rectangle::new(point, Size::default()), false, output);
         let loc = Point::from((
@@ -1664,7 +1767,7 @@ impl Nekoland {
 
     /// Opens the submenu of a row of a level beside it, closing any deeper one.
     fn open_submenu(&mut self, level: usize, row: usize, highlight_first: bool) {
-        let size = self.output_size();
+        let size = self.bar_size();
         let Some(open) = self.menu_bar.open.as_mut() else {
             return;
         };
@@ -1726,7 +1829,7 @@ impl Nekoland {
                 entries.extend(found);
             }
         }
-        let size = self.output_size();
+        let size = self.bar_size();
         let Some(open) = self.menu_bar.open.as_mut() else {
             return;
         };

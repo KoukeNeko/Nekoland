@@ -1,8 +1,6 @@
 //! Runs the compositor on a display of its own, through DRM/KMS, with input from libinput.
 //!
-//! shortcut: one GPU, and the connectors found at startup, whose modes are followed as they
-//! change; plugging in another display and a second GPU need per-device state as Smithay's
-//! anvil has.
+//! shortcut: one GPU; displays on a second one need per-device state as Smithay's anvil has.
 
 use std::{
     cell::RefCell,
@@ -49,7 +47,8 @@ use smithay::{
         input::Libinput,
         rustix::fs::OFlags,
     },
-    utils::{DeviceFd, IsAlive, Physical, Point},
+    reexports::wayland_server::backend::GlobalId,
+    utils::{DeviceFd, IsAlive, Logical, Physical, Point, Size},
     wayland::{
         compositor::with_states,
         dmabuf::DmabufFeedbackBuilder,
@@ -60,7 +59,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
 
 use crate::{
-    config::{Config, Rotation},
+    config::{Config, Projection},
     cursor::Cursors,
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
@@ -104,8 +103,12 @@ struct Udev {
     /// Each output's connector, modes and size in millimetres, to choose from again as the
     /// settings or the modes change.
     displays: HashMap<crtc::Handle, Display>,
+    /// Each output's wl_output, taken away with it when its display is unplugged.
+    globals: HashMap<crtc::Handle, GlobalId>,
+    /// The connectors seen so far, to tell which were plugged in or out since.
+    scanner: DrmScanner,
     /// The `mode`, `scale` and `rotation` settings the outputs were last set up with.
-    applied: (Option<String>, Option<f64>, Rotation, Vec<String>, String),
+    applied: String,
     /// While it is open, the power button and the lid are Nekoland's.
     _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
@@ -139,10 +142,10 @@ pub fn init_udev(
     let gbm = GbmDevice::new(fd)?;
 
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
-    let mut renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl_display)?)? };
+    let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl_display)?)? };
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
 
-    let mut manager: OutputManager = DrmOutputManager::new(
+    let manager: OutputManager = DrmOutputManager::new(
         drm,
         GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT),
         GbmFramebufferExporter::new(gbm.clone(), None),
@@ -151,114 +154,32 @@ pub fn init_udev(
         render_formats,
     );
 
-    let mut surfaces = HashMap::new();
-    let mut displays = HashMap::new();
-    let mut gamma = HashMap::new();
-    for event in <DrmScanner>::new().scan_connectors(manager.device())? {
-        let DrmScanEvent::Connected {
-            connector,
-            crtc: Some(crtc),
-        } = event
-        else {
-            continue;
-        };
-
-        let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
-        let modes = connector.modes();
-        let drm_mode = choose_mode(&name, modes, &state.config).ok_or("connector has no modes")?;
-        let mode = Mode::from(drm_mode);
-        let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
-
-        let output = Output::new(
-            name.clone(),
-            PhysicalProperties {
-                size: (width_mm as i32, height_mm as i32).into(),
-                subpixel: connector.subpixel().into(),
-                make: "Unknown".into(),
-                model: "Unknown".into(),
-            },
-        );
-        for mode in modes {
-            output.add_mode(Mode::from(*mode));
-        }
-        // The global lives as long as the compositor does.
-        let _global = output.create_global::<Nekoland>(&data.display_handle);
-
-        // Side by side, each as wide as it is in points.
-        let x = state
-            .space
-            .outputs()
-            .map(|o| state.space.output_geometry(o).unwrap().size.w)
-            .sum::<i32>();
-        let scale = chosen_scale(&state.config, &name, mode, (width_mm, height_mm));
-        info!("{name}: scale {scale}");
-        // What Settings offers as the default, whichever mode the settings set now.
-        output.set_preferred(preferred_mode(modes).map_or(mode, Mode::from));
-        output.change_current_state(
-            Some(mode),
-            Some(state.config.rotation.transform()),
-            Some(Scale::Fractional(scale)),
-            Some((x, 0).into()),
-        );
-        crate::text::set_picture_scale(scale);
-        state.space.map_output(&output, (x, 0));
-        lay_out_outputs(state);
-
-        let surface = manager
-            .initialize_output::<GlesRenderer, SceneElement>(
-                crtc,
-                drm_mode,
-                &[connector.handle()],
-                &output,
-                None,
-                &mut renderer,
-                &DrmOutputRenderElements::default(),
-            )
-            .map_err(|err| format!("could not set up {name}: {err}"))?;
-        info!("{name}: {}x{}", mode.size.w, mode.size.h);
-        match manager.device().get_crtc(crtc) {
-            Ok(info) if info.gamma_length() > 1 => {
-                gamma.insert(crtc, info.gamma_length());
-            }
-            Ok(_) => {}
-            Err(err) => warn!("{name}: no gamma: {err}"),
-        }
-        surfaces.insert(crtc, (surface, output));
-        displays.insert(crtc, (connector.handle(), modes.to_vec(), (width_mm, height_mm)));
-    }
-    if surfaces.is_empty() {
-        return Err("no connected display".into());
-    }
-
     let power_keys = crate::power::take_power_keys()
         .inspect_err(|err| warn!("logind keeps the power button and the lid: {err}"))
         .ok();
-    state.night_shift_available = !gamma.is_empty();
     let udev: SharedUdev = Rc::new(RefCell::new(Udev {
         dark: HashSet::new(),
         pending: HashSet::new(),
         retrying: HashSet::new(),
-        displays,
+        displays: HashMap::new(),
+        globals: HashMap::new(),
+        scanner: DrmScanner::new(),
         applied: applied_settings(&state.config),
-        gamma,
+        gamma: HashMap::new(),
         ramps: HashMap::new(),
         filters: HashMap::new(),
         profile: (None, None),
         _power_keys: power_keys,
-        glass: surfaces
-            .keys()
-            .filter_map(|crtc| {
-                Glass::new(&mut renderer)
-                    .inspect_err(|err| warn!("no glass: {err}"))
-                    .ok()
-                    .map(|glass| (*crtc, glass))
-            })
-            .collect(),
+        glass: HashMap::new(),
         renderer,
         manager,
-        surfaces,
+        surfaces: HashMap::new(),
         cursors: Cursors::load(&state.config.cursor_theme),
     }));
+    rescan(&mut udev.borrow_mut(), state)?;
+    if udev.borrow().surfaces.is_empty() {
+        return Err("no connected display".into());
+    }
 
     // Clients that draw with the GPU hand their buffers over as dmabufs.
     {
@@ -319,13 +240,18 @@ pub fn init_udev(
         })?;
     }
 
-    // A display's modes change under it: QEMU's follow the size of its window.
+    // Displays are plugged in and out, and their modes change under them: QEMU's follow
+    // the size of its window.
     {
         let udev = udev.clone();
         let device = DrmNode::from_path(&gpu_path)?.dev_id();
         handle.insert_source(UdevBackend::new(&seat)?, move |event, _, data| {
             if matches!(event, UdevEvent::Changed { device_id } if device_id == device) {
-                reprobe_modes(&mut udev.borrow_mut(), &mut data.state);
+                let mut backend = udev.borrow_mut();
+                if let Err(err) = rescan(&mut backend, &mut data.state) {
+                    warn!("could not look for displays: {err}");
+                }
+                reprobe_modes(&mut backend, &mut data.state);
             }
         })?;
     }
@@ -483,7 +409,7 @@ fn render(
     }
 
     // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
-    let queued = if state.screens_off {
+    let queued = if state.screens_off || state.space.output_geometry(output).is_none() {
         if dark.insert(crtc) {
             if let Err(err) = surface.with_compositor(|compositor| compositor.clear()) {
                 warn!("could not turn {} off: {err}", output.name());
@@ -531,10 +457,123 @@ fn render(
     let _ = data.display_handle.flush_clients();
 }
 
+/// Sets up the displays plugged in since the last look, and lets go of those unplugged.
+fn rescan(udev: &mut Udev, state: &mut Nekoland) -> std::io::Result<()> {
+    let mut changed = false;
+    for event in udev.scanner.scan_connectors(udev.manager.device())? {
+        match event {
+            DrmScanEvent::Connected {
+                connector,
+                crtc: Some(crtc),
+            } => match connect(udev, state, &connector, crtc) {
+                Ok(()) => changed = true,
+                Err(err) => warn!("{err}"),
+            },
+            DrmScanEvent::Disconnected { crtc: Some(crtc), .. } => {
+                disconnect(udev, state, crtc);
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    if changed {
+        state.night_shift_available = !udev.gamma.is_empty();
+        lay_out_outputs(udev, state);
+        state.tell_surfaces_the_scale();
+        state.dock.drawn = None;
+        state.menu_bar.drawn = None;
+        state.fit_windows_to_display();
+    }
+    Ok(())
+}
+
+/// Sets a display up at the mode and scale the settings ask for, to the right of the others.
+fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, crtc: crtc::Handle) -> Result<(), String> {
+    let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+    let modes = connector.modes();
+    let drm_mode = choose_mode(&name, modes, &state.config).ok_or(format!("{name} has no modes"))?;
+    let mode = Mode::from(drm_mode);
+    let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
+
+    let output = Output::new(
+        name.clone(),
+        PhysicalProperties {
+            size: (width_mm as i32, height_mm as i32).into(),
+            subpixel: connector.subpixel().into(),
+            make: "Unknown".into(),
+            model: "Unknown".into(),
+        },
+    );
+    for mode in modes {
+        output.add_mode(Mode::from(*mode));
+    }
+
+    let scale = chosen_scale(&state.config, &name, mode, (width_mm, height_mm));
+    info!("{name}: scale {scale}");
+    // What Settings offers as the default, whichever mode the settings set now.
+    output.set_preferred(preferred_mode(modes).map_or(mode, Mode::from));
+    // Where it goes, and whether it is shown at all, is the layout's.
+    output.change_current_state(
+        Some(mode),
+        Some(state.config.rotation_of(&name).transform()),
+        Some(Scale::Fractional(scale)),
+        None,
+    );
+
+    let surface = udev
+        .manager
+        .initialize_output::<GlesRenderer, SceneElement>(
+            crtc,
+            drm_mode,
+            &[connector.handle()],
+            &output,
+            None,
+            &mut udev.renderer,
+            &DrmOutputRenderElements::default(),
+        )
+        .map_err(|err| format!("could not set up {name}: {err}"))?;
+    info!("{name}: {}x{}", mode.size.w, mode.size.h);
+    match udev.manager.device().get_crtc(crtc) {
+        Ok(info) if info.gamma_length() > 1 => {
+            udev.gamma.insert(crtc, info.gamma_length());
+        }
+        Ok(_) => {}
+        Err(err) => warn!("{name}: no gamma: {err}"),
+    }
+    match Glass::new(&mut udev.renderer) {
+        Ok(glass) => {
+            udev.glass.insert(crtc, glass);
+        }
+        Err(err) => warn!("no glass: {err}"),
+    }
+    udev.surfaces.insert(crtc, (surface, output));
+    udev.displays.insert(crtc, (connector.handle(), modes.to_vec(), (width_mm, height_mm)));
+    Ok(())
+}
+
+/// Lets go of an unplugged display; its windows are fitted to the displays left.
+fn disconnect(udev: &mut Udev, state: &mut Nekoland, crtc: crtc::Handle) {
+    if let Some((_, output)) = udev.surfaces.remove(&crtc) {
+        info!("{}: unplugged", output.name());
+        state.space.unmap_output(&output);
+        state.connected_outputs.retain(|connected| *connected != output);
+    }
+    if let Some(global) = udev.globals.remove(&crtc) {
+        state.display_handle.remove_global::<Nekoland>(global);
+    }
+    udev.displays.remove(&crtc);
+    udev.glass.remove(&crtc);
+    udev.gamma.remove(&crtc);
+    udev.ramps.remove(&crtc);
+    udev.filters.remove(&crtc);
+    udev.dark.remove(&crtc);
+    udev.pending.remove(&crtc);
+}
+
 /// The mode the settings ask for, at its fastest rate unless they name one; the display's
 /// preferred mode otherwise.
 fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode> {
-    let configured = config.wanted_mode().and_then(|(size, rate)| {
+    let configured = config.wanted_mode(name).and_then(|(size, rate)| {
         let found = modes
             .iter()
             .filter(|mode| mode.size() == size && rate.is_none_or(|rate| mode.vrefresh() == rate))
@@ -643,33 +682,88 @@ fn set_colour_matrix(
 }
 
 /// The settings the outputs are set up from, to tell when they change.
-fn applied_settings(config: &Config) -> (Option<String>, Option<f64>, Rotation, Vec<String>, String) {
-    (
-        config.mode.clone(),
-        config.scale,
-        config.rotation,
-        config.display_order.clone(),
-        format!("{:?}{}", config.display_scales, config.mirror_displays),
+fn applied_settings(config: &Config) -> String {
+    format!(
+        "{:?}",
+        (
+            &config.mode,
+            &config.display_modes,
+            config.scale,
+            &config.display_scales,
+            config.rotation,
+            &config.display_rotations,
+            &config.display_positions,
+            &config.display_order,
+            config.projection(),
+        )
     )
 }
 
-/// Puts the outputs side by side in the order the settings name, the first mapped first, as
-/// the main display everything else follows.
-fn lay_out_outputs(state: &mut Nekoland) {
-    let mut outputs: Vec<Output> = state.space.outputs().cloned().collect();
-    // Stable: the displays the settings leave out stay in the order they were found.
-    outputs.sort_by_key(|output| {
-        state.config.display_order.iter().position(|name| *name == output.name()).unwrap_or(usize::MAX)
-    });
-    let mut x = 0;
-    for output in &outputs {
-        let width = state.space.output_geometry(output).map_or(0, |geometry| geometry.size.w);
-        state.space.unmap_output(output);
-        output.change_current_state(None, None, None, Some((x, 0).into()));
-        state.space.map_output(output, (x, 0));
-        if !state.config.mirror_displays {
-            x += width;
+/// An output's size in points, as its mode, scale and rotation make it, mapped or not.
+pub fn logical_size(output: &Output) -> Size<i32, Logical> {
+    let mode = output.current_mode().map_or_else(Size::default, |mode| mode.size);
+    let size = output.current_transform().transform_size(mode);
+    size.to_f64().to_logical(output.current_scale().fractional_scale()).to_i32_round()
+}
+
+/// Lights the displays the projection shows and puts them where the settings say, or side by
+/// side in the order they name; the first shown is the main display everything else follows.
+/// Those it leaves dark are taken off the desktop, and from the programs.
+fn lay_out_outputs(udev: &mut Udev, state: &mut Nekoland) {
+    let mut outputs: Vec<(crtc::Handle, Output)> =
+        udev.surfaces.iter().map(|(crtc, (_, output))| (*crtc, output.clone())).collect();
+    let order = |output: &Output| state.config.display_order.iter().position(|name| *name == output.name());
+    outputs.sort_by_key(|(_, output)| (order(output).unwrap_or(usize::MAX), output.name()));
+    let projection = state.config.projection();
+    let shown = |index: usize| match projection {
+        _ if outputs.len() < 2 => true,
+        Projection::MainOnly => index == 0,
+        Projection::SecondOnly => index > 0,
+        Projection::Extend | Projection::Duplicate => true,
+    };
+
+    let mut places: Vec<(Output, Point<i32, Logical>)> = Vec::new();
+    let mut right = 0;
+    for (index, (_, output)) in outputs.iter().enumerate() {
+        if !shown(index) {
+            continue;
         }
+        let place: Point<i32, Logical> = match projection {
+            Projection::Duplicate => (0, 0).into(),
+            _ => state.config.display_positions.get(&output.name()).map_or((right, 0).into(), |&[x, y]| (x, y).into()),
+        };
+        right = right.max(place.x + logical_size(output).w);
+        places.push((output.clone(), place));
+    }
+    // The desktop starts at the top left of the displays, wherever they were put.
+    let origin = places.iter().fold(None, |least: Option<Point<i32, Logical>>, (_, place)| {
+        Some(least.map_or(*place, |least| (least.x.min(place.x), least.y.min(place.y)).into()))
+    });
+
+    for (_, output) in &outputs {
+        state.space.unmap_output(output);
+    }
+    for (crtc, output) in &outputs {
+        let place = places.iter().find(|(placed, _)| placed == output).map(|(_, place)| *place - origin.unwrap_or_default());
+        match place {
+            Some(place) => {
+                output.change_current_state(None, None, None, Some(place));
+                state.space.map_output(output, place);
+                udev.globals
+                    .entry(*crtc)
+                    .or_insert_with(|| output.create_global::<Nekoland>(&state.display_handle));
+            }
+            None => {
+                if let Some(global) = udev.globals.remove(crtc) {
+                    state.display_handle.remove_global::<Nekoland>(global);
+                }
+            }
+        }
+    }
+    state.connected_outputs = outputs.into_iter().map(|(_, output)| output).collect();
+    // The menu bar's and the Dock's pictures are drawn for the main display.
+    if let Some((main, _)) = places.first() {
+        crate::text::set_picture_scale(main.current_scale().fractional_scale());
     }
 }
 
@@ -696,14 +790,13 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
         let scale = chosen_scale(&state.config, &output.name(), mode, *size_mm);
         output.change_current_state(
             Some(mode),
-            Some(state.config.rotation.transform()),
+            Some(state.config.rotation_of(&output.name()).transform()),
             Some(Scale::Fractional(scale)),
             None,
         );
-        crate::text::set_picture_scale(scale);
         smithay::desktop::layer_map_for_output(output).arrange();
     }
-    lay_out_outputs(state);
+    lay_out_outputs(udev, state);
     state.tell_surfaces_the_scale();
     state.dock.drawn = None;
     state.menu_bar.drawn = None;

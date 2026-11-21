@@ -692,17 +692,15 @@ impl Nekoland {
 
     /// Lays the overview out again for the desktop that is shown now.
     pub fn rebuild_overview(&mut self) {
-        let Some(output) = self
-            .space
-            .outputs()
-            .next()
-            .and_then(|output| self.space.output_geometry(output))
-        else {
+        let Some(main) = self.space.outputs().next().cloned() else {
+            return;
+        };
+        let Some(output) = self.space.output_geometry(&main) else {
             return;
         };
         // Under the bar, above whatever a dock keeps free at the bottom.
         let bottom = self
-            .usable_area()
+            .usable_area_on(&main)
             .map_or(output.loc.y + output.size.h, |area| area.loc.y + area.size.h);
         let area_under = |top: i32| {
             Rectangle::new(

@@ -287,7 +287,7 @@ impl Nekoland {
 
     /// Draws the alert's card over a dimmed screen, once for the size the output has.
     pub(crate) fn refresh_alert(&mut self) {
-        let Some(output) = self.output_area() else {
+        let Some(output) = self.bar_area() else {
             return;
         };
         let dark = self.menu_bar.dark;
@@ -324,7 +324,7 @@ impl Nekoland {
     }
 
     pub(crate) fn alert_overlay(&self) -> Option<Overlay<'_>> {
-        let output = self.output_area()?;
+        let output = self.bar_area()?;
         let alert = self.menu_bar.clock_bar.alert.as_ref()?;
         let picture = alert.picture.as_ref()?;
         Some(Overlay {

@@ -10,18 +10,27 @@ pub struct Config {
     /// The display mode to ask for, as `WIDTHxHEIGHT`, at its fastest rate, or as
     /// `WIDTHxHEIGHT@HZ`; the display's preferred one otherwise.
     pub mode: Option<String>,
+    /// The mode of single displays, by name, in place of `mode` for those.
+    pub display_modes: std::collections::BTreeMap<String, String>,
     /// How many pixels a point is drawn with; worked out from the display's density otherwise.
     pub scale: Option<f64>,
     /// The scale of single displays, by name, in place of `scale` for those.
     pub display_scales: std::collections::BTreeMap<String, f64>,
     /// How far the picture is turned on the displays, clockwise, for one stood on its side.
     pub rotation: Rotation,
+    /// The rotation of single displays, by name, in place of `rotation` for those.
+    pub display_rotations: std::collections::BTreeMap<String, Rotation>,
+    /// Where single displays' top left corners are, in points, by name; one without a place
+    /// goes to the right of the others.
+    pub display_positions: std::collections::BTreeMap<String, [i32; 2]>,
+    /// Which displays show the desktop, as Windows' Win+P offers: all of them side by side,
+    /// all the same, the main one alone, or all but the main one.
+    pub projection: Projection,
     /// The displays' names, as the connectors are, from left to right: the first is the main
     /// display, which has the menu bar and the Dock. Displays it leaves out follow in the
     /// order they were found.
     pub display_order: Vec<String>,
-    /// Whether the displays show the same part of the desktop, all from its left edge, instead
-    /// of side by side; what a display is too small for is cut off.
+    /// The same as `projection = "duplicate"`, as it was written before there was a choice.
     pub mirror_displays: bool,
     /// Whether the frames drawn each second are counted in a corner of the screen.
     pub show_fps: bool,
@@ -342,6 +351,21 @@ pub enum AppsView {
     Sidebar,
 }
 
+/// Which displays show the desktop, and how, as Windows' four choices.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Projection {
+    #[default]
+    Extend,
+    Duplicate,
+    MainOnly,
+    SecondOnly,
+}
+
+impl Projection {
+    pub const ALL: [Projection; 4] = [Projection::MainOnly, Projection::Duplicate, Projection::Extend, Projection::SecondOnly];
+}
+
 /// A quarter turn of the picture, written as its degrees: 0, 90, 180 or 270.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(try_from = "u16", into = "u16")]
@@ -652,8 +676,12 @@ impl Default for Config {
         Self {
             mode: None,
             scale: None,
+            display_modes: Default::default(),
             display_scales: Default::default(),
             rotation: Rotation::default(),
+            display_rotations: Default::default(),
+            display_positions: Default::default(),
+            projection: Projection::default(),
             display_order: Vec::new(),
             mirror_displays: false,
             show_fps: false,
@@ -896,13 +924,26 @@ impl Config {
     }
 
     /// The keyboard's layout, variant and options, as XKB is given them.
+    pub fn rotation_of(&self, display: &str) -> Rotation {
+        self.display_rotations.get(display).copied().unwrap_or(self.rotation)
+    }
+
+    /// Which displays show the desktop, `mirror_displays` read as duplicating.
+    pub fn projection(&self) -> Projection {
+        match self.projection {
+            Projection::Extend if self.mirror_displays => Projection::Duplicate,
+            projection => projection,
+        }
+    }
+
     pub fn keyboard(&self) -> [String; 3] {
         [&self.keyboard_layout, &self.keyboard_variant, &self.keyboard_options].map(String::clone)
     }
 
-    /// The size `mode` asks for, and the rate in hertz if it names one.
-    pub fn wanted_mode(&self) -> Option<((u16, u16), Option<u32>)> {
-        let mode = self.mode.as_deref()?;
+    /// The size the display named `display` is asked for, and the rate in hertz if one is
+    /// named.
+    pub fn wanted_mode(&self, display: &str) -> Option<((u16, u16), Option<u32>)> {
+        let mode = self.display_modes.get(display).or(self.mode.as_ref())?.as_str();
         let (size, rate) = match mode.split_once('@') {
             Some((size, rate)) => (size, Some(rate.trim().parse().ok()?)),
             None => (mode, None),
@@ -1175,10 +1216,18 @@ mod tests {
                 mode: Some(mode.into()),
                 ..Config::default()
             }
-            .wanted_mode()
+            .wanted_mode("HDMI-A-1")
         };
         assert_eq!(wanted("1920x1080"), Some(((1920, 1080), None)));
         assert_eq!(wanted("2560x1440@144"), Some(((2560, 1440), Some(144))));
+        // A display's own mode goes before the one all share.
+        let config = Config {
+            mode: Some("1920x1080".into()),
+            display_modes: [("DP-1".to_string(), "2560x1440@144".to_string())].into(),
+            ..Config::default()
+        };
+        assert_eq!(config.wanted_mode("DP-1"), Some(((2560, 1440), Some(144))));
+        assert_eq!(config.wanted_mode("HDMI-A-1"), Some(((1920, 1080), None)));
     }
 
     #[test]
@@ -1188,7 +1237,7 @@ mod tests {
                 mode: Some(mode.into()),
                 ..Config::default()
             };
-            assert_eq!(config.wanted_mode(), None, "{mode}");
+            assert_eq!(config.wanted_mode("HDMI-A-1"), None, "{mode}");
         }
     }
 
