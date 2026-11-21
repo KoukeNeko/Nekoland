@@ -1158,6 +1158,10 @@ impl DisplayPage {
         if let Some(brightness) = brightness_row().filter(|_| built_in) {
             display.add(&brightness);
         }
+        // The built-in panel is the one that turns with the computer.
+        if built_in {
+            display.add(&switch_row(&config, "旋轉鎖定", "rotation_lock"));
+        }
         if let Target::Display(name) = &target {
             if *name != screens[0].name {
                 display.add(&main_display_row(self, &screens, name));

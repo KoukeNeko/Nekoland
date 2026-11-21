@@ -309,6 +309,8 @@ pub struct Config {
     pub left_handed: bool,
     /// Whether a touchpad ignores touches while keys are typed, and for a moment after.
     pub disable_while_typing: bool,
+    /// Whether the computer's own display stays as it is, rather than turning as it is held.
+    pub rotation_lock: bool,
     /// The XKB layout keys are read with, and its variant and options, as setxkbmap takes
     /// them: `us`, `dvorak`, `ctrl:nocaps`.
     pub keyboard_layout: String,
@@ -884,6 +886,7 @@ impl Default for Config {
             pointer_acceleration: true,
             left_handed: false,
             disable_while_typing: true,
+            rotation_lock: false,
             keyboard_layout: "us".into(),
             keyboard_variant: String::new(),
             keyboard_options: String::new(),

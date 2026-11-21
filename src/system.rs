@@ -84,6 +84,42 @@ pub fn watch_sound(events: Sender<Event>) {
     }
 }
 
+/// Reads which way up the computer is from iio-sensor-proxy, where there is an
+/// accelerometer, and says so whenever it turns.
+pub fn watch_orientation(events: Sender<Event>) {
+    let spawned = std::thread::Builder::new().name("nekoland-orientation".into()).spawn(move || {
+        let read = || -> zbus::Result<()> {
+            let bus = zbus::blocking::Connection::system()?;
+            let proxy = zbus::blocking::Proxy::new(&bus, SENSOR_PROXY, "/net/hadess/SensorProxy", SENSOR_PROXY)?;
+            if !proxy.get_property::<bool>("HasAccelerometer")? {
+                return Ok(());
+            }
+            proxy.call_method("ClaimAccelerometer", &())?;
+            let mut last = String::new();
+            loop {
+                let now: String = proxy.get_property("AccelerometerOrientation")?;
+                if now != last && now != "undefined" {
+                    if events.send(Event::Orientation(now.clone())).is_err() {
+                        return Ok(());
+                    }
+                    last = now;
+                }
+                std::thread::sleep(ORIENTATION_POLL);
+            }
+        };
+        // Without iio-sensor-proxy, or an accelerometer, there is nothing to turn.
+        if let Err(err) = read() {
+            tracing::debug!("no orientation: {err}");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::warn!("no orientation: {err}");
+    }
+}
+
+const SENSOR_PROXY: &str = "net.hadess.SensorProxy";
+const ORIENTATION_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
 pub const DEFAULT_SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 

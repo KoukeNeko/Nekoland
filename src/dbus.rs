@@ -145,6 +145,9 @@ pub enum Event {
     },
     /// A bus name went away, and with it what its application said of its icon.
     LauncherGone(String),
+    /// Which way up the computer is held, as iio-sensor-proxy says: `normal`, `left-up`,
+    /// `right-up` or `bottom-up`.
+    Orientation(String),
 }
 
 /// What an application changed of its Dock icon; what it left out stays as it was.

@@ -96,6 +96,10 @@ pub struct Nekoland {
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
     /// The windows Show Desktop minimized, which it brings back when given again.
     pub desktop_shown: Vec<Window>,
+    /// Which way up iio-sensor-proxy last said the computer is held.
+    pub orientation: Option<String>,
+    /// The turn last given the computer's own display for it, which the rotation lock holds.
+    pub turned: Option<u16>,
     /// Every display plugged in, the main one first, shown or not; empty where the backend has
     /// only the outputs on the desktop.
     pub connected_outputs: Vec<Output>,
@@ -241,6 +245,8 @@ impl Nekoland {
             space,
             minimized: Vec::new(),
             desktop_shown: Vec::new(),
+            orientation: None,
+            turned: None,
             connected_outputs: Vec::new(),
             snap: Default::default(),
             overview: None,
@@ -494,6 +500,7 @@ impl Nekoland {
         let old_keyboard = self.config.keyboard();
         let old_font = std::mem::take(&mut self.config.font);
         self.config = Config::load();
+        self.turn_with_orientation();
         // What the bar and the Dock show may have changed with it.
         self.dock.drawn = None;
         self.menu_bar.drawn = None;

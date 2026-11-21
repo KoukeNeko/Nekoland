@@ -1557,6 +1557,7 @@ impl Nekoland {
             Event::Ime(event) => self.ime_event(event),
             Event::Launcher { sender, app_id, update } => self.dock_launcher(sender, app_id, update),
             Event::LauncherGone(sender) => self.dock_launcher_gone(&sender),
+            Event::Orientation(orientation) => self.orientation_changed(orientation),
             Event::Sound(volume) => {
                 bar.sound = volume;
                 bar.items_revision += 1;
