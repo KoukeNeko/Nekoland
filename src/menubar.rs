@@ -1619,6 +1619,12 @@ impl Nekoland {
         self.bar_area().map(|area| area.size).unwrap_or_default()
     }
 
+    /// Where the control center's icon is in the bar, which the control center opens under.
+    pub(crate) fn control_center_anchor(&self) -> Option<Rectangle<i32, Logical>> {
+        let title = self.menu_bar.titles.iter().find(|title| matches!(title.source, Source::Control))?;
+        Some(title.rect)
+    }
+
     /// Opens the menu of a title, or for a status item without one, activates it.
     fn open_menu(&mut self, title: usize, highlight_first: bool) {
         let Some(source) = self.menu_bar.titles.get(title).map(|title| title.source.clone()) else {
@@ -1887,9 +1893,13 @@ impl Nekoland {
                 if has("preferences") || has("shortcuts") {
                     entries.push(Entry::separator());
                 }
-                entries.push(Entry::item(format!("隱藏「{name}」"), Command::Hide).shortcut(&self.shortcut_label("minimize")));
-                entries.push(Entry::item("隱藏其他", Command::HideOthers));
-                entries.push(Entry::item("顯示全部", Command::ShowAll).enabled(!self.minimized.is_empty()));
+                entries.push(Entry::item(format!("隱藏「{name}」"), Command::Hide).shortcut(&self.shortcut_label("hide-app")));
+                entries.push(Entry::item("隱藏其他", Command::HideOthers).shortcut(&self.shortcut_label("hide-others")));
+                entries.push(
+                    Entry::item("顯示全部", Command::ShowAll)
+                        .enabled(!self.minimized.is_empty())
+                        .shortcut(&self.shortcut_label("show-all")),
+                );
                 entries.push(Entry::separator());
                 entries.push(Entry::item(format!("結束「{name}」"), Command::Quit).shortcut(&self.shortcut_label("quit-app")));
                 entries
@@ -2468,7 +2478,7 @@ impl Nekoland {
         }
     }
 
-    fn run_menu_command(&mut self, command: Command) {
+    pub(crate) fn run_menu_command(&mut self, command: Command) {
         let app = self.active_app();
         let focused = self.focused_window().filter(is_managed);
         let send = |bar: &MenuBar, request: Request| {
@@ -2639,7 +2649,7 @@ impl Nekoland {
     }
 }
 
-fn is_maximized(window: &Window) -> bool {
+pub(crate) fn is_maximized(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {
             toplevel.current_state().states.contains(ToplevelState::Maximized)

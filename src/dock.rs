@@ -2902,6 +2902,19 @@ impl Nekoland {
         self.open_tile(press.tile);
     }
 
+    /// Does what a click on the `number`th application in the Dock does, counted from 1 as
+    /// Super with a digit counts them on Windows.
+    pub fn open_dock_app(&mut self, number: usize) {
+        let tile = self
+            .dock_tiles()
+            .into_iter()
+            .filter(|tile| matches!(tile, Tile::App { .. }))
+            .nth(number.saturating_sub(1));
+        if let Some(tile) = tile {
+            self.open_tile(tile);
+        }
+    }
+
     /// Does what a click on `tile` does.
     fn open_tile(&mut self, tile: Tile) {
         match tile {

@@ -20,6 +20,7 @@ use shortcuts::Combo;
 use crate::{
     config,
     grabs::MoveSurfaceGrab,
+    menubar::Command,
     state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
     windows::{window_names, LAUNCHER_APP_ID},
 };
@@ -356,6 +357,10 @@ impl Nekoland {
 
 /// What Super+` runs: shows or hides the terminal's drop-down window, as Win+` does Nekominal's.
 const DROP_DOWN_TERMINAL: &str = "nekoland-terminal drop-down";
+/// Starts Orca, or stops it, and tells GNOME's setting, which starts it at the next login.
+const SCREEN_READER_TOGGLE: &str = "key=org.gnome.desktop.a11y.applications; \
+    if pkill -x orca; then gsettings set $key screen-reader-enabled false; \
+    else gsettings set $key screen-reader-enabled true; exec orca; fi";
 // evdev's BTN_LEFT
 const BUTTON_LEFT: u32 = 0x110;
 const BUTTON_RIGHT: u32 = 0x111;
@@ -501,9 +506,29 @@ impl Nekoland {
             logo,
             key: xkb::keysym_get_name(sym),
         };
+        let inhibited = self.shortcuts_inhibited();
+        let app_id = self.focused_window().map(|window| window_names(&window).1);
         let found = shortcuts::find(self.config.shortcut_scheme, &self.config.shortcuts, &combo);
-        if let Some((action, extended)) = found.filter(|_| !self.shortcuts_inhibited()) {
+        // Ctrl with a letter in a terminal is the program's, though the Mac's Emacs keys
+        // move the cursor elsewhere: tmux and readline take them as they are.
+        let terminal_own = |action: &shortcuts::Action| {
+            action.is_app()
+                && combo.ctrl
+                && !(combo.alt || combo.logo)
+                && app_id.as_deref().is_some_and(shortcuts::is_terminal)
+        };
+        if let Some((action, extended)) = found.filter(|(action, _)| !inhibited && !terminal_own(action)) {
             self.run_action(action, extended);
+            return true;
+        }
+        // macOS: ⌘ with any other key is the application's Ctrl one.
+        let command = app_id
+            .as_deref()
+            .filter(|_| self.config.shortcut_scheme == shortcuts::Scheme::Macos && !inhibited)
+            .filter(|_| StickyKeys::modifier(sym).is_none())
+            .and_then(|app_id| shortcuts::command_key(&combo, app_id));
+        if let Some(command) = command {
+            self.send_combo(&command);
             return true;
         }
 
@@ -577,13 +602,50 @@ impl Nekoland {
             "workspace-right" => self.switch_workspace_by(1),
             "new-workspace" => self.add_and_show_workspace(),
             "close-workspace" => self.remove_workspace(self.workspaces.active),
+            "control-center" => {
+                if let Some(anchor) = self.control_center_anchor() {
+                    self.toggle_control_center(anchor);
+                }
+            }
+            "notification-center" => self.toggle_notification_center(),
+            "files" => config::spawn("nekoland-files"),
+            "task-manager" => config::spawn("nekoland-tasks"),
+            // fcitx5's own toggle: back to the input method used before.
+            "input-method" => config::spawn("fcitx5-remote -t"),
+            "log-out" => self.run_menu_command(Command::LogOut),
+            "screen-reader" => config::spawn(SCREEN_READER_TOGGLE),
+            "zoom-toggle" => {
+                let zoom = self.config.zoom;
+                self.zoom_by(if zoom > 1.0 { 1.0 - zoom } else { 1.0 });
+            }
+            "app-windows" => {
+                if let Some(window) = focused {
+                    self.show_app_windows(&window_names(&window).1);
+                }
+            }
+            "next-app-window" => self.focus_next_app_window(),
+            "hide-app" => self.run_menu_command(Command::Hide),
+            "hide-others" => self.run_menu_command(Command::HideOthers),
+            "show-all" => self.run_menu_command(Command::ShowAll),
+            "show-desktop" => self.toggle_show_desktop(),
+            "toggle-maximize" => self.run_menu_command(Command::Zoom),
+            "sticky" => self.run_menu_command(Command::ShowOnAllDesktops),
+            "workspace-first" => self.show_workspace(0, true),
+            "workspace-last" => self.show_workspace(self.workspaces.count().saturating_sub(1), true),
             "carry-left" | "carry-right" => {
                 if let Some(window) = focused {
                     self.carry_window_by(&window, if action.id == "carry-left" { -1 } else { 1 });
                 }
             }
             id => {
-                if let Some(command) = id.strip_prefix("arrange-") {
+                let number = |prefix: &str| id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok());
+                if let Some(number) = number("workspace-") {
+                    if number <= self.workspaces.count() {
+                        self.show_workspace(number - 1, true);
+                    }
+                } else if let Some(number) = number("dock-") {
+                    self.open_dock_app(number);
+                } else if let Some(command) = id.strip_prefix("arrange-") {
                     self.window_command(command);
                 } else if let Some(kind) = id.strip_prefix("shot-") {
                     config::spawn(&format!("nekoland-shot {kind}"));
@@ -752,7 +814,10 @@ mod tests {
     fn every_window_arrangement_action_names_a_window_command() {
         for action in shortcuts::actions() {
             if let Some(command) = action.id.strip_prefix("arrange-") {
-                assert!(command == "restore" || crate::arrange::arrangement(command).is_some(), "{command}");
+                assert!(
+                    crate::windows::OTHER_COMMANDS.contains(&command) || crate::arrange::arrangement(command).is_some(),
+                    "{command}"
+                );
             }
         }
     }

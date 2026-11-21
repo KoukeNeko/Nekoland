@@ -517,6 +517,15 @@ impl Nekoland {
         match command {
             "restore" => self.restore(window),
             "minimize" => self.minimize(window),
+            "restore-or-minimize" => {
+                if data(window).restore.borrow().is_some() {
+                    self.restore(window);
+                } else {
+                    self.minimize(window);
+                }
+            }
+            "display-left" => self.move_to_display(window, -1),
+            "display-right" => self.move_to_display(window, 1),
             "fullscreen" => self.toggle_fullscreen(window),
             "close" => crate::menubar::close(window),
             _ => {
@@ -793,6 +802,88 @@ impl Nekoland {
         true
     }
 
+    /// Moves a window to the display `step` to the right or the left of its own, at the same
+    /// place on it, smaller where it does not fit; a maximized or fullscreen one fills the
+    /// other display instead.
+    fn move_to_display(&mut self, window: &Window, step: isize) {
+        let Some(from) = self.output_of(window) else {
+            return;
+        };
+        let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        outputs.sort_by_key(|output| self.space.output_geometry(output).map_or(0, |geometry| geometry.loc.x));
+        let Some(to) = outputs
+            .iter()
+            .position(|output| *output == from)
+            .and_then(|at| at.checked_add_signed(step))
+            .and_then(|at| outputs.get(at))
+            .cloned()
+        else {
+            return;
+        };
+        let (Some(old), Some(new), Some(frame)) = (self.usable_area_on(&from), self.usable_area_on(&to), self.frame(window))
+        else {
+            return;
+        };
+        let shift = new.loc - old.loc;
+        if let Some(restore) = data(window).restore.borrow_mut().as_mut() {
+            restore.loc += shift;
+        }
+        if self.is_fullscreen(window) {
+            if let Some(geometry) = self.space.output_geometry(&to) {
+                self.put_window(window, geometry, &[ToplevelState::Fullscreen]);
+            }
+        } else if crate::menubar::is_maximized(window) {
+            self.put_window(window, new, &[ToplevelState::Maximized]);
+        } else {
+            let size = Size::from((frame.size.w.min(new.size.w), frame.size.h.min(new.size.h)));
+            let fraction = |at: i32, start: i32, room: i32| f64::from(at - start) / f64::from(room.max(1));
+            let place = |at: i32, start: i32, room: i32, new_start: i32, new_room: i32, length: i32| {
+                let along = (fraction(at, start, room) * f64::from(new_room)).round() as i32;
+                (new_start + along).clamp(new_start, new_start + new_room - length)
+            };
+            let loc = Point::from((
+                place(frame.loc.x, old.loc.x, old.size.w, new.loc.x, new.size.w, size.w),
+                place(frame.loc.y, old.loc.y, old.size.h, new.loc.y, new.size.h, size.h),
+            ));
+            self.put_window(window, Rectangle::new(loc, size), &[]);
+            mark(window, None, false);
+        }
+        self.focus_window(window);
+    }
+
+    /// Minimizes every window on the desktop, as Super+D does on Windows; given again, it
+    /// brings back the ones it put away that are still in the Dock.
+    pub fn toggle_show_desktop(&mut self) {
+        let hidden = std::mem::take(&mut self.desktop_shown);
+        let back: Vec<Window> = hidden.into_iter().filter(|window| self.unminimize(window)).collect();
+        if let Some(top) = back.last() {
+            self.focus_window(top);
+            return;
+        }
+        let shown: Vec<Window> = self.space.elements().filter(|window| is_managed(window)).cloned().collect();
+        for window in &shown {
+            self.minimize(window);
+        }
+        self.desktop_shown = shown;
+    }
+
+    /// Goes on to the next window of the application that has the keyboard, as ⌘` does on
+    /// the Mac: the one furthest back comes forward.
+    pub fn focus_next_app_window(&mut self) {
+        let Some(focused) = self.focused_window().filter(is_managed) else {
+            return;
+        };
+        let app_id = window_names(&focused).1;
+        let furthest = self
+            .space
+            .elements()
+            .find(|window| is_managed(window) && window_names(window).1 == app_id)
+            .cloned();
+        if let Some(window) = furthest.filter(|window| *window != focused) {
+            self.focus_window(&window);
+        }
+    }
+
     /// Moves on to the next window: minimized ones first, then the one at the bottom of the stack.
     // shortcut: a round robin over the stack, not most-recently-used order with a switcher.
     pub fn focus_next_window(&mut self) {
@@ -839,7 +930,15 @@ impl Nekoland {
 const DRAG_START_DISTANCE: f64 = 4.0;
 
 /// What a window command does besides putting the window in a part of the display.
-const OTHER_COMMANDS: [&str; 4] = ["restore", "minimize", "fullscreen", "close"];
+pub(crate) const OTHER_COMMANDS: [&str; 7] = [
+    "restore",
+    "minimize",
+    "fullscreen",
+    "close",
+    "restore-or-minimize",
+    "display-left",
+    "display-right",
+];
 
 fn mark(window: &Window, arranged: Option<Arranged>, snapped: bool) {
     *data(window).arranged.borrow_mut() = arranged;

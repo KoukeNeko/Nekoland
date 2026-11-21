@@ -94,6 +94,8 @@ pub struct Nekoland {
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
     pub minimized: Vec<(Window, Point<i32, Logical>)>,
+    /// The windows Show Desktop minimized, which it brings back when given again.
+    pub desktop_shown: Vec<Window>,
     /// Every display plugged in, the main one first, shown or not; empty where the backend has
     /// only the outputs on the desktop.
     pub connected_outputs: Vec<Output>,
@@ -238,6 +240,7 @@ impl Nekoland {
 
             space,
             minimized: Vec::new(),
+            desktop_shown: Vec::new(),
             connected_outputs: Vec::new(),
             snap: Default::default(),
             overview: None,

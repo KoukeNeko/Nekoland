@@ -284,17 +284,19 @@ pub enum Group {
     Windows,
     Arrange,
     Desktops,
+    Dock,
     Screenshots,
     Editing,
     Text,
 }
 
 impl Group {
-    pub const ALL: [Group; 7] = [
+    pub const ALL: [Group; 8] = [
         Group::General,
         Group::Windows,
         Group::Arrange,
         Group::Desktops,
+        Group::Dock,
         Group::Screenshots,
         Group::Editing,
         Group::Text,
@@ -306,6 +308,7 @@ impl Group {
             Group::Windows => "視窗",
             Group::Arrange => "視窗排列",
             Group::Desktops => "桌面",
+            Group::Dock => "Dock",
             Group::Screenshots => "截圖",
             Group::Editing => "編輯",
             Group::Text => "文字游標",
@@ -400,9 +403,9 @@ static ACTIONS: &[Action] = &[
         "啟動器",
         General,
         [
-            &["Alt+Space"],
+            &["Alt+Space", "Alt+F2"],
             &["Super+Space", "Alt+Space"],
-            &["Super+S", "Alt+Space"],
+            &["Super+S", "Alt+Space", "Super+R"],
         ],
     ),
     system(
@@ -444,6 +447,58 @@ static ACTIONS: &[Action] = &[
         [&["Ctrl+F3"], &["Ctrl+F3"], &["Ctrl+F3"]],
     ),
     system(
+        "control-center",
+        "控制中心",
+        General,
+        [&["Super+S"], &[], &["Super+A"]],
+    ),
+    system(
+        "notification-center",
+        "通知中心",
+        General,
+        [&["Super+V"], &[], &["Super+N"]],
+    ),
+    system(
+        "files",
+        "檔案",
+        General,
+        [&["Super+E"], &["Alt+Super+Space"], &["Super+E"]],
+    ),
+    system(
+        "task-manager",
+        "工作管理員",
+        General,
+        [
+            &["Ctrl+Shift+Escape"],
+            &["Alt+Super+Escape"],
+            &["Ctrl+Shift+Escape"],
+        ],
+    ),
+    system(
+        "input-method",
+        "切換輸入法",
+        General,
+        [&["Super+Space"], &["Ctrl+Space"], &["Super+Space"]],
+    ),
+    system(
+        "log-out",
+        "登出",
+        General,
+        [&["Ctrl+Alt+Delete"], &["Shift+Super+Q"], &[]],
+    ),
+    system(
+        "screen-reader",
+        "螢幕閱讀器",
+        General,
+        [&["Alt+Super+S"], &["Super+F5"], &["Ctrl+Super+Return"]],
+    ),
+    system(
+        "zoom-toggle",
+        "螢幕放大開關",
+        General,
+        [&["Alt+Super+8"], &["Alt+Super+8"], &["Super+Escape"]],
+    ),
+    system(
         "zoom-in",
         "放大螢幕",
         General,
@@ -478,12 +533,35 @@ static ACTIONS: &[Action] = &[
         [&["Alt+F4", "Super+Q"], &[], &["Alt+F4"]],
     ),
     system("quit-app", "結束應用程式", Windows, [&[], &["Super+Q"], &[]]),
+    system("app-windows", "應用程式視窗", Windows, [&[], &["Ctrl+Down"], &[]]),
     system(
-        "minimize",
-        "最小化",
+        "next-app-window",
+        "同一應用程式的下一個視窗",
         Windows,
-        [&["Super+H"], &["Super+M", "Super+H"], &["Super+M"]],
+        [&["Alt+grave"], &["Super+grave"], &[]],
     ),
+    system("minimize", "最小化", Windows, [&["Super+H"], &["Super+M"], &[]]),
+    system(
+        "hide-app",
+        "隱藏應用程式",
+        Windows,
+        [&[], &["Super+H", "Alt+Super+M"], &[]],
+    ),
+    system(
+        "hide-others",
+        "隱藏其他",
+        Windows,
+        [&[], &["Alt+Super+H"], &["Super+Home"]],
+    ),
+    system("show-all", "顯示全部", Windows, [&[], &[], &["Shift+Super+M"]]),
+    system(
+        "show-desktop",
+        "顯示桌面",
+        Windows,
+        [&["Super+D"], &["F11", "Super+F3"], &["Super+D", "Super+M"]],
+    ),
+    system("toggle-maximize", "縮放", Windows, [&["Alt+F10"], &[], &[]]),
+    system("sticky", "在所有桌面顯示", Windows, [&[], &[], &[]]),
     system(
         "fullscreen",
         "全螢幕",
@@ -543,7 +621,34 @@ static ACTIONS: &[Action] = &[
         [
             &["Super+Down", "Alt+Super+BackSpace"],
             &["Ctrl+Alt+Shift+Down"],
-            &["Super+Down", "Alt+Super+BackSpace"],
+            &["Alt+Super+BackSpace"],
+        ],
+    ),
+    // Windows' Super+Down: a window put somewhere goes back, any other to the Dock.
+    system(
+        "arrange-restore-or-minimize",
+        "還原或最小化",
+        Arrange,
+        [&[], &[], &["Super+Down"]],
+    ),
+    system(
+        "arrange-display-left",
+        "移到左邊的顯示器",
+        Arrange,
+        [
+            &["Shift+Super+Left"],
+            &["Ctrl+Alt+Super+Left"],
+            &["Shift+Super+Left"],
+        ],
+    ),
+    system(
+        "arrange-display-right",
+        "移到右邊的顯示器",
+        Arrange,
+        [
+            &["Shift+Super+Right"],
+            &["Ctrl+Alt+Super+Right"],
+            &["Shift+Super+Right"],
         ],
     ),
     system(
@@ -639,6 +744,27 @@ static ACTIONS: &[Action] = &[
         ],
     ),
     system(
+        "workspace-first",
+        "第一個桌面",
+        Desktops,
+        [&["Super+Home"], &[], &[]],
+    ),
+    system(
+        "workspace-last",
+        "最後一個桌面",
+        Desktops,
+        [&["Super+End"], &[], &[]],
+    ),
+    system("workspace-1", "桌面 1", Desktops, [&[], &["Ctrl+1"], &[]]),
+    system("workspace-2", "桌面 2", Desktops, [&[], &["Ctrl+2"], &[]]),
+    system("workspace-3", "桌面 3", Desktops, [&[], &["Ctrl+3"], &[]]),
+    system("workspace-4", "桌面 4", Desktops, [&[], &["Ctrl+4"], &[]]),
+    system("workspace-5", "桌面 5", Desktops, [&[], &["Ctrl+5"], &[]]),
+    system("workspace-6", "桌面 6", Desktops, [&[], &["Ctrl+6"], &[]]),
+    system("workspace-7", "桌面 7", Desktops, [&[], &["Ctrl+7"], &[]]),
+    system("workspace-8", "桌面 8", Desktops, [&[], &["Ctrl+8"], &[]]),
+    system("workspace-9", "桌面 9", Desktops, [&[], &["Ctrl+9"], &[]]),
+    system(
         "new-workspace",
         "新增桌面",
         Desktops,
@@ -669,6 +795,60 @@ static ACTIONS: &[Action] = &[
             &["Ctrl+Shift+Right"],
             &["Ctrl+Shift+Super+Right"],
         ],
+    ),
+    system(
+        "dock-1",
+        "第 1 個應用程式",
+        Dock,
+        [&["Super+1"], &[], &["Super+1"]],
+    ),
+    system(
+        "dock-2",
+        "第 2 個應用程式",
+        Dock,
+        [&["Super+2"], &[], &["Super+2"]],
+    ),
+    system(
+        "dock-3",
+        "第 3 個應用程式",
+        Dock,
+        [&["Super+3"], &[], &["Super+3"]],
+    ),
+    system(
+        "dock-4",
+        "第 4 個應用程式",
+        Dock,
+        [&["Super+4"], &[], &["Super+4"]],
+    ),
+    system(
+        "dock-5",
+        "第 5 個應用程式",
+        Dock,
+        [&["Super+5"], &[], &["Super+5"]],
+    ),
+    system(
+        "dock-6",
+        "第 6 個應用程式",
+        Dock,
+        [&["Super+6"], &[], &["Super+6"]],
+    ),
+    system(
+        "dock-7",
+        "第 7 個應用程式",
+        Dock,
+        [&["Super+7"], &[], &["Super+7"]],
+    ),
+    system(
+        "dock-8",
+        "第 8 個應用程式",
+        Dock,
+        [&["Super+8"], &[], &["Super+8"]],
+    ),
+    system(
+        "dock-9",
+        "第 9 個應用程式",
+        Dock,
+        [&["Super+9"], &[], &["Super+9"]],
     ),
     system(
         "shot-full",
@@ -744,7 +924,25 @@ static ACTIONS: &[Action] = &[
         "Ctrl+Shift+A",
     ),
     app("find", "尋找", Editing, &["Super+F"], "Ctrl+F", "Ctrl+Shift+F"),
+    app("find-next", "尋找下一個", Editing, &["Super+G"], "Ctrl+G", ""),
+    app(
+        "find-previous",
+        "尋找上一個",
+        Editing,
+        &["Shift+Super+G"],
+        "Ctrl+Shift+G",
+        "",
+    ),
+    app("replace", "取代", Editing, &["Alt+Super+F"], "Ctrl+H", ""),
     app("save", "儲存", Editing, &["Super+S"], "Ctrl+S", ""),
+    app(
+        "save-as",
+        "另存新檔",
+        Editing,
+        &["Shift+Super+S"],
+        "Ctrl+Shift+S",
+        "",
+    ),
     app("open", "打開", Editing, &["Super+O"], "Ctrl+O", ""),
     app("new", "新增", Editing, &["Super+N"], "Ctrl+N", "Ctrl+Shift+N"),
     app(
@@ -762,6 +960,22 @@ static ACTIONS: &[Action] = &[
         &["Shift+Super+T"],
         "Ctrl+Shift+T",
         "",
+    ),
+    app(
+        "next-tab",
+        "下一個分頁",
+        Editing,
+        &["Shift+Super+bracketright", "Alt+Super+Right"],
+        "Ctrl+Page_Down",
+        "Ctrl+Page_Down",
+    ),
+    app(
+        "previous-tab",
+        "上一個分頁",
+        Editing,
+        &["Shift+Super+bracketleft", "Alt+Super+Left"],
+        "Ctrl+Page_Up",
+        "Ctrl+Page_Up",
     ),
     app(
         "close",
@@ -784,6 +998,38 @@ static ACTIONS: &[Action] = &[
         "",
     ),
     app(
+        "text-larger",
+        "放大",
+        Editing,
+        &["Super+equal", "Super+plus"],
+        "Ctrl+equal",
+        "Ctrl+equal",
+    ),
+    app(
+        "text-smaller",
+        "縮小",
+        Editing,
+        &["Super+minus"],
+        "Ctrl+minus",
+        "Ctrl+minus",
+    ),
+    app(
+        "text-actual",
+        "實際大小",
+        Editing,
+        &["Super+0"],
+        "Ctrl+0",
+        "Ctrl+0",
+    ),
+    app(
+        "developer-tools",
+        "開發者工具",
+        Editing,
+        &["Alt+Super+I"],
+        "Ctrl+Shift+I",
+        "",
+    ),
+    app(
         "preferences",
         "偏好設定",
         Editing,
@@ -791,8 +1037,8 @@ static ACTIONS: &[Action] = &[
         "Ctrl+comma",
         "Ctrl+comma",
     ),
-    moving("line-start", "行首", &["Super+Left"], "Home", "Home"),
-    moving("line-end", "行尾", &["Super+Right"], "End", "End"),
+    moving("line-start", "行首", &["Super+Left", "Ctrl+A"], "Home", "Home"),
+    moving("line-end", "行尾", &["Super+Right", "Ctrl+E"], "End", "End"),
     moving("document-start", "文件開頭", &["Super+Up"], "Ctrl+Home", ""),
     moving("document-end", "文件結尾", &["Super+Down"], "Ctrl+End", ""),
     moving("word-left", "上一個字", &["Alt+Left"], "Ctrl+Left", "Ctrl+Left"),
@@ -803,6 +1049,12 @@ static ACTIONS: &[Action] = &[
         "Ctrl+Right",
         "Ctrl+Right",
     ),
+    moving("char-left", "前一個字元", &["Ctrl+B"], "Left", "Left"),
+    moving("char-right", "後一個字元", &["Ctrl+F"], "Right", "Right"),
+    moving("line-up", "上一行", &["Ctrl+P"], "Up", "Up"),
+    moving("line-down", "下一行", &["Ctrl+N"], "Down", "Down"),
+    moving("paragraph-start", "段落開頭", &["Alt+Up"], "Ctrl+Up", ""),
+    moving("paragraph-end", "段落結尾", &["Alt+Down"], "Ctrl+Down", ""),
     app(
         "delete-word",
         "刪除前一個字",
@@ -818,6 +1070,38 @@ static ACTIONS: &[Action] = &[
         &["Super+BackSpace"],
         "Shift+Home BackSpace",
         "Ctrl+U",
+    ),
+    app(
+        "delete-forward",
+        "刪除後一個字元",
+        Text,
+        &["Ctrl+D"],
+        "Delete",
+        "Delete",
+    ),
+    app(
+        "delete-word-forward",
+        "刪除後一個字",
+        Text,
+        &["Alt+Delete"],
+        "Ctrl+Delete",
+        "Alt+D",
+    ),
+    app(
+        "delete-to-line-end",
+        "刪除到行尾",
+        Text,
+        &["Ctrl+K"],
+        "Shift+End Delete",
+        "Ctrl+K",
+    ),
+    app(
+        "backspace",
+        "刪除前一個字元",
+        Text,
+        &["Ctrl+H"],
+        "BackSpace",
+        "BackSpace",
     ),
 ];
 
@@ -925,6 +1209,21 @@ pub fn native(action: &Action, app_id: &str, apps: &AppKeys) -> Vec<Combo> {
         None => usual,
     };
     keys.split_whitespace().filter_map(Combo::parse).collect()
+}
+
+/// What macOS' ⌘ with a key that no action has stands for in other applications, which
+/// take Ctrl where the Mac takes ⌘: Ctrl, or Ctrl+Shift in a terminal, where Ctrl with a
+/// letter goes to the program running in it.
+pub fn command_key(combo: &Combo, app_id: &str) -> Option<Combo> {
+    if !combo.logo || combo.ctrl || combo.key == SUPER_ALONE {
+        return None;
+    }
+    Some(Combo {
+        ctrl: true,
+        logo: false,
+        shift: combo.shift || is_terminal(app_id),
+        ..combo.clone()
+    })
 }
 
 #[cfg(test)]
@@ -1078,5 +1377,24 @@ mod tests {
         .into();
         assert_eq!(native(copy, "emacs", &apps), vec![combo("Alt+W")]);
         assert!(native(action("lock").unwrap(), "firefox", &none).is_empty());
+    }
+
+    #[test]
+    fn command_with_any_other_key_is_ctrl_in_applications() {
+        assert_eq!(
+            command_key(&combo("Super+B"), "org.gnome.TextEditor"),
+            Some(combo("Ctrl+B"))
+        );
+        assert_eq!(
+            command_key(&combo("Shift+Super+K"), "firefox"),
+            Some(combo("Ctrl+Shift+K"))
+        );
+        assert_eq!(
+            command_key(&combo("Super+K"), "foot"),
+            Some(combo("Ctrl+Shift+K"))
+        );
+        assert_eq!(command_key(&combo("Ctrl+Super+K"), "firefox"), None);
+        assert_eq!(command_key(&combo("Ctrl+K"), "firefox"), None);
+        assert_eq!(command_key(&combo("Super"), "firefox"), None);
     }
 }
