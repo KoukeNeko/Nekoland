@@ -1,7 +1,8 @@
 //! 截圖: takes a picture of the screen, an area of it, a window, or a page longer than the
 //! screen as it scrolls, and opens it to mark up, copy, save, pin or upload.
 //!
-//! `nekoland-shot area|window|scroll|ocr|full|repeat|clipboard|delay [N]|open FILE|edit|history|prefs|pin FILE`
+//! `nekoland-shot area|window|scroll|ocr|full|repeat|clipboard|delay [N]|open FILE|edit|history|prefs|pin FILE`,
+//! and `record` or `record-area` to record the screen or an area of it, or stop recording.
 
 use std::{
     cell::{Cell, RefCell},
@@ -25,6 +26,8 @@ mod marks;
 mod output;
 #[path = "shot/overlay.rs"]
 mod overlay;
+#[path = "shot/record.rs"]
+mod record;
 
 use editor::Ed;
 use img::Img;
@@ -118,6 +121,10 @@ fn run(app: &adw::Application, command: &str, rest: &[String]) {
         "window" => choose(app, Mode::Window, hold),
         "scroll" => choose(app, Mode::Scroll, hold),
         "ocr" => choose(app, Mode::Ocr, hold),
+        "record" | "record-area" if record::is_recording() => record::stop(),
+        "record" => record::start(None),
+        "record-stop" => record::stop(),
+        "record-area" => choose(app, Mode::Record, hold),
         "full" => match overlay::freeze() {
             Ok(frozen) => taken(app, (*frozen.img).clone(), frozen.scale()),
             Err(err) => failed(&err),
@@ -180,6 +187,7 @@ fn choose(app: &adw::Application, mode: Mode, hold: Hold) {
         match choice {
             Choice::Area(Mode::Scroll, area) => scroll(app, area, hold.clone()),
             Choice::Area(Mode::Ocr, area) => read_text(shown.crop(area), hold.clone()),
+            Choice::Area(Mode::Record, area) => record::start(Some(area)),
             Choice::Area(_, area) => {
                 output::remember_area(area);
                 taken(app, shown.crop(area), shown.scale());

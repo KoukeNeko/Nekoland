@@ -19,6 +19,8 @@ pub enum Mode {
     Window,
     Scroll,
     Ocr,
+    /// A video of the area, or of the whole screen.
+    Record,
 }
 
 /// What was chosen.
@@ -167,6 +169,23 @@ fn trimmed(frozen: &Frozen, s: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
     (a.x as f64 / k, a.y as f64 / k, a.w as f64 / k, a.h as f64 / k)
 }
 
+/// What the button that takes the area says.
+fn take_label(mode: Mode) -> &'static str {
+    if mode == Mode::Record {
+        "錄影"
+    } else {
+        "截取"
+    }
+}
+
+/// The whole screen, as a picture or, recording, as the area of a video.
+fn whole(mode: Mode, frozen: &Frozen) -> Choice {
+    match mode {
+        Mode::Record => Choice::Area(Mode::Record, (0.0, 0.0, frozen.size.0, frozen.size.1)),
+        _ => Choice::Full,
+    }
+}
+
 /// Shows the screen to choose from; `done` is told what was chosen once, as the window goes.
 pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl Fn(Choice) + 'static) {
     let window = gtk::ApplicationWindow::builder()
@@ -212,6 +231,11 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
     }
 
     // The strip of modes along the bottom.
+    let take = gtk::Button::builder()
+        .label(take_label(mode))
+        .css_classes(["suggested-action"])
+        .build();
+    take.set_visible(false);
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strip.add_css_class("shot-strip");
     strip.set_halign(gtk::Align::Center);
@@ -230,6 +254,7 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
         (Mode::Window, "shot-window-symbolic", "視窗"),
         (Mode::Scroll, "shot-scroll-symbolic", "捲動"),
         (Mode::Ocr, "shot-ocr-symbolic", "文字辨識"),
+        (Mode::Record, "media-record-symbolic", "錄影"),
     ] {
         let button = gtk::ToggleButton::builder()
             .icon_name(icon)
@@ -240,11 +265,13 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
         let state = state.clone();
         let area = area.clone();
         let buttons = mode_buttons.clone();
+        let take = take.clone();
         button.connect_clicked(move |_| {
             state.borrow_mut().mode = m;
             for (other, b) in buttons.borrow().iter() {
                 b.set_active(*other == m);
             }
+            take.set_label(take_label(m));
             area.queue_draw();
         });
         mode_buttons.borrow_mut().push((m, button.clone()));
@@ -253,7 +280,12 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
     let full = tool("view-fullscreen-symbolic", "全螢幕");
     {
         let finish = finish.clone();
-        full.connect_clicked(move |_| finish(Choice::Full));
+        let state = state.clone();
+        let frozen = frozen.clone();
+        full.connect_clicked(move |_| {
+            let mode = state.borrow().mode;
+            finish(whole(mode, &frozen));
+        });
     }
     strip.append(&full);
     strip.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -288,11 +320,6 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
     }
     strip.append(&clipboard);
     strip.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    let take = gtk::Button::builder()
-        .label("截取")
-        .css_classes(["suggested-action"])
-        .build();
-    take.set_visible(false);
     {
         let finish = finish.clone();
         let state = state.clone();
@@ -505,7 +532,7 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
                     let mode = s.mode;
                     let choice = match s.sel {
                         Some(sel) => Choice::Area(mode, sel),
-                        None => Choice::Full,
+                        None => whole(mode, &frozen),
                     };
                     drop(s);
                     finish(choice);
@@ -516,12 +543,14 @@ pub fn choose(app: &gtk::Application, frozen: Rc<Frozen>, mode: Mode, done: impl
                         Mode::Area => Mode::Window,
                         Mode::Window => Mode::Scroll,
                         Mode::Scroll => Mode::Ocr,
-                        Mode::Ocr => Mode::Area,
+                        Mode::Ocr => Mode::Record,
+                        Mode::Record => Mode::Area,
                     };
                     s.mode = next;
                     for (m, b) in mode_buttons.borrow().iter() {
                         b.set_active(*m == next);
                     }
+                    take.set_label(take_label(next));
                 }
                 gdk::Key::a | gdk::Key::A => {
                     if let Some(sel) = s.sel {

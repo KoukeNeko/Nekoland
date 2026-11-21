@@ -52,6 +52,8 @@ use crate::{
 };
 
 pub const MENU_BAR_HEIGHT: i32 = 30;
+/// What 截圖 writes in the runtime folder while it records, as its process and its file.
+const RECORDING_FILE: &str = "nekoland-record";
 const TITLE_PADDING: i32 = 8;
 /// How strongly a bar not in use, on another display, shows its content.
 const INACTIVE_BAR_ALPHA: f32 = 0.5;
@@ -254,6 +256,8 @@ enum Source {
     Network,
     Battery,
     Control,
+    /// The button that stops 截圖's recording, while it records.
+    Recording,
     /// The bell, which opens the Notification Center.
     Notifications,
     Clock,
@@ -323,6 +327,8 @@ pub struct MenuBar {
     menus_revision: u64,
     items: Vec<StatusItem>,
     pub(crate) items_revision: u64,
+    /// Whether 截圖 is recording the screen.
+    pub(crate) recording: bool,
     pub(crate) sound: Option<Volume>,
     pub(crate) in_use: crate::privacy::InUse,
     pub(crate) network: Option<Network>,
@@ -365,6 +371,7 @@ impl Default for MenuBar {
             menus_revision: 0,
             items: Vec::new(),
             items_revision: 0,
+            recording: false,
             sound: None,
             in_use: Default::default(),
             network: None,
@@ -795,6 +802,15 @@ impl MenuBar {
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
         let mut icons: Vec<Icon> = vec![(Source::Control, String::new(), String::new(), String::new(), None)];
+        if self.recording {
+            icons.push((
+                Source::Recording,
+                "recording".into(),
+                "media-playback-stop-symbolic".into(),
+                String::new(),
+                None,
+            ));
+        }
         if let Some(battery) = self.battery.filter(|_| config.menu_bar_battery) {
             icons.push((Source::Battery, "battery".into(), battery_icon(battery), String::new(), None));
         }
@@ -1306,6 +1322,15 @@ impl Nekoland {
                 bus.send(Request::Actions(app_id.clone()));
             }
         }
+        // The file names the recorder's process first; one that ended leaves the file behind.
+        let recording = std::env::var_os("XDG_RUNTIME_DIR")
+            .and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(RECORDING_FILE)).ok())
+            .and_then(|text| text.lines().next()?.trim().parse::<u32>().ok())
+            .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
+        if recording != self.menu_bar.recording {
+            self.menu_bar.recording = recording;
+            self.menu_bar.items_revision += 1;
+        }
         if self
             .menu_bar
             .network_read
@@ -1640,6 +1665,10 @@ impl Nekoland {
             }
             Source::Clock => {
                 self.toggle_clock_panel(self.menu_bar.titles[title].rect);
+                return;
+            }
+            Source::Recording => {
+                config::spawn("nekoland-shot record-stop");
                 return;
             }
             _ => {}
@@ -2085,7 +2114,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
-            Source::Control | Source::Notifications | Source::Clock => Vec::new(),
+            Source::Control | Source::Notifications | Source::Clock | Source::Recording => Vec::new(),
         }
     }
 
