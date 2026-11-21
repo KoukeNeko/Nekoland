@@ -347,7 +347,10 @@ pub struct MenuBar {
     pub(crate) clock_picked: Option<calendar_data::Date>,
     pub(crate) agenda: crate::agenda::Agenda,
     pub(crate) clock_bar: crate::clockbar::ClockBar,
+    /// What the bar shows, without its tint, which stays put as this slides with the desktops.
     picture: Option<Picture>,
+    /// The bar's tint over its glass, for the width, darkness and opacity it was made for.
+    tint: Option<((i32, bool, u64), Picture)>,
     /// The bar as the other displays show it, by their width.
     other_pictures: Vec<(i32, Picture, Id)>,
     /// The display whose bar is the one to use, by name; None for the main one.
@@ -359,6 +362,7 @@ pub struct MenuBar {
     /// the output's size it was found for.
     wallpaper_dark: Option<(WallpaperKey, bool)>,
     bar_id: Id,
+    content_id: Id,
     menu_ids: Vec<Id>,
 }
 
@@ -390,12 +394,14 @@ impl Default for MenuBar {
             agenda: Default::default(),
             clock_bar: Default::default(),
             picture: None,
+            tint: None,
             other_pictures: Vec::new(),
             display: None,
             followed: None,
             drawn: None,
             wallpaper_dark: None,
             bar_id: Id::new(),
+            content_id: Id::new(),
             menu_ids: Vec::new(),
         }
     }
@@ -1175,6 +1181,11 @@ impl Nekoland {
         self.menu_bar.picture.as_ref()
     }
 
+    /// The bar's tint, which its content does not bring, when it has a background.
+    pub fn menu_bar_tint(&self) -> Option<&Picture> {
+        self.menu_bar.tint.as_ref().map(|(_, tint)| tint)
+    }
+
     /// Whether the bar is there to see: not in the overview, nor over a fullscreen window.
     pub fn menu_bar_shown(&self) -> bool {
         self.overview.is_none() && self.fullscreen_window().is_none()
@@ -1399,10 +1410,22 @@ impl Nekoland {
             }
             self.menu_bar.other_pictures = others;
             self.menu_bar.open = open;
-            self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, background), &self.config);
+            self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, false), &self.config);
             self.menu_bar.drawn = Some(Drawn {
                 open: self.menu_bar.open.as_ref().and_then(|open| open.title),
                 ..drawn
+            });
+        }
+        let tint = background.then(|| crate::glass::tint(dark, Tier::Bar));
+        let key = tint.map(|tint| (output.size.w, dark, tint.3.to_bits()));
+        if self.menu_bar.tint.as_ref().map(|(made, _)| *made) != key {
+            self.menu_bar.tint = key.zip(tint).and_then(|(key, (r, g, b, a))| {
+                let surface = text::canvas(output.size.w.max(1), MENU_BAR_HEIGHT).ok()?;
+                let cr = Context::new(&surface).ok()?;
+                cr.set_source_rgba(r, g, b, a);
+                cr.paint().ok()?;
+                drop(cr);
+                Some((key, text::picture(surface)?))
             });
         }
 
@@ -1463,14 +1486,25 @@ impl Nekoland {
         if let Some(alert) = self.alert_overlay() {
             overlays.insert(0, alert);
         }
-        if let Some(picture) = &bar.picture {
+        let rect = Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into());
+        // While the desktops slide, the content slides over the glass and tint, which stay.
+        if let Some(picture) = bar.picture.as_ref().filter(|_| self.menu_bar_slide(output.size.w).is_none()) {
+            overlays.push(Overlay {
+                fade: 1.0,
+                id: &bar.content_id,
+                rect,
+                glass: None,
+                alpha: 1.0,
+                picture,
+            });
+        }
+        if let Some(picture) = self.menu_bar_tint() {
             overlays.push(Overlay {
                 fade: 1.0,
                 id: &bar.bar_id,
-                rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
-                glass: self.config.menu_bar_background.then_some((Tier::Bar, 0)),
-                // While the desktops slide, its glass stays and its content slides over it.
-                alpha: if self.menu_bar_slide(output.size.w).is_some() { 0.0 } else { 1.0 },
+                rect,
+                glass: Some((Tier::Bar, 0)),
+                alpha: 1.0,
                 picture,
             });
         }

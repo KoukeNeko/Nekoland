@@ -387,9 +387,11 @@ pub fn scene_elements(
             }),
     );
     scene.extend(desktop_thumbnails(state, renderer, output, output_geometry.loc));
-    // The menu bar's content, sliding up off the screen as the overview opens, and back.
+    // The menu bar's content over its tint, sliding up off the screen as the overview opens,
+    // and back.
     let away = state.overview_menu_away();
-    scene.extend(state.menu_bar_picture().filter(|_| away < 1.0).and_then(|bar| {
+    let bar = [state.menu_bar_picture(), state.menu_bar_tint()];
+    scene.extend(bar.into_iter().flatten().filter(|_| away < 1.0).filter_map(|bar| {
         let gone = (f64::from(bar.size.h) * away).round() as i32;
         let shown = Size::from((bar.size.w, bar.size.h - gone));
         MemoryRenderBufferRenderElement::from_buffer(
