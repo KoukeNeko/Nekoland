@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use smithay::{
     backend::{
@@ -9,6 +13,7 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
+            ping::make_ping,
             timer::{TimeoutAction, Timer},
             EventLoop,
         },
@@ -26,8 +31,6 @@ use crate::{
     CalloopData, Nekoland,
 };
 
-/// How often a frame is drawn, when anything in it changed.
-const FRAME: Duration = Duration::from_millis(16);
 /// How often an xrdp session's window looks whether the screen it covers changed size.
 const SCREEN_CHECK: Duration = Duration::from_secs(1);
 
@@ -51,8 +54,11 @@ pub fn init_winit(
 
     let mode = Mode {
         size: backend.window_size(),
-        refresh: 60_000,
+        refresh: refresh_rate(backend.window()),
     };
+    // Frames come at the pace of the display the window is on: a fixed 60 a second halves
+    // every animation on a faster one.
+    let frame = Rc::new(Cell::new(frame_time(mode.refresh)));
 
     let output = Output::new(
         "winit".to_string(),
@@ -103,13 +109,22 @@ pub fn init_winit(
 
     // The host gives a frame at once whenever one is asked for; frames come at this pace instead.
     let ticking = backend.clone();
+    let pace = frame.clone();
     event_loop
         .handle()
-        .insert_source(Timer::from_duration(FRAME), move |_, _, _| {
+        .insert_source(Timer::from_duration(frame.get()), move |_, _, _| {
             ticking.borrow().window().request_redraw();
-            TimeoutAction::ToDuration(FRAME)
+            TimeoutAction::ToDuration(pace.get())
         })
         .map_err(|err| err.error)?;
+    // Input and clients' new frames draw at once, rather than at the next tick.
+    let (ping, source) = make_ping()?;
+    let pinged = backend.clone();
+    event_loop
+        .handle()
+        .insert_source(source, move |_, _, _| pinged.borrow().window().request_redraw())
+        .map_err(|err| err.error)?;
+    state.redraw = Some(ping);
     if state.remote {
         let covering = backend.clone();
         event_loop
@@ -128,12 +143,14 @@ pub fn init_winit(
 
         match event {
             WinitEvent::Resized { size, scale_factor } => {
+                let refresh = refresh_rate(backend.window());
+                frame.set(frame_time(refresh));
                 let scale = Scale::Fractional(state.config.scale.unwrap_or(scale_factor));
                 crate::text::set_picture_scale(scale.fractional_scale());
                 output.change_current_state(
                     Some(Mode {
                         size,
-                        refresh: 60_000,
+                        refresh,
                     }),
                     None,
                     Some(scale),
@@ -222,6 +239,23 @@ pub fn init_winit(
     })?;
 
     Ok(())
+}
+
+/// The refresh rate, in millihertz, of the display the window is on, or of the fastest
+/// display before the host says which that is.
+// shortcut: on a host with displays of different rates the window may pace itself to the
+// faster one until it is resized; follow the display it moves to if that ever matters.
+fn refresh_rate(window: &Window) -> i32 {
+    window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .or_else(|| window.available_monitors().filter_map(|monitor| monitor.refresh_rate_millihertz()).max())
+        .filter(|&millihertz| millihertz > 0)
+        .map_or(60_000, |millihertz| millihertz as i32)
+}
+
+fn frame_time(millihertz: i32) -> Duration {
+    Duration::from_micros(1_000_000_000 / millihertz.max(1) as u64)
 }
 
 /// Puts the window over the whole of the X server's screen, which is what xrdp's client shows.
