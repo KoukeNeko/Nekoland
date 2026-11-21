@@ -4,6 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod alert;
+mod program;
 mod backup;
 mod bluetooth;
 mod display;
@@ -1993,7 +1994,7 @@ fn lock_preview(style: Option<&'static str>, height: i32) -> (gtk::Picture, Rc<d
         #[weak]
         picture,
         move || {
-            let program = nekoland_program("nekoland-lock");
+            let program = program::path("nekoland-lock");
             let (width, height) = lock_preview_size();
             let (width, height) = (width.to_string(), height.to_string());
             let mut argv = vec![program.as_os_str(), "--preview".as_ref(), file.as_os_str(), width.as_ref(), height.as_ref()];
@@ -6615,7 +6616,7 @@ fn storage_group() -> Option<adw::PreferencesGroup> {
             .build();
         // What takes the space is shown by 磁碟用量.
         row.connect_activated(move |_| {
-            let program = nekoland_program("nekoland-disk");
+            let program = program::path("nekoland-disk");
             if let Err(err) = gio::Subprocess::newv(&[program.as_os_str(), std::ffi::OsStr::new(&place)], gio::SubprocessFlags::NONE) {
                 eprintln!("nekoland-disk: {err}");
             }
@@ -6654,7 +6655,7 @@ fn gb(bytes: u64) -> String {
 /// Runs `args` as root through `sudo -A`, whose password Nekoland's askpass asks for,
 /// saying `reason`; `flags` as STDERR_PIPE keep what sudo and `args` say to show it.
 fn sudo(reason: &str, args: &[&str], flags: gio::SubprocessFlags) -> Result<gio::Subprocess, glib::Error> {
-    let askpass = nekoland_program("nekoland-askpass");
+    let askpass = program::path("nekoland-askpass");
     let launcher = gio::SubprocessLauncher::new(flags);
     if flags.contains(gio::SubprocessFlags::STDERR_PIPE) {
         // What is said is read for why it failed, so it is said in the words looked for.
@@ -6997,17 +6998,6 @@ fn enroll_finger(parent: &impl IsA<gtk::Widget>, finger: &'static str, done: Rc<
         }
         done();
     });
-}
-
-/// The absolute path of one of Nekoland's programs, installed beside Settings; sudo takes
-/// only an absolute path.
-fn nekoland_program(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|path| path.exists())
-        .or_else(|| glib::find_program_in_path(name))
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin").join(name))
 }
 
 /// Whether xrdp is running, or None when it is not installed.

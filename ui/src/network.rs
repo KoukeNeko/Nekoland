@@ -1001,7 +1001,7 @@ fn hand_over(button: &gtk::Button, done: Rc<dyn Fn()>) {
             }
         }
     };
-    let program = crate::nekoland_program(HAND_OVER);
+    let program = crate::program::path(HAND_OVER);
     let program = program.to_string_lossy();
     let sudo = match crate::sudo("改由 NetworkManager 管理網路", &[&program], gio::SubprocessFlags::STDERR_PIPE) {
         Ok(sudo) => sudo,

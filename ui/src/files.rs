@@ -28,6 +28,7 @@ macro_rules! on {
 }
 
 mod alert;
+mod program;
 mod browse;
 mod focus;
 #[path = "files/info.rs"]

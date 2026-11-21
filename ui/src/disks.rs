@@ -17,6 +17,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 mod alert;
+mod program;
 #[path = "disks/map.rs"]
 mod map;
 #[path = "disks/model.rs"]

@@ -188,7 +188,7 @@ fn run_step(step: &Step, reason: &str, cancel: &Cancel, events: &async_channel::
     let mut command = if step.root {
         let mut command = Command::new("sudo");
         command.args(["-A", "--"]).args(&step.argv);
-        command.env("SUDO_ASKPASS", program("nekoland-askpass"));
+        command.env("SUDO_ASKPASS", crate::program::path("nekoland-askpass"));
         command.env("NEKOLAND_ASKPASS_REASON", reason);
         command
     } else {
@@ -262,16 +262,6 @@ fn why_failed(said: &str, out: &str, step: &Step) -> String {
     } else {
         tail[tail.len().saturating_sub(3)..].join("\n")
     }
-}
-
-/// A program of Nekoland's, beside this one or on the path.
-fn program(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|path| path.exists())
-        .or_else(|| which(name))
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin").join(name))
 }
 
 /// Where `name` is, on the path or where the system's tools are kept.

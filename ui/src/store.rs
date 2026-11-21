@@ -5,6 +5,7 @@
 //! `.deb` package files it is given to open.
 
 mod alert;
+mod program;
 #[path = "store/browsers.rs"]
 mod browsers;
 #[path = "store/choice.rs"]

@@ -371,15 +371,6 @@ pub fn open_with(win: &Rc<Window>, app_id: &str, files: &[gio::File]) {
 
 // Copying and moving, by nekoland-fileop.
 
-/// nekoland-fileop next to this program, as an install puts them, else on PATH.
-fn fileop() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-fileop")))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("nekoland-fileop"))
-}
-
 thread_local! {
     /// The transfers running, by the folder each goes into, with how far each is, 0 to 1.
     static TRANSFERS: RefCell<Vec<(PathBuf, Rc<Cell<f64>>)>> = const { RefCell::new(Vec::new()) };
@@ -409,7 +400,7 @@ pub fn transfer(verb: &str, folder: &Path, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
     }
-    let spawned = std::process::Command::new(fileop())
+    let spawned = std::process::Command::new(crate::program::path("nekoland-fileop"))
         .arg(verb)
         .arg(folder)
         .args(paths)

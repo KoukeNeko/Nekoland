@@ -1556,11 +1556,7 @@ fn run_admin(admin: &[Vec<String>], reason: &str, watch: &Watch) -> Result<(), S
         })
         .collect::<Vec<_>>()
         .join(" && ");
-    let askpass = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("nekoland-askpass"));
+    let askpass = crate::program::path("nekoland-askpass");
     let mut sudo = Command::new("sudo");
     sudo.env("SUDO_ASKPASS", askpass)
         .env("NEKOLAND_ASKPASS_REASON", reason)

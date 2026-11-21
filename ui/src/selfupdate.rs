@@ -59,11 +59,7 @@ fn update() -> Result<(), String> {
         .map(|text| text.trim().to_string())
         .map_err(|_| "找不到安裝 Nekoland 的原始碼。請在原始碼中執行 install.sh。".to_string())?;
     run(Command::new("git").args(["-C", &source, "pull", "--ff-only", "-q", REMOTE, BRANCH]))?;
-    let askpass = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("nekoland-askpass")))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| "/usr/local/bin/nekoland-askpass".into());
+    let askpass = crate::program::path("nekoland-askpass");
     // install.sh and the scripts it runs call plain sudo: a sudo first on PATH asks with askpass,
     // and the terminal `script` gives them all lets sudo remember the password across them.
     // In the person's own runtime folder, made new and theirs alone: a sudo someone else put first
@@ -92,7 +88,7 @@ fn update() -> Result<(), String> {
     let installed = run(Command::new("script")
         .args([
             "-qec",
-            &format!("sh {}", shell_quote(&format!("{source}/install.sh"))),
+            &format!("sh {}", glib::shell_quote(format!("{source}/install.sh")).to_string_lossy()),
             "/dev/null",
         ])
         .env("PATH", path)
@@ -102,10 +98,6 @@ fn update() -> Result<(), String> {
         eprintln!("selfupdate: {}: {err}", wrapper.display());
     }
     installed
-}
-
-fn shell_quote(word: &str) -> String {
-    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// Runs a command to its end; on a failure, the last line it said (under `script`, its output and
