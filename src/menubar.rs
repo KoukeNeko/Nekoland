@@ -1469,7 +1469,8 @@ impl Nekoland {
                 id: &bar.bar_id,
                 rect: Rectangle::new(output.loc, (output.size.w, MENU_BAR_HEIGHT).into()),
                 glass: self.config.menu_bar_background.then_some((Tier::Bar, 0)),
-                alpha: 1.0,
+                // While the desktops slide, its glass stays and its content slides over it.
+                alpha: if self.menu_bar_slide(output.size.w).is_some() { 0.0 } else { 1.0 },
                 picture,
             });
         }

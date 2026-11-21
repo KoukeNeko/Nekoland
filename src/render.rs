@@ -208,6 +208,7 @@ pub fn scene_elements(
         let mut elements = switcher_front(state, renderer, output_geometry.loc, scale);
         elements.extend(state.desktop_front_elements(renderer, output_geometry.loc, scale));
         elements.extend(dock_front(state, renderer, output_geometry.loc, scale));
+        elements.extend(menu_bar_sliding(state, renderer, output_geometry, scale));
         elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
         return Ok(elements);
@@ -515,6 +516,46 @@ fn switcher_front(
         elements.extend(window_fitted(renderer, window, *rect, output_loc, scale));
     }
     elements
+}
+
+/// The menu bar's content of the desktop gone to and of the one left, sliding past each other
+/// with their windows, each cut to the bar's display.
+fn menu_bar_sliding(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    output_geometry: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Vec<SceneElement> {
+    if state.bar_area() != Some(output_geometry) || !state.menu_bar_shown() {
+        return Vec::new();
+    }
+    let width = output_geometry.size.w;
+    let Some((coming, going)) = state.menu_bar_slide(width) else {
+        return Vec::new();
+    };
+    state
+        .menu_bar_picture()
+        .map(|bar| (bar, coming))
+        .into_iter()
+        .chain(going)
+        .filter_map(|(bar, offset)| {
+            let shown = Size::from(((bar.size.w - offset.abs()).min(width - offset.max(0)), bar.size.h));
+            if shown.w <= 0 {
+                return None;
+            }
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                Point::<i32, Logical>::from((offset.max(0), 0)).to_f64().to_physical(scale),
+                &bar.buffer,
+                None,
+                Some(Rectangle::new(Point::from(((-offset).max(0), 0)), shown).to_f64()),
+                Some(shown),
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture)
+        })
+        .collect()
 }
 
 /// What the Dock shows live over its glass, front first: the icons at the corners of the

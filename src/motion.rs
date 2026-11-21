@@ -33,6 +33,7 @@ use smithay::{
 };
 
 use crate::{
+    text::Picture,
     windows::is_managed,
     Nekoland,
 };
@@ -301,6 +302,8 @@ struct Slide {
     leaving: Vec<(Window, Point<i32, Logical>)>,
     /// Whether the desktop gone to is after the one left, and so comes in from the right.
     forward: bool,
+    /// The menu bar's content as the desktop left had it, sliding out with its windows.
+    bar: Option<Picture>,
     started: Instant,
 }
 
@@ -568,6 +571,14 @@ impl Nekoland {
         Some(Pose { actual, shown, alpha })
     }
 
+    /// While the desktops slide past each other on a display `width` wide: how far right the
+    /// menu bar's content is drawn, and the desktop left's content with how far right it is.
+    pub fn menu_bar_slide(&self, width: i32) -> Option<(i32, Option<(&Picture, i32)>)> {
+        let slide = self.motion.slide.as_ref()?;
+        let (coming, going) = slide.offsets(width);
+        Some((coming, slide.bar.as_ref().map(|bar| (bar, going))))
+    }
+
     /// The windows of the desktop just left, bottom of the stack first, each where it is
     /// drawn on its way out.
     pub fn leaving_windows(&self) -> Vec<(Window, Pose)> {
@@ -708,6 +719,7 @@ impl Nekoland {
         self.motion.slide = Some(Slide {
             leaving,
             forward,
+            bar: self.menu_bar_picture().cloned(),
             started: Instant::now(),
         });
     }
