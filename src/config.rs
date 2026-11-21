@@ -1139,8 +1139,18 @@ pub fn expand_home(path: &str) -> String {
 
 /// Starts a shell command as a client of this compositor.
 pub fn spawn(command: &str) {
-    if let Err(err) = Command::new("sh").arg("-c").arg(command).spawn() {
-        tracing::warn!("{command}: {err}");
+    match Command::new("sh").arg("-c").arg(command).spawn() {
+        // Waited for off the compositor's thread, or it would stay a zombie, which a check
+        // such as dictation's `kill -0` takes for still running.
+        Ok(mut child) => {
+            let waited = std::thread::Builder::new()
+                .name("nekoland-spawn".into())
+                .spawn(move || child.wait());
+            if let Err(err) = waited {
+                tracing::warn!("{command}: {err}");
+            }
+        }
+        Err(err) => tracing::warn!("{command}: {err}"),
     }
 }
 
