@@ -3162,7 +3162,10 @@ impl Nekoland {
 
     /// Opens a menu over a tile of the Dock, as high as its name and windows open.
     fn open_tile_menu(&mut self, index: usize, entries: Vec<Entry>) {
-        if let Some(anchor) = self.dock_anchor(index, false) {
+        // The Dock's tiles are where they are in the whole layout; menus are placed on the
+        // menu bar's display, which need not start at its top left.
+        if let (Some(anchor), Some(bar)) = (self.dock_anchor(index, false), self.bar_area()) {
+            let anchor = Rectangle::new(anchor.loc - bar.loc, anchor.size);
             self.open_dock_menu(entries, anchor, self.full_rise() + POPUP_GAP);
         }
     }
