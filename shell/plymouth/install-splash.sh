@@ -22,7 +22,15 @@ sudo rm -rf "$dest"
 sudo install -Dm 644 -t "$dest" "$work"/theme/*
 # Plymouth reads the theme from plymouthd.conf, and dracut, which builds Ubuntu's initramfs,
 # copies the theme it names; the default.plymouth alternative is for what reads that instead.
-printf '[Daemon]\nTheme=nekoland\n' | sudo tee /etc/plymouth/plymouthd.conf >/dev/null
+# Only its theme is changed: what else is set there, as ShowDelay or DeviceScale, stays.
+conf=/etc/plymouth/plymouthd.conf
+if [ -f "$conf" ] && grep -q '^Theme=' "$conf"; then
+    sudo sed -i 's/^Theme=.*/Theme=nekoland/' "$conf"
+elif [ -f "$conf" ] && grep -q '^\[Daemon\]' "$conf"; then
+    sudo sed -i '/^\[Daemon\]/a Theme=nekoland' "$conf"
+else
+    printf '[Daemon]\nTheme=nekoland\n' | sudo tee -a "$conf" >/dev/null
+fi
 sudo update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
     "$dest/nekoland.plymouth" 150
 sudo update-alternatives --set default.plymouth "$dest/nekoland.plymouth"
