@@ -886,7 +886,10 @@ fn review_credentials(model: &Rc<Model>, parent: &gtk::Widget) {
                 }
                 Err(err) => {
                     glib::spawn_future_local(async move {
-                        keyring::forget(&profile.id, &[kind]).await;
+                        // A server that could not be reached did not refuse what is kept.
+                        if !err.contains(FAILED_TO_CONNECT) {
+                            keyring::forget(&profile.id, &[kind]).await;
+                        }
                         answer_failed(model, parent, profile, err);
                     });
                 }
@@ -895,10 +898,13 @@ fn review_credentials(model: &Rc<Model>, parent: &gtk::Widget) {
     }
 }
 
+/// What `plaitway connect` says when the connection failed, not the credentials.
+const FAILED_TO_CONNECT: &str = ": failed to connect";
+
 /// After `plaitway connect` failed: a connection that failed is told, refused credentials
 /// are asked for again.
 fn answer_failed(model: Rc<Model>, parent: gtk::Widget, profile: Profile, err: String) {
-    if err.contains(": failed to connect") {
+    if err.contains(FAILED_TO_CONNECT) {
         model.asking.borrow_mut().remove(&profile.id);
         alert::notice(&parent, &format!("無法連線到「{}」", profile.name), Some(&err));
     } else {
@@ -1215,10 +1221,15 @@ impl ProfileRow {
         let (target, ordered) = (profile.id.clone(), model.clone());
         drop.connect_drop(move |drop, value, _, _| {
             let Ok(dragged) = value.get::<String>() else { return false };
-            let Some(place) = ordered.profiles.borrow().iter().position(|profile| profile.id == target)
-            else {
-                return false;
+            let place = {
+                let profiles = ordered.profiles.borrow();
+                // Text dragged from another program is not a profile.
+                if !profiles.iter().any(|profile| profile.id == dragged) {
+                    return false;
+                }
+                profiles.iter().position(|profile| profile.id == target)
             };
+            let Some(place) = place else { return false };
             if dragged == target {
                 return false;
             }
