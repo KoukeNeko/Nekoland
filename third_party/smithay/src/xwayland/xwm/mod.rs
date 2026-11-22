@@ -1158,6 +1158,9 @@ impl X11Wm {
             self.conn
                 .set_selection_owner(x11rb::NONE, selection.atom, selection.timestamp)?;
         }
+        // Not left for the next event from X11 to carry: until it goes, the program that
+        // owned the selection still answers for it, and a paste is what was copied before.
+        self.conn.flush()?;
 
         Ok(())
     }
