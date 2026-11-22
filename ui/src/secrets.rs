@@ -1,14 +1,14 @@
-//! The passwords of Hamasen's servers in the keyring: the Secret Service's items under
-//! Hamasen's libsecret schema, found by the server's id, so either program reads what the
-//! other kept. Spoken over D-Bus, as libsecret does, with the plain session it uses.
+//! Passwords in the keyring: the Secret Service's items, found by the attributes another
+//! program's libsecret schema gives them, so either program reads what the other kept. Spoken
+//! over D-Bus, as libsecret does, with the plain session it uses.
+// Files and Settings each use part of it.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 
 use gtk::prelude::*;
 use gtk::{gio, glib, glib::variant::ObjectPath};
 
-const SCHEMA: &str = "app.hamasen.Hamasen";
-const LABEL: &str = "Hamasen";
 const SERVICE: &str = "org.freedesktop.secrets";
 const SERVICE_PATH: &str = "/org/freedesktop/secrets";
 const SERVICE_IFACE: &str = "org.freedesktop.Secret.Service";
@@ -17,12 +17,8 @@ const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
 /// What the service answers for "no object": no prompt needed, no collection.
 const NONE: &str = "/";
 
-fn attributes(id: &str) -> HashMap<String, String> {
-    HashMap::from([
-        ("xdg:schema".to_owned(), SCHEMA.to_owned()),
-        ("server".to_owned(), id.to_owned()),
-    ])
-}
+/// An item's attributes, `xdg:schema` among them.
+pub type Attributes = HashMap<String, String>;
 
 fn unexpected(what: &str) -> glib::Error {
     glib::Error::new(gio::IOErrorEnum::InvalidData, &format!("鑰匙圈的回應無法讀取：{what}"))
@@ -51,13 +47,13 @@ impl Keyring {
         // The service drops a session with the connection anyway; this only frees it sooner.
         let ended = call(&self.bus, self.session.as_str(), "org.freedesktop.Secret.Session", "Close", ().to_variant()).await;
         if let Err(err) = ended {
-            eprintln!("nekoland-files: keyring session not closed: {err}");
+            eprintln!("keyring session not closed: {err}");
         }
     }
 
-    /// The server's items, unlocked: the keyring asks for its password when it is locked.
-    async fn items(&self, id: &str) -> Result<Vec<ObjectPath>, glib::Error> {
-        let reply = call(&self.bus, SERVICE_PATH, SERVICE_IFACE, "SearchItems", (attributes(id),).to_variant()).await?;
+    /// The items, unlocked: the keyring asks for its password when it is locked.
+    async fn items(&self, attributes: &Attributes) -> Result<Vec<ObjectPath>, glib::Error> {
+        let reply = call(&self.bus, SERVICE_PATH, SERVICE_IFACE, "SearchItems", (attributes,).to_variant()).await?;
         let (mut unlocked, locked): (Vec<ObjectPath>, Vec<ObjectPath>) =
             reply.get().ok_or_else(|| unexpected("SearchItems"))?;
         if !locked.is_empty() {
@@ -152,11 +148,32 @@ async fn call(
     .await
 }
 
-/// The server's password, or none when none was kept.
-pub async fn lookup(id: &str) -> Result<Option<String>, glib::Error> {
+/// Whether anything is kept under the attributes, without unlocking the keyring to say so. A
+/// keyring that is announced but does not answer soon counts as keeping nothing.
+pub async fn has(attributes: &Attributes) -> Result<bool, glib::Error> {
+    let bus = gio::bus_get_future(gio::BusType::Session).await?;
+    let reply = bus
+        .call_future(
+            Some(SERVICE),
+            SERVICE_PATH,
+            SERVICE_IFACE,
+            "SearchItems",
+            Some(&(attributes,).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            5_000,
+        )
+        .await?;
+    let (unlocked, locked): (Vec<ObjectPath>, Vec<ObjectPath>) =
+        reply.get().ok_or_else(|| unexpected("SearchItems"))?;
+    Ok(!unlocked.is_empty() || !locked.is_empty())
+}
+
+/// The password kept under the attributes, or none when none was kept.
+pub async fn lookup(attributes: &Attributes) -> Result<Option<String>, glib::Error> {
     let keyring = Keyring::open().await?;
     let found = async {
-        let Some(item) = keyring.items(id).await?.into_iter().next() else {
+        let Some(item) = keyring.items(attributes).await?.into_iter().next() else {
             return Ok(None);
         };
         let reply = call(
@@ -180,18 +197,19 @@ pub async fn lookup(id: &str) -> Result<Option<String>, glib::Error> {
     found
 }
 
-/// Keeps the server's password in the default keyring, or forgets it when it is empty.
-pub async fn store(id: &str, password: &str) -> Result<(), glib::Error> {
+/// Keeps a password in the default keyring under the attributes and `label`, or forgets it
+/// when it is empty.
+pub async fn store(attributes: &Attributes, label: &str, password: &str) -> Result<(), glib::Error> {
     if password.is_empty() {
-        return clear(id).await;
+        return clear(attributes).await;
     }
     let keyring = Keyring::open().await?;
     let stored = async {
         let collection = keyring.default_collection().await?;
         keyring.unlock(vec![collection.clone()]).await?;
         let properties = HashMap::from([
-            ("org.freedesktop.Secret.Item.Label".to_owned(), LABEL.to_variant()),
-            ("org.freedesktop.Secret.Item.Attributes".to_owned(), attributes(id).to_variant()),
+            ("org.freedesktop.Secret.Item.Label".to_owned(), label.to_variant()),
+            ("org.freedesktop.Secret.Item.Attributes".to_owned(), attributes.to_variant()),
         ]);
         let secret = (
             keyring.session.clone(),
@@ -215,11 +233,11 @@ pub async fn store(id: &str, password: &str) -> Result<(), glib::Error> {
     stored
 }
 
-/// Forgets the server's password.
-pub async fn clear(id: &str) -> Result<(), glib::Error> {
+/// Forgets what is kept under the attributes.
+pub async fn clear(attributes: &Attributes) -> Result<(), glib::Error> {
     let keyring = Keyring::open().await?;
     let cleared = async {
-        for item in keyring.items(id).await? {
+        for item in keyring.items(attributes).await? {
             let reply = call(&keyring.bus, item.as_str(), ITEM_IFACE, "Delete", ().to_variant()).await?;
             let prompt = reply.child_value(0).str().map(str::to_owned).ok_or_else(|| unexpected("Delete"))?;
             keyring.prompt(&prompt).await?;

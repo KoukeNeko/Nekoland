@@ -25,6 +25,17 @@ use crate::{
     secrets, Window,
 };
 
+const KEYRING_SCHEMA: &str = "app.hamasen.Hamasen";
+const KEYRING_LABEL: &str = "Hamasen";
+
+/// A server's password in the keyring, under Hamasen's libsecret schema, found by its id.
+fn keyring_item(id: &str) -> secrets::Attributes {
+    secrets::Attributes::from([
+        ("xdg:schema".to_owned(), KEYRING_SCHEMA.to_owned()),
+        ("server".to_owned(), id.to_owned()),
+    ])
+}
+
 const GUIDE_URL: &str = "https://console.cloud.google.com/apis/credentials";
 /// At login the network, a VPN and the keyring may not be up yet, so it is tried a while.
 const LOGIN_ATTEMPTS: u32 = 20;
@@ -148,7 +159,7 @@ pub fn mount(server: &Server, parent: Option<gtk::Window>) -> impl Future<Output
 }
 
 async fn mount_gvfs(server: &Server, parent: Option<&gtk::Window>) -> Result<(), String> {
-    let kept = secrets::lookup(&server.id).await.unwrap_or_else(|err| {
+    let kept = secrets::lookup(&keyring_item(&server.id)).await.unwrap_or_else(|err| {
         eprintln!("nekoland-files: no password for {} from the keyring: {err}", server.name);
         None
     });
@@ -193,7 +204,7 @@ async fn mount_rclone(server: &Server) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     // S3's keys go in the environment, not on the command line or in rclone.conf.
     let env = if server.protocol().is_some_and(|p| p.kind == Kind::S3) {
-        let secret = secrets::lookup(&server.id).await.map_err(|e| e.message().to_owned())?;
+        let secret = secrets::lookup(&keyring_item(&server.id)).await.map_err(|e| e.message().to_owned())?;
         vec![
             ("RCLONE_S3_ACCESS_KEY_ID", server.field("user").to_owned()),
             ("RCLONE_S3_SECRET_ACCESS_KEY", secret.unwrap_or_default()),
@@ -358,7 +369,7 @@ pub fn delete(win: &Rc<Window>, server: Server) {
         }
         let id = server.id.clone();
         glib::spawn_future_local(async move {
-            if let Err(err) = secrets::clear(&id).await {
+            if let Err(err) = secrets::clear(&keyring_item(&id)).await {
                 eprintln!("nekoland-files: the keyring keeps the password of {id}: {err}");
             }
         });
@@ -547,7 +558,7 @@ pub fn edit(win: &Rc<Window>, server: Option<&Server>) {
     if let Some(server) = server {
         let (id, weak) = (server.id.clone(), Rc::downgrade(&form));
         glib::spawn_future_local(async move {
-            match secrets::lookup(&id).await {
+            match secrets::lookup(&keyring_item(&id)).await {
                 Ok(Some(password)) => {
                     if let Some(form) = weak.upgrade() {
                         form.password.set_text(&password);
@@ -676,7 +687,7 @@ impl Form {
     fn keep_password(&self, win: &Rc<Window>, password: String) {
         let (id, weak) = (self.id(), Rc::downgrade(win));
         glib::spawn_future_local(async move {
-            if let Err(err) = secrets::store(&id, &password).await {
+            if let Err(err) = secrets::store(&keyring_item(&id), KEYRING_LABEL, &password).await {
                 if !err.matches(gio::IOErrorEnum::FailedHandled) {
                     if let Some(win) = weak.upgrade() {
                         win.alert("無法儲存密碼", Some(err.message()));

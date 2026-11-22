@@ -138,6 +138,8 @@ pub enum Event {
     },
     /// The default output's volume, or None when there is no sound server to ask.
     Sound(Option<crate::system::Volume>),
+    /// Plaitway's profiles, or None while its helper is not running.
+    Vpn(Option<Vec<crate::vpn::Tunnel>>),
     /// Whether a microphone or a camera is open; the screen's sharing is the compositor's own.
     InUse(crate::privacy::InUse),
     Ime(crate::ime::ImeEvent),

@@ -16,6 +16,7 @@ mod keys;
 mod network;
 mod printers;
 mod region;
+mod secrets;
 mod selfupdate;
 mod themes;
 mod users;
@@ -40,6 +41,8 @@ mod sharing;
 mod updates;
 #[path = "settings/design.rs"]
 mod design;
+#[path = "settings/vpn.rs"]
+mod vpn;
 
 use lock_screen::*;
 use hover::*;
@@ -518,6 +521,7 @@ fn build(app: &adw::Application) {
                 "Wi-Fi" => wifi::wifi_page().upcast(),
                 "藍牙" => bluetooth::bluetooth_page().upcast(),
                 "網路" => network::network_page().upcast(),
+                "VPN" => vpn::vpn_page().upcast(),
                 "外觀" => appearance_page(config, &look).upcast(),
                 "協助工具" => accessibility_page(config).upcast(),
                 "隱私" => privacy_page().upcast(),
@@ -551,10 +555,9 @@ fn build(app: &adw::Application) {
             .then_some(("Wi-Fi", "network-wireless-symbolic"))
             .into_iter()
             .chain(bluetooth::has_bluetooth().then_some(("藍牙", "bluetooth-symbolic")))
-            .chain([
-                ("網路", "network-wired-symbolic"),
-                ("共享", "preferences-desktop-remote-desktop-symbolic"),
-            ])
+            .chain([("網路", "network-wired-symbolic")])
+            .chain(has_vpn().then_some(("VPN", "network-vpn-symbolic")))
+            .chain([("共享", "preferences-desktop-remote-desktop-symbolic")])
             .collect(),
         vec![
             ("外觀", "preferences-desktop-appearance-symbolic"),
@@ -778,6 +781,10 @@ fn build(app: &adw::Application) {
         sidebar.select_row(sidebar.row_at_index(0).as_ref());
     }
     OPEN_PAGE.set(Some(open_page));
+    // Plaitway's profiles that ask for a password are asked about on whichever page is shown.
+    if vpn::installed() {
+        page_of(&stack, "VPN");
+    }
 
     // Search: the pages' names and every setting's title, over the pages as they are now.
     let hits: Rc<RefCell<Vec<(usize, Option<gtk::Widget>)>>> = Rc::default();
@@ -1364,6 +1371,11 @@ fn hot_corners_summary() -> String {
     if set.is_empty() { "無".into() } else { set.join("、") }
 }
 
+/// Whether there is a VPN to set: Plaitway's, or NetworkManager's.
+fn has_vpn() -> bool {
+    vpn::installed() || glib::find_program_in_path("nmcli").is_some()
+}
+
 /// A page holding `groups`, for a row to open one level down.
 fn page_of_groups(groups: &[adw::PreferencesGroup]) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
@@ -1379,6 +1391,9 @@ fn menu_bar_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let icons = group("狀態圖示");
     icons.add(&switch_row(config, "網路", "menu_bar_network"));
+    if vpn::installed() {
+        icons.add(&switch_row(config, "VPN", "menu_bar_vpn"));
+    }
     icons.add(&switch_row(config, "音量", "menu_bar_sound"));
     if !batteries().is_empty() {
         icons.add(&switch_row(config, "電池", "menu_bar_battery"));

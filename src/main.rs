@@ -43,6 +43,7 @@ mod screencopy;
 mod snap_layouts;
 mod sprite;
 mod switcher;
+mod vpn;
 mod widgets;
 mod stacks;
 mod state;
@@ -183,6 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|err| err.error)?;
     system::watch_sound(dbus_events.clone());
     system::watch_orientation(dbus_events.clone());
+    vpn::watch(dbus_events.clone());
     privacy::watch_devices(dbus_events.clone());
     data.state.events = Some(dbus_events.clone());
     data.state.menu_bar.bus = dbus::start(dbus_events)

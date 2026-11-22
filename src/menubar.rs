@@ -257,6 +257,7 @@ enum Source {
     Status(String),
     Sound,
     Network,
+    Vpn,
     Battery,
     Control,
     /// The button that stops 截圖's recording, while it records.
@@ -337,6 +338,7 @@ pub struct MenuBar {
     pub(crate) sound: Option<Volume>,
     pub(crate) in_use: crate::privacy::InUse,
     pub(crate) network: Option<Network>,
+    vpn: Option<Vec<crate::vpn::Tunnel>>,
     pub(crate) battery: Option<Battery>,
     network_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
@@ -384,6 +386,7 @@ impl Default for MenuBar {
             sound: None,
             in_use: Default::default(),
             network: None,
+            vpn: None,
             battery: None,
             network_read: None,
             icons: HashMap::new(),
@@ -842,6 +845,9 @@ impl MenuBar {
                 String::new(),
                 None,
             ));
+        }
+        if let Some(tunnels) = self.vpn.as_ref().filter(|tunnels| config.menu_bar_vpn && !tunnels.is_empty()) {
+            icons.push((Source::Vpn, "vpn".into(), crate::vpn::icon(tunnels).into(), String::new(), None));
         }
         if let Some(volume) = self.sound.filter(|_| config.menu_bar_sound) {
             icons.push((
@@ -1620,6 +1626,19 @@ impl Nekoland {
                 bar.sound = volume;
                 bar.items_revision += 1;
             }
+            Event::Vpn(tunnels) => {
+                // A profile that comes to ask for a password is asked about in Settings, as
+                // Plaitway's own app opens its window; Settings open already asks by itself.
+                let newly_asks = tunnels.iter().flatten().any(|tunnel| {
+                    tunnel.asks_for_password()
+                        && !bar.vpn.iter().flatten().any(|old| old.id == tunnel.id && old.asks_for_password())
+                });
+                bar.vpn = tunnels;
+                bar.items_revision += 1;
+                if newly_asks && self.app_windows(crate::vpn::SETTINGS_APP_ID).is_empty() {
+                    self.run_menu_command(Command::SettingsPage(crate::vpn::SETTINGS_PAGE));
+                }
+            }
             Event::InUse(devices) => {
                 bar.in_use = crate::privacy::InUse { screen: bar.in_use.screen, ..devices };
                 bar.items_revision += 1;
@@ -2184,6 +2203,7 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
+            Source::Vpn => self.menu_bar.vpn.as_deref().map(crate::vpn::menu).unwrap_or_default(),
             Source::Battery => match self.menu_bar.battery {
                 Some(battery) => {
                     let state = if battery.charging {

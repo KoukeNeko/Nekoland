@@ -1,6 +1,7 @@
 //! Settings' 網路 page, through NetworkManager's `nmcli`: each Ethernet port, joined and
-//! left, with its addresses and how they are set, and the VPNs, turned on and off, added
-//! from a file and removed. Wi-Fi has its own page; its networks' addresses are set here.
+//! left, with its addresses and how they are set. Wi-Fi has its own page; its networks'
+//! addresses are set here. NetworkManager's VPNs, turned on and off, added from a file and
+//! removed, are on the VPN page.
 
 use std::{
     cell::RefCell,
@@ -598,6 +599,24 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         groups.push(wired);
     }
 
+    for group in groups.iter().chain(&shown.kept) {
+        page.add(group);
+    }
+    shown.groups.replace(groups);
+}
+
+/// NetworkManager's VPNs, under the rest of the VPN page, kept up with NetworkManager. With
+/// another VPN's profiles above, the group is left out while it would be empty.
+pub fn follow_vpns(page: &adw::PreferencesPage, alone: bool) {
+    let shown: Rc<RefCell<Option<adw::PreferencesGroup>>> = Rc::default();
+    fill_vpns(page, &shown, alone);
+    follow_network(page, move |page| fill_vpns(page, &shown, alone));
+}
+
+fn fill_vpns(page: &adw::PreferencesPage, shown: &Rc<RefCell<Option<adw::PreferencesGroup>>>, alone: bool) {
+    if let Some(group) = shown.take() {
+        page.remove(&group);
+    }
     let vpns = parse_vpns(
         &output(
             "nmcli",
@@ -605,7 +624,16 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         )
         .unwrap_or_default(),
     );
-    let vpn = group("VPN");
+    if vpns.is_empty() && !alone {
+        return;
+    }
+    let (weak, again) = (page.downgrade(), shown.clone());
+    let done: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(page) = weak.upgrade() {
+            fill_vpns(&page, &again, alone);
+        }
+    });
+    let vpn = group("NetworkManager");
     let add = gtk::Button::builder()
         .icon_name("list-add-symbolic")
         .tooltip_text("從檔案加入 VPN")
@@ -614,6 +642,8 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
         .build();
     let again = done.clone();
     add.connect_clicked(move |button| import_vpn(button, again.clone()));
+    // Another VPN's profiles have their own button for files.
+    add.set_visible(alone);
     vpn.set_header_suffix(Some(&add));
     for network in &vpns {
         vpn.add(&vpn_row(network, &done));
@@ -621,12 +651,8 @@ fn fill_network_page(page: &adw::PreferencesPage, shown: &Rc<NetworkPage>) {
     if vpns.is_empty() {
         vpn.add(&adw::ActionRow::builder().title("沒有 VPN").build());
     }
-    groups.push(vpn);
-
-    for group in groups.iter().chain(&shown.kept) {
-        page.add(group);
-    }
-    shown.groups.replace(groups);
+    page.add(&vpn);
+    shown.replace(Some(vpn));
 }
 
 /// 飛航模式: every radio off at once, the Wi-Fi and mobile radios through NetworkManager and

@@ -29,6 +29,7 @@ macro_rules! on {
 
 mod alert;
 mod program;
+mod secrets;
 mod browse;
 mod focus;
 #[path = "files/hamasen.rs"]
@@ -47,8 +48,6 @@ mod quicklook;
 mod rename;
 #[path = "files/search.rs"]
 mod search;
-#[path = "files/secrets.rs"]
-mod secrets;
 #[path = "files/server.rs"]
 mod server;
 #[path = "files/sidebar.rs"]

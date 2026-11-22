@@ -77,6 +77,7 @@ wallpaper and an input method. Every key is optional:
 | `clock_24h`, `clock_date`, `clock_weekday`, `clock_seconds` | How the menu bar's clock reads: 24 hours, the date and the weekday unless set, no seconds |
 | `clock_flash` | Whether the colon between the clock's hours and minutes flashes each second; off unless set |
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
+| `menu_bar_vpn` | Whether the menu bar shows Plaitway's VPNs, where Plaitway is installed: each turned on and off from its menu, and Settings opened for one that asks for a password; on unless set |
 | `menu_bar_battery`, `menu_bar_battery_percent` | Whether the menu bar shows the computer's battery, where it has one, and its percentage beside it; the battery without its percentage unless set |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
@@ -206,9 +207,15 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   Wi-Fi network's among them, set whether it comes up on its own, 低數據模式 (marked
   metered), IPv4 (from DHCP, by hand, or off, with DHCP's lease renewed), IPv6, DNS servers
   and search domains, the MTU, and for Wi-Fi the private address, and copy a kept
-  network's password. It turns VPNs on and off, adds a WireGuard `.conf` or OpenVPN
-  `.ovpn` and removes one. A port netplan gives to systemd-networkd, as on Ubuntu Server,
+  network's password. A port netplan gives to systemd-networkd, as on Ubuntu Server,
   has 改用 NetworkManager, which runs `nekoland-hand-over-network` as the installer does.
+  The VPN page has, where Plaitway is installed, its OpenVPN and WireGuard profiles,
+  through the `plaitway` command: each turned on and off, dragged into the order that
+  decides which holds a route, set, edited as text, removed, with its traffic, routes and
+  log, and the helper's routing and diagnostics; the passwords profiles ask for are asked
+  while Settings is open and kept in the keyring items the Plaitway app keeps. Below them,
+  NetworkManager's VPNs are turned on and off and removed; without Plaitway, a WireGuard
+  `.conf` or OpenVPN `.ovpn` is added to NetworkManager there.
   Each change takes effect at once. The fonts page sets `font` and GNOME's interface font together,
   and the monospace font, text size and antialiasing that GNOME's settings give GTK and
   others. The sound page picks the output and input, and the sample rate and
