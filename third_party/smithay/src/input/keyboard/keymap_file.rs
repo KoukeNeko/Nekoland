@@ -30,8 +30,12 @@ pub struct KeymapFile {
 impl KeymapFile {
     /// Turn the keymap into a string using KEYMAP_FORMAT_TEXT_V1, create a sealed file for it, and store the string
     pub fn new(keymap: &Keymap) -> Self {
+        Self::from_text(keymap.get_as_string(KEYMAP_FORMAT_TEXT_V1))
+    }
+
+    /// Keep a keymap's text as it stands, which must hold no NUL
+    pub(crate) fn from_text(keymap: String) -> Self {
         let name = c"smithay-keymap";
-        let keymap = keymap.get_as_string(KEYMAP_FORMAT_TEXT_V1);
         let sealed = SealedFile::with_content(name, &CString::new(keymap.as_str()).unwrap());
 
         if let Err(err) = sealed.as_ref() {

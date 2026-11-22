@@ -208,12 +208,29 @@ where
         }
     };
 
+    let text = with_an_interpret(new_keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+
     // Store active virtual keyboard map.
     let mut inner = data.handle.inner.lock().unwrap();
     let mods = inner.state.take().map(|state| state.mods).unwrap_or_default();
     inner.state = Some(VirtualKeyboardState {
         mods,
-        keymap: KeymapFile::new(&new_keymap),
+        keymap: KeymapFile::from_text(text),
         state: xkb::State::new(&new_keymap),
     });
+}
+
+/// A keymap's text with an interpret in it. Xwayland takes a keymap without one as no keymap, and
+/// keeps the one it had. libxkbcommon writes only those a key uses, which for the few keys of a
+/// program that types is none of them, so one that no key meets is put in.
+fn with_an_interpret(mut text: String) -> String {
+    let compatibility = text.find("xkb_compatibility").unwrap_or(text.len());
+    let start = text[compatibility..].find('{');
+    if let Some(start) = start.filter(|_| !text.contains("interpret ")) {
+        text.insert_str(
+            compatibility + start + 1,
+            "\n\tinterpret VoidSymbol+AnyOfOrNone(all) { action= NoAction(); };",
+        );
+    }
+    text
 }
