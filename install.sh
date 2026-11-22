@@ -135,9 +135,12 @@ sudo install -Dm 644 -t /usr/local/share/themes/Nekoland/gtk-3.0 "$src"/shell/gt
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network
+# The keyring's prompters too, ahead of gcr-prompter's in /usr/share.
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
-    "$src/shell/org.freedesktop.FileManager1.service"
+    "$src/shell/org.freedesktop.FileManager1.service" \
+    "$src/shell/org.gnome.keyring.SystemPrompter.service" \
+    "$src/shell/org.gnome.keyring.PrivatePrompter.service"
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
