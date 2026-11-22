@@ -34,7 +34,7 @@ use crate::{
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
     windows::{
-        has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, window_names,
+        has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_corners, window_names,
         CONFIRM_APP_ID,
     },
     Nekoland,
@@ -180,11 +180,8 @@ pub fn scene_elements(
             .chain(state.leaving_windows().into_iter().rev())
             .collect();
         // What a closed window leaves fades over the windows it was among.
-        let mut under: Vec<SceneElement> = state
-            .ghost_elements(output_geometry.loc, scale)
-            .into_iter()
-            .map(SceneElement::Ghost)
-            .collect();
+        let mut under: Vec<SceneElement> = state.ghost_bar_elements(renderer, output_geometry.loc, scale);
+        under.extend(state.ghost_elements(output_geometry.loc, scale).into_iter().map(SceneElement::Ghost));
         let mut backdrop: Vec<SceneElement> = state
             .desktop_elements(renderer, output_geometry.loc, scale)
             .into_iter()
@@ -1224,7 +1221,7 @@ fn windows_on_glass(
             scene = preview;
         }
         let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
-        if rounds_x11_corners(window) {
+        if rounds_corners(window) {
             let radius = (f64::from(WINDOW_RADIUS) * scale).round() as i32;
             let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
             elements = crate::rounded::round(renderer, elements, radius, (trim.w, trim.h));
@@ -1255,7 +1252,7 @@ fn windows_on_glass(
             );
             kept.push(id);
         }
-        if rounds_x11_corners(window) {
+        if rounds_corners(window) {
             let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
             let focused = state.focused_window().as_ref() == Some(window);
             elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));

@@ -78,6 +78,9 @@ impl WlPointerHandle {
                 .load(Ordering::Acquire);
             let location = event.location.to_client(client_scale);
             ptr.enter(event.serial.into(), surface, location.x, location.y);
+            // As wlroots' compositors do: Waydroid takes where the pointer is from motion
+            // alone, and would press where it last moved within the window.
+            ptr.motion(event.time, location.x, location.y);
         })
     }
 

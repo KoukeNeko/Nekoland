@@ -52,6 +52,7 @@ mod windows;
 mod winit;
 mod workspaces;
 mod x11;
+mod waydroid;
 mod xsettings;
 
 use smithay::reexports::{

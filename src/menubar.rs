@@ -1595,8 +1595,9 @@ impl Nekoland {
             }
             Event::Dark(dark) => {
                 bar.dark = dark;
-                // X11 programs are told to be dark too.
+                // X11 programs and Android are told to be dark too.
                 crate::xsettings::sync();
+                crate::waydroid::follow_dark(dark);
             }
             // Banners and the Notification Center's list, which the notices take.
             Event::Notify(_) | Event::CloseNotification(_) => {}
@@ -2543,10 +2544,16 @@ impl Nekoland {
                 app_id: app_id.to_string(),
                 action: "quit".into(),
             }),
-            _ => self
-                .all_windows()
-                .filter(|window| is_managed(window) && window_names(window).1 == app_id)
-                .for_each(close),
+            _ => {
+                let windows: Vec<Window> = self
+                    .all_windows()
+                    .filter(|window| is_managed(window) && window_names(window).1 == app_id)
+                    .cloned()
+                    .collect();
+                for window in &windows {
+                    self.close_window(window);
+                }
+            }
         }
     }
 
@@ -2648,7 +2655,7 @@ impl Nekoland {
             }
             Command::CloseWindow => {
                 if let Some(window) = focused {
-                    close(&window);
+                    self.close_window(&window);
                 }
             }
             Command::FullScreen => {
@@ -2769,15 +2776,6 @@ pub(crate) fn is_maximized(window: &Window) -> bool {
             toplevel.current_state().states.contains(ToplevelState::Maximized)
         }
         WindowSurface::X11(surface) => surface.is_maximized(),
-    }
-}
-
-pub(crate) fn close(window: &Window) {
-    match window.underlying_surface() {
-        WindowSurface::Wayland(toplevel) => toplevel.send_close(),
-        WindowSurface::X11(surface) => {
-            let _ = surface.close();
-        }
     }
 }
 

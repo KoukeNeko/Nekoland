@@ -41,7 +41,7 @@ use crate::{
     config::{self, DockPosition, MinimizeEffect, Show, Sort, Stack, View},
     dbus::LauncherUpdate,
     glass::Tier,
-    menubar::{close, Command, Entry, Overlay, MENU_BAR_HEIGHT},
+    menubar::{Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
     windows::{is_managed, window_names, CONFIRM_APP_ID, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
@@ -2656,7 +2656,7 @@ impl Nekoland {
                     (preview.windows[index].clone(), on_close)
                 });
             match picked {
-                Some((window, true)) => close(&window),
+                Some((window, true)) => self.close_window(&window),
                 Some((window, false)) if !right => {
                     self.dock.preview = None;
                     self.reveal_window(&window);

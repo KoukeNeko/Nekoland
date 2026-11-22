@@ -256,12 +256,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, Window> for Nekoland {
             Request::SetMaximized => state.maximize(window),
             Request::SetFullscreen { .. } => state.fullscreen(window),
             Request::UnsetMaximized | Request::UnsetFullscreen => state.restore(window),
-            Request::Close => match window.underlying_surface() {
-                WindowSurface::Wayland(toplevel) => toplevel.send_close(),
-                WindowSurface::X11(surface) => {
-                    let _ = surface.close();
-                }
-            },
+            Request::Close => state.close_window(window),
             // Where the taskbar shows the window; only an animation would use it.
             Request::SetRectangle { .. } | Request::Destroy => {}
             _ => {}

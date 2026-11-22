@@ -404,13 +404,18 @@ where
                     .to_logical(client_scale)
                     .to_i32_round(),
             )),
-            wl_region::Request::Subtract { x, y, width, height } => guard.rects.push((
-                RectangleKind::Subtract,
-                Rectangle::<i32, Client>::new((x, y).into(), (width, height).into())
+            wl_region::Request::Subtract { x, y, width, height } => {
+                let rect = Rectangle::<i32, Client>::new((x, y).into(), (width, height).into())
                     .to_f64()
                     .to_logical(client_scale)
-                    .to_i32_round(),
-            )),
+                    .to_i32_round();
+                // What it covers whole is gone, so that a region taken away and added back
+                // each frame, as Waydroid's is, does not grow without end.
+                guard.rects.retain(|(_, earlier)| !rect.contains_rect(*earlier));
+                if !guard.rects.is_empty() {
+                    guard.rects.push((RectangleKind::Subtract, rect));
+                }
+            }
             wl_region::Request::Destroy => {
                 // all is handled by our destructor
             }

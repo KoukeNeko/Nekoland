@@ -175,6 +175,9 @@ impl Nekoland {
     fn title_room(&self, window: &Window) -> i32 {
         match window.underlying_surface() {
             WindowSurface::X11(surface) => title_room(surface),
+            WindowSurface::Wayland(_) if crate::waydroid::is_task(window) => {
+                (TITLE_HEIGHT - crate::waydroid::CAPTION_HEIGHT).max(0)
+            }
             WindowSurface::Wayland(_) => 0,
         }
     }
@@ -198,6 +201,7 @@ impl Nekoland {
     fn covered_title(&self, window: &Window) -> Option<i32> {
         match window.underlying_surface() {
             WindowSurface::X11(surface) if !self.is_fullscreen(window) => covered(surface),
+            WindowSurface::Wayland(_) if crate::waydroid::is_task(window) => Some(crate::waydroid::CAPTION_HEIGHT),
             _ => None,
         }
     }
@@ -283,7 +287,7 @@ impl Nekoland {
             location: point,
         };
         match hit {
-            Hit::Close => menubar::close(&window),
+            Hit::Close => self.close_window(&window),
             Hit::Minimize => self.minimize(&window),
             Hit::Maximize => {
                 let maximized = matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_maximized());
@@ -306,14 +310,17 @@ impl Nekoland {
         true
     }
 
+    /// The bar over a window as it is drawn now, and where.
+    pub(crate) fn title_snapshot(&self, window: &Window) -> Option<(Picture, Rectangle<i32, Logical>)> {
+        let title = self.title_rect(window)?;
+        Some((self.title_picture(window, title.size.w, title.size.h)?, title))
+    }
+
     /// The bar's picture, drawn again when its title, width, focus, the scale or the colours
     /// changed.
     fn title_picture(&self, window: &Window, width: i32, height: i32) -> Option<Picture> {
-        let WindowSurface::X11(surface) = window.underlying_surface() else {
-            return None;
-        };
         let drawn = Drawn {
-            title: surface.title(),
+            title: crate::windows::window_names(window).0,
             width,
             height,
             look: crate::xsettings::is_nekoland_look(),

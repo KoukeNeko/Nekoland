@@ -72,13 +72,15 @@ pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
     matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_decorated())
 }
 
-/// Whether the compositor rounds the corners of a window: an X11 program's own, with a
-/// frame of its own, which it draws square, left where it was put. Maximized, fullscreen
-/// and arranged ones are square, as GTK's are.
-pub fn rounds_x11_corners(window: &Window) -> bool {
-    matches!(window.underlying_surface(), WindowSurface::X11(surface)
-        if surface.is_decorated() && crate::frame::is_own_window(surface))
-        && matches!(placement_of(window), Placement::Free)
+/// Whether the compositor rounds the corners of a window and shades it: an X11 program's own,
+/// with a frame of its own, or an Android app's, either drawn square, left where it was put.
+/// Maximized, fullscreen and arranged ones are square, as GTK's are.
+pub fn rounds_corners(window: &Window) -> bool {
+    let square = match window.underlying_surface() {
+        WindowSurface::X11(surface) => surface.is_decorated() && crate::frame::is_own_window(surface),
+        WindowSurface::Wayland(_) => crate::waydroid::is_task(window),
+    };
+    square && matches!(placement_of(window), Placement::Free)
 }
 
 /// The smallest and largest size a window says it can be; 0 is no limit.
@@ -224,11 +226,13 @@ pub fn window_names(window: &Window) -> (String, String) {
     }
 }
 
-/// Menus and tooltips of X11 programs are windows too, but not ones to list, switch to or arrange.
+/// Menus and tooltips of X11 programs are windows too, but not ones to list, switch to or
+/// arrange, and so is the one Android's input method draws in.
 pub fn is_managed(window: &Window) -> bool {
     !window
         .x11_surface()
         .is_some_and(|surface| surface.is_override_redirect())
+        && !crate::waydroid::is_input_method(window)
 }
 
 impl Nekoland {
@@ -461,8 +465,22 @@ impl Nekoland {
         }
         data(window).placed.set(true);
 
+        // One of a size of its own cannot be maximized, but can have asked to be before its
+        // size was known, as Waydroid's windows do: it is placed as any other.
+        let fixed = has_fixed_size(window) && matches!(placement_of(window), Placement::Maximized);
+        if fixed {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|pending| {
+                    pending.states.unset(ToplevelState::Maximized);
+                    pending.size = None;
+                });
+                toplevel.send_pending_configure();
+            }
+            mark(window, None, false);
+            data(window).restore.take();
+        }
         // One that asked to be fullscreen or maximized before it was shown is in place already.
-        let free = matches!(placement_of(window), Placement::Free | Placement::Arranged);
+        let free = fixed || matches!(placement_of(window), Placement::Free | Placement::Arranged);
         if let Some(area) = self.usable_area().filter(|_| free) {
             let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
             let app_id = window_names(window).1;
@@ -479,6 +497,20 @@ impl Nekoland {
         }
         self.focus_window(window);
         self.motion_open(window);
+    }
+
+    /// Puts Android's input method window, over the rest, where Android's display is for the
+    /// Android window typed into, so that what it shows is by the text, as Android has it.
+    /// It takes the keyboard from none.
+    pub fn place_input_method(&mut self, window: &Window) {
+        let Some(typed_into) = self.focused_window().filter(crate::waydroid::is_task) else {
+            return;
+        };
+        let Some(location) = self.space.element_location(&typed_into) else {
+            return;
+        };
+        self.space
+            .map_element(window.clone(), location - typed_into.geometry().loc, false);
     }
 
     fn remember_place(&self, window: &Window) {
@@ -582,7 +614,7 @@ impl Nekoland {
                 }
             }
             "fullscreen" => self.toggle_fullscreen(window),
-            "close" => crate::menubar::close(window),
+            "close" => self.close_window(window),
             _ => {
                 let Some(arrangement) = arrange::arrangement(command) else {
                     return false;
@@ -1029,6 +1061,20 @@ impl Nekoland {
             .cloned();
         if let Some(window) = window {
             self.forget_window(&window);
+        }
+    }
+
+    /// Asks a window to close. Waydroid always closes a task window's task, and Android takes
+    /// the task's picture away first: the window goes now, with the picture it shows.
+    pub(crate) fn close_window(&mut self, window: &Window) {
+        if crate::waydroid::is_task(window) {
+            self.forget_window(window);
+        }
+        match window.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => toplevel.send_close(),
+            WindowSurface::X11(surface) => {
+                let _ = surface.close();
+            }
         }
     }
 

@@ -22,6 +22,7 @@ use smithay::{
 };
 
 use super::xdg_shell;
+use smithay::wayland::seat::WaylandFocus;
 use smithay::xwayland::XWaylandClientData;
 
 impl CompositorHandler for Nekoland {
@@ -72,6 +73,20 @@ impl CompositorHandler for Nekoland {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        // A task window Android took away closes as a window whose program quit does, with
+        // the picture it showed.
+        let lost = self
+            .all_windows()
+            .find(|window| *surface == root && window.wl_surface().as_deref() == Some(&root))
+            .filter(|window| crate::waydroid::loses_body(window))
+            .cloned();
+        if let Some(window) = lost {
+            self.forget_window(&window);
+        }
         on_commit_buffer_handler::<Self>(surface);
         if let Some(redraw) = &self.redraw {
             redraw.ping();
@@ -90,13 +105,20 @@ impl CompositorHandler for Nekoland {
             });
         }
         if !is_sync_subsurface(surface) {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
-            if let Some(window) = self.window_for_surface(&root) {
+            // Minimized windows and those on other desktops too: a task window's body is
+            // its geometry only as long as each commit gives it again.
+            let window = self
+                .all_windows()
+                .find(|window| window.wl_surface().as_deref() == Some(&root))
+                .cloned();
+            if let Some(window) = window {
                 window.on_commit();
-                self.place_new_window(&window);
+                if crate::waydroid::is_input_method(&window) {
+                    crate::waydroid::pass_pointer_through(&window);
+                    self.place_input_method(&window);
+                } else if crate::waydroid::fit_body(&window, self.menu_bar.dark) {
+                    self.place_new_window(&window);
+                }
             }
         };
 

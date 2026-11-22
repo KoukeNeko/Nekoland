@@ -2,7 +2,8 @@
 //! GTK does; an X11 one that draws its own frame, as Electron's do, draws it square because
 //! X11 gives it no way to know the desktop is composited, so the corners are cut here, by a
 //! shader that draws the window's surface within a rounded rectangle. Nor can it have the
-//! soft shadow GTK's windows draw around themselves, so that is drawn here too.
+//! soft shadow GTK's windows draw around themselves, so that is drawn here too. Android's
+//! windows, which Waydroid hands over square and without a shadow, are given both too.
 
 use std::cell::{OnceCell, RefCell};
 

@@ -18,7 +18,9 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
+                memory::MemoryRenderBufferRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                utils::RescaleRenderElement,
                 Element, Id, Kind, RenderElement,
             },
             gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
@@ -33,6 +35,7 @@ use smithay::{
 };
 
 use crate::{
+    render::SceneElement,
     text::Picture,
     windows::is_managed,
     Nekoland,
@@ -300,6 +303,8 @@ struct Ghost {
     id: Id,
     texture: GlesTexture,
     rect: Rectangle<i32, Logical>,
+    /// The bar Nekoland drew over the window, which goes as the window does.
+    bar: Option<(Picture, Rectangle<i32, Logical>)>,
     started: Instant,
 }
 
@@ -498,9 +503,12 @@ fn desktops_in_view(view: f64) -> std::ops::RangeInclusive<usize> {
 
 /// When a view that sets off now last moved: a frame ago, so that the first frame drawn
 /// after a key is pressed has moved already.
+/// How long a frame shows.
+const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
 fn first_frame_ago() -> Instant {
     let now = Instant::now();
-    now.checked_sub(std::time::Duration::from_millis(16)).unwrap_or(now)
+    now.checked_sub(FRAME).unwrap_or(now)
 }
 
 /// The speed the view sets off at, `away` desktops from where it goes, going `speed`: one
@@ -681,6 +689,37 @@ impl Nekoland {
             .collect()
     }
 
+    /// The bars over the windows closed a moment ago, shrinking and fading with them.
+    pub fn ghost_bar_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        output_loc: Point<i32, Logical>,
+        scale: f64,
+    ) -> Vec<SceneElement> {
+        self.motion
+            .ghosts
+            .iter()
+            .filter_map(|ghost| {
+                let (picture, title) = ghost.bar.as_ref()?;
+                let progress = CLOSE.at(ghost.started).clamp(0.0, 1.0);
+                let factor = 1.0 - (1.0 - CLOSE_SCALE) * progress;
+                let at: Point<i32, Physical> = (title.loc - output_loc).to_physical_precise_round(scale);
+                let bar = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    at.to_f64(),
+                    &picture.buffer,
+                    Some((1.0 - progress) as f32),
+                    None,
+                    None,
+                    Kind::Unspecified,
+                )
+                .ok()?;
+                let pivot: Point<i32, Physical> = (center(ghost.rect) - output_loc).to_physical_precise_round(scale);
+                Some(SceneElement::ZoomedPicture(RescaleRenderElement::from_element(bar, pivot, factor)))
+            })
+            .collect()
+    }
+
     /// A window was shown for the first time: it grows a little where it is. One started
     /// from the applications does too, as they are gone by then, back to the desktop.
     pub fn motion_open(&mut self, window: &Window) {
@@ -739,6 +778,17 @@ impl Nekoland {
         {
             return;
         }
+        // One gone before a frame could show it leaves nothing: Waydroid makes and drops
+        // windows of Android's within a millisecond.
+        let unseen = self
+            .motion
+            .opening
+            .iter()
+            .any(|opening| &opening.window == window && opening.started.elapsed() < FRAME);
+        if unseen {
+            self.motion.opening.retain(|opening| &opening.window != window);
+            return;
+        }
         let Some(pose) = self.window_pose(window) else {
             return;
         };
@@ -760,6 +810,7 @@ impl Nekoland {
             id: Id::new(),
             texture,
             rect: Rectangle::new(pose.actual.loc - window.geometry().loc + bbox.loc, bbox.size),
+            bar: self.title_snapshot(window),
             started: Instant::now(),
         });
     }

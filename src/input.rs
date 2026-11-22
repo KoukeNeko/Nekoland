@@ -3,7 +3,7 @@ use smithay::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
-    desktop::{LayerSurface, Window, WindowSurface},
+    desktop::LayerSurface,
     input::{
         keyboard::{xkb, FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, RelativeMotionEvent},
@@ -674,7 +674,11 @@ impl Nekoland {
                 self.window_command("resize");
             }
             "overview" => self.toggle_overview(),
-            "close-window" => close(focused),
+            "close-window" => {
+                if let Some(window) = &focused {
+                    self.close_window(window);
+                }
+            }
             "quit-app" => {
                 if let Some(window) = focused {
                     self.quit_app(&window_names(&window).1);
@@ -794,6 +798,12 @@ impl Nekoland {
     /// Asks the window that has the keyboard to do an application action, with the keys its
     /// application does it with; `shift` adds Shift to them.
     pub fn app_action(&mut self, action: &shortcuts::Action, shift: bool) {
+        // An Android app has no tabs, and closes its window itself without what it showed:
+        // its window is closed as Nekoland closes one.
+        if let Some(window) = self.focused_window().filter(|window| action.id == "close" && crate::waydroid::is_task(window)) {
+            self.close_window(&window);
+            return;
+        }
         let app_id = self.focused_window().map(|window| window_names(&window).1).unwrap_or_default();
         for combo in shortcuts::native(action, &app_id, &self.config.app_shortcuts) {
             self.send_combo(&if shift { combo.with_shift() } else { combo });
@@ -905,16 +915,6 @@ impl Nekoland {
                 self.run_action(action, false);
             }
         }
-    }
-}
-
-fn close(window: Option<Window>) {
-    match window.as_ref().map(Window::underlying_surface) {
-        Some(WindowSurface::Wayland(toplevel)) => toplevel.send_close(),
-        Some(WindowSurface::X11(surface)) => {
-            let _ = surface.close();
-        }
-        None => {}
     }
 }
 
