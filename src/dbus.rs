@@ -255,9 +255,14 @@ pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
         requests: requests.clone(),
     };
     connection.object_server().at(WATCHER_PATH, watcher)?;
-    // Another panel may already be the watcher; then its items are not shown here.
-    if let Err(err) = connection.request_name_with_flags(WATCHER_NAME, KEPT.into()) {
-        tracing::warn!("status items are shown elsewhere: {err}");
+    // Another panel may already be the watcher, as GNOME on another seat is; waiting in line
+    // takes the name when it ends, and the items register here again then.
+    match connection.request_name_with_flags(WATCHER_NAME, Default::default()) {
+        Ok(zbus::fdo::RequestNameReply::InQueue) => {
+            tracing::warn!("status items are shown elsewhere until that panel ends")
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("status items are shown elsewhere: {err}"),
     }
     // Qt only exports its menus when there is a registrar, on Wayland too; X11 programs
     // say where their menus are through it.
