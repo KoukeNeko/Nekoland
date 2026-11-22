@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windows
+Comment=The Windows desktop
+Comment[zh_TW]=Windows 桌面
+Exec=nekoland-settings --windows-app
+TryExec=xfreerdp3
+Icon=computer
+StartupWMClass=nekoland-windows
+NoDisplay=true

@@ -2184,6 +2184,8 @@ fn show_desktop() -> Result<(), String> {
         "+home-drive".into(),
         "+dynamic-resolution".into(),
         "/t:Windows".into(),
+        // Known as Windows in the Dock and the menu bar, by the launcher of that name.
+        format!("/wm-class:{UNNAMED_APP}"),
     ]);
     // Connecting is the way to ask whether Windows has started: after a connection that only
     // signs in, it holds the next one up for a minute. One that ends at once was not let in.
