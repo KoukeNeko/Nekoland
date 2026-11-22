@@ -47,15 +47,18 @@ uniform vec2 dst_size;
 uniform vec2 uv_origin;
 uniform vec2 uv_size;
 uniform float radius;
+uniform vec2 trim;
 varying vec2 v_coords;
 void main() {
     vec4 color = texture2D(tex, v_coords);
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0);
 #endif
-    // v_coords is in the whole texture, which may be larger than what is shown.
-    vec2 centered = (v_coords - (uv_origin + uv_size * 0.5)) / uv_size * dst_size;
-    vec2 q = abs(centered) - (dst_size * 0.5 - vec2(radius));
+    // v_coords is in the whole texture, which may be larger than what is shown; the right
+    // and bottom of what is shown are left out by trim.
+    vec2 shown = dst_size - trim;
+    vec2 centered = (v_coords - uv_origin) / uv_size * dst_size - shown * 0.5;
+    vec2 q = abs(centered) - (shown * 0.5 - vec2(radius));
     float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     gl_FragColor = color * clamp(0.5 - distance, 0.0, 1.0) * alpha;
 }
@@ -76,6 +79,7 @@ fn program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
                     UniformName::new("uv_origin", UniformType::_2f),
                     UniformName::new("uv_size", UniformType::_2f),
                     UniformName::new("radius", UniformType::_1f),
+                    UniformName::new("trim", UniformType::_2f),
                 ];
                 renderer
                     .compile_custom_texture_shader(ROUNDED, &uniforms)
@@ -87,8 +91,14 @@ fn program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
 }
 
 /// `elements` with the surfaces among them drawn `radius` physical pixels round at the
-/// corners; unchanged where the shader cannot be had.
-pub fn round(renderer: &mut GlesRenderer, elements: Vec<SceneElement>, radius: i32) -> Vec<SceneElement> {
+/// corners, without `trim` physical pixels of their right and bottom; unchanged where the
+/// shader cannot be had.
+pub fn round(
+    renderer: &mut GlesRenderer,
+    elements: Vec<SceneElement>,
+    radius: i32,
+    trim: (i32, i32),
+) -> Vec<SceneElement> {
     let Some(program) = program(renderer) else {
         return elements;
     };
@@ -96,7 +106,7 @@ pub fn round(renderer: &mut GlesRenderer, elements: Vec<SceneElement>, radius: i
         .into_iter()
         .map(|element| match element {
             SceneElement::Surface(inner) => {
-                SceneElement::Rounded(RoundedSurface { inner, program: program.clone(), radius })
+                SceneElement::Rounded(RoundedSurface { inner, program: program.clone(), radius, trim })
             }
             other => other,
         })
@@ -107,6 +117,7 @@ pub struct RoundedSurface {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     program: GlesTexProgram,
     radius: i32,
+    trim: (i32, i32),
 }
 
 impl Element for RoundedSurface {
@@ -174,6 +185,7 @@ impl RenderElement<GlesRenderer> for RoundedSurface {
                 Uniform::new("uv_origin", ((src.loc.x / tex_size.w) as f32, (src.loc.y / tex_size.h) as f32)),
                 Uniform::new("uv_size", ((src.size.w / tex_size.w) as f32, (src.size.h / tex_size.h) as f32)),
                 Uniform::new("radius", self.radius as f32),
+                Uniform::new("trim", (self.trim.0 as f32, self.trim.1 as f32)),
             ],
         );
         let drawn = RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);

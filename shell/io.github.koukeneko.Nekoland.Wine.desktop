@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wine
+Comment=Run Windows programs
+Comment[zh_TW]=執行 Windows 程式
+Exec=nekoland-settings --wine %f
+TryExec=wine
+Icon=application-x-executable
+NoDisplay=true
+MimeType=application/vnd.microsoft.portable-executable;application/x-msdownload;application/x-ms-dos-executable;application/x-msi;

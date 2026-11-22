@@ -4,6 +4,7 @@
 //! and puts each change in effect; the rest is the system's, through its own tools.
 
 mod alert;
+mod apt;
 mod program;
 mod backup;
 mod bluetooth;
@@ -19,6 +20,7 @@ mod themes;
 mod users;
 mod web;
 mod wifi;
+mod windows;
 #[path = "settings/lock_screen.rs"]
 mod lock_screen;
 #[path = "settings/hover.rs"]
@@ -326,6 +328,19 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(backup::BACKUP_FLAG) {
         return backup::back_up_now();
     }
+    // A launcher of Windows' programs runs this, with no window of its own.
+    if std::env::args().nth(1).as_deref() == Some(windows::OPEN_FLAG) {
+        let (entry, file) = (std::env::args().nth(2), std::env::args().nth(3));
+        return windows::open(entry.as_deref(), file.as_deref());
+    }
+    // Files opens a Windows program with this, in Wine, with no window of its own.
+    if std::env::args().nth(1).as_deref() == Some(windows::WINE_FLAG) {
+        return windows::run(std::env::args().nth(2).as_deref());
+    }
+    // Files asks this what Windows' programs add to a file's menu, with no window.
+    if std::env::args().nth(1).as_deref() == Some(windows::MENU_FLAG) {
+        return windows::menu(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     // The environment comes along so that a page asked for while Settings is open is shown.
     let app = adw::Application::builder()
         .application_id(APP_ID)
@@ -521,6 +536,7 @@ fn build(app: &adw::Application) {
                 "印表機" => printers::printers_page().upcast(),
                 "軟體更新" => updates_page().upcast(),
                 "備份" => backup::backup_page().upcast(),
+                "Windows App" => windows::windows_page().upcast(),
                 "共享" => sharing_page().upcast(),
                 "關於" => about_page().upcast(),
                 _ => unreachable!("no page named {name}"),
@@ -560,6 +576,7 @@ fn build(app: &adw::Application) {
             ("通知", "preferences-system-notifications-symbolic"),
             ("軟體更新", "software-update-available-symbolic"),
             ("備份", "document-save-symbolic"),
+            ("Windows App", "application-x-executable-symbolic"),
         ],
         vec![
             ("使用者", "system-users-symbolic"),

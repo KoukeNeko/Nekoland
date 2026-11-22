@@ -317,7 +317,8 @@ figure{{margin:0;text-align:center}} img{{width:66px;height:66px;vertical-align:
 def desktop_icons():
     names = set()
     for data in DATA_DIRS:
-        for path in glob.glob(f"{data}/applications/*.desktop"):
+        # Those in folders within too, where Wine keeps the entries of the programs it installs.
+        for path in glob.glob(f"{data}/applications/**/*.desktop", recursive=True):
             entry = configparser.ConfigParser(interpolation=None, strict=False)
             try:
                 entry.read(path, encoding="utf-8")

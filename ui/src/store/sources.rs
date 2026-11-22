@@ -1272,28 +1272,8 @@ fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|w| w.to_string()).collect()
 }
 
-/// apt-get as Market runs it, with nothing to answer: a configuration file changed
-/// both here and in the new version keeps the one here, as dpkg would otherwise ask on a
-/// closed input and leave the package half set up.
-/// Its status lines go to what it prints, where `run_one` reads them for the progress.
-pub const APT_GET: [&str; 12] = [
-    "env",
-    "DEBIAN_FRONTEND=noninteractive",
-    "apt-get",
-    "-y",
-    "-o",
-    "Dpkg::Options::=--force-confdef",
-    "-o",
-    "Dpkg::Options::=--force-confold",
-    "-o",
-    APT_LOCK_WAIT,
-    "-o",
-    "APT::Status-Fd=1",
-];
-
-/// apt fails at once while another apt holds its lock, as a second install started before
-/// the first ends would; this has it wait for that one instead, for up to ten minutes.
-const APT_LOCK_WAIT: &str = "DPkg::Lock::Timeout=600";
+pub use crate::apt::APT_GET;
+use crate::apt::APT_LOCK_WAIT;
 
 fn apt_update() -> Vec<String> {
     words(&["apt-get", "-o", APT_LOCK_WAIT, "update"])

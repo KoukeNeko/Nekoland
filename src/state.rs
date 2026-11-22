@@ -389,7 +389,7 @@ impl Nekoland {
         };
         let window_under = || {
             // In the overview, windows are thumbnails to pick, not something to point into.
-            if self.overview.is_some() {
+            if self.overview.is_some() || self.frame_hit(pos).is_some() {
                 return None;
             }
             self.space.element_under(pos).and_then(|(window, location)| {

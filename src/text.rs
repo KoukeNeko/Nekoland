@@ -565,9 +565,10 @@ fn data_dirs() -> Vec<PathBuf> {
 /// removed without them.
 pub fn watch_applications() {
     let changed = || -> Vec<Option<std::time::SystemTime>> {
-        data_dirs()
+        let (_, folders) = applications(&data_dirs());
+        folders
             .iter()
-            .map(|dir| std::fs::metadata(dir.join("applications")).and_then(|meta| meta.modified()).ok())
+            .map(|folder| std::fs::metadata(folder).and_then(|meta| meta.modified()).ok())
             .collect()
     };
     std::thread::spawn(move || {
@@ -579,6 +580,15 @@ pub fn watch_applications() {
             }
             // A package puts its entry down before its icons: wait for the rest of it.
             std::thread::sleep(std::time::Duration::from_secs(5));
+            // GIO, which lists the applications, watches these folders but not the ones
+            // within them, where Wine keeps its programs' entries: a file come and gone in
+            // the person's own has it look again.
+            if let Some(folder) = data_dirs().first().map(|dir| dir.join("applications")) {
+                let come = folder.join(".nekoland-changed");
+                if std::fs::write(&come, "").is_ok() {
+                    let _ = std::fs::remove_file(&come);
+                }
+            }
             seen = changed();
             match std::process::Command::new("nekoland-conform-icons").arg("--refresh").status() {
                 Ok(status) if status.success() => {
@@ -597,7 +607,8 @@ fn lookup(app_id: &str) -> AppInfo {
     let dirs = data_dirs();
     let Some(entry) = desktop_entry(&dirs, app_id) else {
         return AppInfo {
-            name: None,
+            // A Windows program of Wine's is named after its file, as "notepad.exe".
+            name: app_id.to_lowercase().strip_suffix(".exe").map(str::to_string),
             icon_name: Some(app_id.to_lowercase()),
             exec: None,
         };
@@ -641,34 +652,47 @@ fn strip_field_codes(exec: &str) -> String {
 }
 
 /// The desktop entry named after the application, or failing that the one that claims its window class.
+/// The desktop entries of the data folders and the folders they are in, those within
+/// `applications` too, where Wine keeps the entries of the programs it installs.
+fn applications(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut entries, mut folders) = (Vec::new(), Vec::new());
+    let mut left: Vec<PathBuf> = dirs.iter().rev().map(|dir| dir.join("applications")).collect();
+    while let Some(folder) = left.pop() {
+        let Ok(inside) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        folders.push(folder);
+        for path in inside.flatten().map(|entry| entry.path()) {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("desktop") {
+                entries.push(path);
+            } else if path.is_dir() {
+                left.push(path);
+            }
+        }
+    }
+    (entries, folders)
+}
+
 fn desktop_entry(dirs: &[PathBuf], app_id: &str) -> Option<String> {
     let wanted = app_id.to_lowercase();
     let mut by_class = None;
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
-            continue;
-        };
-        for path in entries.flatten().map(|entry| entry.path()) {
-            if path.extension().and_then(|ext| ext.to_str()) != Some("desktop") {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_lowercase();
-            if stem == wanted {
-                return std::fs::read_to_string(path).ok();
-            }
-            if by_class.is_none() {
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    let claims = text
-                        .lines()
-                        .filter_map(|line| line.strip_prefix("StartupWMClass="))
-                        .any(|class| class.trim().to_lowercase() == wanted);
-                    if claims {
-                        by_class = Some(text);
-                    }
+    for path in applications(dirs).0 {
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        if stem == wanted {
+            return std::fs::read_to_string(path).ok();
+        }
+        if by_class.is_none() {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let claims = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("StartupWMClass="))
+                    .any(|class| class.trim().to_lowercase() == wanted);
+                if claims {
+                    by_class = Some(text);
                 }
             }
         }

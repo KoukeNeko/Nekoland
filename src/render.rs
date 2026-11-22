@@ -444,6 +444,10 @@ fn desktop_thumbnails(
         let mut shown = Rectangle::new(rect.loc - output_loc, rect.size);
         if index.is_some() {
             shown.size.w = shown.size.w.min(row_end - rect.loc.x);
+            // Wholly past the row's end, it would make a rectangle of negative width.
+            if shown.size.w <= 0 {
+                continue;
+            }
         }
         let Some(crop) = crop.intersection(shown.to_physical_precise_round(scale))
         else {
@@ -936,6 +940,10 @@ fn floating_elements(
         );
     }
     for window in windows {
+        // Before the window, which a bar over a title bar of the program's own covers.
+        if state.window_pose(window).is_some_and(|pose| pose.is_still()) {
+            elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
+        }
         elements.extend(window_elements(state, renderer, window, output_loc, scale));
         let radius = state
             .config
@@ -944,9 +952,6 @@ fn floating_elements(
             .copied()
             .unwrap_or_default();
         if let Some(pose) = state.window_pose(window) {
-            if pose.is_still() {
-                elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
-            }
             let area = pose_area(pose, output_loc, scale);
             elements.extend(
                 glass
@@ -1221,10 +1226,12 @@ fn windows_on_glass(
         let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
         if rounds_x11_corners(window) {
             let radius = (f64::from(WINDOW_RADIUS) * scale).round() as i32;
-            elements = crate::rounded::round(renderer, elements, radius);
+            let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
+            elements = crate::rounded::round(renderer, elements, radius, (trim.w, trim.h));
         }
         if pose.is_still() {
-            elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
+            // In front of the window, which a bar over a title bar of the program's own covers.
+            elements.splice(0..0, crate::frame::title_element(state, renderer, window, output_loc, scale));
         }
         let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
         // These windows are mostly transparent shadow margin, which glass would blur: the
@@ -1251,7 +1258,7 @@ fn windows_on_glass(
             kept.push(id);
         }
         if rounds_x11_corners(window) {
-            let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size);
+            let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
             let focused = state.focused_window().as_ref() == Some(window);
             elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));
         }

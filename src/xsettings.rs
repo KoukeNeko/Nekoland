@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
         Mutex,
     },
 };
@@ -23,6 +23,16 @@ const DPI_UNIT: f64 = 1024.0;
 static DAEMON: AtomicI32 = AtomicI32::new(0);
 /// Gathering and writing the file is one at a time, so that the last to ask has the last say.
 static WRITING: Mutex<()> = Mutex::new(());
+/// Whether GTK's programs are in Nekoland's look, as of the last time the settings were read.
+/// The GTK 3 theme Settings chooses while Nekoland's look is on.
+const NEKOLAND_THEME: &str = "Nekoland";
+static NEKOLAND_LOOK: AtomicBool = AtomicBool::new(true);
+
+/// Whether the look Settings gives GTK's programs is on, for what the compositor draws as
+/// they would.
+pub fn is_nekoland_look() -> bool {
+    NEKOLAND_LOOK.load(Ordering::Relaxed)
+}
 
 #[derive(Default, PartialEq, Debug)]
 struct Values {
@@ -93,7 +103,9 @@ fn path() -> Option<PathBuf> {
 
 fn write() -> Option<PathBuf> {
     let path = path()?;
-    if let Err(err) = std::fs::write(&path, render(&read())) {
+    let values = read();
+    NEKOLAND_LOOK.store(values.theme == NEKOLAND_THEME, Ordering::Relaxed);
+    if let Err(err) = std::fs::write(&path, render(&values)) {
         tracing::warn!("{}: {err}", path.display());
         return None;
     }

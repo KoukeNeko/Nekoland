@@ -233,7 +233,27 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   power page sets power-profiles-daemon's 電源模式, and 協助工具 turns Orca on and sets 螢幕縮放. 備份 copies the
   home folder with rsync to a folder elsewhere, a dated folder each time with unchanged files
   hard-linked to the last, now or daily through a systemd user timer
-  (`nekoland-settings --backup`). Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  (`nekoland-settings --backup`). Windows App installs Wine and keeps bottles of it, each a
+  prefix with its own Windows folders and programs: it runs a Windows program in the one
+  chosen, turns DXVK on and off and installs fonts and runtimes there through winetricks,
+  sets the Windows it says it is, and opens Wine's settings, registry editor, task manager
+  and uninstaller for it; a bottle made there can run with the newest of Kron4ek's builds
+  of Wine, which the page downloads, in place of Ubuntu's. A bottle follows Nekoland's
+  appearance: dark, it goes without Wine's theme, in Nekoland's colours or libadwaita's,
+  and its programs are told Windows is dark; a Windows program opened from Files
+  (`nekoland-settings --wine`) is given the look first. It also
+  installs Windows 11 Enterprise's
+  90-day evaluation in a dockur/windows container under rootless podman with KVM, and adds
+  a program of it as an application that opens as its own window through FreeRDP's
+  RemoteApp (`nekoland-settings --windows-app`): the page has Windows list the programs in
+  its Start menu, with their icons and the types of file they open, so that such a file
+  opens in Windows from Files. One connection is kept for all of them, in which an agent
+  of Nekoland's (`ui/src/windows/agent.ps1`) starts the programs and tells their windows
+  apart, so that each is its own application in the Dock under Nekoland's title bar.
+  A `.exe` or `.msi` opened in Files runs with Wine. Files' right-click menu has a
+  Windows submenu (`nekoland-settings --windows-menu`) with what Windows' programs add to
+  the file's menu there, as Windows last listed it for files of the kind, and the
+  programs installed in Wine's bottles to open the file with. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's
@@ -544,7 +564,9 @@ controls keep their own look.
 X11 programs that do not draw their own title bar get one from Nekoland: the window's title,
 and minimize, maximize and close at its right, above the window. Its edges and the bar's top
 resize it, as an X11 program's own request to do so does. Maximized, it sits under the menu
-bar; fullscreen, it is not drawn.
+bar; fullscreen, it is not drawn. It is drawn as GTK's header bar is: in Nekoland's look
+while Settings has that on, in Adwaita's otherwise. A Windows App program's window, which
+has Windows' title bar in it, has the bar over that one.
 
 `nekoland-calendar`, from `ui/`, is a small calendar of GTK's and libadwaita's own widgets
 with no styling of its own: a month, the chosen day's events, kept in

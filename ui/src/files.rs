@@ -1219,6 +1219,16 @@ impl Window {
             }
         }));
         self.actions.add_action(&open_with);
+        let windows_menu = gio::SimpleAction::new("windows-menu", Some(glib::VariantTy::STRING));
+        windows_menu.connect_activate(on!(self, |w, _a, value| {
+            let chosen = w.pane().map(|pane| pane.selected_files()).unwrap_or_default();
+            if let (Some(item), [file]) = (value.and_then(|v| v.get::<String>()), chosen.as_slice()) {
+                if let Some(path) = file.path() {
+                    ops::windows_item(&w, &item, &path);
+                }
+            }
+        }));
+        self.actions.add_action(&windows_menu);
         let go = gio::SimpleAction::new("go", Some(glib::VariantTy::STRING));
         go.connect_activate(on!(self, |w, _a, value| {
             let (Some(name), Some(pane)) = (value.and_then(|v| v.get::<String>()), w.pane()) else {

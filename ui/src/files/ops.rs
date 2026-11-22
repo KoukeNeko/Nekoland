@@ -26,6 +26,8 @@ const COPIED_FILES: &str = "x-special/gnome-copied-files";
 const URI_LIST: &str = "text/uri-list";
 /// The name a new folder is given, as the desktop names one.
 pub const NEW_FOLDER: &str = "未命名檔案夾";
+/// What nekoland-settings is asked with for what Windows' programs add to a file's menu.
+const WINDOWS_MENU_FLAG: &str = "--windows-menu";
 
 // The menus.
 
@@ -84,6 +86,12 @@ pub fn menu(
             let apps = open_with_menu(info);
             if apps.n_items() > 0 {
                 first.append_submenu(Some("打開檔案的應用程式"), &apps);
+            }
+        }
+        if let Some(path) = info_file(info).and_then(|file| file.path()) {
+            let windows = windows_menu(&path);
+            if windows.n_items() > 0 {
+                first.append_submenu(Some("Windows"), &windows);
             }
         }
     }
@@ -314,6 +322,55 @@ fn open_with_menu(info: &gio::FileInfo) -> gio::Menu {
         }
     }
     menu
+}
+
+/// What Windows' programs add to a file's right-click menu there, as nekoland-settings says
+/// them: a line an item, its submenus' names and its own, tabs between.
+fn windows_menu(file: &Path) -> gio::Menu {
+    let menu = gio::Menu::new();
+    let Ok(said) = std::process::Command::new("nekoland-settings")
+        .arg(WINDOWS_MENU_FLAG)
+        .arg(file)
+        .output()
+    else {
+        return menu;
+    };
+    let mut submenus: Vec<(String, gio::Menu)> = Vec::new();
+    for line in String::from_utf8_lossy(&said.stdout).lines() {
+        let mut into = menu.clone();
+        let (mut above, names) = (String::new(), line.split('\t').collect::<Vec<_>>());
+        let Some((label, parents)) = names.split_last() else {
+            continue;
+        };
+        for parent in parents {
+            above = format!("{above}\t{parent}");
+            into = match submenus.iter().find(|(path, _)| *path == above) {
+                Some((_, submenu)) => submenu.clone(),
+                None => {
+                    let submenu = gio::Menu::new();
+                    into.append_submenu(Some(&parent.replace('_', "__")), &submenu);
+                    submenus.push((above.clone(), submenu.clone()));
+                    submenu
+                }
+            };
+        }
+        let item = gio::MenuItem::new(Some(&label.replace('_', "__")), None);
+        item.set_action_and_target_value(Some("win.windows-menu"), Some(&line.to_variant()));
+        into.append_item(&item);
+    }
+    menu
+}
+
+/// Has Windows do one of the items it has for a file, named as [`windows_menu`] read it.
+pub fn windows_item(win: &Rc<Window>, item: &str, file: &Path) {
+    let asked = std::process::Command::new("nekoland-settings")
+        .arg(WINDOWS_MENU_FLAG)
+        .arg(file)
+        .args(item.split('\t'))
+        .spawn();
+    if let Err(err) = asked {
+        win.alert("無法執行 Windows 的項目", Some(&err.to_string()));
+    }
 }
 
 // Opening.

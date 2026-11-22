@@ -400,6 +400,23 @@ impl Nekoland {
         if let (Some(xwm), Some(surface)) = (self.xwm.as_mut(), window.x11_surface()) {
             let _ = xwm.raise_window(surface);
         }
+        // An X11 program's dialogs are windows of their own that name the one they are for,
+        // and that one waits for them: they stay in front of it, and have the keyboard.
+        let dialogs: Vec<Window> = window.x11_surface().map_or_else(Vec::new, |surface| {
+            let id = surface.window_id();
+            self.space
+                .elements()
+                .filter(|other| other.x11_surface().is_some_and(|dialog| dialog.is_transient_for() == Some(id)))
+                .cloned()
+                .collect()
+        });
+        for dialog in &dialogs {
+            self.space.raise_element(dialog, true);
+            if let (Some(xwm), Some(surface)) = (self.xwm.as_mut(), dialog.x11_surface()) {
+                let _ = xwm.raise_window(surface);
+            }
+        }
+        let window = dialogs.last().unwrap_or(window);
         self.raise_pins();
         // The on-screen keyboard types into the window that has the keyboard, so it never
         // takes it, whatever asks: a click, its own activation, the switcher.

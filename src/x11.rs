@@ -137,7 +137,7 @@ impl XwmHandler for Nekoland {
         }
         let size = surface.geometry().size;
         // A window with a title bar of ours is centred with it, and below the top.
-        let bar = if frame::needs_title(&surface) { frame::TITLE_HEIGHT } else { 0 };
+        let bar = frame::title_room(&surface);
         let location = state
             .usable_area()
             .map(|area| {
