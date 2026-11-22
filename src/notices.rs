@@ -384,6 +384,20 @@ impl Nekoland {
             }
             // Its program took it back: from the screen and from the Notification Center.
             Event::CloseNotification(id) => self.close_notice(*id, CLOSED),
+            Event::LauncherGone(sender) => {
+                let gone: Vec<u32> = self
+                    .notices
+                    .banners
+                    .iter()
+                    .map(|banner| &banner.notification)
+                    .chain(self.notices.kept.iter().map(|kept| &kept.notification))
+                    .filter(|notification| notification.resident && &notification.sender == sender)
+                    .map(|notification| notification.id)
+                    .collect();
+                for id in gone {
+                    self.close_notice(id, CLOSED);
+                }
+            }
             _ => {}
         }
     }
@@ -650,6 +664,8 @@ mod tests {
             actions: Vec::new(),
             timeout: Expiry::AsSet,
             transient: false,
+            resident: false,
+            sender: String::new(),
         }
     }
 

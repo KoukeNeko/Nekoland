@@ -180,6 +180,10 @@ pub struct Notification {
     pub timeout: Expiry,
     /// Whether the program asked for it to be shown and not kept, with the `transient` hint.
     pub transient: bool,
+    /// Whether it stands for something its program is doing, with the `resident` hint, as
+    /// Android's ongoing ones do, and the bus name that sent it: it goes when that does.
+    pub resident: bool,
+    pub sender: String,
 }
 
 /// How long a notification is shown.
@@ -381,6 +385,7 @@ impl Notifications {
         actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
+        #[zbus(header)] header: Header<'_>,
     ) -> u32 {
         let id = if replaces_id != 0 {
             replaces_id
@@ -409,10 +414,12 @@ impl Notifications {
             }
             _ => Expiry::AsSet,
         };
-        let transient = hints
-            .get("transient")
-            .and_then(|value| bool::try_from(value.clone()).ok())
-            .unwrap_or(false);
+        let flag = |name: &str| {
+            hints
+                .get(name)
+                .and_then(|value| bool::try_from(value.clone()).ok())
+                .unwrap_or(false)
+        };
         let _ = self.events.send(Event::Notify(Notification {
             id,
             app_name,
@@ -422,7 +429,9 @@ impl Notifications {
             body: plain_text(&body),
             actions,
             timeout,
-            transient,
+            transient: flag("transient"),
+            resident: flag("resident"),
+            sender: header.sender().map(|sender| sender.to_string()).unwrap_or_default(),
         }));
         id
     }
