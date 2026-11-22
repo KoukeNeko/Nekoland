@@ -176,6 +176,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // others choose X11 then, as XWayland's DISPLAY is there too: drawn through XWayland,
         // Chrome has no window buttons and its menus' shadows take glass.
         std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
+        // Wayland programs find Fcitx through the compositor; X11 programs ask for it by name.
+        if std::env::var_os("XMODIFIERS").is_none() {
+            std::env::set_var("XMODIFIERS", "@im=fcitx");
+        }
     }
     if nested {
         // XWayland takes DISPLAY; the clipboard of xrdp's client is on this one.
@@ -233,6 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "DISPLAY",
                     "XDG_CURRENT_DESKTOP",
                     SESSION_TYPE,
+                    "XMODIFIERS",
                     "LD_PRELOAD",
                     "FREETYPE_PROPERTIES",
                 ])
