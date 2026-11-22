@@ -164,6 +164,14 @@ printf '[Service]\nExecStart=\nExecStart=/usr/bin/nm-online -s -q --timeout=10\n
     sudo tee /etc/systemd/system/NetworkManager-wait-online.service.d/nekoland.conf >/dev/null
 sudo systemctl daemon-reload
 
+# Wine 10.16 and later wait on Windows programs' locks in the kernel, much faster, where its
+# ntsync module is loaded; Linux leaves it unloaded until asked.
+if modinfo ntsync >/dev/null 2>&1; then
+    say "Loading ntsync for Wine at boot"
+    echo ntsync | sudo tee /etc/modules-load.d/nekoland-ntsync.conf >/dev/null
+    sudo modprobe ntsync
+fi
+
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
 nekoland-conform-icons

@@ -618,6 +618,26 @@ fn set_dxvk(prefix: &Path, on: bool) -> std::io::Result<std::process::Output> {
     }
 }
 
+/// Whether a bottle's programs open their windows on Wayland itself rather than through XWayland.
+fn wayland_on(prefix: &Path) -> bool {
+    std::fs::read_to_string(prefix.join("user.reg"))
+        .is_ok_and(|registry| registry.contains("\"Graphics\"=\"wayland\""))
+}
+
+/// Has the programs a bottle starts from now on open their windows on Wayland, or as Wine
+/// would by itself, through XWayland.
+fn set_wayland(prefix: &Path, on: bool) -> Result<(), String> {
+    let mut reg = Command::new(wine_of(prefix));
+    reg.arg("reg")
+        .arg(if on { "add" } else { "delete" })
+        .args([r"HKCU\Software\Wine\Drivers", "/v", "Graphics", "/f"])
+        .env("WINEPREFIX", prefix);
+    if on {
+        reg.args(["/d", "wayland"]);
+    }
+    said(&mut reg).map(drop)
+}
+
 /// What winetricks has put in a bottle, as it notes them, one a line.
 fn installed_components(prefix: &Path) -> Vec<String> {
     std::fs::read_to_string(prefix.join("winetricks.log"))
@@ -684,6 +704,10 @@ fn wine_group() -> adw::PreferencesGroup {
         .title("DXVK")
         .subtitle("Direct3D 8–11 以 Vulkan 繪製")
         .build();
+    let wayland = adw::SwitchRow::builder()
+        .title("Wayland")
+        .subtitle("視窗不經 XWayland")
+        .build();
     let components = adw::ExpanderRow::builder().title("元件").build();
     let tools = adw::ExpanderRow::builder().title("工具").build();
     wine.add(&state);
@@ -692,6 +716,7 @@ fn wine_group() -> adw::PreferencesGroup {
     wine.add(&windows);
     wine.add(&run);
     wine.add(&dxvk);
+    wine.add(&wayland);
     wine.add(&components);
     wine.add(&tools);
 
@@ -761,6 +786,8 @@ fn wine_group() -> adw::PreferencesGroup {
         #[weak]
         dxvk,
         #[weak]
+        wayland,
+        #[weak]
         components,
         #[weak]
         tools,
@@ -778,6 +805,7 @@ fn wine_group() -> adw::PreferencesGroup {
             bottle.set_visible(version.is_some());
             run.set_visible(version.is_some());
             tools.set_visible(version.is_some());
+            wayland.set_visible(version.is_some());
             dxvk.set_visible(has_winetricks);
             components.set_visible(has_winetricks);
             let prefix = prefix();
@@ -800,6 +828,7 @@ fn wine_group() -> adw::PreferencesGroup {
             // Not to be chosen from until Wine says which it is.
             windows.set_sensitive(false);
             dxvk.set_active(dxvk_installed(&prefix));
+            wayland.set_active(wayland_on(&prefix));
             showing.set(false);
             // Wine is asked what Windows the bottle is, which takes it a moment.
             if version.is_some() {
@@ -1052,6 +1081,36 @@ fn wine_group() -> adw::PreferencesGroup {
                 if let Err(err) = start_in(&prefix(), &args) {
                     alert::notice(&button, "無法執行程式", Some(&err.to_string()));
                 }
+            });
+        }
+    ));
+
+    wayland.connect_active_notify(glib::clone!(
+        #[strong]
+        showing,
+        #[strong]
+        show,
+        #[strong]
+        prefix,
+        move |row| {
+            if showing.get() {
+                return;
+            }
+            let (on, prefix) = (row.is_active(), prefix());
+            row.set_sensitive(false);
+            let (row, show) = (row.clone(), show.clone());
+            glib::spawn_future_local(async move {
+                let set = gio::spawn_blocking(move || set_wayland(&prefix, on)).await;
+                row.set_sensitive(true);
+                // The switch keeps what was chosen rather than being shown again: while the
+                // bottle's programs run, Wine writes user.reg only every 30 seconds or so.
+                let why = match set {
+                    Ok(Ok(())) => return,
+                    Ok(Err(err)) => Some(err),
+                    Err(_) => None,
+                };
+                show();
+                alert::notice(&row, "無法變更 Wayland", why.as_deref());
             });
         }
     ));

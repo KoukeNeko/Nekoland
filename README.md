@@ -236,9 +236,11 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   (`nekoland-settings --backup`). Windows App installs Wine and keeps bottles of it, each a
   prefix with its own Windows folders and programs: it runs a Windows program in the one
   chosen, turns DXVK on and off and installs fonts and runtimes there through winetricks,
-  sets the Windows it says it is, and opens Wine's settings, registry editor, task manager
+  has its programs open their windows on Wayland itself rather than through XWayland
+  (Wine's Wayland driver), sets the Windows it says it is, and opens Wine's settings, registry editor, task manager
   and uninstaller for it; a bottle made there can run with the newest of Kron4ek's builds
-  of Wine, which the page downloads, in place of Ubuntu's. A bottle follows Nekoland's
+  of Wine, which the page downloads, in place of Ubuntu's, and which uses the kernel's
+  ntsync that `install.sh` loads at boot (Ubuntu's Wine 10.0 is too old for it). A bottle follows Nekoland's
   appearance: dark, it goes without Wine's theme, in Nekoland's colours or libadwaita's,
   and its programs are told Windows is dark; a Windows program opened from Files
   (`nekoland-settings --wine`) is given the look first. It also
