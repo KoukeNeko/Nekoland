@@ -253,7 +253,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   A `.exe` or `.msi` opened in Files runs with Wine. Files' right-click menu has a
   Windows submenu (`nekoland-settings --windows-menu`) with what Windows' programs add to
   the file's menu there, as Windows last listed it for files of the kind, and the
-  programs installed in Wine's bottles to open the file with. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  programs installed in Wine's bottles to open the file with, and what those add to the
+  menu themselves, as 7-Zip does, which a Windows program built with MinGW
+  (`ui/src/windows/shellmenu.c`) asks them for. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's

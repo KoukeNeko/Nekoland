@@ -58,6 +58,9 @@ pub const WINE_FLAG: &str = "--wine";
 /// What Files asks for what Windows' programs add to a file's right-click menu, and has one
 /// of them done with.
 pub const MENU_FLAG: &str = "--windows-menu";
+/// The Windows program that asks a bottle's programs for their right-click items, next to
+/// this one.
+const SHELL_MENU: &str = "nekoland-shellmenu.exe";
 /// Said after it by the process that lists, to another that has Windows list anew.
 const MENU_AGAIN: &str = "--again";
 /// The files in a bottle that say which look it was last given, and that keep the colours it
@@ -2006,6 +2009,27 @@ fn wine_programs() -> Vec<(String, PathBuf, String)> {
     programs
 }
 
+/// Has the helper built from `windows/shellmenu.c` say what a bottle's programs add to a
+/// file's right-click menu, or do the item named of them. Nothing where the helper was not
+/// built or the bottle has not been filled in.
+fn shell_menu(prefix: &Path, file: &str, item: &[String]) -> Option<std::process::Output> {
+    let helper = std::env::current_exe().ok()?.with_file_name(SHELL_MENU);
+    if !helper.exists() || !prefix.join("system.reg").exists() {
+        return None;
+    }
+    // Wine has the whole of Linux's files as its drive Z.
+    Command::new(wine_of(prefix))
+        .arg(helper)
+        .arg(format!("Z:{}", file.replace('/', "\\")))
+        .args(item)
+        .env("WINEPREFIX", prefix)
+        .env("WINEDEBUG", "-all")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+}
+
 /// `nekoland-settings --windows-menu FILE [ITEM…]`: says what Windows' programs add to the
 /// file's right-click menu, a line an item, its submenus' names and its own with tabs
 /// between; or has Windows do the item named so. The list is the one Windows last gave for
@@ -2031,6 +2055,13 @@ pub fn menu(args: &[String]) -> glib::ExitCode {
             if !Path::new(file).is_dir() {
                 for (name, ..) in wine_programs() {
                     println!("{name}");
+                }
+            }
+            // shortcut: every bottle's Wine is started at each right-click, cached when
+            // that is slow with many bottles.
+            for (_, prefix) in bottles() {
+                if let Some(said) = shell_menu(&prefix, file, &[]) {
+                    print!("{}", String::from_utf8_lossy(&said.stdout));
                 }
             }
             // Anew when Windows is connected to already, or has never said: connecting takes
@@ -2065,6 +2096,15 @@ pub fn menu(args: &[String]) -> glib::ExitCode {
                 &[OsStr::new("start"), OsStr::new(shortcut), OsStr::new(&file)],
             )
             .map_err(|err| err.to_string())
+        }
+        // The helper says so when the item is none of the bottle's.
+        [file, item @ ..]
+            if !item.is_empty()
+                && bottles().iter().any(|(_, prefix)| {
+                    shell_menu(prefix, file, item).is_some_and(|done| done.status.success())
+                }) =>
+        {
+            Ok(())
         }
         [file, item @ ..] if !item.is_empty() => windows_path(Path::new(file))
             .ok_or_else(|| format!("{file}: not a file"))

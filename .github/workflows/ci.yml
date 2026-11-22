@@ -36,7 +36,9 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Build as install.sh does
-        run: cargo build --release --locked --workspace
+        run: |
+          cargo build --release --locked --workspace
+          sh shell/build-shellmenu.sh target/release
 
       - name: Package
         # What install.sh installs from target/release, named for this Ubuntu and processor,

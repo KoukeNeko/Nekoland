@@ -22,7 +22,8 @@ command -v apt-get >/dev/null || die "it needs Ubuntu's apt-get"
 build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
-    libadwaita-1-dev libvte-2.91-gtk4-dev libpoppler-glib-dev libfontconfig-dev libfreetype-dev libpam0g-dev"
+    libadwaita-1-dev libvte-2.91-gtk4-dev libpoppler-glib-dev libfontconfig-dev libfreetype-dev libpam0g-dev
+    gcc-mingw-w64-x86-64"
 # What it runs with: Mesa to draw, with Vulkan and video decoding on the GPU, Xwayland, the
 # wallpaper, terminal, portals, the network, sound, printing, languages, clipboard, fonts and
 # icons, the input method, and the applications the example configuration keeps in the Dock.
@@ -102,6 +103,7 @@ else
     say "Building (the first build takes a while)"
     target=${CARGO_TARGET_DIR:-$src/target}
     (cd "$src" && CARGO_TARGET_DIR=$target "$cargo" build --release --locked --workspace)
+    sh "$src/shell/build-shellmenu.sh" "$target/release"
 fi
 
 say "Installing into /usr/local"
