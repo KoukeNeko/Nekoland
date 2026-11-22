@@ -65,6 +65,13 @@ where
             );
             return;
         };
+        // The others may hold a virtual keyboard's keymap, which this one was not given. Then no
+        // keymap is every keyboard's, and the next to be sent goes to them all.
+        let mut active_keymap = self.arc.active_keymap.write().unwrap();
+        if *active_keymap != Some(keymap_file.id()) {
+            *active_keymap = None;
+        }
+        drop(active_keymap);
 
         let guard = self.arc.internal.lock().unwrap();
         if kbd.version() >= 4 {

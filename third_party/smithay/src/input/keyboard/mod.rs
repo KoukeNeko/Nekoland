@@ -360,7 +360,7 @@ pub(crate) struct KbdRc<D: SeatHandler> {
     pub(crate) last_enter: Mutex<Option<Serial>>,
     pub(crate) span: tracing::Span,
     #[cfg(feature = "wayland_frontend")]
-    pub(crate) active_keymap: RwLock<KeymapFileId>,
+    pub(crate) active_keymap: RwLock<Option<KeymapFileId>>,
 }
 
 #[cfg(not(feature = "wayland_frontend"))]
@@ -696,7 +696,7 @@ impl<D: SeatHandler + 'static> KeyboardHandle<D> {
                 #[cfg(feature = "wayland_frontend")]
                 last_enter: Mutex::new(None),
                 #[cfg(feature = "wayland_frontend")]
-                active_keymap: RwLock::new(active_keymap),
+                active_keymap: RwLock::new(Some(active_keymap)),
                 span,
             }),
         })
@@ -735,10 +735,10 @@ impl<D: SeatHandler + 'static> KeyboardHandle<D> {
 
         // Ignore request which do not change the keymap.
         let new_id = keymap_file.id();
-        if new_id == *self.arc.active_keymap.read().unwrap() {
+        if Some(new_id) == *self.arc.active_keymap.read().unwrap() {
             return false;
         }
-        *self.arc.active_keymap.write().unwrap() = new_id;
+        *self.arc.active_keymap.write().unwrap() = Some(new_id);
 
         // Update keymap for every wl_keyboard.
         let known_kbds = &self.arc.known_kbds;
