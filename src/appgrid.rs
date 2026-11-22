@@ -113,6 +113,29 @@ struct GridApp {
     info: gio::DesktopAppInfo,
 }
 
+impl GridApp {
+    /// What the Dock keeps it as: the entry's name, which its windows go by; or for a
+    /// program of Wine's or Darling's, whose windows go by its file's name, the window class
+    /// its entry claims. Kept by the entry's name, that one's tile would not be its windows'.
+    /// Other entries' classes are X11's, which their windows on Wayland do not go by.
+    fn dock_id(&self) -> String {
+        let class = self.info.startup_wm_class();
+        let command = self.info.commandline();
+        windows_class(
+            class.as_deref(),
+            command.as_deref().and_then(|line| line.to_str()),
+        )
+        .map_or_else(|| self.id.clone(), String::from)
+    }
+}
+
+/// The window class an entry claims, where its windows go by it: the entry of a program of
+/// Wine's, whose class is a Windows program's file, or of one started in Darling.
+fn windows_class<'a>(class: Option<&'a str>, command: Option<&str>) -> Option<&'a str> {
+    let in_darling = command.is_some_and(|line| line.starts_with("darling "));
+    class.filter(|class| in_darling || class.to_lowercase().ends_with(".exe"))
+}
+
 /// A place on the grid: an application, or a folder of them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Entry {
@@ -1874,7 +1897,7 @@ impl Nekoland {
         };
         let (entry, from) = (held.entry, held.from);
         if let Entry::App(app) = entry {
-            let id = apps.apps[app].id.clone();
+            let id = apps.apps[app].dock_id();
             self.offer_to_dock(id);
         }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
@@ -1968,7 +1991,7 @@ impl Nekoland {
         apps.edge = None;
         apps.gap = None;
         if let Entry::App(app) = held.entry {
-            let id = apps.apps[app].id.clone();
+            let id = apps.apps[app].dock_id();
             if self.drop_on_dock(id, on_screen) {
                 return;
             }
@@ -2441,6 +2464,23 @@ fn draw_held(tile: &Tile) -> Option<Picture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_wine_s_and_darling_s_programs_are_kept_by_their_window_class() {
+        let wine = "env WINEPREFIX=/home/me/.wine wine C:\\Programs\\notepad++.exe";
+        assert_eq!(
+            windows_class(Some("notepad++.exe"), Some(wine)),
+            Some("notepad++.exe")
+        );
+        let darling = "darling \"/home/me/Apps/TextEdit.app/Contents/MacOS/TextEdit\"";
+        assert_eq!(windows_class(Some("TextEdit"), Some(darling)), Some("TextEdit"));
+        // X11's class, which the program's windows on Wayland do not go by.
+        assert_eq!(
+            windows_class(Some("TelegramDesktop"), Some("telegram-desktop -- %u")),
+            None
+        );
+        assert_eq!(windows_class(None, Some(darling)), None);
+    }
 
     #[test]
     fn a_folder_opens_under_its_row_and_the_rows_part_for_it() {

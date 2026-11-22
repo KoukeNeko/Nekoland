@@ -20,6 +20,7 @@ mod themes;
 mod users;
 mod web;
 mod wifi;
+mod macos;
 mod windows;
 #[path = "settings/lock_screen.rs"]
 mod lock_screen;
@@ -537,6 +538,7 @@ fn build(app: &adw::Application) {
                 "軟體更新" => updates_page().upcast(),
                 "備份" => backup::backup_page().upcast(),
                 "Windows App" => windows::windows_page().upcast(),
+                "macOS App" => macos::macos_page().upcast(),
                 "共享" => sharing_page().upcast(),
                 "關於" => about_page().upcast(),
                 _ => unreachable!("no page named {name}"),
@@ -577,6 +579,7 @@ fn build(app: &adw::Application) {
             ("軟體更新", "software-update-available-symbolic"),
             ("備份", "document-save-symbolic"),
             ("Windows App", "application-x-executable-symbolic"),
+            ("macOS App", "computer-symbolic"),
         ],
         vec![
             ("使用者", "system-users-symbolic"),

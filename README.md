@@ -257,7 +257,11 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   the file's menu there, as Windows last listed it for files of the kind, and the
   programs installed in Wine's bottles to open the file with, and what those add to the
   menu themselves, as 7-Zip does, which a Windows program built with MinGW
-  (`ui/src/windows/shellmenu.c`) asks them for. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  (`ui/src/windows/shellmenu.c`) asks them for. macOS App runs Mac programs in Darling,
+  which the person installs, there being no package of it: it starts a program's bundle
+  (`.app`) there, and adds one as an application under its own name and icon, whose windows
+  are its tile in the Dock, with its menus in the menu bar and the clipboard shared.
+  Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's
