@@ -20,11 +20,11 @@ const XDPW: &str = "org.freedesktop.impl.portal.desktop.wlr";
 const SESSIONS: &str = "/org/freedesktop/portal/desktop/session";
 const SESSION: &str = "org.freedesktop.impl.portal.Session";
 
-/// The room around the thumbnails and the buttons, and between thumbnails, on the design
-/// language's 4-point grid: the theme pads each tile, so the edges take 4 less than the gaps
-/// to look as wide.
+/// The room around the tiles and the buttons, and between tiles, on the design language's
+/// 4-point grid. The theme pads each tile by `SPACING` (`.thumbnails` in shell/gtk/nekoland.css),
+/// so thumbnails are as far from each other as from the window's edge.
 const MARGIN: i32 = 16;
-const SPACING: u32 = 12;
+const SPACING: u32 = 8;
 
 fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("stop") {
@@ -88,6 +88,7 @@ fn grid(per_line: u32) -> gtk::FlowBox {
         .margin_top(MARGIN)
         .margin_bottom(MARGIN)
         .valign(gtk::Align::Start)
+        .css_classes(["thumbnails"])
         .build()
 }
 
@@ -98,6 +99,9 @@ fn choose(app: &adw::Application) {
         .default_width(WIDTH)
         .default_height(HEIGHT)
         .build();
+    // On glass, as the system's alerts: shell/gtk/nekoland.css. Added, as setting the classes
+    // would drop the window's own `background`.
+    window.add_css_class("system-alert");
     let tiles: Rc<RefCell<Vec<Tile>>> = Rc::default();
     let add = |grid: &gtk::FlowBox, child: gtk::FlowBoxChild, answer: String| {
         grid.append(&child);
@@ -166,8 +170,8 @@ fn choose(app: &adw::Application) {
     let buttons = gtk::Box::builder()
         .spacing(8)
         .halign(gtk::Align::End)
-        .margin_top(SPACING as i32)
-        .margin_bottom(SPACING as i32)
+        .margin_top(MARGIN)
+        .margin_bottom(MARGIN)
         .margin_start(MARGIN)
         .margin_end(MARGIN)
         .build();
@@ -175,7 +179,40 @@ fn choose(app: &adw::Application) {
     buttons.append(&share);
 
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&gtk::StackSwitcher::builder().stack(&pages).build()));
+    // Only close, as an alert's, on the side the title bar's buttons are set to be.
+    let layout = gtk::Settings::default().and_then(|settings| settings.gtk_decoration_layout()).unwrap_or_default();
+    let close_only: Vec<String> = layout
+        .split(':')
+        .map(|side| side.split(',').filter(|button| !matches!(*button, "minimize" | "maximize")).collect::<Vec<_>>().join(","))
+        .collect();
+    header.set_decoration_layout(Some(&close_only.join(":")));
+    // Which page, as Files chooses its views: libadwaita's toggle group, made from its name as
+    // files.rs makes it, its `active` the index of the page.
+    let toggles: String = ["視窗", "顯示器"]
+        .iter()
+        .map(|label| {
+            format!(
+                "<child><object class=\"AdwToggle\"><property name=\"label\">{label}</property></object></child>"
+            )
+        })
+        .collect();
+    let switch: gtk::Widget = gtk::Builder::from_string(&format!(
+        "<interface><object class=\"AdwToggleGroup\" id=\"group\">{toggles}</object></interface>"
+    ))
+    .object("group")
+    .expect("the toggle group just described");
+    switch.connect_notify_local(
+        Some("active"),
+        glib::clone!(
+            #[weak]
+            pages,
+            move |switch, _| {
+                let page = if switch.property::<u32>("active") == 0 { "windows" } else { "displays" };
+                pages.set_visible_child_name(page);
+            }
+        ),
+    );
+    header.set_title_widget(Some(&switch));
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&pages));
@@ -269,9 +306,9 @@ fn tile(what: [&str; 2], shape: (i32, i32), icon: Option<&gio::Icon>, name: &str
     let words = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
     words.append(&label(name, &["heading"]));
     words.append(&label(detail, &["caption", "dim-label"]));
-    let line = gtk::Box::builder().spacing(8).margin_top(6).build();
+    let line = gtk::Box::builder().spacing(SPACING as i32).margin_top(SPACING as i32).build();
     if let Some(icon) = icon {
-        line.append(&gtk::Image::builder().gicon(icon).pixel_size(24).valign(gtk::Align::Start).build());
+        line.append(&gtk::Image::builder().gicon(icon).pixel_size(32).valign(gtk::Align::Center).build());
     }
     line.append(&words);
     let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();

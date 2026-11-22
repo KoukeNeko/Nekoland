@@ -35,10 +35,11 @@ pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
 pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
 /// The system's alerts, each a window of its own that asks before the session goes on: kept
 /// in front of every other window, as the Mac's.
-pub const ALERT_APP_IDS: [&str; 3] = [
+pub const ALERT_APP_IDS: [&str; 4] = [
     CONFIRM_APP_ID,
     "io.github.koukeneko.Nekoland.Askpass",
     "io.github.koukeneko.Nekoland.KeyringPrompt",
+    "io.github.koukeneko.Nekoland.ScreenShare",
 ];
 /// The title of 截圖's full-screen window for choosing what to take: it shows a still
 /// picture of the screen, so it appears and goes at once, without the windows' motion.

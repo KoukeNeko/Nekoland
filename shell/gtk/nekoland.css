@@ -858,11 +858,21 @@ window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverv
 window.view .content-pane, window.view overlay-split-view > outline + widget { background-color: var(--view-bg-color); }
 .sidebar-pane { background-color: color-mix(in srgb, var(--sidebar-bg-color) var(--nekoland-glass-opacity), transparent); }
 /* An alert shown as a window of its own, as the system's are, is all glass: its sheet as
- * see-through as the menus, and what is in it without the background given back above. */
-window.background.dialog-window.alert:not(.desktopwindow) {
+ * see-through as the menus, and what is in it without the background given back above. So
+ * is a window of the system's that asks as an alert does, marked `system-alert`, as the
+ * screen-share picker. */
+window.background.dialog-window.alert:not(.desktopwindow),
+window.background.system-alert:not(.desktopwindow) {
   background-color: color-mix(in srgb, var(--dialog-bg-color) var(--nekoland-glass-opacity), transparent);
 }
-window.background.dialog-window.alert:not(.desktopwindow) > * { background-color: transparent; }
+window.background.dialog-window.alert:not(.desktopwindow) > *,
+window.background.system-alert:not(.desktopwindow) > * { background-color: transparent; }
+/* An application window puts its content under a dialog-host, given the background back
+ * above at any depth: inside the system's, none. */
+window.background.system-alert:not(.desktopwindow) { --window-bg-color: transparent; }
+/* The screen-share picker's tiles: as much room around a thumbnail as between it and its
+ * name, and corners that follow the thumbnail's 12 at that distance. */
+flowbox.thumbnails > flowboxchild { padding: 8px; border-radius: 20px; }
 
 @media (prefers-color-scheme: dark) {
   :root {
