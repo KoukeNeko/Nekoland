@@ -835,6 +835,12 @@ impl Window {
             ),
             gdk::Key::BackSpace if ctrl => activate("trash", None),
             gdk::Key::F2 => activate("rename", None),
+            gdk::Key::Menu | gdk::Key::F10 if key == gdk::Key::Menu || shift => {
+                if let Some(pane) = self.pane() {
+                    pane.menu_from_keys();
+                }
+                true
+            }
             gdk::Key::Down if alt => activate("open", None),
             gdk::Key::i if ctrl => activate("info", None),
             gdk::Key::c if ctrl => activate("copy", None),

@@ -2119,6 +2119,22 @@ impl Pane {
         }
     }
 
+    /// The menu from the keyboard: under the first of what is chosen that is in view, or
+    /// the folder's own at its corner.
+    pub fn menu_from_keys(self: &Rc<Self>) {
+        let chosen = ITEM_WIDGETS.with_borrow(|all| {
+            all.iter().find_map(|(widget, item)| {
+                let widget = widget.upgrade()?;
+                (item.upgrade()?.is_selected() && widget.is_mapped() && widget.is_ancestor(&self.root))
+                    .then_some(widget)
+            })
+        });
+        match chosen {
+            Some(widget) => self.menu_at(&widget, 0.0, f64::from(widget.height())),
+            None => self.menu_at(self.root.upcast_ref(), 0.0, 0.0),
+        }
+    }
+
     fn menu_at(self: &Rc<Self>, widget: &gtk::Widget, x: f64, y: f64) {
         let Some(win) = self.window() else { return };
         let (menu, custom) = ops::menu(&win, self, &self.selected());
