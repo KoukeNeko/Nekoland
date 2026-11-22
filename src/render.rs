@@ -941,8 +941,8 @@ fn floating_elements(
     }
     for window in windows {
         // Before the window, which a bar over a title bar of the program's own covers.
-        if state.window_pose(window).is_some_and(|pose| pose.is_still()) {
-            elements.extend(crate::frame::title_element(state, renderer, window, output_loc, scale));
+        if let Some(pose) = state.window_pose(window).filter(|pose| pose.is_still()) {
+            elements.extend(crate::frame::title_element(state, renderer, window, pose, output_loc, scale));
         }
         elements.extend(window_elements(state, renderer, window, output_loc, scale));
         let radius = state
@@ -1229,10 +1229,8 @@ fn windows_on_glass(
             let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
             elements = crate::rounded::round(renderer, elements, radius, (trim.w, trim.h));
         }
-        if pose.is_still() {
-            // In front of the window, which a bar over a title bar of the program's own covers.
-            elements.splice(0..0, crate::frame::title_element(state, renderer, window, output_loc, scale));
-        }
+        // In front of the window, which a bar over a title bar of the program's own covers.
+        elements.splice(0..0, crate::frame::title_element(state, renderer, window, *pose, output_loc, scale));
         let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
         // These windows are mostly transparent shadow margin, which glass would blur: the
         // confirmation's, and an X11 program's menus and tooltips, which X11 gives no way to

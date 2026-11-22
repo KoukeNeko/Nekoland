@@ -334,21 +334,34 @@ impl Nekoland {
     }
 }
 
-/// The bar over a window `width` wide, where `output_loc` is the output's, as render
-/// elements.
+/// The bar over a window, where `output_loc` is the output's, as render elements: drawn as
+/// the window is in `pose`, so that it comes and goes with the window and not after it.
 pub fn title_element(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     window: &Window,
+    pose: crate::motion::Pose,
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Option<SceneElement> {
     let title = state.title_rect(window)?;
     let picture = state.title_picture(window, title.size.w, title.size.h)?;
-    let at: Point<i32, Physical> = (title.loc - output_loc).to_physical_precise_round(scale);
-    MemoryRenderBufferRenderElement::from_buffer(renderer, at.to_f64(), &picture.buffer, None, None, None, Kind::Unspecified)
-        .ok()
-        .map(SceneElement::Picture)
+    let (actual, shown) = (pose.actual, pose.shown);
+    // As far from where the window is shown as it is from where the window is.
+    let at: Point<i32, Physical> = (title.loc - actual.loc + shown.loc - output_loc).to_physical_precise_round(scale);
+    let alpha = Some(pose.alpha).filter(|alpha| *alpha < 1.0);
+    let bar =
+        MemoryRenderBufferRenderElement::from_buffer(renderer, at.to_f64(), &picture.buffer, alpha, None, None, Kind::Unspecified)
+            .ok()?;
+    if shown.size == actual.size || actual.size.w <= 0 || actual.size.h <= 0 {
+        return Some(SceneElement::Picture(bar));
+    }
+    let origin: Point<i32, Physical> = (shown.loc - output_loc).to_physical_precise_round(scale);
+    let factor = smithay::utils::Scale::from((
+        f64::from(shown.size.w) / f64::from(actual.size.w),
+        f64::from(shown.size.h) / f64::from(actual.size.h),
+    ));
+    Some(SceneElement::ZoomedPicture(smithay::backend::renderer::element::utils::RescaleRenderElement::from_element(bar, origin, factor)))
 }
 
 /// The colours of GTK's header bar: its background, what is written on it, and the line
