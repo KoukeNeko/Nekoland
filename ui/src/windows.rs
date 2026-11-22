@@ -26,8 +26,9 @@ pub const OPEN_FLAG: &str = "--windows-app";
 /// What Wine is installed with: Wine, and winetricks, which puts DXVK in its prefix; Ubuntu's
 /// own DXVK package's `dxvk-setup` looks for Wine where Ubuntu's Wine is not.
 const WINE_PACKAGES: [&str; 2] = ["wine", "winetricks"];
-/// The Direct3D libraries DXVK stands in for, which Wine is told to load from the prefix.
-const DXVK_DLLS: [&str; 5] = ["d3d8", "d3d9", "d3d10core", "d3d11", "dxgi"];
+/// The Direct3D libraries DXVK and VKD3D-Proton stand in for, which Wine is told to load
+/// from the prefix.
+const DXVK_DLLS: [&str; 7] = ["d3d8", "d3d9", "d3d10core", "d3d11", "dxgi", "d3d12", "d3d12core"];
 /// What Windows programs often want that Wine does not come with, as winetricks names them,
 /// and as they are listed.
 const COMPONENTS: [(&str, &str); 7] = [
@@ -298,6 +299,18 @@ fn runners() -> Vec<String> {
         .collect();
     runners.sort();
     runners
+}
+
+/// A downloaded Wine's version, by the numbers in its name (`wine-11.22-amd64`).
+fn runner_version(name: &str) -> Vec<u32> {
+    name.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+/// The downloaded Wine of the highest version.
+fn newest_runner() -> Option<String> {
+    runners().into_iter().max_by_key(|name| runner_version(name))
 }
 
 /// Removes a Wine downloaded here; the bottles that ran with it run with Ubuntu's again.
@@ -611,11 +624,11 @@ fn winetricks(prefix: &Path, verbs: &[&str]) -> std::io::Result<std::process::Ou
     Ok(done)
 }
 
-/// Turns DXVK on or off; `--force`, as winetricks skips DXVK once it is in the bottle, even
-/// with Wine told to load its own.
+/// Turns DXVK, and VKD3D-Proton for Direct3D 12, on or off; `--force`, as winetricks skips
+/// them once they are in the bottle, even with Wine told to load its own.
 fn set_dxvk(prefix: &Path, on: bool) -> std::io::Result<std::process::Output> {
     if on {
-        winetricks(prefix, &["--force", "dxvk"])
+        winetricks(prefix, &["--force", "dxvk", "vkd3d"])
     } else {
         let builtin = DXVK_DLLS.map(|dll| format!("{dll}=builtin"));
         winetricks(prefix, &builtin.each_ref().map(String::as_str))
@@ -706,12 +719,16 @@ fn wine_group() -> adw::PreferencesGroup {
     run.set_activatable_widget(Some(&choose));
     let dxvk = adw::SwitchRow::builder()
         .title("DXVK")
-        .subtitle("Direct3D 8–11 以 Vulkan 繪製")
+        .subtitle("Direct3D 8–12 以 Vulkan 繪製")
         .build();
     let wayland = adw::SwitchRow::builder()
         .title("Wayland")
         .subtitle("視窗不經 XWayland")
         .build();
+    let games = adw::ActionRow::builder().title("遊戲設定").build();
+    let apply_games = button("套用");
+    games.add_suffix(&apply_games);
+    games.set_activatable_widget(Some(&apply_games));
     let components = adw::ExpanderRow::builder().title("元件").build();
     let tools = adw::ExpanderRow::builder().title("工具").build();
     wine.add(&state);
@@ -721,6 +738,7 @@ fn wine_group() -> adw::PreferencesGroup {
     wine.add(&run);
     wine.add(&dxvk);
     wine.add(&wayland);
+    wine.add(&games);
     wine.add(&components);
     wine.add(&tools);
 
@@ -792,6 +810,8 @@ fn wine_group() -> adw::PreferencesGroup {
         #[weak]
         wayland,
         #[weak]
+        games,
+        #[weak]
         components,
         #[weak]
         tools,
@@ -818,6 +838,7 @@ fn wine_group() -> adw::PreferencesGroup {
             remove.set_visible(is_made_here);
             runner.set_visible(version.is_some() && is_made_here);
             windows.set_visible(version.is_some());
+            games.set_visible(has_winetricks && is_made_here);
             let runners = runners();
             let listed: Vec<&str> = std::iter::once("系統")
                 .chain(runners.iter().map(String::as_str))
@@ -1010,7 +1031,12 @@ fn wine_group() -> adw::PreferencesGroup {
                 }
                 let prefix = bottles_dir().join(&name);
                 // Wine fills the folder in as its first program starts; this is that program.
+                // It is the newest Wine downloaded, if any, as Ubuntu's lacks ntsync.
                 let made = std::fs::create_dir_all(&prefix)
+                    .and_then(|()| match newest_runner() {
+                        Some(runner) => set_runner(&prefix, Some(&runner)),
+                        None => Ok(()),
+                    })
                     .map_err(|err| err.to_string())
                     .and_then(|()| update(&prefix).map_err(|err| err.to_string()));
                 list(&name);
@@ -1139,6 +1165,25 @@ fn wine_group() -> adw::PreferencesGroup {
                     alert::notice(&row, "無法變更 DXVK", Some(&why));
                 }
             });
+        }
+    ));
+
+    // Has the page's own rows make the change, as if each were chosen by hand.
+    apply_games.connect_clicked(glib::clone!(
+        #[weak]
+        runner,
+        #[weak]
+        wayland,
+        #[weak]
+        dxvk,
+        move |_| {
+            // The runner first, so that winetricks puts DXVK in with the Wine the bottle runs with.
+            if let Some(newest) = newest_runner() {
+                let at = runners().iter().position(|name| *name == newest).map_or(0, |at| at + 1);
+                runner.set_selected(at as u32);
+            }
+            wayland.set_active(false);
+            dxvk.set_active(true);
         }
     ));
 
