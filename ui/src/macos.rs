@@ -115,20 +115,30 @@ fn read_bundle(bundle: &Path) -> Result<Bundle, String> {
     })
 }
 
-/// The picture in an icon's file that is nearest an icon's size here: the file holds one
-/// after another, each behind its kind and its length, in sizes from 16 to 1024.
-// shortcut: only the PNGs in it, which icons older than OS X 10.7's have none of; decode the
-// packed pictures when a program turns up with no icon.
-fn icns_png(icns: &[u8]) -> Option<&[u8]> {
-    const WANTED: u32 = 256;
-    let mut rest = icns.strip_prefix(b"icns")?.get(4..)?;
-    let mut best: Option<(u32, &[u8])> = None;
+/// The pictures in an icon's file, with their kinds: the file holds one after another, each
+/// behind its kind and its length. One cut short ends them.
+fn icns_entries(icns: &[u8]) -> Vec<(&[u8], &[u8])> {
+    let mut entries = Vec::new();
+    let Some(mut rest) = icns.strip_prefix(b"icns").and_then(|icns| icns.get(4..)) else {
+        return entries;
+    };
     while let Some(length) = rest.get(4..8) {
         let length = u32::from_be_bytes([length[0], length[1], length[2], length[3]]) as usize;
         let Some(picture) = rest.get(8..length) else {
             break;
         };
+        entries.push((&rest[..4], picture));
         rest = &rest[length..];
+    }
+    entries
+}
+
+/// The PNG of the picture in an icon's file that is nearest an icon's size here, in sizes from
+/// 16 to 1024; one drawn before OS X 10.7, which has no PNG, gives its largest packed picture.
+fn icns_png(icns: &[u8]) -> Option<Vec<u8>> {
+    const WANTED: u32 = 256;
+    let mut best: Option<(u32, &[u8])> = None;
+    for (_, picture) in icns_entries(icns) {
         // A PNG says how wide it is right after the header of its first chunk.
         let Some(width) = picture
             .strip_prefix(b"\x89PNG\r\n\x1a\n")
@@ -146,7 +156,73 @@ fn icns_png(icns: &[u8]) -> Option<&[u8]> {
             best = Some((width, picture));
         }
     }
-    best.map(|(_, picture)| picture)
+    match best {
+        Some((_, picture)) => Some(picture.to_vec()),
+        None => icns_packed_png(icns),
+    }
+}
+
+/// An old icon's largest packed picture, as a PNG. Its red, green and blue come one after
+/// another, packed in runs, and its alpha in a mask of its own beside it.
+fn icns_packed_png(icns: &[u8]) -> Option<Vec<u8>> {
+    const KINDS: [(&[u8], &[u8], u32); 4] = [
+        (b"it32", b"t8mk", 128),
+        (b"ih32", b"h8mk", 48),
+        (b"il32", b"l8mk", 32),
+        (b"is32", b"s8mk", 16),
+    ];
+    let entries = icns_entries(icns);
+    let find = |kind: &[u8]| {
+        entries
+            .iter()
+            .find(|(found, _)| *found == kind)
+            .map(|(_, picture)| *picture)
+    };
+    KINDS.iter().find_map(|&(kind, mask, width)| {
+        let pixels = (width * width) as usize;
+        let mut picture = find(kind)?;
+        // The largest begins with four bytes of nothing.
+        if kind == b"it32" {
+            picture = picture.get(4..)?;
+        }
+        let colours = unpack(picture, pixels * 3)?;
+        let alpha = find(mask).filter(|mask| mask.len() == pixels);
+        let mut rgba = Vec::with_capacity(pixels * 4);
+        for pixel in 0..pixels {
+            rgba.extend([
+                colours[pixel],
+                colours[pixels + pixel],
+                colours[2 * pixels + pixel],
+            ]);
+            rgba.push(alpha.map_or(u8::MAX, |alpha| alpha[pixel]));
+        }
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, width, width);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
+        Some(png)
+    })
+}
+
+/// `length` bytes from runs: a byte below 0x80 is followed by that many and one more to take
+/// as they are, any other by one byte to repeat that many less 125 times.
+fn unpack(mut packed: &[u8], length: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(length);
+    while out.len() < length {
+        let (&count, rest) = packed.split_first()?;
+        if count < 0x80 {
+            let taken = rest.get(..count as usize + 1)?;
+            out.extend_from_slice(taken);
+            packed = &rest[taken.len()..];
+        } else {
+            let (&byte, rest) = rest.split_first()?;
+            out.extend(std::iter::repeat_n(byte, count as usize - 125));
+            packed = rest;
+        }
+    }
+    out.truncate(length);
+    Some(out)
 }
 
 /// Starts a bundle's program in Darling, left to run by itself.
@@ -196,7 +272,7 @@ fn add_launcher(bundle: &Path) -> Result<(String, String), String> {
         Some(picture) => {
             let kept = icon_path(&id);
             std::fs::create_dir_all(kept.parent().unwrap_or(&kept)).map_err(failed)?;
-            std::fs::write(&kept, picture).map_err(failed)?;
+            std::fs::write(&kept, &picture).map_err(failed)?;
             kept.to_string_lossy().into_owned()
         }
         None => "application-x-executable".into(),
@@ -451,14 +527,45 @@ mod tests {
             picture(b"ic08", 256),
             picture(b"ic09", 512),
         ]);
-        assert_eq!(icns_png(&all).map(width), Some(256));
+        assert_eq!(icns_png(&all).as_deref().map(width), Some(256));
         assert_eq!(
-            icns_png(&icns(&[picture(b"ic07", 128), picture(b"icp4", 16)])).map(width),
+            icns_png(&icns(&[picture(b"ic07", 128), picture(b"icp4", 16)]))
+                .as_deref()
+                .map(width),
             Some(128)
         );
-        // One cut short still gives what came whole; one with no PNG, or not an icon, none.
-        assert_eq!(icns_png(&all[..all.len() - 3]).map(width), Some(256));
+        // One cut short still gives what came whole; one whose packed picture is broken, or
+        // not an icon, none.
+        assert_eq!(icns_png(&all[..all.len() - 3]).as_deref().map(width), Some(256));
         assert_eq!(icns_png(&icns(&[packed])), None);
         assert_eq!(icns_png(b"not an icon"), None);
+    }
+
+    #[test]
+    fn an_old_icon_gives_its_largest_packed_picture() {
+        let entry = |kind: &[u8], data: &[u8]| [kind, &(data.len() as u32 + 8).to_be_bytes(), data].concat();
+        // A channel of 32 by 32 of one byte: runs of 130, then the rest as they are.
+        let channel = |byte: u8| {
+            let mut packed = [0xFF, byte].repeat(1024 / 130);
+            packed.push((1024 % 130 - 1) as u8);
+            packed.extend(std::iter::repeat_n(byte, 1024 % 130));
+            packed
+        };
+        let colours = [channel(200), channel(100), channel(50)].concat();
+        let icon = [
+            b"icns\0\0\0\0".as_slice(),
+            &entry(b"is32", &[0x80, 9].repeat(3 * 256 / 3)),
+            &entry(b"il32", &colours),
+            &entry(b"l8mk", &[128; 1024]),
+        ]
+        .concat();
+
+        let png = icns_png(&icon).expect("a picture");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((reader.info().width, reader.info().height), (32, 32));
+        assert_eq!(pixels[..4], [200, 100, 50, 128]);
+        assert_eq!(pixels[pixels.len() - 4..], [200, 100, 50, 128]);
     }
 }
