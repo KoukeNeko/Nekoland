@@ -77,25 +77,64 @@ pub fn bookmarks_path() -> PathBuf {
     glib::user_config_dir().join("gtk-3.0/bookmarks")
 }
 
-/// Where Hamasen mounts the servers GVfs has no backend for, each a FUSE folder.
-fn hamasen_root() -> PathBuf {
+/// Where the servers GVfs has no backend for are mounted, each a FUSE folder rclone serves.
+pub fn hamasen_root() -> PathBuf {
     home().join("Hamasen")
 }
 
-/// A mount of a server rather than of a drive: one by GVfs, or a folder Hamasen mounted.
+/// A mount of a server rather than of a drive: one by GVfs, or a folder rclone mounted.
 pub fn is_server(mount: &gio::Mount) -> bool {
     let root = mount.root();
     !root.is_native() || root.path().is_some_and(|path| path.starts_with(hamasen_root()))
 }
 
-/// A server set up in Hamasen, which mounts it: `hamasen --mount <id>`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// Mounted through GIO.
+    Gvfs,
+    /// An rclone remote signed in to in the browser.
+    Oauth,
+    /// An rclone remote the server's record describes in full.
+    S3,
+}
+
+pub struct Protocol {
+    pub label: &'static str,
+    pub scheme: &'static str,
+    pub port: u64,
+    pub kind: Kind,
+    pub rclone_type: &'static str,
+}
+
+/// The kinds of server Hamasen and Files set up, in the order they are offered.
+pub const PROTOCOLS: [Protocol; 10] = [
+    Protocol { label: "SFTP", scheme: "sftp", port: 22, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "FTP", scheme: "ftp", port: 21, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "SMB", scheme: "smb", port: 445, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "WebDAV", scheme: "dav", port: 80, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "WebDAV (HTTPS)", scheme: "davs", port: 443, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "NFS", scheme: "nfs", port: 2049, kind: Kind::Gvfs, rclone_type: "" },
+    Protocol { label: "Google Drive", scheme: "gdrive", port: 0, kind: Kind::Oauth, rclone_type: "drive" },
+    Protocol { label: "OneDrive", scheme: "onedrive", port: 0, kind: Kind::Oauth, rclone_type: "onedrive" },
+    Protocol { label: "Dropbox", scheme: "dropbox", port: 0, kind: Kind::Oauth, rclone_type: "dropbox" },
+    Protocol { label: "Amazon S3", scheme: "s3", port: 0, kind: Kind::S3, rclone_type: "s3" },
+];
+
+pub fn protocol(scheme: &str) -> Option<&'static Protocol> {
+    PROTOCOLS.iter().find(|p| p.scheme == scheme)
+}
+
+/// A server set up in Hamasen's list, which Hamasen and Files both read and write.
+#[derive(Clone)]
 pub struct Server {
     pub id: String,
     pub name: String,
     /// The folder it opens on, once mounted.
     pub location: gio::File,
     /// GVfs mounts it, rather than rclone in a folder of its own.
-    gvfs: bool,
+    pub gvfs: bool,
+    /// Everything Hamasen keeps of it, the fields neither program reads included.
+    pub record: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Server {
@@ -113,50 +152,56 @@ impl Server {
             })
             .cloned()
     }
+
+    pub fn field(&self, key: &str) -> &str {
+        self.record.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    pub fn protocol(&self) -> Option<&'static Protocol> {
+        protocol(self.field("scheme"))
+    }
 }
 
-/// The servers set up in Hamasen, in its order.
-pub fn hamasen_servers() -> Vec<Server> {
-    let Ok(text) = std::fs::read_to_string(glib::user_config_dir().join("hamasen/servers.json")) else {
+pub fn hamasen_servers_path() -> PathBuf {
+    glib::user_config_dir().join("hamasen/servers.json")
+}
+
+/// Hamasen's list as it is kept; empty when there is none yet.
+pub fn hamasen_records() -> Vec<serde_json::Map<String, serde_json::Value>> {
+    let Ok(text) = std::fs::read_to_string(hamasen_servers_path()) else {
         return Vec::new();
     };
-    let servers: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
-    servers.iter().filter_map(hamasen_server).collect()
+    serde_json::from_str(&text).unwrap_or_else(|err| {
+        eprintln!("nekoland: cannot read {}: {err}", hamasen_servers_path().display());
+        Vec::new()
+    })
+}
+
+/// The servers set up in Hamasen's list, in its order.
+pub fn hamasen_servers() -> Vec<Server> {
+    hamasen_records().into_iter().filter_map(hamasen_server).collect()
 }
 
 /// A server as Hamasen keeps it: where it mounts it is its `server_uri` and `mount_path`.
-fn hamasen_server(server: &serde_json::Value) -> Option<Server> {
-    let field = |key| server.get(key)?.as_str().filter(|value| !value.is_empty());
+pub fn hamasen_server(record: serde_json::Map<String, serde_json::Value>) -> Option<Server> {
+    let field = |key: &str| record.get(key)?.as_str().filter(|value| !value.is_empty());
     let (id, name, scheme) = (
         field("id")?.to_owned(),
         field("name")?.to_owned(),
         field("scheme")?,
     );
-    let default_port = match scheme {
-        "sftp" => 22,
-        "ftp" => 21,
-        "smb" => 445,
-        "dav" => 80,
-        "davs" => 443,
-        "nfs" => 2049,
+    let Some(protocol) = protocol(scheme).filter(|p| p.kind == Kind::Gvfs) else {
         // The rest rclone mounts on a folder named after the server.
-        _ => {
-            let location = gio::File::for_path(hamasen_root().join(name.replace('/', "_")));
-            return Some(Server {
-                id,
-                name,
-                location,
-                gvfs: false,
-            });
-        }
+        let location = gio::File::for_path(hamasen_root().join(name.replace('/', "_")));
+        return Some(Server { id, name, location, gvfs: false, record });
     };
     let user = field("user")
         .map(|user| format!("{}@", glib::Uri::escape_string(user, None, false)))
         .unwrap_or_default();
-    let port = server
+    let port = record
         .get("port")
         .and_then(|port| port.as_u64())
-        .filter(|port| *port != 0 && *port != default_port)
+        .filter(|port| *port != 0 && *port != protocol.port)
         .map(|port| format!(":{port}"))
         .unwrap_or_default();
     let path = glib::Uri::escape_string(
@@ -166,12 +211,7 @@ fn hamasen_server(server: &serde_json::Value) -> Option<Server> {
     );
     let host = field("host")?;
     let location = gio::File::for_uri(&format!("{scheme}://{user}{host}{port}/{path}"));
-    Some(Server {
-        id,
-        name,
-        location,
-        gvfs: true,
-    })
+    Some(Server { id, name, location, gvfs: true, record })
 }
 
 /// When a file was changed, as short as it can be said: the time today or yesterday, the
@@ -403,16 +443,17 @@ mod tests {
     fn hamasen_servers_mount_where_hamasen_does() {
         let sftp = serde_json::json!({"id": "a", "name": "NAS", "scheme": "sftp", "host": "nas",
             "port": 2222, "user": "ko ke", "path": "/srv/共用"});
-        let server = hamasen_server(&sftp).unwrap();
+        let record = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let server = hamasen_server(record(sftp)).unwrap();
         assert!(server.gvfs);
         assert_eq!(
             server.location.uri(),
             "sftp://ko%20ke@nas:2222/srv/%E5%85%B1%E7%94%A8"
         );
         let smb = serde_json::json!({"id": "b", "name": "S", "scheme": "smb", "host": "h", "port": 445});
-        assert_eq!(hamasen_server(&smb).unwrap().location.uri(), "smb://h/");
+        assert_eq!(hamasen_server(record(smb)).unwrap().location.uri(), "smb://h/");
         let drive = serde_json::json!({"id": "c", "name": "a/b", "scheme": "gdrive", "port": 0});
-        let drive = hamasen_server(&drive).unwrap();
+        let drive = hamasen_server(record(drive)).unwrap();
         assert!(!drive.gvfs);
         assert_eq!(drive.location.path().unwrap(), home().join("Hamasen/a_b"));
     }

@@ -31,6 +31,8 @@ mod alert;
 mod program;
 mod browse;
 mod focus;
+#[path = "files/hamasen.rs"]
+mod hamasen;
 #[path = "files/info.rs"]
 mod info;
 #[path = "files/ops.rs"]
@@ -45,6 +47,8 @@ mod quicklook;
 mod rename;
 #[path = "files/search.rs"]
 mod search;
+#[path = "files/secrets.rs"]
+mod secrets;
 #[path = "files/server.rs"]
 mod server;
 #[path = "files/sidebar.rs"]
@@ -205,6 +209,31 @@ fn main() -> glib::ExitCode {
         // that started it rather than quitting before it arrives.
         .inactivity_timeout(10_000)
         .build();
+    // Started at login: mounts the servers set to mount then, and opens no window.
+    let mounting = Rc::new(Cell::new(false));
+    app.add_main_option(
+        "mount-servers",
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Mount the servers set to mount at login",
+        None,
+    );
+    let asked = mounting.clone();
+    app.connect_handle_local_options(move |app, options| {
+        if options.contains("mount-servers") {
+            if let Err(err) = app.register(gio::Cancellable::NONE) {
+                eprintln!("nekoland-files: {err}");
+                return 1;
+            }
+            // Files already running at login mounts nothing more; no window is asked for.
+            if app.is_remote() {
+                return 0;
+            }
+            asked.set(true);
+        }
+        -1
+    });
     app.connect_startup(|app| {
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
@@ -219,7 +248,8 @@ fn main() -> glib::ExitCode {
         serve_file_manager(app);
         serve_hover(app);
     });
-    app.connect_activate(|app| match app.active_window() {
+    app.connect_activate(move |app| match app.active_window() {
+        _ if mounting.replace(false) => hamasen::mount_at_login(app),
         Some(window) => window.present(),
         None => {
             Window::open(app, Where::Folder(gio::File::for_path(home())));
@@ -470,6 +500,8 @@ fn menubar() -> gio::Menu {
         &section(vec![
             item("前往檔案夾⋯", "win.goto", Some("<Control>l")),
             item("連接伺服器⋯", "win.connect-server", Some("<Control>k")),
+            item("新增伺服器⋯", "win.add-server", None),
+            item("從 SSH 設定匯入", "win.import-ssh", None),
         ]),
     );
     let menubar = gio::Menu::new();
@@ -1152,6 +1184,8 @@ impl Window {
         );
         simple("empty-trash", Box::new(|win, _| ops::empty_trash(win)));
         simple("connect-server", Box::new(|win, _| server::ask(win)));
+        simple("add-server", Box::new(|win, _| hamasen::edit(win, None)));
+        simple("import-ssh", Box::new(|win, _| hamasen::import_ssh(win)));
         simple(
             "copy",
             Box::new(|win, pane| ops::copy_to_clipboard(win, &pane.selected_files(), false)),

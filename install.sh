@@ -26,7 +26,8 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
     gcc-mingw-w64-x86-64"
 # What it runs with: Mesa to draw, with Vulkan and video decoding on the GPU, Xwayland, the
 # wallpaper, terminal, portals, the network, sound, printing, languages, clipboard, fonts and
-# icons, the input method, and the applications the example configuration keeps in the Dock.
+# icons, the input method, the applications the example configuration keeps in the Dock, and
+# what Files mounts servers with: GVfs, rclone and the keyring their passwords are kept in.
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-drivers
     libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
@@ -39,7 +40,8 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
     libvte-2.91-gtk4-0 libpoppler-glib8t64 qpdf sane-utils slurp fonts-jetbrains-mono
     tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-eng zbar-tools
-    udisks2 parted e2fsprogs btrfs-progs xfsprogs exfatprogs ntfs-3g dosfstools smartmontools zstd"
+    udisks2 parted e2fsprogs btrfs-progs xfsprogs exfatprogs ntfs-3g dosfstools smartmontools zstd
+    gvfs-backends gnome-keyring rclone fuse3"
 # Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
 [ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 

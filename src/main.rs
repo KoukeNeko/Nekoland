@@ -260,6 +260,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Nekoland comes with no web browser: Market asks for one until there is one or the
         // person skips it, and otherwise ends at once.
         config::spawn("nekoland-store --choose-browser");
+        // The servers set to mount at login; it ends once they are, or after a few minutes.
+        config::spawn("nekoland-files --mount-servers");
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         let wallpaper = config::start_wallpaper(

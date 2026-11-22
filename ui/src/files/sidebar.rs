@@ -11,8 +11,8 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::{
-    browse::{self, is_server, places, Location, EDGE, GAP},
-    ops,
+    browse::{self, is_server, places, Location, Server, EDGE, GAP},
+    hamasen, ops,
     pane::{trash, Where},
     tags, Window,
 };
@@ -22,8 +22,8 @@ enum Target {
     Go(Where),
     /// A drive not mounted yet: clicking it mounts it.
     Volume(gio::Volume),
-    /// A Hamasen server not mounted yet, by id and name: clicking has Hamasen mount it.
-    Hamasen(String, String),
+    /// A Hamasen server not mounted yet: clicking mounts it.
+    Hamasen(Server),
 }
 
 pub struct Sidebar {
@@ -87,9 +87,11 @@ impl Sidebar {
         monitor.connect_mount_changed(on!(&sidebar, |s, _m, _x| s.fill()));
         monitor.connect_volume_added(on!(&sidebar, |s, _m, _x| s.fill()));
         monitor.connect_volume_removed(on!(&sidebar, |s, _m, _x| s.fill()));
-        // The bookmarks file and the trash change from elsewhere too.
+        // The bookmarks file, Hamasen's servers and the trash change from elsewhere too.
         let watched = [
             gio::File::for_path(crate::browse::bookmarks_path())
+                .monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE),
+            gio::File::for_path(crate::browse::hamasen_servers_path())
                 .monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE),
             trash().monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE),
         ];
@@ -141,6 +143,7 @@ impl Sidebar {
         let themed = |name: &str| gio::ThemedIcon::new(name).upcast::<gio::Icon>();
         let mut bookmarks = Vec::new();
         let sections = places();
+        let servers = browse::hamasen_servers();
         for (title, section) in sections {
             match title {
                 None => {
@@ -192,13 +195,21 @@ impl Sidebar {
                         let (Location::Folder(file), Some(id)) = (place.location, place.hamasen) else {
                             continue;
                         };
+                        let Some(server) = servers.iter().find(|s| s.id == id) else {
+                            continue;
+                        };
                         if place.mount.is_none() {
-                            self.add_plain_row(&place.icon, &place.label);
-                            targets.push(Target::Hamasen(id, place.label));
+                            let line = self.add_plain_row(&place.icon, &place.label);
+                            if hamasen::connecting(&id) {
+                                line.append(&gtk::Spinner::builder().spinning(true).build());
+                            }
+                            self.add_server_menu(server);
+                            targets.push(Target::Hamasen(server.clone()));
                             continue;
                         }
                         let to = Where::Folder(file);
                         self.add_row(&place.icon, &place.label, place.mount.as_ref(), &to);
+                        self.add_server_menu(server);
                         if self.opening.borrow().as_ref() == Some(&id) {
                             self.opening.take();
                             if let Some(pane) = self.win.upgrade().and_then(|w| w.pane()) {
@@ -362,38 +373,54 @@ impl Sidebar {
         }
     }
 
-    fn add_plain_row(&self, icon: &gio::Icon, label: &str) {
+    fn add_plain_row(&self, icon: &gio::Icon, label: &str) -> gtk::Box {
         let line = row_line();
         line.append(&gtk::Image::from_gicon(icon));
         line.append(&row_label(label));
         self.list.append(&line);
+        line
+    }
+
+    /// The menu of the row just added for a server: changing it or taking it off the list.
+    fn add_server_menu(&self, server: &Server) {
+        let Some(row) = self.list.last_child() else { return };
+        let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+        let (win, server, row_weak) = (self.win.clone(), server.clone(), row.downgrade());
+        click.connect_pressed(move |_, _, x, y| {
+            let Some(row) = row_weak.upgrade() else { return };
+            let (edit_win, edited) = (win.clone(), server.clone());
+            let (delete_win, deleted) = (win.clone(), server.clone());
+            let items: Vec<(&str, Box<dyn Fn()>)> = vec![
+                (
+                    "編輯⋯",
+                    Box::new(move || {
+                        if let Some(win) = edit_win.upgrade() {
+                            hamasen::edit(&win, Some(&edited));
+                        }
+                    }),
+                ),
+                (
+                    "刪除",
+                    Box::new(move || {
+                        if let Some(win) = delete_win.upgrade() {
+                            hamasen::delete(&win, deleted.clone());
+                        }
+                    }),
+                ),
+            ];
+            row_menu(&row, x, y, items);
+        });
+        row.add_controller(click);
     }
 
     fn bookmark_menu(self: &Rc<Self>, row: &gtk::Widget, folder: &gio::File, x: f64, y: f64) {
-        let popover = gtk::Popover::builder().has_arrow(false).build();
-        let remove = gtk::Button::builder()
-            .label("從側欄移除")
-            .css_classes(["flat"])
-            .build();
         let (win, folder) = (self.win.clone(), folder.clone());
-        remove.connect_clicked(glib::clone!(
-            #[weak]
-            popover,
-            move |_| {
-                popover.popdown();
-                if let Some(win) = win.upgrade() {
-                    ops::remove_bookmark(&win, &folder);
-                }
+        let remove: Box<dyn Fn()> = Box::new(move || {
+            if let Some(win) = win.upgrade() {
+                ops::remove_bookmark(&win, &folder);
             }
-        ));
-        popover.set_child(Some(&remove));
-        popover.set_parent(row);
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
         });
-        popover.popup();
+        row_menu(row, x, y, vec![("從側欄移除", remove)]);
     }
 
     fn activate(self: &Rc<Self>, index: usize) {
@@ -408,10 +435,26 @@ impl Sidebar {
                     pane.focus_content();
                 }
             }
-            Target::Hamasen(id, name) => {
-                if hamasen(&win, "mount", &id, &format!("無法掛載「{name}」")) {
-                    self.opening.replace(Some(id));
+            Target::Hamasen(server) => {
+                if hamasen::connecting(&server.id) {
+                    return;
                 }
+                self.opening.replace(Some(server.id.clone()));
+                let mounting = hamasen::mount(&server, Some(win.window.clone().upcast()));
+                let weak = Rc::downgrade(self);
+                glib::spawn_future_local(async move {
+                    let mounted = mounting.await;
+                    let Some(sidebar) = weak.upgrade() else { return };
+                    if let Err(why) = mounted {
+                        sidebar.opening.take();
+                        if let Some(win) = sidebar.win.upgrade() {
+                            win.alert(&format!("無法掛載「{}」", server.name), Some(&why));
+                        }
+                    }
+                    sidebar.fill();
+                });
+                // Shows it connecting.
+                self.fill();
             }
             Target::Volume(volume) => {
                 let operation = gtk::MountOperation::new(Some(&win.window));
@@ -513,44 +556,42 @@ fn row_label(text: &str) -> gtk::Label {
         .build()
 }
 
-/// Has Hamasen mount or unmount one of its servers: the one running, or one started to.
-/// False when there is no Hamasen to ask, which is said.
-fn hamasen(win: &Window, action: &str, id: &str, failed: &str) -> bool {
-    let argv = gio::DesktopAppInfo::new("app.hamasen.Hamasen.desktop")
-        .and_then(|app| app.commandline())
-        .and_then(|line| glib::shell_parse_argv(line).ok());
-    let Some(mut argv) = argv else {
-        win.alert(failed, Some("沒有安裝 Hamasen。"));
-        return false;
-    };
-    // The desktop file's field codes, for files and URLs it is not given.
-    argv.retain(|arg| !arg.to_string_lossy().starts_with('%'));
-    argv.push(format!("--{action}={id}").into());
-    let argv: Vec<&std::ffi::OsStr> = argv.iter().map(|arg| arg.as_os_str()).collect();
-    match gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
-        Ok(_) => true,
-        Err(err) => {
-            win.alert(failed, Some(err.message()));
-            false
-        }
+/// A menu at a point of a row, each item a button that closes it.
+fn row_menu(row: &gtk::Widget, x: f64, y: f64, items: Vec<(&str, Box<dyn Fn()>)>) {
+    let popover = gtk::Popover::builder().has_arrow(false).build();
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    for (label, run) in items {
+        let button = gtk::Button::builder().label(label).css_classes(["flat"]).build();
+        button.connect_clicked(glib::clone!(
+            #[weak]
+            popover,
+            move |_| {
+                popover.popdown();
+                run();
+            }
+        ));
+        column.append(&button);
     }
+    popover.set_child(Some(&column));
+    popover.set_parent(row);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+    popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    popover.popup();
 }
 
 fn eject_mount(win: &Weak<Window>, mount: &gio::Mount) {
     let Some(window) = win.upgrade() else { return };
-    // Hamasen unmounts its own servers: it waits for uploads still on their way, and takes
-    // its bookmark off.
+    // A folder rclone serves waits for the uploads still on their way, and loses its
+    // bookmark with it.
     let all = [mount.clone()];
     if let Some(server) = browse::hamasen_servers()
         .into_iter()
-        .find(|s| s.mount(&all).is_some())
+        .find(|s| !s.gvfs && s.mount(&all).is_some())
     {
-        hamasen(
-            &window,
-            "unmount",
-            &server.id,
-            &format!("無法退出「{}」", server.name),
-        );
+        hamasen::unmount(&window, server);
         return;
     }
     let operation = gtk::MountOperation::new(Some(&window.window));
