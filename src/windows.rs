@@ -30,9 +30,16 @@ use crate::{
 
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
-/// The application ID of Nekoland's confirmation dialog, which draws its own opaque card
-/// and shadow, so it needs no glass.
+/// The application ID of Nekoland's confirmation dialog, which leaves its shadow to the
+/// compositor so that its glass ends at its card.
 pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
+/// The system's alerts, each a window of its own that asks before the session goes on: kept
+/// in front of every other window, as the Mac's.
+pub const ALERT_APP_IDS: [&str; 3] = [
+    CONFIRM_APP_ID,
+    "io.github.koukeneko.Nekoland.Askpass",
+    "io.github.koukeneko.Nekoland.KeyringPrompt",
+];
 /// The title of 截圖's full-screen window for choosing what to take: it shows a still
 /// picture of the screen, so it appears and goes at once, without the windows' motion.
 pub const SHOT_OVERLAY_TITLE: &str = "截圖範圍";
@@ -425,14 +432,19 @@ impl Nekoland {
         }
     }
 
-    /// Puts the pictures 截圖 pinned back in front of whatever was raised.
+    /// Puts the pictures 截圖 pinned, and the system's alerts over them, back in front of
+    /// whatever was raised.
     pub fn raise_pins(&mut self) {
-        let pins: Vec<Window> = self
+        let mut pins: Vec<Window> = self
             .space
             .elements()
-            .filter(|window| [PIN_APP_ID, KEYBOARD_APP_ID].contains(&window_names(window).1.as_str()))
+            .filter(|window| {
+                let app_id = window_names(window).1;
+                [PIN_APP_ID, KEYBOARD_APP_ID].contains(&app_id.as_str()) || ALERT_APP_IDS.contains(&app_id.as_str())
+            })
             .cloned()
             .collect();
+        pins.sort_by_key(|window| ALERT_APP_IDS.contains(&window_names(window).1.as_str()));
         for pin in &pins {
             self.space.raise_element(pin, false);
         }
@@ -681,7 +693,12 @@ impl Nekoland {
 
     /// The window that covers the whole output, panels included: the topmost one, if it is fullscreen.
     pub fn fullscreen_window(&self) -> Option<Window> {
-        let top = self.space.elements().next_back()?;
+        // The system's alerts ask over a fullscreen window without ending it.
+        let top = self
+            .space
+            .elements()
+            .rev()
+            .find(|window| !ALERT_APP_IDS.contains(&window_names(window).1.as_str()))?;
         self.is_fullscreen(top).then(|| top.clone())
     }
 

@@ -6,6 +6,8 @@ export component Confirm inherits Window {
     in property <string> question;
     in property <string> consequence;
     in property <string> action;
+    // The Appearance settings' glass, as solid as the compositor's menus.
+    in property <float> glass-opacity: 0.8;
     callback confirmed;
     callback cancelled;
 
@@ -24,12 +26,13 @@ export component Confirm inherits Window {
             }
             reject
         }
+        // The window is the card alone, on the compositor's glass and with its shadow.
         VerticalLayout {
-            // Room for the dialog's shadow inside the window.
-            padding: 40px;
             Dialog {
                 title: question;
                 body: consequence;
+                background: Theme.sheet.with-alpha(root.glass-opacity);
+                drop-shadow-color: transparent;
                 Button {
                     text: "取消";
                     kind: "secondary";

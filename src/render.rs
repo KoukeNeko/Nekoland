@@ -35,7 +35,7 @@ use crate::{
     text::Picture,
     windows::{
         has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, window_names,
-        CONFIRM_APP_ID,
+        ALERT_APP_IDS, CONFIRM_APP_ID,
     },
     Nekoland,
 };
@@ -151,7 +151,16 @@ pub fn scene_elements(
                 .ok_or("output is not mapped")?
                 .loc;
             let mut elements = layer_elements(renderer, output, [Layer::Overlay, Layer::Overlay], false);
-            elements.extend(window_elements(state, renderer, &window, output_loc, scale));
+            // The system's alerts ask over a fullscreen window too, on its glass.
+            let alerts: Vec<(Window, Pose)> = state
+                .space
+                .elements()
+                .rev()
+                .filter(|other| ALERT_APP_IDS.contains(&window_names(other).1.as_str()))
+                .filter_map(|alert| Some((alert.clone(), state.window_pose(alert)?)))
+                .collect();
+            let fullscreen = window_elements(state, renderer, &window, output_loc, scale);
+            elements.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &alerts, fullscreen));
             return Ok(elements);
         }
         let output_geometry = state
@@ -1232,12 +1241,10 @@ fn windows_on_glass(
         // In front of the window, which a bar over a title bar of the program's own covers.
         elements.splice(0..0, crate::frame::title_element(state, renderer, window, *pose, output_loc, scale));
         let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
-        // These windows are mostly transparent shadow margin, which glass would blur: the
-        // confirmation's, and an X11 program's menus and tooltips, which X11 gives no way to
-        // tell their shadow from their body and which draw their own background anyway.
-        let area = area.filter(|_| {
-            window_names(window).1 != CONFIRM_APP_ID && is_managed(window) && !is_x11_drawing_own_frame(window)
-        });
+        // An X11 program's menus and tooltips are mostly transparent shadow margin, which glass
+        // would blur: X11 gives no way to tell their shadow from their body, and they draw
+        // their own background anyway.
+        let area = area.filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
         if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
             let id = window_glass_id(window);
             if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
@@ -1255,7 +1262,8 @@ fn windows_on_glass(
             );
             kept.push(id);
         }
-        if rounds_x11_corners(window) {
+        // The confirmation is its card alone, with no room for a shadow of its own.
+        if rounds_x11_corners(window) || window_names(window).1 == CONFIRM_APP_ID {
             let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
             let focused = state.focused_window().as_ref() == Some(window);
             elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));

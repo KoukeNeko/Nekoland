@@ -487,7 +487,8 @@ popover > arrow {
 
 /* Dialogs take the corners windows do. */
 floating-sheet > sheet,
-dialog-host > dialog.alert sheet {
+dialog-host > dialog.alert sheet,
+window.dialog-window.alert.csd:not(.solid-csd) {
   border-radius: 14px;
 }
 /* A dialog's title bar is only as tall as its close button and the 6px around it, the title
@@ -856,6 +857,12 @@ window.background:not(.desktopwindow) > dialog-host > widget > widget > taboverv
 .content-pane, navigation-split-view > navigation-view > navigation-view-page, overlay-split-view > outline + widget { background-color: var(--window-bg-color); }
 window.view .content-pane, window.view overlay-split-view > outline + widget { background-color: var(--view-bg-color); }
 .sidebar-pane { background-color: color-mix(in srgb, var(--sidebar-bg-color) var(--nekoland-glass-opacity), transparent); }
+/* An alert shown as a window of its own, as the system's are, is all glass: its sheet as
+ * see-through as the menus, and what is in it without the background given back above. */
+window.background.dialog-window.alert:not(.desktopwindow) {
+  background-color: color-mix(in srgb, var(--dialog-bg-color) var(--nekoland-glass-opacity), transparent);
+}
+window.background.dialog-window.alert:not(.desktopwindow) > * { background-color: transparent; }
 
 @media (prefers-color-scheme: dark) {
   :root {

@@ -3,6 +3,11 @@
 
 slint::include_modules!();
 
+// For its look; the rest is the launcher's.
+#[allow(dead_code)]
+#[path = "launcher/apps.rs"]
+mod apps;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let which = std::env::args().nth(1).unwrap_or_default();
     let (question, consequence, action, command): (&str, &str, &str, &[&str]) = match which.as_str() {
@@ -40,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     dialog.set_question(question.into());
     dialog.set_consequence(consequence.into());
     dialog.set_action(action.into());
+    dialog.set_glass_opacity(apps::Look::load().glass_opacity);
     dialog.on_cancelled(|| {
         let _ = slint::quit_event_loop();
     });
