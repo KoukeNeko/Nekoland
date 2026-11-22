@@ -16,7 +16,10 @@ fallback_mode=1920x1080
 die() { echo "install-theme.sh: $*" >&2; exit 1; }
 
 [ -f "$font" ] || die "needs fonts-ubuntu"
-python3 -c 'import fontTools, PIL' 2>/dev/null || die "needs python3-fonttools and python3-pil"
+# The system's Python, which apt's python3-fonttools and python3-pil are for, not one first
+# on PATH, as Homebrew's.
+python=/usr/bin/python3
+"$python" -c 'import fontTools, PIL' 2>/dev/null || die "needs python3-fonttools and python3-pil"
 command -v grub-mkfont >/dev/null || die "needs grub-common"
 
 # The preferred mode of the first connected display, as the kernel read it from the display;
@@ -37,10 +40,10 @@ height=${mode#*x}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-font_size=$(python3 "$here/make-theme.py" "$width" "$height" "$work/theme")
+font_size=$("$python" "$here/make-theme.py" "$width" "$height" "$work/theme")
 # GRUB draws the menu's text from its own one-bit font: Ubuntu's Medium, the weight that
 # holds up at one bit; the Ubuntu-M.ttf beside it is only a link to the variable font.
-python3 -m fontTools varLib.instancer "$font" wght=500 wdth=100 -o "$work/medium.ttf" --quiet
+"$python" -m fontTools varLib.instancer "$font" wght=500 wdth=100 -o "$work/medium.ttf" --quiet
 grub-mkfont -n Nekoland -s "$font_size" --no-hinting -o "$work/theme/nekoland.pf2" "$work/medium.ttf"
 
 sudo rm -rf "$dest"

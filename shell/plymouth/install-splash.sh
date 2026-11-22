@@ -16,7 +16,8 @@ ls /usr/lib/*/plymouth/label-*.so >/dev/null 2>&1 || { echo "install-splash.sh: 
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-python3 "$here/make-theme.py" "${mode%x*}" "${mode#*x}" "$work/theme"
+# The system's Python, which apt's python3-pil is for, not one first on PATH.
+/usr/bin/python3 "$here/make-theme.py" "${mode%x*}" "${mode#*x}" "$work/theme"
 
 sudo rm -rf "$dest"
 sudo install -Dm 644 -t "$dest" "$work"/theme/*
