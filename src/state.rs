@@ -92,6 +92,8 @@ pub struct Nekoland {
     pub idle_inhibitors: Vec<WlSurface>,
     /// Screen captures waiting for their output to be drawn.
     pub screencopy: Vec<crate::screencopy::Frame>,
+    /// Frames of windows, ext-image-copy-capture's, waiting for the next drawing.
+    pub window_captures: Vec<crate::image_capture::WindowFrame>,
 
     pub space: Space<Window>,
     /// Minimized windows, with where they go back to.
@@ -193,6 +195,7 @@ impl Nekoland {
         let protocols = Protocols::new(&dh);
         crate::handlers::appmenu::create_globals(&dh);
         crate::screencopy::create_global(&dh);
+        crate::image_capture::create_globals(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
@@ -250,6 +253,7 @@ impl Nekoland {
             screen_shared_at: None,
             idle_inhibitors: Vec::new(),
             screencopy: Vec::new(),
+            window_captures: Vec::new(),
 
             space,
             minimized: Vec::new(),

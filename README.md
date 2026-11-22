@@ -496,13 +496,17 @@ does what `power_button` and `lid_close` say; closing the lid does nothing while
 display is connected. A time without input can also turn the displays off, until the next
 input, and put the computer to sleep, locked as it wakes.
 
-Screenshots and screen sharing go through `wlr-screencopy`: `grim` takes pictures, and
-`xdg-desktop-portal-wlr`, which `shell/nekoland-portals.conf` picks, takes them and shares
-the screen for programs that ask the portal, such as browsers. Copy and paste works
+Screenshots and screen sharing go through `wlr-screencopy` and `ext-image-copy-capture`:
+`grim` takes pictures, of a display or of one window, and `xdg-desktop-portal-wlr`, which
+`shell/nekoland-portals.conf` picks, shares a display or a window for programs that ask
+the portal, such as browsers and Discord. What to share is chosen in
+`nekoland-screenshare`, a window of thumbnails of the windows and the displays; windows
+are told apart by `ext-foreign-toplevel-list`. Copy and paste works
 between X11 and Wayland programs.
 
-While any program has a microphone or a camera open, or records the screen, a dot shows
-left of the clock, as on the Mac: orange, green and purple.
+While any program has a microphone or a camera open, a dot shows left of the clock, as on
+the Mac: orange or green. While the screen is shared, a purple button shows there, whose
+menu stops the sharing.
 
 Programs in a sandbox such as Flatpak's connect through `security-context-v1` and are
 kept from what reaches other programs: input methods, virtual keyboards, the clipboard

@@ -38,6 +38,7 @@ mod power;
 mod privacy;
 mod render;
 mod rounded;
+mod image_capture;
 mod screencopy;
 mod snap_layouts;
 mod sprite;
@@ -223,7 +224,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // X11 programs find XWayland through the environment, so everything else starts after it.
     x11::start(&event_loop.handle(), &mut data, move |data| {
         // Services D-Bus starts, such as the portal that tells programs whether to be dark,
-        // have to find this display; a nested compositor leaves the outer session's alone.
+        // have to find this display, and the screen-share picker the portal runs, Nekoland's
+        // socket; a nested compositor leaves the outer session's alone.
         if owns_session {
             let renderer = std::env::var_os(GTK_RENDERER).map(|_| GTK_RENDERER);
             let updated = std::process::Command::new("dbus-update-activation-environment")
@@ -235,6 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SESSION_TYPE,
                     "LD_PRELOAD",
                     "FREETYPE_PROPERTIES",
+                    "NEKOLAND_SOCKET",
                 ])
                 .args(renderer)
                 .status();

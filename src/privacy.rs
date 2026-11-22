@@ -1,12 +1,16 @@
 //! The menu bar's dots while something records, as on the Mac: orange while a microphone is
-//! open, green while a camera is, purple while the screen is shared.
+//! open, green while a camera is; while the screen is shared, a purple button whose menu
+//! stops it.
 
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
 
-use smithay::reexports::calloop::channel::Sender;
+use smithay::{
+    reexports::calloop::channel::Sender,
+    utils::{Logical, Rectangle},
+};
 
 use crate::{dbus::Event, state::Nekoland};
 
@@ -20,6 +24,11 @@ pub const SCREEN: (f64, f64, f64) = (0.69, 0.32, 0.87);
 pub const CAMERA: (f64, f64, f64) = (0.20, 0.78, 0.35);
 pub const MICROPHONE: (f64, f64, f64) = (1.0, 0.58, 0.0);
 const DOT_GAP: i32 = 4;
+/// The sharing button, and how much darker it is while its menu is open.
+const SHARING_WIDTH: i32 = 30;
+const SHARING_HEIGHT: f64 = 22.0;
+const SHARING_GAP: i32 = 4;
+const SHARING_OPEN_SHADE: f64 = 0.85;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InUse {
@@ -104,11 +113,7 @@ impl Nekoland {
 
 /// Draws the dots of what is in use, leftwards from `right`, and returns where they end.
 pub fn draw_dots(cr: &cairo::Context, in_use: InUse, mut right: i32, center: f64) -> i32 {
-    let dots = [
-        (in_use.screen, SCREEN),
-        (in_use.camera, CAMERA),
-        (in_use.microphone, MICROPHONE),
-    ];
+    let dots = [(in_use.camera, CAMERA), (in_use.microphone, MICROPHONE)];
     for (_, (r, g, b)) in dots.iter().filter(|(on, _)| *on) {
         cr.set_source_rgb(*r, *g, *b);
         cr.arc(f64::from(right) - DOT / 2.0, center, DOT / 2.0, 0.0, std::f64::consts::TAU);
@@ -116,6 +121,34 @@ pub fn draw_dots(cr: &cairo::Context, in_use: InUse, mut right: i32, center: f64
         right -= DOT as i32 + DOT_GAP;
     }
     right
+}
+
+/// Where the sharing button goes, leftwards from `right`.
+pub fn sharing_button(right: i32) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (right - SHARING_GAP - SHARING_WIDTH, 0).into(),
+        (SHARING_WIDTH + SHARING_GAP, crate::menubar::MENU_BAR_HEIGHT).into(),
+    )
+}
+
+/// The sharing button: a display, white, on the screen's purple.
+pub fn draw_sharing(cr: &cairo::Context, rect: Rectangle<i32, Logical>, open: bool, center: f64) {
+    let shade = if open { SHARING_OPEN_SHADE } else { 1.0 };
+    let x = f64::from(rect.loc.x + SHARING_GAP);
+    let width = f64::from(SHARING_WIDTH);
+    crate::text::rounded_rectangle(cr, x, center - SHARING_HEIGHT / 2.0, width, SHARING_HEIGHT, 6.0);
+    cr.set_source_rgb(SCREEN.0 * shade, SCREEN.1 * shade, SCREEN.2 * shade);
+    let _ = cr.fill();
+    // A display 13 by 9 points on a stand, as the bar's other icons are drawn.
+    let (left, top) = (x + (width - 13.0) / 2.0, center - 6.0);
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.set_line_width(1.5);
+    crate::text::rounded_rectangle(cr, left, top, 13.0, 9.0, 1.5);
+    let _ = cr.stroke();
+    cr.move_to(left + 3.5, top + 11.75);
+    cr.line_to(left + 9.5, top + 11.75);
+    cr.set_line_cap(cairo::LineCap::Round);
+    let _ = cr.stroke();
 }
 
 #[cfg(test)]

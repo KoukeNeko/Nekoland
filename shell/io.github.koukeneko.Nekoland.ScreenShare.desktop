@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Share Screen
+Name[zh_TW]=分享畫面
+Exec=nekoland-screenshare
+Icon=video-display
+NoDisplay=true

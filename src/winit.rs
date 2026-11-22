@@ -224,6 +224,7 @@ pub fn init_winit(
                 if !frames.is_empty() {
                     crate::screencopy::copy(backend.renderer(), &output, &elements, 0, frames);
                 }
+                state.capture_windows(backend.renderer());
 
                 state.finish_frame(&output);
                 if submitted {

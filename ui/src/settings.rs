@@ -9,6 +9,7 @@ mod program;
 mod backup;
 mod bluetooth;
 mod display;
+mod edid;
 mod focus;
 mod imagegen;
 mod keys;

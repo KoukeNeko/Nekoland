@@ -261,6 +261,8 @@ enum Source {
     Control,
     /// The button that stops 截圖's recording, while it records.
     Recording,
+    /// The purple button while the screen is shared, whose menu stops it.
+    Sharing,
     /// The bell, which opens the Notification Center.
     Notifications,
     Clock,
@@ -807,6 +809,15 @@ impl MenuBar {
             source: Source::Clock,
         });
         right -= CLOCK_PADDING;
+        if self.in_use.screen {
+            let rect = crate::privacy::sharing_button(right);
+            crate::privacy::draw_sharing(&cr, rect, open == Some(self.titles.len()), center);
+            self.titles.push(Title {
+                rect,
+                source: Source::Sharing,
+            });
+            right = rect.loc.x;
+        }
         right = crate::privacy::draw_dots(&cr, self.in_use, right, center);
 
         type Icon = (Source, String, String, String, Option<(i32, i32, Vec<u8>)>);
@@ -2191,6 +2202,11 @@ impl Nekoland {
                 }
                 None => Vec::new(),
             },
+            Source::Sharing => vec![
+                Entry::note("螢幕分享中"),
+                Entry::separator(),
+                Entry::item("停止分享", Command::Spawn("nekoland-screenshare stop".into())),
+            ],
             Source::Control | Source::Notifications | Source::Clock | Source::Recording => Vec::new(),
         }
     }

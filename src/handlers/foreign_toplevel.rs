@@ -1,5 +1,6 @@
 //! wlr-foreign-toplevel-management: tells docks and taskbars which windows exist, and
-//! lets them activate, minimize, maximize and close them.
+//! lets them activate, minimize, maximize and close them. ext-foreign-toplevel-list names
+//! the same windows for capturing one: xdg-desktop-portal-wlr shares a window by it.
 
 use smithay::{
     desktop::{Window, WindowSurface},
@@ -14,7 +15,9 @@ use smithay::{
             backend::ClientId, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
+    delegate_foreign_toplevel_list,
     utils::IsAlive,
+    wayland::foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState},
 };
 
 use crate::{
@@ -56,6 +59,8 @@ struct Entry {
     window: Window,
     description: Description,
     handles: Vec<ZwlrForeignToplevelHandleV1>,
+    /// The window in ext-foreign-toplevel-list.
+    listed: ForeignToplevelHandle,
 }
 
 impl Entry {
@@ -72,18 +77,49 @@ impl Entry {
         }
         handle.done();
     }
+
+    fn send_listed(&self, previous: &Description) {
+        let now = &self.description;
+        if previous.title == now.title && previous.app_id == now.app_id {
+            return;
+        }
+        self.listed.send_title(&now.title);
+        self.listed.send_app_id(&now.app_id);
+        self.listed.send_done();
+    }
 }
 
 #[derive(Default)]
 pub struct ForeignToplevelState {
     managers: Vec<ZwlrForeignToplevelManagerV1>,
     entries: Vec<Entry>,
+    /// Always there once made; an option only to be taken while refreshing.
+    list: Option<ForeignToplevelListState>,
 }
 
 impl ForeignToplevelState {
     pub fn new(dh: &DisplayHandle) -> Self {
         dh.create_global::<Nekoland, ZwlrForeignToplevelManagerV1, _>(VERSION, ());
-        Self::default()
+        Self {
+            // It names other programs' windows, to capture.
+            list: Some(ForeignToplevelListState::new_with_filter::<Nekoland>(dh, crate::state::unsandboxed)),
+            ..Self::default()
+        }
+    }
+
+    /// The window ext-foreign-toplevel-list names `handle`.
+    pub fn listed_window(&self, handle: &ForeignToplevelHandle) -> Option<&Window> {
+        let identifier = handle.identifier();
+        (self.entries.iter())
+            .find(|entry| entry.listed.identifier() == identifier)
+            .map(|entry| &entry.window)
+    }
+
+    /// The name ext-foreign-toplevel-list gives `window`.
+    pub fn identifier(&self, window: &Window) -> Option<String> {
+        (self.entries.iter())
+            .find(|entry| entry.window == *window)
+            .map(|entry| entry.listed.identifier())
     }
 }
 
@@ -145,10 +181,12 @@ impl Nekoland {
     pub fn refresh_foreign_toplevels(&mut self) {
         let mut state = std::mem::take(&mut self.foreign_toplevels);
 
+        let mut list = state.list.take().expect("made with the list");
         state.entries.retain(|entry| {
             let alive = entry.window.alive();
             if !alive {
                 entry.handles.iter().for_each(|handle| handle.closed());
+                list.remove_toplevel(&entry.listed);
             }
             alive
         });
@@ -168,13 +206,16 @@ impl Nekoland {
                         .handles
                         .iter()
                         .for_each(|handle| entry.send(handle, Some(&previous)));
+                    entry.send_listed(&previous);
                 }
                 Some(_) => {}
                 None => {
+                    let listed = list.new_toplevel::<Nekoland>(&description.title, &description.app_id);
                     let mut entry = Entry {
                         window,
                         description,
                         handles: Vec::new(),
+                        listed,
                     };
                     entry.handles = state
                         .managers
@@ -186,9 +227,17 @@ impl Nekoland {
             }
         }
 
+        state.list = Some(list);
         self.foreign_toplevels = state;
     }
 }
+
+impl ForeignToplevelListHandler for Nekoland {
+    fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
+        self.foreign_toplevels.list.as_mut().expect("made with the list")
+    }
+}
+delegate_foreign_toplevel_list!(Nekoland);
 
 impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for Nekoland {
     fn bind(

@@ -341,6 +341,20 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                     .collect(),
             );
         }
+        // The windows a screen share can show, the topmost first: the name
+        // ext-foreign-toplevel-list gives it, its application ID and its title, tab between.
+        "capturable-windows" => {
+            return Some(
+                launcher_windows(state)
+                    .iter()
+                    .filter_map(|window| {
+                        let identifier = state.foreign_toplevels.identifier(window)?;
+                        let (title, app_id) = window_names(window);
+                        Some(format!("{identifier}\t{app_id}\t{}\n", title.replace(['\t', '\n'], " ")))
+                    })
+                    .collect(),
+            );
+        }
         // The windows on screen, the topmost first: `X Y WIDTH HEIGHT` in points, a tab and
         // the title. 截圖 takes a window by these.
         "window-areas" => {

@@ -439,10 +439,12 @@ fn render(
             surface.reset_buffers();
         }
         let frames = state.take_screencopy(output);
-        draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
+        let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
             warn!("render: {err}");
             false
-        })
+        });
+        state.capture_windows(renderer);
+        queued
     };
     let output = output.clone();
     let idle = if guard.last_drawn.elapsed() < QUIET_AFTER { IDLE_REDRAW } else { QUIET_REDRAW };

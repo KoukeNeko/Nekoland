@@ -144,6 +144,8 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
+# xdg-desktop-portal-wlr reads its settings per desktop, by XDG_CURRENT_DESKTOP.
+sudo install -Dm 644 "$src/shell/xdpw-nekoland.ini" /etc/xdg/xdg-desktop-portal-wlr/Nekoland
 sudo install -Dm 644 "$src/shell/nekoland-lock.pam" /etc/pam.d/nekoland-lock
 # An override changes only the schemas compiled beside it, and GNOME's are in /usr/share.
 sudo install -Dm 644 -t /usr/share/glib-2.0/schemas "$src/shell/90_nekoland.gschema.override"

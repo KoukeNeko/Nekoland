@@ -41,6 +41,10 @@ name = "nekoland-filechooser"
 path = "src/filechooser.rs"
 
 [[bin]]
+name = "nekoland-screenshare"
+path = "src/screenshare.rs"
+
+[[bin]]
 name = "nekoland-fileop"
 path = "src/fileop.rs"
 

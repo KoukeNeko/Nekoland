@@ -150,7 +150,7 @@ impl FractionalScaleHandler for Nekoland {
 }
 
 impl Nekoland {
-    fn display_scale(&self) -> f64 {
+    pub fn display_scale(&self) -> f64 {
         (self.space.outputs().next()).map_or(1.0, |output| output.current_scale().fractional_scale())
     }
 

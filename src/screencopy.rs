@@ -1,7 +1,8 @@
 //! Screenshots and screen sharing, through wlr-screencopy: grim takes pictures with it,
 //! and xdg-desktop-portal-wlr shares the screen through it with the programs that ask the
 //! portal, such as browsers and Discord. A frame asked for is copied, into the client's
-//! shared memory, when the output is next drawn.
+//! shared memory, when the output is next drawn; ext-image-copy-capture's frames of an
+//! output (`image_capture`) wait and are copied with these.
 //!
 //! shortcut: shared memory only, no dmabufs, so each frame goes through the CPU; offer
 //! dmabufs if sharing a large screen proves slow.
@@ -18,6 +19,9 @@ use smithay::{
     },
     output::Output,
     reexports::{
+        wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::{
+            ExtImageCopyCaptureFrameV1, FailureReason,
+        },
         wayland_protocols_wlr::screencopy::v1::server::{
             zwlr_screencopy_frame_v1::{self, Flags, ZwlrScreencopyFrameV1},
             zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
@@ -34,7 +38,7 @@ use smithay::{
 use crate::{render::CLEAR_COLOR, Nekoland};
 
 const VERSION: u32 = 3;
-const BYTES_PER_PIXEL: i32 = 4;
+pub(crate) const BYTES_PER_PIXEL: i32 = 4;
 
 /// What a client asked to capture.
 pub struct FrameData {
@@ -47,17 +51,70 @@ pub struct FrameData {
     used: Mutex<bool>,
 }
 
+/// Which protocol a frame was asked for in, to answer it in.
+pub enum Target {
+    Wlr(ZwlrScreencopyFrameV1),
+    Ext(ExtImageCopyCaptureFrameV1),
+}
+
 /// A frame waiting for its output to be drawn.
 pub struct Frame {
-    frame: ZwlrScreencopyFrameV1,
-    buffer: WlBuffer,
-    with_damage: bool,
+    pub target: Target,
+    pub buffer: WlBuffer,
+    pub output: Output,
+    /// The part of the output, in its pixels.
+    pub region: Rectangle<i32, Physical>,
+    pub cursor: bool,
+    /// One of a stream, as a recorder's or a screen share's, rather than a screenshot.
+    pub streaming: bool,
 }
 
 impl Frame {
-    fn data(&self) -> &FrameData {
-        self.frame.data::<FrameData>().expect("frames are made with their data")
+    fn is_alive(&self) -> bool {
+        match &self.target {
+            Target::Wlr(frame) => frame.is_alive(),
+            Target::Ext(frame) => frame.is_alive(),
+        }
     }
+
+    fn failed(&self) {
+        match &self.target {
+            Target::Wlr(frame) => frame.failed(),
+            Target::Ext(frame) => frame.failed(FailureReason::Unknown),
+        }
+    }
+
+    fn ready(&self, transform: Transform, time: Duration) {
+        let (seconds, nanos) = (time.as_secs(), time.subsec_nanos());
+        let size = self.region.size;
+        match &self.target {
+            Target::Wlr(frame) => {
+                if self.streaming {
+                    frame.damage(0, 0, size.w as u32, size.h as u32);
+                }
+                frame.flags(Flags::empty());
+                frame.ready((seconds >> 32) as u32, seconds as u32, nanos);
+            }
+            Target::Ext(frame) => {
+                frame.transform(transform.into());
+                frame.damage(0, 0, size.w, size.h);
+                frame.presentation_time((seconds >> 32) as u32, seconds as u32, nanos);
+                frame.ready();
+            }
+        }
+    }
+}
+
+/// Whether `buffer` is shared memory in the one format frames are copied in, `size` large.
+pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
+    with_buffer_contents_mut(buffer, |_, len, shm| {
+        shm.format == wl_shm::Format::Xrgb8888
+            && shm.width == size.w
+            && shm.height == size.h
+            && shm.stride >= size.w * BYTES_PER_PIXEL
+            && shm.offset as usize + (shm.stride * shm.height) as usize <= len
+    })
+    .unwrap_or(false)
 }
 
 pub fn create_global(dh: &DisplayHandle) {
@@ -172,7 +229,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Nekoland {
             zwlr_screencopy_frame_v1::Request::Copy { buffer } => (buffer, false),
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
             zwlr_screencopy_frame_v1::Request::Destroy => {
-                state.screencopy.retain(|pending| &pending.frame != frame);
+                state
+                    .screencopy
+                    .retain(|pending| !matches!(&pending.target, Target::Wlr(known) if known == frame));
                 return;
             }
             _ => return,
@@ -183,23 +242,21 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Nekoland {
             return;
         }
         // The buffer must be the one the frame said.
-        let size = data.region.size;
-        let fits = with_buffer_contents_mut(&buffer, |_, len, shm| {
-            shm.format == wl_shm::Format::Xrgb8888
-                && shm.width == size.w
-                && shm.height == size.h
-                && shm.stride >= size.w * BYTES_PER_PIXEL
-                && shm.offset as usize + (shm.stride * shm.height) as usize <= len
-        });
-        if !fits.unwrap_or(false) {
+        if !fits(&buffer, data.region.size) {
             frame.post_error(zwlr_screencopy_frame_v1::Error::InvalidBuffer, "not the buffer the frame asked for");
             return;
         }
         *used = true;
+        let Some(output) = data.output.clone() else {
+            return frame.failed();
+        };
         state.screencopy.push(Frame {
-            frame: frame.clone(),
+            target: Target::Wlr(frame.clone()),
             buffer,
-            with_damage,
+            output,
+            region: data.region,
+            cursor: data.cursor,
+            streaming: with_damage,
         });
     }
 }
@@ -209,10 +266,10 @@ impl Nekoland {
     pub fn take_screencopy(&mut self, output: &Output) -> Vec<Frame> {
         let (frames, rest) = std::mem::take(&mut self.screencopy)
             .into_iter()
-            .filter(|frame| frame.frame.is_alive())
-            .partition(|frame| frame.data().output.as_ref() == Some(output));
+            .filter(Frame::is_alive)
+            .partition(|frame| frame.output == *output);
         self.screencopy = rest;
-        if frames.iter().any(|frame| frame.with_damage) {
+        if frames.iter().any(|frame| frame.streaming) {
             self.note_screen_frame();
         }
         frames
@@ -229,43 +286,45 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
     frames: Vec<Frame>,
 ) {
     let Some(size) = output.current_mode().map(|mode| mode.size) else {
-        return frames.iter().for_each(|frame| frame.frame.failed());
+        return frames.iter().for_each(Frame::failed);
     };
     let time = monotonic_now();
+    let turned = output.current_transform();
     for frame in frames {
-        let data = frame.data();
-        let elements = if data.cursor { elements } else { &elements[cursor.min(elements.len())..] };
-        let drawn = (size, output.current_scale().fractional_scale(), output.current_transform());
-        match copy_frame(renderer, drawn, elements, &frame) {
-            Ok(()) => {
-                if frame.with_damage {
-                    let region = data.region.size;
-                    frame.frame.damage(0, 0, region.w as u32, region.h as u32);
-                }
-                frame.frame.flags(Flags::empty());
-                let seconds = time.as_secs();
-                frame.frame.ready((seconds >> 32) as u32, seconds as u32, time.subsec_nanos());
-            }
+        let elements = if frame.cursor { elements } else { &elements[cursor.min(elements.len())..] };
+        // wlr-screencopy's picture is the display's own, unturned; ext-image-copy-capture's
+        // is drawn upright, as programs that ignore the transform it says would show it.
+        let (size, transform) = match frame.target {
+            Target::Wlr(_) => (size, turned),
+            Target::Ext(_) => (turned.transform_size(size), Transform::Normal),
+        };
+        let drawn = (size, output.current_scale().fractional_scale(), transform);
+        // The region was cut from the output as it was when the frame was asked for; a
+        // display made smaller since then no longer holds it.
+        let copied = if Rectangle::from_size(size).contains_rect(frame.region) {
+            copy_into(renderer, drawn, elements, frame.region, &frame.buffer)
+        } else {
+            Err("the display changed size since the frame was asked for".into())
+        };
+        match copied {
+            Ok(()) => frame.ready(transform, time),
             Err(err) => {
                 tracing::warn!("screen capture: {err}");
-                frame.frame.failed();
+                frame.failed();
             }
         }
     }
 }
 
-fn copy_frame<E: RenderElement<GlesRenderer>>(
+/// Draws `elements` as on a display `size` large, at `scale` and turned by `transform`, and
+/// copies `region` of it into `buffer`, which `fits` it.
+pub fn copy_into<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     (size, scale, transform): (Size<i32, Physical>, f64, Transform),
     elements: &[E],
-    frame: &Frame,
+    region: Rectangle<i32, Physical>,
+    buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let region = frame.data().region;
-    // The region was cut from the output as it was when the frame was asked for; a display
-    // made smaller since then no longer holds it.
-    if !Rectangle::from_size(size).contains_rect(region) {
-        return Err("the display changed size since the frame was asked for".into());
-    }
     let mut texture = Offscreen::<smithay::backend::renderer::gles::GlesTexture>::create_buffer(
         renderer,
         Fourcc::Abgr8888,
@@ -290,7 +349,7 @@ fn copy_frame<E: RenderElement<GlesRenderer>>(
     let output_row = (size.w * BYTES_PER_PIXEL) as usize;
     let row = (region.size.w * BYTES_PER_PIXEL) as usize;
     let left = (region.loc.x * BYTES_PER_PIXEL) as usize;
-    with_buffer_contents_mut(&frame.buffer, |ptr, len, shm| {
+    with_buffer_contents_mut(buffer, |ptr, len, shm| {
         // Checked when the buffer was given: it holds every row at its stride.
         let memory = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
         for y in 0..region.size.h as usize {
@@ -304,7 +363,7 @@ fn copy_frame<E: RenderElement<GlesRenderer>>(
 }
 
 /// The time on the clock the protocol's timestamps are on.
-fn monotonic_now() -> Duration {
+pub fn monotonic_now() -> Duration {
     let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // Cannot fail for CLOCK_MONOTONIC with a valid pointer.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
