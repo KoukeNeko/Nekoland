@@ -22,6 +22,10 @@ use zbus::{
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const REGISTRAR_NAME: &str = "com.canonical.AppMenu.Registrar";
 const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
+/// How the names are asked for: left to whoever has them, and not to be taken from here,
+/// as zbus would otherwise have it. A second Nekoland on the bus, one in a window, took
+/// them from the session's and left them to nobody when it ended.
+const KEPT: zbus::fdo::RequestNameFlags = zbus::fdo::RequestNameFlags::DoNotQueue;
 const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
 const REGISTRAR_PATH: &str = "/com/canonical/AppMenu/Registrar";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
@@ -252,7 +256,7 @@ pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
     };
     connection.object_server().at(WATCHER_PATH, watcher)?;
     // Another panel may already be the watcher; then its items are not shown here.
-    if let Err(err) = connection.request_name(WATCHER_NAME) {
+    if let Err(err) = connection.request_name_with_flags(WATCHER_NAME, KEPT.into()) {
         tracing::warn!("status items are shown elsewhere: {err}");
     }
     // Qt only exports its menus when there is a registrar, on Wayland too; X11 programs
@@ -263,7 +267,7 @@ pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
         events: events.clone(),
     };
     connection.object_server().at(NOTIFICATIONS_PATH, notifications)?;
-    if let Err(err) = connection.request_name(NOTIFICATIONS_NAME) {
+    if let Err(err) = connection.request_name_with_flags(NOTIFICATIONS_NAME, KEPT.into()) {
         tracing::warn!("notifications are shown elsewhere: {err}");
     }
 
@@ -272,7 +276,7 @@ pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
         events: events.clone(),
     };
     connection.object_server().at(REGISTRAR_PATH, registrar)?;
-    if let Err(err) = connection.request_name(REGISTRAR_NAME) {
+    if let Err(err) = connection.request_name_with_flags(REGISTRAR_NAME, KEPT.into()) {
         tracing::warn!("application menus are shown elsewhere: {err}");
     }
 
