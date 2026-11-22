@@ -250,6 +250,8 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   opens in Windows from Files. One connection is kept for all of them, in which an agent
   of Nekoland's (`ui/src/windows/agent.ps1`) starts the programs and tells their windows
   apart, so that each is its own application in the Dock under Nekoland's title bar.
+  Microsoft Store and what is installed from it are among the programs listed, known by
+  their names there (`shell:AppsFolder\…`) rather than by paths that change as they update.
   A `.exe` or `.msi` opened in Files runs with Wine. Files' right-click menu has a
   Windows submenu (`nekoland-settings --windows-menu`) with what Windows' programs add to
   the file's menu there, as Windows last listed it for files of the kind, and the

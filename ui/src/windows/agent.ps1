@@ -4,13 +4,15 @@
 #
 # It does what Nekoland asks in requests\*.txt, a line of tab-separated fields each:
 #   run <program> [<file>]   starts a program, with the file open in it
-#   find                     lists the Start menu's programs into found\apps.tsv
+#   find                     lists the Start menu's programs into found\apps.tsv, the
+#                            Store's among them, as shell:AppsFolder\<their name there>
 #   menu <file> <name>       lists what programs add to the file's right-click menu into
 #                            menus\<name>.tsv, a line an item: its submenus' names and its own
 #   verb <file> <item>...    does one of them
 # and keeps windows.tsv, a line for each window shown: its handle, which FreeRDP names its
 # window after, its program's path, how much of its top is a title bar of Windows', for
-# Nekoland to draw its own over, and its width and height.
+# Nekoland to draw its own over, its width and height, and for a program from the Store what
+# it is started by, which unlike its path stays the same from one update to the next.
 
 $share = '\\tsclient\nekoland'
 
@@ -45,6 +47,10 @@ public static class Neko {
     [DllImport("user32.dll")] static extern bool GetTitleBarInfo(IntPtr window, ref TITLEBARINFO info);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr window, ref POINT point);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string kind, string title);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process, ref uint length, StringBuilder id);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out RECT value, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -175,6 +181,17 @@ public static class Neko {
         return said;
     }
 
+    // What a process from the Store is known by there, or nothing for any other.
+    public static string Model(uint process) {
+        IntPtr handle = OpenProcess(0x1000, false, process);
+        if (handle == IntPtr.Zero) return "";
+        uint length = 256;
+        var id = new StringBuilder(256);
+        int failed = GetApplicationUserModelId(handle, ref length, id);
+        CloseHandle(handle);
+        return failed == 0 ? id.ToString() : "";
+    }
+
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20, DWMWA_CLOAKED = 14, DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     const long WS_CAPTION = 0xC00000, WS_EX_TOOLWINDOW = 0x80;
 
@@ -204,6 +221,10 @@ public static class Neko {
                 title = bar.Bar.Bottom - whole.Top;
             uint process;
             GetWindowThreadProcessId(window, out process);
+            // Windows frames some of the Store's programs in a process of its own: the
+            // program is the one whose window is inside.
+            IntPtr inside_frame = FindWindowEx(window, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null);
+            if (inside_frame != IntPtr.Zero) GetWindowThreadProcessId(inside_frame, out process);
             // What is seen of the window: without the margins around it that Windows resizes
             // it at, which are the window's too.
             RECT seen;
@@ -261,11 +282,35 @@ function Find-Apps {
         $extensions = ($opens[$target.ToLower()] | Select-Object -Unique) -join ' '
         "$($_.BaseName)`t$target`t$number`t$extensions"
     }
+    # The Store's, which the Start menu has no shortcuts for: each with the largest picture
+    # its package has of it.
+    $packages = @{}
+    Get-AppxPackage | ForEach-Object { $packages[$_.PackageFamilyName] = $_ }
+    $number = $seen.Count
+    $lines = @($lines) + @(Get-StartApps | Where-Object { $_.AppID -match '^[^\\]+!' } | ForEach-Object {
+        $number++
+        $family, $id = $_.AppID -split '!', 2
+        $package = $packages[$family]
+        if ($package) {
+            try {
+                $app = (Get-AppxPackageManifest $package).Package.Applications.Application | Where-Object Id -eq $id
+                $logo = $app.VisualElements.Square44x44Logo
+                $named = Join-Path $package.InstallLocation $logo
+                $largest = Get-ChildItem (Split-Path $named) -Filter "$([IO.Path]::GetFileNameWithoutExtension($named))*.png" |
+                    Where-Object Name -notmatch 'contrast' | Sort-Object Length -Descending | Select-Object -First 1
+                if ($largest) { Copy-Item -LiteralPath $largest.FullName "$out\$number.png" }
+            } catch {
+                [IO.File]::AppendAllText("$share\agent.log", "icon of $($_.AppID): $_`r`n")
+            }
+        }
+        "$($_.Name)`tshell:AppsFolder\$($_.AppID)`t$number`t"
+    })
     [IO.File]::WriteAllLines("$out\apps.new", @($lines))
     Move-Item -Force "$out\apps.new" "$out\apps.tsv"
 }
 
 $paths = @{}
+$models = @{}
 $last = $null
 while (Test-Path $share) {
     foreach ($request in @(Get-ChildItem "$share\requests" -Filter *.txt -ErrorAction SilentlyContinue | Sort-Object Name)) {
@@ -273,6 +318,9 @@ while (Test-Path $share) {
         Remove-Item -LiteralPath $request.FullName
         try {
             if ($verb -eq 'find') { Find-Apps }
+            # One from the Store through Explorer, which does not wait for it: started from
+            # here, a program busy with a window of its own kept the agent waiting with it.
+            elseif ($verb -eq 'run' -and $program -like 'shell:*') { Start-Process explorer.exe -ArgumentList "`"$program`"" }
             elseif ($verb -eq 'run' -and $file) { Start-Process -FilePath $program -ArgumentList "`"$file`"" }
             elseif ($verb -eq 'run') { Start-Process -FilePath $program }
             elseif ($verb -eq 'menu') {
@@ -294,8 +342,10 @@ while (Test-Path $share) {
         $handle, $process, $title, $width, $height = $window -split "`t"
         if (-not $paths.ContainsKey($process)) {
             $paths[$process] = (Get-Process -Id $process -ErrorAction SilentlyContinue).Path
+            $model = [Neko]::Model($process)
+            $models[$process] = if ($model) { "shell:AppsFolder\$model" }
         }
-        "$handle`t$($paths[$process])`t$title`t$width`t$height"
+        "$handle`t$($paths[$process])`t$title`t$width`t$height`t$($models[$process])"
     }
     $now = @($lines) -join "`n"
     if ($now -ne $last -or -not (Test-Path "$share\windows.tsv")) {

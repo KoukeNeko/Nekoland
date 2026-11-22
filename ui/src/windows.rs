@@ -1637,6 +1637,9 @@ struct Shown {
     title: u32,
     /// How large Windows has it.
     size: (u32, u32),
+    /// Its program as the Store's are known, `shell:AppsFolder\…`, when it is one of those:
+    /// their files move with each update.
+    packaged: String,
 }
 
 fn parse_shown(list: &str) -> Vec<Shown> {
@@ -1653,6 +1656,7 @@ fn parse_shown(list: &str) -> Vec<Shown> {
                 program: program.to_string(),
                 title: title.trim().parse().unwrap_or(0),
                 size: (width, height),
+                packaged: fields.next().unwrap_or_default().trim().to_string(),
             })
         })
         .collect()
@@ -1664,7 +1668,9 @@ fn parse_shown(list: &str) -> Vec<Shown> {
 fn identity(shown: &Shown, launchers: &[(String, String, String)]) -> (String, String) {
     let app = launchers
         .iter()
-        .find(|(_, _, program)| program.eq_ignore_ascii_case(&shown.program))
+        .find(|(_, _, program)| {
+            program.eq_ignore_ascii_case(&shown.program) || program.eq_ignore_ascii_case(&shown.packaged)
+        })
         .map_or(UNNAMED_APP, |(id, ..)| id)
         .to_string();
     let (width, height) = shown.size;
@@ -1844,14 +1850,24 @@ fn mime_types(extensions: &[String]) -> Vec<String> {
     types
 }
 
-/// Whether `text` is a whole path in Windows, as `C:\Windows\notepad.exe`.
+/// What a program from the Store is started by, before its name there.
+const PACKAGED: &str = "shell:AppsFolder\\";
+
+/// Whether `text` is a whole path in Windows, as `C:\Windows\notepad.exe`, or a program
+/// from the Store, as `shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App`.
 fn is_windows_path(text: &str) -> bool {
     let bytes = text.as_bytes();
-    bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+    text.strip_prefix(PACKAGED).is_some_and(|name| name.contains('!'))
+        || bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }
 
 /// The program's file name without its extension: `C:\Windows\notepad.exe` is "notepad".
 fn program_stem(program: &str) -> &str {
+    // One from the Store is named by who made it, a dot, itself, and what tells it apart.
+    if let Some(name) = program.strip_prefix(PACKAGED) {
+        let name = name.split(['_', '!']).next().unwrap_or(name);
+        return name.rsplit('.').next().unwrap_or(name);
+    }
     let file = program.rsplit('\\').next().unwrap_or(program);
     file.rsplit_once('.').map_or(file, |(stem, _)| stem)
 }
@@ -2811,6 +2827,9 @@ mod tests {
         assert!(is_windows_path(r"C:\Windows\notepad.exe"));
         assert!(!is_windows_path("notepad.exe"));
         assert!(!is_windows_path("/home/neko/a.exe"));
+        let store = r"shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App";
+        assert!(is_windows_path(store));
+        assert_eq!(program_stem(store), "WindowsStore");
     }
 
     #[test]
