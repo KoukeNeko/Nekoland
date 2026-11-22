@@ -243,6 +243,10 @@ public static class Neko {
 # that session over.
 reg add 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' /v AutoAdminLogon /t REG_SZ /d 0 /f | Out-Null
 
+# Windows sends a remote session at most 30 frames a second; 15 here raises that past 60,
+# from the next session Windows starts.
+reg add 'HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' /v DWMFRAMEINTERVAL /t REG_DWORD /d 15 /f | Out-Null
+
 # Lists the Start menu's programs, one a line: name, path, the number its icon is saved
 # under, and the extensions Windows opens with it. The list is written whole and then
 # named, so that it is never read half written.
