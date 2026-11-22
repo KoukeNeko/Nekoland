@@ -257,7 +257,13 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   the file's menu there, as Windows last listed it for files of the kind, and the
   programs installed in Wine's bottles to open the file with, and what those add to the
   menu themselves, as 7-Zip does, which a Windows program built with MinGW
-  (`ui/src/windows/shellmenu.c`) asks them for. Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
+  (`ui/src/windows/shellmenu.c`) asks them for. Android Apps runs Android's apps in
+  Waydroid: it installs Waydroid with Google Play, in Chinese and with the clipboard shared,
+  each app in a window of its own, which the compositor places, animates, rounds, puts on
+  glass and gives its own bar over Android's caption by the app's window, not by the whole
+  of Android's display Waydroid gives each one; it registers the device with Google Play,
+  lists the apps installed, and gets Apple Music, which has no Linux or Mac program to run.
+  Copy `shell/io.github.koukeneko.Nekoland.Settings.desktop` to
   `~/.local/share/applications/` to find it among the applications.
 - The launcher, `nekoland-launcher` from `ui/`, opens with Alt+Space and closes with it
   again or when anything else is clicked. It finds applications by name, in the user's

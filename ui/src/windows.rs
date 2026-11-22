@@ -178,7 +178,7 @@ pub(crate) fn windows_page() -> adw::PreferencesPage {
     page
 }
 
-fn button(label: &str) -> gtk::Button {
+pub(crate) fn button(label: &str) -> gtk::Button {
     gtk::Button::builder()
         .label(label)
         .valign(gtk::Align::Center)
@@ -187,7 +187,7 @@ fn button(label: &str) -> gtk::Button {
 
 /// apt-get installing `packages`, without the status lines Market reads for its progress:
 /// they are the last two of its words.
-fn apt_install(packages: &[&'static str]) -> Vec<&'static str> {
+pub(crate) fn apt_install(packages: &[&'static str]) -> Vec<&'static str> {
     let quiet = &apt::APT_GET[..apt::APT_GET.len() - 2];
     quiet
         .iter()
@@ -1502,12 +1502,18 @@ fn entries_dir() -> PathBuf {
     glib::user_data_dir().join("applications")
 }
 
-fn entry_path(id: &str) -> PathBuf {
+pub(crate) fn entry_path(id: &str) -> PathBuf {
     entries_dir().join(format!("{id}.desktop"))
 }
 
 /// The launchers made here, by name: each one's ID, name and Windows program.
 fn launchers() -> Vec<(String, String, String)> {
+    entries(ENTRY_PREFIX, PROGRAM_KEY)
+}
+
+/// The desktop entries named with `prefix`, by name: each one's ID, name and what it keeps
+/// under `key`.
+pub(crate) fn entries(prefix: &str, key: &str) -> Vec<(String, String, String)> {
     let Ok(entries) = std::fs::read_dir(entries_dir()) else {
         return Vec::new();
     };
@@ -1515,12 +1521,12 @@ fn launchers() -> Vec<(String, String, String)> {
         .flatten()
         .filter_map(|entry| {
             let id = entry.file_name().to_str()?.strip_suffix(".desktop")?.to_string();
-            id.starts_with(ENTRY_PREFIX).then_some(())?;
+            id.starts_with(prefix).then_some(())?;
             let file = glib::KeyFile::new();
             file.load_from_file(entry.path(), glib::KeyFileFlags::NONE).ok()?;
             let name = file.string(ENTRY_GROUP, "Name").ok()?.to_string();
-            let program = file.string(ENTRY_GROUP, PROGRAM_KEY).ok()?.to_string();
-            Some((id, name, program))
+            let kept = file.string(ENTRY_GROUP, key).ok()?.to_string();
+            Some((id, name, kept))
         })
         .collect();
     found.sort_by(|a, b| a.1.cmp(&b.1));
