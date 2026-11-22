@@ -150,6 +150,10 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(15);
 const REFUSED_WITHIN: Duration = Duration::from_secs(10);
 /// How long the agent is given to say what Windows shows, which takes it a few seconds.
 const AGENT_START: Duration = Duration::from_secs(25);
+/// How long the agent's list, which it writes anew every 10 seconds, may stay as it is before
+/// the connection is taken to be dead: Windows stopped, or FreeRDP stuck without its display.
+/// Finding the programs holds the agent up for a while.
+const AGENT_SILENT: Duration = Duration::from_secs(120);
 /// `nekoland-settings --windows-app --agent` keeps the connection without opening anything.
 const KEEP_FLAG: &str = "--agent";
 
@@ -1823,6 +1827,9 @@ fn keep_connection() -> Result<(), String> {
     let mut tagged: std::collections::HashMap<String, ((String, String), Vec<String>)> = Default::default();
     let (started, mut connected, mut busy, mut answered) =
         (Instant::now(), Instant::now(), Instant::now(), false);
+    // When the list was last written, as the file says, and when that last changed; the
+    // file's time is Windows' to set, so it is only compared with itself.
+    let (mut written, mut heard) = (None, Instant::now());
     let ended = loop {
         std::thread::sleep(Duration::from_millis(300));
         if connection.try_wait().map_err(failed)?.is_some() {
@@ -1859,6 +1866,13 @@ fn keep_connection() -> Result<(), String> {
             }
             continue;
         };
+        let now_written = std::fs::metadata(&listed).and_then(|meta| meta.modified()).ok();
+        if now_written != written {
+            (written, heard) = (now_written, Instant::now());
+        } else if heard.elapsed() > AGENT_SILENT {
+            eprintln!("{OPEN_FLAG}: the agent has not answered for {AGENT_SILENT:?}; ending its connection");
+            break Ok(());
+        }
         answered = true;
         let shown = parse_shown(&list);
         let launchers = launchers();

@@ -9,10 +9,11 @@
 #   menu <file> <name>       lists what programs add to the file's right-click menu into
 #                            menus\<name>.tsv, a line an item: its submenus' names and its own
 #   verb <file> <item>...    does one of them
-# and keeps windows.tsv, a line for each window shown: its handle, which FreeRDP names its
-# window after, its program's path, how much of its top is a title bar of Windows', for
-# Nekoland to draw its own over, its width and height, and for a program from the Store what
-# it is started by, which unlike its path stays the same from one update to the next.
+# and keeps windows.tsv, written anew at least every 10 seconds, a line for each window
+# shown: its handle, which FreeRDP names its window after, its program's path, how much of
+# its top is a title bar of Windows', for Nekoland to draw its own over, its width and
+# height, and for a program from the Store what it is started by, which unlike its path
+# stays the same from one update to the next.
 
 $share = '\\tsclient\nekoland'
 
@@ -312,6 +313,7 @@ function Find-Apps {
 $paths = @{}
 $models = @{}
 $last = $null
+$written = [Diagnostics.Stopwatch]::StartNew()
 while (Test-Path $share) {
     foreach ($request in @(Get-ChildItem "$share\requests" -Filter *.txt -ErrorAction SilentlyContinue | Sort-Object Name)) {
         $verb, $program, $file = (Get-Content -LiteralPath $request.FullName -Encoding UTF8 -TotalCount 1) -split "`t"
@@ -348,10 +350,12 @@ while (Test-Path $share) {
         "$handle`t$($paths[$process])`t$title`t$width`t$height`t$($models[$process])"
     }
     $now = @($lines) -join "`n"
-    if ($now -ne $last -or -not (Test-Path "$share\windows.tsv")) {
+    # Written anew every 10 seconds all the same, for Nekoland to know the agent is there.
+    if ($now -ne $last -or $written.Elapsed.TotalSeconds -ge 10 -or -not (Test-Path "$share\windows.tsv")) {
         [IO.File]::WriteAllText("$share\windows.new", "$now`n")
         Move-Item -Force "$share\windows.new" "$share\windows.tsv"
         $last = $now
+        $written.Restart()
     }
     Start-Sleep -Milliseconds 250
 }
