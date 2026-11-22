@@ -82,6 +82,28 @@ fn draw_gtk_without_gl_when_gpuless() {
     }
 }
 
+/// A zsh login on Ubuntu skips /etc/profile.d, where Flatpak and Snap add their apps'
+/// folders to XDG_DATA_DIRS, so the app grid and launcher would miss those apps. The user's
+/// systemd manager has them from its environment generators; a value already set is kept.
+fn find_flatpak_and_snap_apps() {
+    if std::env::var_os("XDG_DATA_DIRS").is_some() {
+        return;
+    }
+    let shown = match std::process::Command::new("systemctl").args(["--user", "show-environment"]).output() {
+        Ok(shown) if shown.status.success() => shown,
+        other => {
+            tracing::warn!("Flatpak and Snap apps may be missing; no systemd environment: {other:?}");
+            return;
+        }
+    };
+    let dirs = String::from_utf8_lossy(&shown.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("XDG_DATA_DIRS=").map(str::to_owned));
+    if let Some(dirs) = dirs {
+        std::env::set_var("XDG_DATA_DIRS", dirs);
+    }
+}
+
 fn has_render_node() -> bool {
     std::fs::read_dir(DRI_DIRECTORY).is_ok_and(|nodes| {
         nodes
@@ -129,6 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     draw_gtk_without_gl_when_gpuless();
+    find_flatpak_and_snap_apps();
 
     let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
 
