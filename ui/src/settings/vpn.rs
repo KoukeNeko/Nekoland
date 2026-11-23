@@ -1326,7 +1326,7 @@ fn show_glyph(glyph: &gtk::Image, profile: &Profile) {
 }
 
 /// Shows `content` one level down from `from`, under `title`, with `bar` under the header.
-fn push(
+pub(crate) fn push(
     from: &impl IsA<gtk::Widget>,
     title: &str,
     bar: Option<&gtk::Widget>,
@@ -1346,7 +1346,7 @@ fn push(
 }
 
 /// The strip under a page's header with what only that page does.
-fn page_bar(children: &[&gtk::Widget]) -> gtk::Box {
+pub(crate) fn page_bar(children: &[&gtk::Widget]) -> gtk::Box {
     let bar = line(6, children);
     bar.set_margin_start(12);
     bar.set_margin_end(12);

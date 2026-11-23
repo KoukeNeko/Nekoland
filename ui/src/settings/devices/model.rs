@@ -788,28 +788,39 @@ pub fn devices(records: &[Record], machine: &Machine) -> Vec<Device> {
 /// whether anything is under it, in order, but for what is under one not `expanded`. What is
 /// connected to nothing shown is under the ACPI device the firmware places it on, else under
 /// the computer, as in Windows.
-pub fn tree(devices: &[&Device], expanded: &HashSet<String>) -> Vec<(usize, usize, bool)> {
+/// What each device is connected to, by its index: the nearest device above it in sysfs, else
+/// the one its firmware node is under, else the computer, which is under none.
+pub fn parents(devices: &[&Device]) -> Vec<Option<usize>> {
     let at: HashMap<&str, usize> = devices
         .iter()
         .enumerate()
         .map(|(index, device)| (device.path.as_str(), index))
         .collect();
     let computer = devices.iter().position(|device| device.kind == Kind::Computer);
-    let mut under: Vec<Vec<usize>> = vec![Vec::new(); devices.len()];
-    let mut tops = Vec::new();
     let nearest = |from: Option<&str>| {
         std::iter::successors(from, |path| parent(path)).find_map(|path| at.get(path).copied())
     };
-    for (index, device) in devices.iter().enumerate() {
-        let firmware = || {
-            nearest(device.firmware.as_deref())
-                .filter(|&above| !devices[above].path.starts_with(&device.path))
-        };
-        let above = if Some(index) == computer {
-            None
-        } else {
-            nearest(parent(&device.path)).or_else(firmware).or(computer)
-        };
+    devices
+        .iter()
+        .enumerate()
+        .map(|(index, device)| {
+            let firmware = || {
+                nearest(device.firmware.as_deref())
+                    .filter(|&above| !devices[above].path.starts_with(&device.path))
+            };
+            if Some(index) == computer {
+                None
+            } else {
+                nearest(parent(&device.path)).or_else(firmware).or(computer)
+            }
+        })
+        .collect()
+}
+
+pub fn tree(devices: &[&Device], expanded: &HashSet<String>) -> Vec<(usize, usize, bool)> {
+    let mut under: Vec<Vec<usize>> = vec![Vec::new(); devices.len()];
+    let mut tops = Vec::new();
+    for (index, above) in parents(devices).into_iter().enumerate() {
         match above {
             Some(parent) => under[parent].push(index),
             None => tops.push(index),

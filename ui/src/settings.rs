@@ -47,6 +47,8 @@ mod vpn;
 mod sunshine;
 #[path = "settings/storage.rs"]
 mod storage;
+#[path = "settings/devices.rs"]
+mod devices;
 // Market's: what is installed and how it is removed.
 #[allow(dead_code)]
 #[path = "store/sources.rs"]
@@ -558,6 +560,7 @@ fn build(app: &adw::Application) {
                 "通知" => notifications_page(config).upcast(),
                 "顯示" => display::display_page(config).upcast(),
                 "電源" => power_page(config).upcast(),
+                "裝置管理員" => devices::devices_page().upcast(),
                 "聲音" => sound_page().upcast(),
                 "鍵盤" => keyboard_page(config).upcast(),
                 "滑鼠與觸控板" => mouse_page(config).upcast(),
@@ -600,6 +603,7 @@ fn build(app: &adw::Application) {
             ("滑鼠與觸控板", "input-mouse-symbolic"),
             ("印表機", "printer-symbolic"),
             ("電源", "battery-level-100-symbolic"),
+            ("裝置管理員", "computer-symbolic"),
         ],
         vec![
             ("一般", "preferences-system-symbolic"),
