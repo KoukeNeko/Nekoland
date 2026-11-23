@@ -1023,6 +1023,13 @@ impl Nekoland {
             return;
         };
         self.dock_minimizing(window, Rectangle::new(location, window.geometry().size));
+        // Out of the space, focus changes no longer reach it; it is let go of here, so being
+        // activated again when restored sends the configure Chromium waits for to draw.
+        if window.set_activated(false) {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_pending_configure();
+            }
+        }
         self.space.unmap_elem(window);
         self.minimized.push((window.clone(), location));
         self.focus_top_window();
