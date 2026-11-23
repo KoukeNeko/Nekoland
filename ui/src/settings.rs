@@ -3140,12 +3140,21 @@ fn notifications_page(config: &Config) -> adw::PreferencesPage {
     if notifiers.is_empty() {
         apps.add(&adw::ActionRow::builder().title("沒有應用程式").css_classes(["dim-label"]).build());
     }
+    let installed = gio::AppInfo::all();
     for name in notifiers {
+        let app = notifier_app(&installed, &name);
         let row = adw::SwitchRow::builder()
-            .title(name.as_str())
+            .title(app.as_ref().map_or(name.clone(), |app| app.display_name().to_string()))
             .use_markup(false)
             .active(!off.borrow().contains(&name))
             .build();
+        let icon = app.and_then(|app| app.icon());
+        let image = match &icon {
+            Some(icon) => gtk::Image::from_gicon(icon),
+            None => gtk::Image::from_icon_name("preferences-system-notifications-symbolic"),
+        };
+        image.set_pixel_size(32);
+        row.add_prefix(&image);
         let off = off.clone();
         row.connect_active_notify(move |row| {
             let mut off = off.borrow_mut();
@@ -3160,6 +3169,27 @@ fn notifications_page(config: &Config) -> adw::PreferencesPage {
     }
     page.add(&apps);
     page
+}
+
+/// The application a program sends notifications as `name` is: the one of that name, or
+/// whose desktop file or program is called so, as `nekoland-files` is Files'. One shown in
+/// the applications comes before a hidden helper of the same name, as Sunshine has.
+fn notifier_app(installed: &[gio::AppInfo], name: &str) -> Option<gio::AppInfo> {
+    let name = name.to_lowercase();
+    let mut installed: Vec<&gio::AppInfo> = installed.iter().collect();
+    installed.sort_by_key(|app| !app.should_show());
+    installed.iter().copied().find(|app| app.name().to_lowercase() == name).or_else(|| {
+        installed.iter().copied().find(|app| {
+            let id = app.id().map(|id| id.trim_end_matches(".desktop").to_lowercase());
+            // Not `executable()`, which some entries have none of and the binding reads anyway.
+            let program = app.commandline().and_then(|line| {
+                let line = line.to_string_lossy().into_owned();
+                let program = line.split_whitespace().next()?;
+                Some(Path::new(program).file_name()?.to_string_lossy().to_lowercase())
+            });
+            id.as_deref() == Some(name.as_str()) || program.as_deref() == Some(name.as_str())
+        })
+    }).cloned()
 }
 
 fn about_page() -> adw::PreferencesPage {
