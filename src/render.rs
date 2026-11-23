@@ -1102,7 +1102,7 @@ fn floating_elements(
             .copied()
             .unwrap_or_default();
         if let Some(pose) = state.window_pose(window) {
-            let area = pose_area(pose, output_loc, scale);
+            let area = pose_area(window, pose, output_loc, scale);
             elements.extend(
                 glass
                     .as_deref_mut()
@@ -1448,7 +1448,7 @@ fn windows_on_glass(
                 // An X11 program's menus and tooltips are mostly transparent shadow margin,
                 // which glass would blur: X11 gives no way to tell their shadow from their
                 // body, and they draw their own background anyway.
-                let area = Some(pose_area(*pose, output_loc, scale))
+                let area = Some(pose_area(window, *pose, output_loc, scale))
                     .filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
                 let radius = framed.map_or(corner, |(_, radius)| radius);
                 // Nor behind one that covers all of it, which would never show.
@@ -1602,11 +1602,23 @@ fn window_area(
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Option<Rectangle<i32, Physical>> {
-    state.window_pose(window).map(|pose| pose_area(pose, output_loc, scale))
+    state.window_pose(window).map(|pose| pose_area(window, pose, output_loc, scale))
 }
 
-fn pose_area(pose: Pose, output_loc: Point<i32, Logical>, scale: f64) -> Rectangle<i32, Physical> {
-    Rectangle::new(pose.shown.loc - output_loc, pose.shown.size).to_physical_precise_round(scale)
+fn pose_area(
+    window: &Window,
+    pose: Pose,
+    output_loc: Point<i32, Logical>,
+    scale: f64,
+) -> Rectangle<i32, Physical> {
+    // Rounded from where the window's surface is put, as its pixels are: rounded from the
+    // body, it lies half a pixel off them one way or the other at a fractional scale, as the
+    // window moves, and its edge shows past the window's own or not.
+    let margin = window.geometry().loc;
+    let surface: Point<i32, Physical> =
+        (pose.shown.loc - margin - output_loc).to_physical_precise_round(scale);
+    let body = surface + margin.to_physical_precise_round(scale);
+    Rectangle::new(body, pose.shown.size.to_physical_precise_round(scale))
 }
 
 /// What a window's glass goes by from frame to frame: the window keeps it.
