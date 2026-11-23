@@ -33,7 +33,7 @@ or `./install.sh` from a checkout. It installs what Nekoland runs with, download
 build CI made of that commit for Ubuntu 26.10 on x86-64 or arm64, or installs those packages
 and builds it where there is none (or with `NEKOLAND_BUILD=1`), puts its programs in `/usr/local/bin`, its desktop entries and portal files where
 GTK and `xdg-desktop-portal` find them, a GRUB theme (`shell/grub`) for the boot menu, shown for five seconds at every boot, and a Plymouth splash (`shell/plymouth`) after it, both drawn at the screen's own size where GRUB boots the computer, the boot waiting at most ten seconds for the network to come up, `shell/config.toml` as the configuration unless
-there is one, and a few lines at the end of `~/.profile` that start Nekoland on logging in
+there is one, and a few lines at the end of `~/.profile` (and of `~/.zprofile` when the login shell is zsh) that start Nekoland on logging in
 on the first console, tty1, in place of its shell, so that quitting it logs out; its log is
 `~/.local/state/nekoland.log`, the one before `nekoland.log.old`. Where netplan leaves the
 network to systemd-networkd, as on Ubuntu Server, it hands it to NetworkManager, whose

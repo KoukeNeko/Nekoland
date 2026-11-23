@@ -198,10 +198,14 @@ fi
 # tells nothing; Ctrl+C cannot stop that into a shell. The last session's log is kept beside
 # the new one. An older block is replaced: its last line is the only "fi" not indented.
 marker="# Nekoland: started by logging in on the first console"
-say "Starting Nekoland from ~/.profile on tty1"
-touch "$HOME/.profile"
-sed -i "/^$marker\$/,/^fi\$/d" "$HOME/.profile"
-cat >>"$HOME/.profile" <<EOF
+# A zsh login reads ~/.zprofile, not ~/.profile.
+profiles="$HOME/.profile"
+[ "$(basename "$(getent passwd "$(id -un)" | cut -d: -f7)")" != zsh ] || profiles="$profiles $HOME/.zprofile"
+for profile in $profiles; do
+say "Starting Nekoland from $profile on tty1"
+touch "$profile"
+sed -i "/^$marker\$/,/^fi\$/d" "$profile"
+cat >>"$profile" <<EOF
 $marker
 if [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ] && [ "\$(tty)" = /dev/tty1 ]; then
     mkdir -p "\$HOME/.local/state"
@@ -215,6 +219,7 @@ if [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ] && [ "\$(tty)" = /de
     exit
 fi
 EOF
+done
 
 # Settings' 網路 page is NetworkManager's, but Ubuntu Server's netplan leaves the Ethernet
 # ports to systemd-networkd. Over SSH, applying it at once could cut the connection this runs
