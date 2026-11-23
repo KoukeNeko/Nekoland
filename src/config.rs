@@ -213,6 +213,10 @@ pub struct Config {
     /// The battery in the menu bar, where there is one, and its percentage beside it.
     pub menu_bar_battery: bool,
     pub menu_bar_battery_percent: bool,
+    /// The order of the menu bar's icons that Ctrl and a drag move, left to right: `battery`,
+    /// `network`, `vpn`, `sound`, and `item:` before an application's item's ID. Ones not
+    /// named go on the left.
+    pub menu_bar_order: Vec<String>,
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
@@ -837,6 +841,7 @@ impl Default for Config {
             menu_bar_sound: true,
             menu_bar_battery: true,
             menu_bar_battery_percent: false,
+            menu_bar_order: Vec::new(),
             clock_date: true,
             menu_bar_background: true,
             clock_icon: false,
@@ -1005,6 +1010,14 @@ pub fn config_file(name: &str) -> Option<PathBuf> {
 pub fn save_dock(dock: &[String]) {
     let quoted: Vec<String> = dock.iter().map(|app_id| format!("{app_id:?}")).collect();
     if let Err(err) = save_setting("dock", &format!("dock = [{}]", quoted.join(", "))) {
+        tracing::warn!("{err}");
+    }
+}
+
+/// Writes the order of the menu bar's icons back to the configuration file.
+pub fn save_menu_bar_order(order: &[String]) {
+    let quoted: Vec<String> = order.iter().map(|name| format!("{name:?}")).collect();
+    if let Err(err) = save_setting("menu_bar_order", &format!("menu_bar_order = [{}]", quoted.join(", "))) {
         tracing::warn!("{err}");
     }
 }

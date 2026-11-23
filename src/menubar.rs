@@ -15,6 +15,9 @@
 //! Submenus open to the side, and a pointer on its way into one does not close it. The
 //! keyboard works too: the arrows move, Return chooses, Escape closes, and Ctrl+F2 opens
 //! the first menu.
+//!
+//! The icons left of the control center's, but for the recording's, are dragged into
+//! another order with Ctrl held, the others sliding aside to make room.
 
 use std::{
     collections::HashMap,
@@ -83,6 +86,8 @@ pub(crate) const GAP_BELOW_BAR: i32 = 4;
 const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
 const NETWORK_POLL: Duration = Duration::from_secs(3);
+/// How fast the bar's icons slide aside for one dragged among them.
+const ICON_SLIDE_RATE: f64 = 16.0;
 
 /// What Help menus are called, by the programs that bring their own.
 const HELP_TITLES: [&str; 6] = ["help", "說明", "輔助說明", "幫助", "帮助", "ヘルプ"];
@@ -302,6 +307,16 @@ pub struct OpenMenu {
     last_pointer: Option<Point<i32, Logical>>,
 }
 
+/// An icon of the bar being dragged with Ctrl held to another place among those that move.
+struct Reorder {
+    name: String,
+    /// Where in the icon it was taken, and where the pointer is, from the bar's right end.
+    grab: f64,
+    pointer: f64,
+    /// The icons that move, by name, left to right, as they would be let go now.
+    order: Vec<String>,
+}
+
 /// What the bar shows; it is drawn again when any of it changes.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Drawn {
@@ -368,6 +383,11 @@ pub struct MenuBar {
     bar_id: Id,
     content_id: Id,
     menu_ids: Vec<Id>,
+    reorder: Option<Reorder>,
+    /// Where each icon that moves is drawn while they make room for one dragged, from the
+    /// bar's right end, and how fast it goes; empty once they are all in place.
+    slides: HashMap<String, (f64, f64)>,
+    slid: Instant,
 }
 
 impl Default for MenuBar {
@@ -408,6 +428,9 @@ impl Default for MenuBar {
             bar_id: Id::new(),
             content_id: Id::new(),
             menu_ids: Vec::new(),
+            reorder: None,
+            slides: HashMap::new(),
+            slid: Instant::now(),
         }
     }
 }
@@ -868,19 +891,62 @@ impl MenuBar {
                 item.pixmap,
             )
         }));
-        for (source, key, name, theme_path, pixmap) in icons {
+        // Those that move go in the order they were left in, the ones not in it on the left.
+        let order = self.reorder.as_ref().map_or(&config.menu_bar_order, |drag| &drag.order);
+        let (fixed, mut moving): (Vec<Icon>, Vec<Icon>) =
+            icons.into_iter().partition(|icon| self.order_name(&icon.0).is_none());
+        moving.sort_by_key(|icon| {
+            let rank = self
+                .order_name(&icon.0)
+                .and_then(|name| order.iter().position(|placed| *placed == name));
+            (rank.is_none(), std::cmp::Reverse(rank))
+        });
+        let fixed_count = fixed.len();
+        // The left and right ends of the icons that move.
+        let mut region = (right, right);
+        let mut placed = Vec::new();
+        for (index, icon) in fixed.into_iter().chain(moving).enumerate() {
+            if index == fixed_count {
+                region.1 = right;
+            }
             // The battery's percentage, when shown, goes before its icon, in the clock's type.
             let percent = self
                 .battery
-                .filter(|_| source == Source::Battery && config.menu_bar_battery_percent)
+                .filter(|_| icon.0 == Source::Battery && config.menu_bar_battery_percent)
                 .map(|battery| format!("{}%", battery.percent));
             let label_width = percent.as_ref().map_or(0, |percent| text_size(percent, &clock_font).0 + 4);
-            let base = slot;
             let rect = Rectangle::new(
-                (right - base - label_width, 0).into(),
-                (base + label_width, MENU_BAR_HEIGHT).into(),
+                (right - slot - label_width, 0).into(),
+                (slot + label_width, MENU_BAR_HEIGHT).into(),
             );
-            let lit = open == Some(self.titles.len()) || (source == Source::Control && self.control.is_some());
+            right = rect.loc.x;
+            placed.push((icon, rect, percent, label_width));
+        }
+        region.0 = right;
+
+        let now = Instant::now();
+        // A frame late by much is not taken as a jump.
+        let seconds = now.duration_since(self.slid).as_secs_f64().min(0.05);
+        self.slid = now;
+        let sliding = self.reorder.is_some() || !self.slides.is_empty();
+        let mut moved = false;
+        let first = self.titles.len();
+        self.titles
+            .extend(placed.iter().map(|((source, ..), rect, ..)| Title { rect: *rect, source: source.clone() }));
+        // The one dragged goes over those it passes.
+        let dragged = self.reorder.as_ref().map(|drag| drag.name.clone());
+        let mut placed: Vec<_> = placed.into_iter().enumerate().collect();
+        placed.sort_by_key(|(_, ((source, ..), ..))| dragged.is_some() && self.order_name(source) == dragged);
+        for (index, ((source, key, name, theme_path, pixmap), rect, percent, label_width)) in placed {
+            let shift = match self.order_name(&source).filter(|_| sliding) {
+                Some(order_name) => self.slide(order_name, rect, width, region, seconds, config.animations),
+                None => 0.0,
+            };
+            moved |= shift != 0.0;
+            cr.save().ok();
+            cr.translate(shift, 0.0);
+            let base = slot;
+            let lit = open == Some(first + index) || (source == Source::Control && self.control.is_some());
             if lit {
                 highlight(&cr, rect);
             }
@@ -905,11 +971,92 @@ impl MenuBar {
                 let _ = cr.paint();
                 cr.restore().ok();
             }
-            self.titles.push(Title { rect, source });
-            right = rect.loc.x;
+            cr.restore().ok();
+        }
+        if self.reorder.is_none() && !moved {
+            self.slides.clear();
         }
         drop(cr);
         self.picture = text::picture(surface);
+    }
+
+    /// What the order of the bar's icons calls one that Ctrl and a drag move; none for one
+    /// that stays put.
+    fn order_name(&self, source: &Source) -> Option<String> {
+        Some(match source {
+            Source::Battery => "battery".into(),
+            Source::Network => "network".into(),
+            Source::Vpn => "vpn".into(),
+            Source::Sound => "sound".into(),
+            // Its key names it only while the program runs.
+            Source::Status(key) => match self.items.iter().find(|item| item.key == *key && !item.id.is_empty()) {
+                Some(item) => format!("item:{}", item.id),
+                None => key.clone(),
+            },
+            _ => return None,
+        })
+    }
+
+    /// The icons that move, by name, left to right, where the bar last put them.
+    fn movable_titles(&self) -> Vec<(String, Rectangle<i32, Logical>)> {
+        let mut found: Vec<_> = self
+            .titles
+            .iter()
+            .filter_map(|title| Some((self.order_name(&title.source)?, title.rect)))
+            .collect();
+        found.sort_by_key(|(_, rect)| rect.loc.x);
+        found
+    }
+
+    /// How far from its place at `rect` the icon `name` is drawn, `seconds` on: the one
+    /// dragged under the pointer, kept within the `region` of those that move, and the others
+    /// sliding to where they now go.
+    fn slide(
+        &mut self,
+        name: String,
+        rect: Rectangle<i32, Logical>,
+        width: i32,
+        region: (i32, i32),
+        seconds: f64,
+        animate: bool,
+    ) -> f64 {
+        let goal = f64::from(rect.loc.x - width);
+        let held = self.reorder.as_ref().filter(|drag| drag.name == name);
+        let (x, speed) = self.slides.entry(name).or_insert((goal, 0.0));
+        if let Some(drag) = held {
+            let (left, right) = (f64::from(region.0 - width), f64::from(region.1 - rect.size.w - width));
+            *x = (drag.pointer - drag.grab).clamp(left, right);
+            *speed = 0.0;
+        } else {
+            if animate {
+                crate::motion::settle(x, speed, goal, ICON_SLIDE_RATE, seconds);
+            }
+            if !animate || ((*x - goal).abs() < 0.3 && speed.abs() < 1.0) {
+                (*x, *speed) = (goal, 0.0);
+            }
+        }
+        *x - goal
+    }
+
+    /// The pointer dragging an icon is at `x` on a bar `width` wide: the icon follows it, and
+    /// goes to the place among the others nearest where it is.
+    fn reorder_to(&mut self, x: f64, width: i32) {
+        let titles = self.movable_titles();
+        let Some(drag) = self.reorder.as_mut() else {
+            return;
+        };
+        drag.pointer = x - f64::from(width);
+        let Some(dragged) = titles.iter().find(|(name, _)| *name == drag.name).map(|(_, rect)| rect.size.w) else {
+            return;
+        };
+        let right = titles.iter().map(|(_, rect)| rect.loc.x + rect.size.w).max().unwrap_or(0);
+        let others: Vec<&(String, Rectangle<i32, Logical>)> =
+            titles.iter().filter(|(name, _)| *name != drag.name).collect();
+        let widths: Vec<i32> = others.iter().map(|(_, rect)| rect.size.w).collect();
+        let slot = reorder_slot(&widths, dragged, right, x - drag.grab);
+        let mut order: Vec<String> = others.into_iter().map(|(name, _)| name.clone()).collect();
+        order.insert(slot, drag.name.clone());
+        drag.order = order;
     }
 
     /// Where a menu of these entries goes and where each entry is in it: under a title of
@@ -1401,7 +1548,11 @@ impl Nekoland {
             items: self.menu_bar.items_revision,
             others,
         };
-        if self.menu_bar.drawn.as_ref() != Some(&drawn) || self.menu_bar.picture.is_none() {
+        if self.menu_bar.drawn.as_ref() != Some(&drawn)
+            || self.menu_bar.picture.is_none()
+            || self.menu_bar.reorder.is_some()
+            || !self.menu_bar.slides.is_empty()
+        {
             // A menu of an application that is no longer active goes with it.
             if self
                 .menu_bar
@@ -2244,6 +2395,22 @@ impl Nekoland {
             return false;
         };
         if let Some(title) = self.title_at(local) {
+            let ctrl = self
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.modifier_state().ctrl);
+            if let Some(name) = self.menu_bar.order_name(&self.menu_bar.titles[title].source).filter(|_| ctrl) {
+                self.close_menu();
+                let rect = self.menu_bar.titles[title].rect;
+                self.menu_bar.reorder = Some(Reorder {
+                    name,
+                    grab: f64::from(local.x - rect.loc.x),
+                    pointer: f64::from(local.x - self.bar_size().w),
+                    order: self.menu_bar.movable_titles().into_iter().map(|(name, _)| name).collect(),
+                });
+                self.menu_bar.slid = Instant::now();
+                return true;
+            }
             let panel_open = self.menu_bar.titles.get(title).is_some_and(|title| match title.source {
                 Source::Control => self.menu_bar.control.is_some(),
                 Source::Notifications => self.menu_bar.notification_center.is_some(),
@@ -2291,6 +2458,12 @@ impl Nekoland {
     /// The pointer moved: open menus follow it across the bar, light the entry under it,
     /// and open the submenu of that entry.
     pub fn menu_bar_motion(&mut self, pos: Point<f64, Logical>) {
+        if self.menu_bar.reorder.is_some() {
+            if let Some(area) = self.bar_area() {
+                self.menu_bar.reorder_to(pos.x - f64::from(area.loc.x), area.size.w);
+            }
+            return;
+        }
         if (self.menu_bar.control.is_some() || self.menu_bar.clock_panel.is_some()) && self.menu_bar_shown() {
             let Some(local) = self.local(pos) else {
                 return;
@@ -2374,6 +2547,14 @@ impl Nekoland {
     /// A button came up: over an entry, that entry is chosen, whether it was clicked or
     /// the press that opened the menu was dragged onto it.
     pub fn menu_bar_release(&mut self, pos: Point<f64, Logical>) {
+        if let Some(drag) = self.menu_bar.reorder.take() {
+            let order = merged_order(&self.config.menu_bar_order, drag.order);
+            if order != self.config.menu_bar_order {
+                self.config.menu_bar_order = order;
+                config::save_menu_bar_order(&self.config.menu_bar_order);
+            }
+            return;
+        }
         if self.menu_bar.control.is_some() {
             if let Some(local) = self.local(pos) {
                 self.control_release(local);
@@ -2819,6 +3000,38 @@ pub(crate) fn close(window: &Window) {
 
 /// Where a menu `length` long starts along one axis to have its edge at `point`: after it,
 /// or before it where it would pass `end`, kept from `start`.
+/// Where among icons `widths` wide, left to right and ending at `right`, one `width` wide
+/// whose left side is at `left` goes: the place that puts it nearest there.
+fn reorder_slot(widths: &[i32], width: i32, right: i32, left: f64) -> usize {
+    let mut at = right - width - widths.iter().sum::<i32>();
+    let mut nearest = (0, f64::MAX);
+    for slot in 0..=widths.len() {
+        let distance = (f64::from(at) - left).abs();
+        if distance < nearest.1 {
+            nearest = (slot, distance);
+        }
+        at += widths.get(slot).copied().unwrap_or(0);
+    }
+    nearest.0
+}
+
+/// The order of the bar's icons after a drag left those on it `moved`: the ones `before`
+/// named that are not on the bar now, as a VPN with nothing turned on, keep their place after
+/// the one they followed.
+fn merged_order(before: &[String], moved: Vec<String>) -> Vec<String> {
+    let mut order = moved;
+    for (index, name) in before.iter().enumerate() {
+        if !order.contains(name) {
+            let at = index
+                .checked_sub(1)
+                .and_then(|previous| order.iter().position(|placed| *placed == before[previous]))
+                .map_or(0, |position| position + 1);
+            order.insert(at, name.clone());
+        }
+    }
+    order
+}
+
 fn menu_side(point: i32, length: i32, start: i32, end: i32) -> i32 {
     let at = if point + length <= end { point } else { point - length };
     at.max(start).min((end - length).max(start))
@@ -2827,6 +3040,33 @@ fn menu_side(point: i32, length: i32, start: i32, end: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dragged_icon_goes_to_the_place_nearest_it() {
+        // Three others 30 wide end at 200; the one dragged is 40 wide.
+        let widths = [30, 30, 30];
+        assert_eq!(reorder_slot(&widths, 40, 200, 0.0), 0);
+        assert_eq!(reorder_slot(&widths, 40, 200, 70.0), 0);
+        assert_eq!(reorder_slot(&widths, 40, 200, 90.0), 1);
+        assert_eq!(reorder_slot(&widths, 40, 200, 160.0), 3);
+        assert_eq!(reorder_slot(&[], 40, 200, 0.0), 0);
+    }
+
+    #[test]
+    fn icons_not_on_the_bar_keep_their_place_in_the_order() {
+        let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let before = names(&["vpn", "sound", "network", "battery"]);
+        assert_eq!(
+            merged_order(&before, names(&["network", "sound", "battery"])),
+            names(&["vpn", "network", "sound", "battery"])
+        );
+        let before = names(&["sound", "vpn", "battery"]);
+        assert_eq!(
+            merged_order(&before, names(&["battery", "sound"])),
+            names(&["battery", "sound", "vpn"])
+        );
+        assert_eq!(merged_order(&[], names(&["sound"])), names(&["sound"]));
+    }
 
     #[test]
     fn the_battery_icon_follows_the_charge() {

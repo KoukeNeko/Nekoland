@@ -203,6 +203,8 @@ pub enum Expiry {
 pub struct StatusItem {
     /// Bus name and object path, which together name it.
     pub key: String,
+    /// What the program calls it, the same each time it runs.
+    pub id: String,
     pub icon_name: String,
     pub icon_theme_path: String,
     /// The largest of the icons it drew itself: width, height and ARGB in network byte order.
@@ -947,6 +949,7 @@ fn read_item(connection: &Connection, bus: &str, path: &str) -> Option<StatusIte
 
     Some(StatusItem {
         key: format!("{bus}{path}"),
+        id: text("Id"),
         icon_name: text("IconName"),
         icon_theme_path: text("IconThemePath"),
         pixmap,

@@ -79,6 +79,7 @@ wallpaper and an input method. Every key is optional:
 | `menu_bar_network`, `menu_bar_sound` | Whether the menu bar shows the network's and the sound's icons; both unless set |
 | `menu_bar_vpn` | Whether the menu bar shows the VPN helper's profiles: each turned on and off from its menu, and Settings opened for one that asks for a password; on unless set |
 | `menu_bar_battery`, `menu_bar_battery_percent` | Whether the menu bar shows the computer's battery, where it has one, and its percentage beside it; the battery without its percentage unless set |
+| `menu_bar_order` | The order of the menu bar's icons, left to right, as dragging one with Ctrl held leaves it: `battery`, `network`, `vpn`, `sound`, and `item:` followed by an application's item's ID; ones not named go on the left |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
 | `dock_glass` | Whether the Dock is on glass or on its tint alone; on unless set |
 | `bar_opacity`, `bar_blur`, `glass_opacity`, `glass_blur` | How solid the tint over glass is, from 0 to 1, and how far its blur spreads what is behind it, from 0, none, to 1: of the menu bar and the Dock themselves, and of all other glass, menus, notifications, the Dock's popups, the overview, and behind windows, as GTK's menus and sidebars show it. 0.5 and 0.8, each blurred 0.5, unless set |
