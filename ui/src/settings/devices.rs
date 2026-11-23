@@ -290,15 +290,13 @@ fn card(
     name.set_tooltip_text(Some(title));
     words.append(&name);
     words.append(&label(about, &["dim-label"]));
-    let now = gtk::Box::builder().spacing(6).margin_top(4).build();
-    let mark = state_icon(state.0);
-    mark.set_pixel_size(14);
-    now.append(&mark);
-    now.append(&label(state.1, &[]));
-    words.append(&now);
     card.append(&words);
-    let end = action.map_or(CARD_PADDING, |_| 0);
-    words.set_margin_end(end);
+    // The state stands apart on the right, before what can be done, not as a third line.
+    let now = gtk::Box::builder().spacing(6).valign(gtk::Align::Center).build();
+    now.append(&state_icon(state.0));
+    now.append(&gtk::Label::new(Some(state.1)));
+    now.set_margin_end(action.map_or(CARD_PADDING, |_| 0));
+    card.append(&now);
     if let Some(action) = action {
         action.set_valign(gtk::Align::Center);
         action.set_margin_end(CARD_PADDING);
