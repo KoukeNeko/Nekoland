@@ -223,7 +223,7 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         // GNOME's settings changed, which X11 programs are given.
         "xsettings" => crate::xsettings::sync(),
-        // Plaitway's profiles changed order in Settings, which the helper tells no watcher.
+        // The VPN helper's profiles changed order in Settings, which the helper tells no watcher.
         "vpn" => crate::vpn::reread(),
         // The output's mode, then every mode it has, one a line, as WIDTHxHEIGHT@HZ; the main
         // display's, or with a name that display's.

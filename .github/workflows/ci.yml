@@ -33,12 +33,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo test --workspace --locked
+          (cd third_party/plaitway && go test ./...)
 
       - name: Build as install.sh does
         run: |
           cargo build --release --locked --workspace
           sh shell/build-shellmenu.sh target/release
+          sh shell/build-vpn.sh target/release
 
       - name: Package
         # What install.sh installs from target/release, named for this Ubuntu and processor,

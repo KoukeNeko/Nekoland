@@ -799,7 +799,7 @@ fn build(app: &adw::Application) {
         sidebar.select_row(sidebar.row_at_index(0).as_ref());
     }
     OPEN_PAGE.set(Some(open_page));
-    // Plaitway's profiles that ask for a password are asked about on whichever page is shown.
+    // The VPN helper's profiles that ask for a password are asked about on whichever page is shown.
     if vpn::installed() {
         page_of(&stack, "VPN");
     }
@@ -1392,7 +1392,7 @@ fn hot_corners_summary() -> String {
     if set.is_empty() { "無".into() } else { set.join("、") }
 }
 
-/// Whether there is a VPN to set: Plaitway's, or NetworkManager's.
+/// Whether there is a VPN to set: the VPN helper's, or NetworkManager's.
 fn has_vpn() -> bool {
     vpn::installed() || glib::find_program_in_path("nmcli").is_some()
 }

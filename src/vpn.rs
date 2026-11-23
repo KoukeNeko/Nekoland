@@ -1,5 +1,6 @@
-//! The menu bar's VPN item: Plaitway's profiles, as `plaitway watch -json` tells of them,
-//! each turned on and off from its menu, and Settings opened for one that asks for a password.
+//! The menu bar's VPN item: the VPN helper's profiles, as `nekoland-vpn watch -json` tells of
+//! them, each turned on and off from its menu, and Settings opened for one that asks for a
+//! password.
 
 use std::{
     io::{BufRead, BufReader},
@@ -19,15 +20,15 @@ use crate::{
     menubar::{Command as MenuCommand, Entry},
 };
 
-const CLI: &str = "plaitway";
+const CLI: &str = "nekoland-vpn";
 /// How long a helper that is not running is left before it is asked again.
 const RETRY: Duration = Duration::from_secs(5);
-/// The page of Settings that has Plaitway's profiles.
+/// The page of Settings with the VPN helper's profiles.
 pub const SETTINGS_PAGE: &str = "VPN";
 /// Settings' windows, which ask for a profile's password themselves.
 pub const SETTINGS_APP_ID: &str = "io.github.koukeneko.Nekoland.Settings";
 
-/// The `plaitway watch` running, which `reread` ends to have it started again.
+/// The `nekoland-vpn watch` running, which `reread` ends to have it started again.
 static WATCHING: Mutex<Option<Child>> = Mutex::new(None);
 /// Set by `reread`: the watch ended on purpose, and starts again at once.
 static REREAD: AtomicBool = AtomicBool::new(false);
@@ -38,7 +39,7 @@ pub fn reread() {
     if let Some(child) = WATCHING.lock().unwrap().as_mut() {
         REREAD.store(true, Ordering::Relaxed);
         if let Err(err) = child.kill() {
-            tracing::warn!("plaitway watch: {err}");
+            tracing::warn!("nekoland-vpn watch: {err}");
         }
     }
 }
@@ -99,7 +100,7 @@ struct Snapshot {
     profiles: Vec<Profile>,
 }
 
-/// Takes one line of `plaitway watch -json` into the profiles, in their order.
+/// Takes one line of `nekoland-vpn watch -json` into the profiles, in their order.
 fn apply(tunnels: &mut Vec<Tunnel>, line: &str) -> Result<(), serde_json::Error> {
     let event: WatchEvent = serde_json::from_str(line)?;
     if let Some(snapshot) = event.snapshot {
@@ -118,7 +119,7 @@ fn apply(tunnels: &mut Vec<Tunnel>, line: &str) -> Result<(), serde_json::Error>
     Ok(())
 }
 
-/// Follows Plaitway's helper on a thread while it runs; without Plaitway there is no item.
+/// Follows the VPN helper on a thread while it runs; without its command there is no item.
 /// The traffic counted every few seconds changes nothing the menu shows, and is not told.
 pub fn watch(events: Sender<Event>) {
     let installed = std::env::var_os("PATH")
@@ -161,7 +162,7 @@ pub fn watch(events: Sender<Event>) {
                     return;
                 }
             }
-            Err(err) => tracing::warn!("plaitway watch: {err}"),
+            Err(err) => tracing::warn!("nekoland-vpn watch: {err}"),
         }
         if REREAD.swap(false, Ordering::Relaxed) {
             continue;

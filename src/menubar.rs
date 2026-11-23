@@ -1628,7 +1628,7 @@ impl Nekoland {
             }
             Event::Vpn(tunnels) => {
                 // A profile that comes to ask for a password is asked about in Settings, as
-                // Plaitway's own app opens its window; Settings open already asks by itself.
+                // Plaitway's app opened its window; Settings open already asks by itself.
                 let newly_asks = tunnels.iter().flatten().any(|tunnel| {
                     tunnel.asks_for_password()
                         && !bar.vpn.iter().flatten().any(|old| old.id == tunnel.id && old.asks_for_password())

@@ -19,7 +19,7 @@ die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 command -v apt-get >/dev/null || die "it needs Ubuntu's apt-get"
 
 # Build tools and the development files of what the compositor and ui/ link to.
-build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc
+build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc golang-go
     libwayland-dev libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libdrm-dev
     libegl-dev libgles-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
     libadwaita-1-dev libvte-2.91-gtk4-dev libpoppler-glib-dev libfontconfig-dev libfreetype-dev libpam0g-dev
@@ -32,7 +32,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
     xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
-    network-manager wpasupplicant network-manager-openvpn bluez cups locales rsync
+    network-manager wpasupplicant network-manager-openvpn openvpn bluez cups locales rsync
     pipewire pipewire-pulse wireplumber brightnessctl power-profiles-daemon orca
     grub-common plymouth plymouth-label python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
     ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
@@ -106,6 +106,7 @@ else
     target=${CARGO_TARGET_DIR:-$src/target}
     (cd "$src" && CARGO_TARGET_DIR=$target "$cargo" build --release --locked --workspace)
     sh "$src/shell/build-shellmenu.sh" "$target/release"
+    sh "$src/shell/build-vpn.sh" "$target/release"
 fi
 
 say "Installing into /usr/local"
@@ -174,6 +175,22 @@ printf '[Service]\nExecStart=\nExecStart=/usr/lib/systemd/systemd-networkd-wait-
 printf '[Service]\nExecStart=\nExecStart=/usr/bin/nm-online -s -q --timeout=10\n' |
     sudo tee /etc/systemd/system/NetworkManager-wait-online.service.d/nekoland.conf >/dev/null
 sudo systemctl daemon-reload
+
+# The VPN page's helper, restarted so that an update runs the new one. Plaitway's own helper,
+# where it was installed, hands its profiles over once and is turned off: the two cannot both
+# own the routes, and the logins kept in the keyring go with the profiles' ids.
+say "Starting the VPN helper"
+sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-vpnd.service"
+sudo systemctl daemon-reload
+if ! sudo test -e /var/lib/nekoland-vpn && sudo test -d /var/lib/plaitway; then
+    say "Moving Plaitway's VPN profiles to Nekoland"
+    if systemctl cat plaitwayd.service >/dev/null 2>&1; then
+        sudo systemctl disable --now plaitwayd.service
+    fi
+    sudo cp -a /var/lib/plaitway /var/lib/nekoland-vpn
+fi
+sudo systemctl enable nekoland-vpnd.service
+sudo systemctl restart nekoland-vpnd.service
 
 # Wine 10.16 and later wait on Windows programs' locks in the kernel, much faster, where its
 # ntsync module is loaded; Linux leaves it unloaded until asked.

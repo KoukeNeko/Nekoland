@@ -207,7 +207,7 @@ pub struct Config {
     pub clock_flash: bool,
     /// Whether the menu bar shows the network's and the sound's icons.
     pub menu_bar_network: bool,
-    /// Whether the menu bar shows Plaitway's VPNs, where Plaitway is installed.
+    /// Whether the menu bar shows the VPN helper's profiles.
     pub menu_bar_vpn: bool,
     pub menu_bar_sound: bool,
     /// The battery in the menu bar, where there is one, and its percentage beside it.

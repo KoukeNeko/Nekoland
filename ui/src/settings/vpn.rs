@@ -1,15 +1,15 @@
-//! The VPN page. Plaitway's part: OpenVPN and WireGuard profiles up side by side, with the helper
-//! `plaitwayd` deciding which one holds each route and the DNS. Everything goes through the
-//! `plaitway` command, read as the JSON it prints; the credentials a profile asks for are
-//! kept in the keyring items the Plaitway app keeps, so that the two, and the command, share
-//! them.
+//! The VPN page. OpenVPN and WireGuard profiles up side by side, with the helper
+//! `nekoland-vpnd` (Plaitway's daemon, built from third_party/plaitway) deciding which one holds
+//! each route and the DNS. Everything goes through its `nekoland-vpn` command, read as the JSON
+//! it prints; the credentials a profile asks for are kept in the keyring items the Plaitway app
+//! keeps, so that profiles carried over from it keep theirs.
 
 use super::*;
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 
-const CLI: &str = "plaitway";
-const SERVICE: &str = "plaitwayd";
+const CLI: &str = "nekoland-vpn";
+const SERVICE: &str = "nekoland-vpnd";
 /// What the keyring items are filed under, as the Plaitway app files them.
 const SECRET_SCHEMA: &str = "io.github.koukeneko.plaitway.credentials";
 const USER_PASSWORD: &str = "user-password";
@@ -686,7 +686,7 @@ fn plaitway_with(
                     then(Ok((out, err)))
                 } else {
                     // Not a password, which goes through standard input.
-                    eprintln!("plaitway {command}: {}", err.trim());
+                    eprintln!("{CLI} {command}: {}", err.trim());
                     then(Err(said(&err)))
                 }
             }
@@ -735,8 +735,8 @@ fn move_profile(parent: &impl IsA<gtk::Widget>, model: &Rc<Model>, id: &str, pla
                     model.apply(Event { snapshot: Some(snapshot), changed: None, removed: None });
                     model.changed();
                 }
-                Ok(Err(err)) => eprintln!("plaitway list: {err}"),
-                Err(err) => eprintln!("plaitway list: {err}"),
+                Ok(Err(err)) => eprintln!("{CLI} list: {err}"),
+                Err(err) => eprintln!("{CLI} list: {err}"),
             }
         });
     });
@@ -764,7 +764,7 @@ fn follow(model: Rc<Model>, page: &adw::PreferencesPage) {
     ) {
         Ok(child) => child,
         Err(err) => {
-            eprintln!("plaitway watch: {err}");
+            eprintln!("{CLI} watch: {err}");
             return;
         }
     };
@@ -1165,7 +1165,7 @@ fn helper_status(failure: &str) -> adw::ActionRow {
     } else if failure.starts_with("permission denied") {
         ("權限不足", "只有主控台使用者與管理員可以使用輔助程式。".to_string(), None)
     } else if value("LoadState").as_deref() == Some("not-found") {
-        ("未安裝輔助程式", "請安裝 plaitway 套件。".to_string(), None)
+        ("未安裝輔助程式", "請在原始碼中執行 install.sh。".to_string(), None)
     } else if value("ActiveState").as_deref() != Some("active") {
         ("輔助程式未執行", failure.to_string(), Some(("啟動輔助程式", "start")))
     } else if failure.starts_with("the daemon is not running") {
@@ -1185,15 +1185,15 @@ fn helper_status(failure: &str) -> adw::ActionRow {
     row
 }
 
-/// Starts or restarts `plaitwayd`, as root; restarting drops every tunnel, so it asks first.
+/// Starts or restarts the helper, as root; restarting drops every tunnel, so it asks first.
 fn control_helper(parent: &gtk::Button, verb: &'static str) {
     let run = {
         let parent = parent.clone();
         move || {
             let (reason, title) = if verb == "start" {
-                ("啟動 Plaitway 輔助程式", "無法啟動輔助程式")
+                ("啟動 VPN 輔助程式", "無法啟動輔助程式")
             } else {
-                ("重新啟動 Plaitway 輔助程式", "無法重新啟動輔助程式")
+                ("重新啟動 VPN 輔助程式", "無法重新啟動輔助程式")
             };
             as_root(reason, &["systemctl", verb, SERVICE], None, move |worked| {
                 if !worked {
@@ -2098,7 +2098,7 @@ fn diagnostics_page(model: &Rc<Model>) -> adw::PreferencesPage {
             "重新啟動",
             move || {
                 as_root(
-                    "重新啟動 Plaitway 輔助程式",
+                    "重新啟動 VPN 輔助程式",
                     &["systemctl", "restart", SERVICE],
                     None,
                     move |worked| {
@@ -2234,7 +2234,7 @@ fn diagnostics_groups(
                 .collect::<Vec<_>>()
                 .join(" · ");
             let details: Vec<&str> =
-                [via.as_str(), route.reason.as_str(), if route.owned { "由 Plaitway 安裝" } else { "" }]
+                [via.as_str(), route.reason.as_str(), if route.owned { "由輔助程式安裝" } else { "" }]
                     .into_iter()
                     .filter(|part| !part.is_empty())
                     .collect();
@@ -2379,7 +2379,7 @@ fn report_text(diagnostics: &Diagnostics, model: &Model) -> String {
     }
     lines.extend(["".into(), "Stale routes".into()]);
     for route in &diagnostics.stale_routes {
-        let owned = if route.owned { " (installed by Plaitway)" } else { "" };
+        let owned = if route.owned { " (installed by the helper)" } else { "" };
         lines.push(format!(
             "  {} via {} {}: {}{owned}",
             route.prefix, route.gateway, route.interface, route.reason
