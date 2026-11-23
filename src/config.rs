@@ -217,6 +217,8 @@ pub struct Config {
     /// `network`, `vpn`, `sound`, and `item:` before an application's item's ID. Ones not
     /// named go on the left.
     pub menu_bar_order: Vec<String>,
+    /// The room between the menu bar's icons on its right, in pixels; up to 32.
+    pub menu_bar_spacing: u32,
     /// Whether the menu bar has its glass and tint, or shows the desktop through it, its text
     /// as dark or light as the wallpaper there needs.
     pub menu_bar_background: bool,
@@ -842,6 +844,7 @@ impl Default for Config {
             menu_bar_battery: true,
             menu_bar_battery_percent: false,
             menu_bar_order: Vec::new(),
+            menu_bar_spacing: 8,
             clock_date: true,
             menu_bar_background: true,
             clock_icon: false,

@@ -1498,6 +1498,13 @@ fn menu_bar_page(config: &Config) -> adw::PreferencesPage {
         icons.add(&switch_row(config, "電池", "menu_bar_battery"));
         icons.add(&switch_row(config, "電池百分比", "menu_bar_battery_percent"));
     }
+    icons.add(&scale_row(
+        "間距",
+        config.number("menu_bar_spacing", 8.0),
+        (0.0, 32.0, 2.0),
+        |gap| format!("{gap:.0} px"),
+        |gap| set(&format!("menu_bar_spacing = {gap:.0}")),
+    ));
     page.add(&icons);
 
     let bar = group("");

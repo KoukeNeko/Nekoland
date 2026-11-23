@@ -781,7 +781,7 @@ impl MenuBar {
         }
 
         // Right, from the edge in: the bell, the clock, the system's items, then the programs'.
-        let slot = STATUS_ICON + TITLE_PADDING * 2 - 8;
+        let slot = STATUS_ICON + config.menu_bar_spacing.min(32) as i32;
         let icon_at = |side| f64::from(side - STATUS_ICON) / 2.0;
         // The bell is what lights while the Notification Center is open, not the clock.
         let bell_rect = Rectangle::new((width - CLOCK_PADDING - slot, 0).into(), (slot, MENU_BAR_HEIGHT).into());
