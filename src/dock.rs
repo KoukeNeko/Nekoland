@@ -64,6 +64,9 @@ const EDGE: i32 = 6;
 const LIFT: f64 = 4.0;
 const DOT: f64 = 4.0;
 const ACTIVE_DOT: f64 = 14.0;
+/// The dot growing into the active one's and back springs a little past its length.
+const DOT_RATE: f64 = std::f64::consts::TAU / 0.36;
+const DOT_DAMPING: f64 = 0.5;
 /// A round icon looks bigger than a square one of the same width.
 const ROUND_SCALE: f64 = 0.94;
 const BADGE: i32 = 18;
@@ -434,6 +437,9 @@ struct Motion {
     lift: f64,
     /// How much bigger than its size it is drawn, under the pointer.
     zoom: f64,
+    /// How long its running dot is, and how fast that is changing.
+    dot: f64,
+    dot_speed: f64,
 }
 
 struct Press {
@@ -512,9 +518,10 @@ pub(crate) struct Drawn {
     art: i32,
     width: i32,
     rise: i32,
-    /// Where each tile is, how lifted in quarter points, pressed, solid and magnified; the
-    /// tiles themselves are `Dock::drawn_tiles`, cloned only when the Dock is drawn again.
-    placed: Vec<(i32, u16, u8, u8, u16)>,
+    /// Where each tile is, how lifted in quarter points, pressed, solid, magnified and how
+    /// long its dot is in twentieths; the tiles themselves are `Dock::drawn_tiles`, cloned
+    /// only when the Dock is drawn again.
+    placed: Vec<(i32, u16, u8, u8, u16, u16)>,
     /// The tile files being dragged from a file manager would be dropped on.
     target: Option<Key>,
     /// The tile the keyboard is on.
@@ -1583,6 +1590,10 @@ impl Nekoland {
                     0.0
                 };
                 let zoom_to = zoom_to(*target, *tile_width);
+                let dot_to = match tile {
+                    Tile::App { active: true, .. } => ACTIVE_DOT,
+                    _ => DOT,
+                };
                 match old.iter().find(|motion| motion.key == key) {
                     Some(motion) => {
                         let mut x = motion.x + (f64::from(*target) - motion.x) * approach;
@@ -1599,13 +1610,20 @@ impl Nekoland {
                         if (zoom - zoom_to).abs() < 0.002 {
                             zoom = zoom_to;
                         }
-                        Motion { key, x, lift, zoom }
+                        let (mut dot, mut dot_speed) = (motion.dot, motion.dot_speed);
+                        crate::motion::swing(&mut dot, &mut dot_speed, dot_to, DOT_RATE, DOT_DAMPING, dt);
+                        if !self.config.animations || ((dot - dot_to).abs() < 0.01 && dot_speed.abs() < 0.1) {
+                            (dot, dot_speed) = (dot_to, 0.0);
+                        }
+                        Motion { key, x, lift, zoom, dot, dot_speed }
                     }
                     None => Motion {
                         key,
                         x: f64::from(*target),
                         lift: 0.0,
                         zoom: 1.0,
+                        dot: dot_to,
+                        dot_speed: 0.0,
                     },
                 }
             })
@@ -1718,6 +1736,7 @@ impl Nekoland {
                         (scale * 200.0).round() as u8,
                         (alpha * 100.0).round() as u8,
                         (motion.zoom * 1000.0).round() as u16,
+                        (motion.dot * 20.0).round() as u16,
                     )
                 })
                 .collect(),
@@ -1781,7 +1800,7 @@ impl Nekoland {
                 DockPosition::Right => cr.transform(Matrix::new(0.0, 1.0, 1.0, 0.0, 0.0, 0.0)),
             }
             let (r, g, b) = ink(dark);
-            for (tile, (x, lift, scale, alpha, zoom)) in tiles.iter().zip(&drawn.placed) {
+            for (tile, (x, lift, scale, alpha, zoom, dot)) in tiles.iter().zip(&drawn.placed) {
                 let x = f64::from(*x) / 2.0;
                 let zoom = f64::from(*zoom) / 1000.0;
                 let art = f64::from(s.art) * zoom;
@@ -1821,7 +1840,6 @@ impl Nekoland {
                         name,
                         icon,
                         running,
-                        active,
                         badge,
                         progress,
                         ..
@@ -1841,7 +1859,7 @@ impl Nekoland {
                         }
                         let _ = cr.restore();
                         if *running && self.config.dock_indicators {
-                            let dot = if *active { ACTIVE_DOT } else { DOT };
+                            let dot = f64::from(*dot) / 20.0;
                             text::rounded_rectangle(
                                 &cr,
                                 x + art / 2.0 - dot / 2.0,
