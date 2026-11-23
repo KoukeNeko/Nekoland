@@ -58,6 +58,40 @@ impl View {
     }
 }
 
+/// What the list puts files under headers by.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Group {
+    None,
+    Kind,
+    Modified,
+    Size,
+}
+
+impl Group {
+    pub const ALL: [Group; 4] = [Group::None, Group::Kind, Group::Modified, Group::Size];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Group::None => "none",
+            Group::Kind => "kind",
+            Group::Modified => "modified",
+            Group::Size => "size",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Group> {
+        Group::ALL.into_iter().find(|g| g.name() == name)
+    }
+}
+
+/// The columns of the list that can be shown or not, by key, with their titles.
+pub const OPTIONAL_COLUMNS: [(&str, &str); 4] = [
+    ("modified", "修改日期"),
+    ("created", "建立日期"),
+    ("size", "大小"),
+    ("kind", "種類"),
+];
+
 #[derive(Clone, Debug)]
 pub enum Where {
     Recent,
@@ -149,7 +183,7 @@ struct Column {
     folder: gio::File,
     scroller: gtk::ScrolledWindow,
     list: gtk::DirectoryList,
-    selection: gtk::SingleSelection,
+    selection: gtk::MultiSelection,
 }
 
 pub struct Pane {
@@ -165,6 +199,8 @@ pub struct Pane {
     shown: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
     pub sorter: gtk::MultiSorter,
+    /// The files in order, which a grouping orders by group first.
+    sorted: gtk::SortListModel,
     flat: gtk::MultiSelection,
     tree_selection: gtk::MultiSelection,
     expandable: Rc<Cell<bool>>,
@@ -230,7 +266,7 @@ impl Pane {
         let expandable = Rc::new(Cell::new(true));
         let tree = {
             let (shown, sorter, expandable) = (shown.clone(), sorter.clone(), expandable.clone());
-            gtk::TreeListModel::new(sorted, false, false, move |item| {
+            gtk::TreeListModel::new(sorted.clone(), false, false, move |item| {
                 let info = item.downcast_ref::<gio::FileInfo>()?;
                 if !expandable.get() || !is_dir(info) {
                     return None;
@@ -245,11 +281,13 @@ impl Pane {
 
         let column_view = gtk::ColumnView::builder()
             .show_column_separators(false)
+            .enable_rubberband(true)
             .css_classes(["nf-list"])
             .build();
         let grid = gtk::GridView::builder()
             .min_columns(2)
             .max_columns(24)
+            .enable_rubberband(true)
             .css_classes(["nf-grid"])
             .build();
         let columns_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -423,6 +461,7 @@ impl Pane {
             shown,
             filtered,
             sorter,
+            sorted: sorted.clone(),
             flat,
             tree_selection,
             expandable,
@@ -562,6 +601,14 @@ impl Pane {
             140,
             Some(by(|a, b| modified_time(a).cmp(&modified_time(b)))),
         );
+        let created_column = column(
+            "建立日期",
+            140,
+            Some(by(|a, b| {
+                let when = |info| created(info).map_or(0, |t| t.to_unix());
+                when(a).cmp(&when(b))
+            })),
+        );
         let size = column("大小", 84, Some(by(|a, b| a.size().cmp(&b.size()))));
         let kind_column = column("種類", 160, Some(by(|a, b| kind_label(a).cmp(&kind_label(b)))));
         let place = column("位置", 160, None);
@@ -573,6 +620,7 @@ impl Pane {
                 ("modified", modified),
                 ("size", size),
                 ("kind", kind_column),
+                ("created", created_column),
             ],
             place,
             orig,
@@ -581,7 +629,8 @@ impl Pane {
     }
 
     fn finish_columns(self: &Rc<Self>) {
-        let [name, modified, size, kind] = [0, 1, 2, 3].map(|i| self.sort_columns[i].1.clone());
+        let [name, modified, size, kind, made] = [0, 1, 2, 3, 4].map(|i| self.sort_columns[i].1.clone());
+        made.set_factory(Some(&self.text_factory(|info| date_label(created(info)))));
         name.set_factory(Some(&self.name_factory()));
         modified.set_factory(Some(&self.text_factory(|info| {
             let when = info.modification_date_time().and_then(|t| t.to_local().ok());
@@ -617,9 +666,19 @@ impl Pane {
         self.column_view.append_column(&self.where_column);
         self.column_view.append_column(&self.orig_column);
         self.column_view.append_column(&modified);
+        self.column_view.append_column(&made);
         self.column_view.append_column(&self.deleted_column);
         self.column_view.append_column(&size);
         self.column_view.append_column(&kind);
+        // A right click on the header: which columns to show.
+        let columns_menu = ops::columns_menu();
+        for column in self.sort_columns.iter().map(|(_, c)| c).chain([
+            &self.where_column,
+            &self.orig_column,
+            &self.deleted_column,
+        ]) {
+            column.set_header_menu(Some(&columns_menu));
+        }
         if let Some(column_sorter) = self.column_view.sorter() {
             self.sorter.append(column_sorter);
         }
@@ -638,6 +697,7 @@ impl Pane {
             };
             // As tall for a CJK name as for a Latin one.
             let line = gtk::Box::builder().spacing(GAP).height_request(20).build();
+            line.append(&pane.check_for(item));
             line.append(&gtk::Image::builder().pixel_size(16).build());
             // Not expanding: the tags follow the name, as Finder's do.
             line.append(
@@ -666,14 +726,16 @@ impl Pane {
             let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else {
                 return;
             };
-            let row = item.item().and_downcast::<gtk::TreeListRow>();
-            expander.set_list_row(row.as_ref());
-            let Some(info) = row.and_then(|r| r.item()).and_downcast::<gio::FileInfo>() else {
+            // Under headers the list is no tree.
+            expander.set_list_row(item.item().and_downcast::<gtk::TreeListRow>().as_ref());
+            let Some(info) = list_item_info(item) else {
                 return;
             };
             let line = expander.child().expect("set up above");
-            let image = line
-                .first_child()
+            let check = line.first_child().expect("set up above");
+            check.set_visible(pane.checks_shown());
+            let image = check
+                .next_sibling()
                 .and_downcast::<gtk::Image>()
                 .expect("set up above");
             let label = image
@@ -762,17 +824,28 @@ impl Pane {
             let dots = tags::dots(&[]);
             dots.set_halign(gtk::Align::Center);
             tile.append(&dots);
-            item.set_child(Some(&tile));
-            pane.set_up_item(&tile.upcast(), item);
+            let overlay = gtk::Overlay::builder().child(&tile).build();
+            let check = pane.check_for(item);
+            check.set_halign(gtk::Align::Start);
+            check.set_valign(gtk::Align::Start);
+            overlay.add_overlay(&check);
+            item.set_child(Some(&overlay));
+            pane.set_up_item(&overlay.upcast(), item);
         });
         let weak = Rc::downgrade(self);
         factory.connect_bind(move |_, item| {
             let (Some(item), Some(pane)) = (item.downcast_ref::<gtk::ListItem>(), weak.upgrade()) else {
                 return;
             };
-            let (Some(tile), Some(info)) = (item.child(), list_item_info(item)) else {
+            let (Some(overlay), Some(info)) =
+                (item.child().and_downcast::<gtk::Overlay>(), list_item_info(item))
+            else {
                 return;
             };
+            let tile = overlay.child().expect("set up above");
+            if let Some(check) = tile.next_sibling() {
+                check.set_visible(pane.checks_shown());
+            }
             let picture = tile
                 .first_child()
                 .and_downcast::<gtk::Picture>()
@@ -864,12 +937,30 @@ impl Pane {
                 };
                 click.set_state(gtk::EventSequenceState::Claimed);
                 if !item.is_selected() {
-                    pane.select_only(item.position());
+                    pane.select_only(&widget, item.position());
                 }
                 pane.menu_at(&widget, x, y);
             });
         }
         widget.add_controller(click);
+
+        // A middle click opens a folder in a new tab.
+        let middle = gtk::GestureClick::builder().button(gdk::BUTTON_MIDDLE).build();
+        {
+            let (weak, item) = (Rc::downgrade(self), item.clone());
+            middle.connect_released(move |click, _, _, _| {
+                let (Some(pane), Some(info)) =
+                    (weak.upgrade(), item.upgrade().and_then(|i| list_item_info(&i)))
+                else {
+                    return;
+                };
+                if let (true, Some(win), Some(folder)) = (is_dir(&info), pane.window(), ops::target(&info)) {
+                    click.set_state(gtk::EventSequenceState::Claimed);
+                    win.new_tab(Where::Folder(folder));
+                }
+            });
+        }
+        widget.add_controller(middle);
 
         let drag = gtk::DragSource::builder()
             .actions(gdk::DragAction::COPY | gdk::DragAction::MOVE)
@@ -880,16 +971,16 @@ impl Pane {
             let (weak, item, widget_weak) = (Rc::downgrade(self), item.clone(), widget.downgrade());
             let taken = grabbed.clone();
             drag.connect_prepare(move |source, x, y| {
-                let (pane, item) = (weak.upgrade()?, item.upgrade()?);
+                let (pane, item, widget) = (weak.upgrade()?, item.upgrade()?, widget_weak.upgrade()?);
                 if !item.is_selected() {
-                    pane.select_only(item.position());
+                    pane.select_only(&widget, item.position());
                 }
                 let files: Vec<gio::File> = pane.selected().iter().filter_map(info_file).collect();
                 if files.is_empty() {
                     return None;
                 }
                 taken.set((files.len(), x, y));
-                if let Some(widget) = widget_weak.upgrade().filter(|_| files.len() == 1) {
+                if files.len() == 1 {
                     source.set_icon(
                         Some(&gtk::WidgetPaintable::new(Some(&widget))),
                         x as i32,
@@ -999,6 +1090,7 @@ impl Pane {
         }));
         self.views
             .connect_transition_running_notify(on!(self, |p, _v| p.feed_views(true)));
+        self.regroup();
         self.feed_views(true);
         self.flat
             .connect_selection_changed(on!(self, |p, _m, _a, _b| p.selection_changed()));
@@ -1015,6 +1107,23 @@ impl Pane {
             .connect_activate(on!(self, |p, _v, position| p.activate_flat(position)));
         self.zoom
             .connect_value_changed(on!(self, |p, scale| p.set_icon_size(scale.value() as i32)));
+        // Ctrl and the wheel make the icons larger or smaller.
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let zoom = self.zoom.downgrade();
+        wheel.connect_scroll(move |wheel, _, dy| {
+            let Some(zoom) = zoom.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if !wheel
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                return glib::Propagation::Proceed;
+            }
+            zoom.set_value(zoom.value() - dy * zoom.adjustment().step_increment());
+            glib::Propagation::Stop
+        });
+        self.grid.add_controller(wheel);
         self.everywhere
             .connect_toggled(on!(self, |p, b| if b.is_active() {
                 p.restart_search(|s| s.everywhere = true)
@@ -1163,8 +1272,10 @@ impl Pane {
             self.show_directory();
             return;
         }
-        // What was chosen there is not chosen here.
-        self.unselect_all();
+        // What was chosen there is not chosen here; the columns keep the choices that led here.
+        if self.view.get() != View::Columns {
+            self.unselect_all();
+        }
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(READ_WAIT, move || {
             if let Some(pane) = weak.upgrade() {
@@ -1255,14 +1366,31 @@ impl Pane {
 
     /// Which columns the list has: where each found file is, or where each item in the
     /// trash came from and when it went there.
-    fn show_columns_for_mode(&self) {
+    pub fn show_columns_for_mode(&self) {
         let trash = self.here.borrow().is_trash();
         let found = self.is_searching() || matches!(*self.here.borrow(), Where::Recent | Where::Tag(_));
-        self.where_column.set_visible(found);
-        self.orig_column.set_visible(trash);
-        self.deleted_column.set_visible(trash);
-        self.sort_columns[1].1.set_visible(!trash);
-        self.sort_columns[3].1.set_visible(!trash);
+        let changed = Cell::new(false);
+        let show = |column: &gtk::ColumnViewColumn, shown: bool| {
+            changed.set(changed.get() || column.is_visible() != shown);
+            column.set_visible(shown);
+        };
+        show(&self.where_column, found);
+        show(&self.orig_column, trash);
+        show(&self.deleted_column, trash);
+        let shown = self
+            .window()
+            .map(|w| w.prefs.borrow().columns.clone())
+            .unwrap_or_default();
+        for (key, column) in &self.sort_columns {
+            let wanted = *key == "name" || shown.iter().any(|k| k == key);
+            // The trash has its own dates and no kinds.
+            let here = !trash || matches!(*key, "name" | "size");
+            show(column, wanted && here);
+        }
+        // GTK gives a section's header a cell of each column shown after the header was made.
+        if changed.get() && self.sorted.section_sorter().is_some() {
+            self.rebind();
+        }
     }
 
     // Searching.
@@ -1466,6 +1594,100 @@ impl Pane {
         };
     }
 
+    /// Puts the files under headers by what the window groups them by, or not.
+    pub fn regroup(&self) {
+        let group = self.window().map_or(Group::None, |w| w.prefs.borrow().group);
+        let Some(now) = glib::DateTime::now_local().ok().filter(|_| group != Group::None) else {
+            self.sorted.set_section_sorter(None::<&gtk::Sorter>);
+            self.column_view.set_header_factory(None::<&gtk::ListItemFactory>);
+            self.feed_views(false);
+            return;
+        };
+        let sorter = {
+            let now = now.clone();
+            gtk::CustomSorter::new(move |a, b| {
+                let (Some(a), Some(b)) = (
+                    a.downcast_ref::<gio::FileInfo>(),
+                    b.downcast_ref::<gio::FileInfo>(),
+                ) else {
+                    return gtk::Ordering::Equal;
+                };
+                group_of(a, group, &now).cmp(&group_of(b, group, &now)).into()
+            })
+        };
+        // The headers are only for a list of sections: on any other list GTK makes one header.
+        let headers = gtk::SignalListItemFactory::new();
+        headers.connect_setup(|_, header| {
+            if let Some(header) = header.downcast_ref::<gtk::ListHeader>() {
+                header.set_child(Some(
+                    &gtk::Label::builder()
+                        .xalign(0.0)
+                        .margin_start(EDGE)
+                        .css_classes(["heading"])
+                        .build(),
+                ));
+            }
+        });
+        headers.connect_bind(move |_, header| {
+            let Some(header) = header.downcast_ref::<gtk::ListHeader>() else {
+                return;
+            };
+            if let (Some(label), Some(info)) = (
+                header.child().and_downcast::<gtk::Label>(),
+                header.item().and_downcast::<gio::FileInfo>(),
+            ) {
+                label.set_label(&group_of(&info, group, &now).1);
+            }
+        });
+        self.sorted.set_section_sorter(Some(&sorter));
+        self.column_view.set_header_factory(Some(&headers));
+        self.feed_views(false);
+    }
+
+    /// What the list is, in order: a tree of folders, or the files under their headers.
+    fn list_selection(&self) -> &gtk::MultiSelection {
+        if self.sorted.section_sorter().is_some() {
+            &self.flat
+        } else {
+            &self.tree_selection
+        }
+    }
+
+    fn checks_shown(&self) -> bool {
+        self.window().is_some_and(|w| w.prefs.borrow().checks)
+    }
+
+    /// Makes the views make their rows and tiles again, as for check boxes shown or not.
+    pub fn rebind(&self) {
+        self.grid.set_model(None::<&gtk::SelectionModel>);
+        self.column_view.set_model(None::<&gtk::SelectionModel>);
+        self.feed_views(false);
+    }
+
+    /// A check box that shows whether `item` is chosen, and chooses it.
+    fn check_for(self: &Rc<Self>, item: &gtk::ListItem) -> gtk::CheckButton {
+        let check = gtk::CheckButton::builder().valign(gtk::Align::Center).build();
+        item.bind_property("selected", &check, "active")
+            .sync_create()
+            .build();
+        let (weak, item) = (Rc::downgrade(self), item.downgrade());
+        check.connect_toggled(move |check| {
+            let (Some(pane), Some(item)) = (weak.upgrade(), item.upgrade()) else {
+                return;
+            };
+            if check.is_active() == item.is_selected() {
+                return;
+            }
+            let model = pane.active_selection();
+            if check.is_active() {
+                model.select_item(item.position(), false);
+            } else {
+                model.unselect_item(item.position());
+            }
+        });
+        check
+    }
+
     /// Gives the files to the view in sight alone, and to the one fading out: a view out of
     /// sight would still make a row or tile of each file, and read its picture, at every
     /// folder.
@@ -1478,7 +1700,7 @@ impl Pane {
         self.strip
             .set_model(fed("gallery", self.strip.model().is_some()).then_some(&self.flat));
         self.column_view
-            .set_model(fed("list", self.column_view.model().is_some()).then_some(&self.tree_selection));
+            .set_model(fed("list", self.column_view.model().is_some()).then_some(self.list_selection()));
     }
 
     fn set_icon_size(self: &Rc<Self>, size: i32) {
@@ -1536,12 +1758,23 @@ impl Pane {
 
     fn update_count(&self) {
         let total = self.filtered.n_items();
-        let chosen = self.selected().len();
-        let items = if chosen > 0 {
-            format!("已選取 {chosen} / {total} 個項目")
-        } else {
+        let chosen = self.selected();
+        let items = if chosen.is_empty() {
             format!("{total} 個項目")
+        } else {
+            format!("已選取 {} / {total} 個項目", chosen.len())
         };
+        // The files' size, as folders are not added up here; then not the space left.
+        let size: u64 = chosen
+            .iter()
+            .filter(|i| !is_dir(i))
+            .map(|i| i.size().max(0) as u64)
+            .sum();
+        if chosen.iter().any(|i| !is_dir(i)) {
+            self.count
+                .set_label(&format!("{items}，{}", glib::format_size(size)));
+            return;
+        }
         self.count.set_label(&items);
         let Some(folder) = self.here().folder().filter(|_| !self.is_searching()) else {
             return;
@@ -1555,7 +1788,8 @@ impl Pane {
                 let (Some(count), Ok(info)) = (count.upgrade(), info) else {
                     return;
                 };
-                if info.has_attribute("filesystem::free") {
+                // Unless what is chosen changed the line since.
+                if info.has_attribute("filesystem::free") && count.label() == items {
                     let free = glib::format_size(info.attribute_uint64("filesystem::free"));
                     count.set_label(&format!("{items}，可用 {free}"));
                 }
@@ -1677,8 +1911,10 @@ impl Pane {
         let columns = self.columns.borrow();
         for (index, column) in columns.iter().enumerate() {
             match chain.get(index + 1) {
-                Some(next) => choose_when_read(&column.list, &column.selection, next),
-                None => column.selection.set_selected(gtk::INVALID_LIST_POSITION),
+                Some(next) => choose_when_read(&column.list, &column.selection, std::slice::from_ref(next)),
+                None => {
+                    column.selection.unselect_all();
+                }
             }
         }
         drop(columns);
@@ -1690,11 +1926,7 @@ impl Pane {
         let list = listing(folder, ATTRIBUTES);
         let filtered = gtk::FilterListModel::new(Some(list.clone()), Some(self.shown.clone()));
         let sorted = gtk::SortListModel::new(Some(filtered), Some(self.sorter.clone()));
-        let selection = gtk::SingleSelection::builder()
-            .model(&sorted)
-            .autoselect(false)
-            .can_unselect(true)
-            .build();
+        let selection = gtk::MultiSelection::new(Some(sorted));
         let factory = gtk::SignalListItemFactory::new();
         let weak = Rc::downgrade(self);
         factory.connect_setup(move |_, item| {
@@ -1750,6 +1982,7 @@ impl Pane {
         let view = gtk::ListView::builder()
             .model(&selection)
             .factory(&factory)
+            .enable_rubberband(true)
             .css_classes(["nf-column"])
             .build();
         let scroller = gtk::ScrolledWindow::builder()
@@ -1780,39 +2013,49 @@ impl Pane {
         }
     }
 
-    fn column_chosen(self: &Rc<Self>, folder: &gio::File, selection: &gtk::SingleSelection) {
+    fn column_chosen(self: &Rc<Self>, folder: &gio::File, selection: &gtk::MultiSelection) {
         if self.choosing.get() {
             return;
         }
-        let info = selection.selected_item().and_downcast::<gio::FileInfo>();
-        match info {
-            Some(info) if is_dir(&info) => {
+        let chosen: Vec<gio::FileInfo> = selected_of(selection)
+            .into_iter()
+            .filter_map(|o| o.downcast().ok())
+            .collect();
+        match chosen.as_slice() {
+            [info] if is_dir(info) => {
                 // A column chooses the folder after it once read, which may be long after it
                 // was made: choosing where the tab already is, or a folder above, goes nowhere.
                 let here = self.here().folder();
-                let child = info_file(&info)
-                    .filter(|c| !here.as_ref().is_some_and(|h| h.equal(c) || h.has_prefix(c)));
+                let child =
+                    info_file(info).filter(|c| !here.as_ref().is_some_and(|h| h.equal(c) || h.has_prefix(c)));
                 if let Some(child) = child {
                     self.go(Where::Folder(child), true);
                 }
             }
-            Some(info) => {
+            [] => {
+                if let Some(peek) = self.peek.take() {
+                    self.columns_box.remove(&peek);
+                }
+            }
+            // A file, or several items: this column is the last, as no one folder is open.
+            chosen => {
                 if !self.here().folder().is_some_and(|h| h.equal(folder)) {
                     self.go(Where::Folder(folder.clone()), true);
-                    // Going there chose nothing in this column; the file again.
+                    // Going there chose nothing in this column; what was chosen again.
                     if let Some(column) = self.columns.borrow().last() {
                         self.choosing.set(true);
-                        if let Some(file) = info_file(&info) {
-                            choose_when_read(&column.list, &column.selection, &file);
-                        }
+                        let files: Vec<gio::File> = chosen.iter().filter_map(info_file).collect();
+                        choose_when_read(&column.list, &column.selection, &files);
                         self.choosing.set(false);
                     }
                 }
-                self.show_peek(&info);
-            }
-            None => {
-                if let Some(peek) = self.peek.take() {
-                    self.columns_box.remove(&peek);
+                match chosen {
+                    [info] => self.show_peek(info),
+                    _ => {
+                        if let Some(peek) = self.peek.take() {
+                            self.columns_box.remove(&peek);
+                        }
+                    }
                 }
             }
         }
@@ -1841,18 +2084,20 @@ impl Pane {
 
     pub fn selected(&self) -> Vec<gio::FileInfo> {
         match self.view.get() {
-            View::List => selected_of(&self.tree_selection)
+            View::List => selected_of(self.list_selection())
                 .into_iter()
-                .filter_map(|o| o.downcast::<gtk::TreeListRow>().ok().and_then(|r| r.item()))
-                .filter_map(|o| o.downcast::<gio::FileInfo>().ok())
+                .filter_map(item_info)
                 .collect(),
             View::Columns if !self.is_searching() => self
                 .columns
                 .borrow()
                 .iter()
                 .rev()
-                .find_map(|c| c.selection.selected_item().and_downcast::<gio::FileInfo>())
+                .map(|c| selected_of(&c.selection))
+                .find(|chosen| !chosen.is_empty())
+                .unwrap_or_default()
                 .into_iter()
+                .filter_map(|o| o.downcast::<gio::FileInfo>().ok())
                 .collect(),
             _ => selected_of(&self.flat)
                 .into_iter()
@@ -1872,16 +2117,31 @@ impl Pane {
             .collect()
     }
 
+    /// What choosing works on: in the columns, the one with the keyboard, else the folder
+    /// shown.
     fn active_selection(&self) -> gtk::SelectionModel {
         match self.view.get() {
-            View::List => self.tree_selection.clone().upcast(),
+            View::List => self.list_selection().clone().upcast(),
+            View::Columns if !self.is_searching() => {
+                let columns = self.columns.borrow();
+                columns
+                    .iter()
+                    .find(|c| c.scroller.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN))
+                    .or(columns.last())
+                    .map_or_else(|| self.flat.clone().upcast(), |c| c.selection.clone().upcast())
+            }
             _ => self.flat.clone().upcast(),
         }
     }
 
-    fn select_only(&self, position: u32) {
+    /// Chooses the item at `position` of the view `widget` is in, alone.
+    fn select_only(&self, widget: &gtk::Widget, position: u32) {
         let model = if self.view.get() == View::Columns && !self.is_searching() {
-            return;
+            let columns = self.columns.borrow();
+            match columns.iter().find(|c| widget.is_ancestor(&c.scroller)) {
+                Some(column) => column.selection.clone().upcast(),
+                None => return,
+            }
         } else {
             self.active_selection()
         };
@@ -1889,15 +2149,20 @@ impl Pane {
     }
 
     pub fn unselect_all(&self) {
-        if self.view.get() != View::Columns {
-            self.active_selection().unselect_all();
-        }
+        self.active_selection().unselect_all();
     }
 
     pub fn select_all(&self) {
-        if self.view.get() != View::Columns {
-            self.active_selection().select_all();
-        }
+        self.active_selection().select_all();
+    }
+
+    /// Chooses what is not chosen, and nothing of what is.
+    pub fn invert_selection(&self) {
+        let model = self.active_selection();
+        let all = gtk::Bitset::new_range(0, model.n_items());
+        let inverted = all.copy();
+        inverted.subtract(&model.selection());
+        model.set_selection(&inverted, &all);
     }
 
     /// Chooses these files where the view lists them.
@@ -1913,7 +2178,7 @@ impl Pane {
                 .last()
                 .map(|c| (c.list.clone(), c.selection.clone()));
             if let Some((list, selection)) = last {
-                choose_when_read(&list, &selection, &files[0]);
+                choose_when_read(&list, &selection, files);
             }
             return;
         }
@@ -1979,6 +2244,7 @@ impl Pane {
             View::Gallery => self
                 .strip
                 .scroll_to(next as u32, gtk::ListScrollFlags::FOCUS, None),
+            View::Columns if !self.is_searching() => {}
             _ => self
                 .grid
                 .scroll_to(next as u32, gtk::ListScrollFlags::FOCUS, None),
@@ -2084,13 +2350,7 @@ impl Pane {
     // Doing.
 
     fn activate_tree(self: &Rc<Self>, position: u32) {
-        let info = self
-            .tree_selection
-            .item(position)
-            .and_downcast::<gtk::TreeListRow>()
-            .and_then(|r| r.item())
-            .and_downcast::<gio::FileInfo>();
-        if let Some(info) = info {
+        if let Some(info) = self.list_selection().item(position).and_then(item_info) {
             self.activate(&info);
         }
     }
@@ -2104,10 +2364,7 @@ impl Pane {
     /// A double click or Enter: into a folder, the file opened.
     fn activate(self: &Rc<Self>, info: &gio::FileInfo) {
         if is_dir(info) {
-            let target = info
-                .attribute_string("standard::target-uri")
-                .map(|uri| gio::File::for_uri(&uri));
-            if let Some(file) = target.or_else(|| info_file(info)) {
+            if let Some(file) = ops::target(info) {
                 self.go(Where::Folder(file), true);
             }
         } else if self.here.borrow().is_trash() {
@@ -2262,27 +2519,34 @@ fn conditions_menu() -> gio::Menu {
 /// Selects `file` in a column once its folder has been read.
 /// The file an item of a selection model is, a row of the list or the item itself.
 fn item_file(item: glib::Object) -> Option<gio::File> {
-    let info = match item.downcast::<gtk::TreeListRow>() {
-        Ok(row) => row.item(),
-        Err(item) => Some(item),
-    };
-    info.and_downcast::<gio::FileInfo>().and_then(|i| info_file(&i))
+    item_info(item).and_then(|i| info_file(&i))
 }
 
-fn choose_when_read(list: &gtk::DirectoryList, selection: &gtk::SingleSelection, file: &gio::File) {
+/// The file's info an item of a selection model is, a row of the list or the item itself.
+fn item_info(item: glib::Object) -> Option<gio::FileInfo> {
+    match item.downcast::<gtk::TreeListRow>() {
+        Ok(row) => row.item().and_downcast(),
+        Err(item) => item.downcast().ok(),
+    }
+}
+
+/// Chooses these files in a column, and nothing else there, once its folder has been read.
+fn choose_when_read(list: &gtk::DirectoryList, selection: &gtk::MultiSelection, files: &[gio::File]) {
     let choose = {
-        let (selection, file) = (selection.downgrade(), file.clone());
+        let (selection, files) = (selection.downgrade(), files.to_vec());
         move || {
             let Some(selection) = selection.upgrade() else {
                 return;
             };
+            let all = gtk::Bitset::new_range(0, selection.n_items());
+            let chosen = gtk::Bitset::new_empty();
             for position in 0..selection.n_items() {
-                let info = selection.item(position).and_downcast::<gio::FileInfo>();
-                if info.and_then(|i| info_file(&i)).is_some_and(|f| f.equal(&file)) {
-                    selection.set_selected(position);
-                    return;
+                let file = selection.item(position).and_then(item_file);
+                if file.is_some_and(|f| files.iter().any(|g| g.equal(&f))) {
+                    chosen.add(position);
                 }
             }
+            selection.set_selection(&chosen, &all);
         }
     };
     if !list.is_loading() {
@@ -2413,9 +2677,95 @@ pub fn created(info: &gio::FileInfo) -> Option<glib::DateTime> {
         .flatten()
 }
 
+/// The group a file is in, ordered as the groups are listed, with the group's title.
+pub fn group_of(info: &gio::FileInfo, group: Group, now: &glib::DateTime) -> (u32, String) {
+    let titled = |rank: u32, title: &str| (rank, title.to_owned());
+    match group {
+        Group::None => titled(0, ""),
+        Group::Kind if is_dir(info) => titled(0, "檔案夾"),
+        Group::Kind => (1, kind_label(info)),
+        Group::Modified => {
+            let Some(when) = info.modification_date_time() else {
+                return titled(5, "更早");
+            };
+            let (year, month, day) = now.ymd();
+            let start = |month: i32, day: i32| glib::DateTime::from_local(year, month, day, 0, 0, 0.0).ok();
+            let today = start(month, day);
+            let since = [
+                today.clone(),
+                today.as_ref().and_then(|t| t.add_days(-1).ok()),
+                today
+                    .as_ref()
+                    .and_then(|t| t.add_days(1 - now.day_of_week()).ok()),
+                start(month, 1),
+                start(1, 1),
+            ];
+            let titles = ["今天", "昨天", "本週稍早", "本月稍早", "今年稍早"];
+            since
+                .iter()
+                .zip(titles)
+                .enumerate()
+                .find(|(_, (since, _))| since.as_ref().is_some_and(|s| when >= *s))
+                .map_or_else(
+                    || titled(5, "更早"),
+                    |(rank, (_, title))| titled(rank as u32, title),
+                )
+        }
+        Group::Size if is_dir(info) => titled(0, "檔案夾"),
+        Group::Size => {
+            const KB: i64 = 1024;
+            let size = info.size();
+            if size == 0 {
+                return titled(1, "空白");
+            }
+            let sizes = [
+                (2, "極小", 16 * KB),
+                (3, "小", KB * KB),
+                (4, "中", 128 * KB * KB),
+                (5, "大", KB * KB * KB),
+                (6, "非常大", 4 * KB * KB * KB),
+            ];
+            sizes
+                .iter()
+                .find(|(_, _, under)| size < *under)
+                .map_or_else(|| titled(7, "超大"), |(rank, title, _)| titled(*rank, title))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_fall_into_groups() {
+        let now = glib::DateTime::from_local(2026, 11, 25, 15, 0, 0.0).unwrap(); // a Wednesday
+        let file = |size: i64, days_ago: f64| {
+            let info = gio::FileInfo::new();
+            info.set_file_type(gio::FileType::Regular);
+            info.set_size(size);
+            info.set_modification_date_time(&now.add_seconds(-days_ago * 86400.0).unwrap());
+            info
+        };
+        let title = |info: &gio::FileInfo, group| group_of(info, group, &now).1;
+        assert_eq!(title(&file(0, 0.1), Group::Modified), "今天");
+        assert_eq!(title(&file(0, 1.0), Group::Modified), "昨天");
+        assert_eq!(title(&file(0, 2.0), Group::Modified), "本週稍早");
+        assert_eq!(title(&file(0, 10.0), Group::Modified), "本月稍早");
+        assert_eq!(title(&file(0, 100.0), Group::Modified), "今年稍早");
+        assert_eq!(title(&file(0, 400.0), Group::Modified), "更早");
+        assert_eq!(title(&file(0, 0.0), Group::Size), "空白");
+        assert_eq!(title(&file(10_000, 0.0), Group::Size), "極小");
+        assert_eq!(title(&file(500_000, 0.0), Group::Size), "小");
+        assert_eq!(title(&file(5 << 30, 0.0), Group::Size), "超大");
+        let ranks: Vec<u32> = [0, 10_000, 500_000, 5 << 30]
+            .map(|size| group_of(&file(size, 0.0), Group::Size, &now).0)
+            .into();
+        assert!(ranks.is_sorted());
+        assert!(
+            group_of(&file(0, 1.0), Group::Modified, &now) > group_of(&file(0, 0.0), Group::Modified, &now)
+        );
+    }
 
     #[test]
     fn names_sort_as_they_are_read() {

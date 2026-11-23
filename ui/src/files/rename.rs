@@ -90,16 +90,18 @@ pub fn refused(new_names: &[String], others: &HashSet<String>) -> Vec<bool> {
 
 /// Renames `files` to `new_names`. When one fails, those renamed before it get their old
 /// names back, so that none is left under the hidden name it went through.
-pub fn rename_all(files: &[gio::File], new_names: &[String]) -> Result<(), glib::Error> {
+/// Gives `files` their new names, or all their old ones back when one cannot be renamed;
+/// the files under their new names.
+pub fn rename_all(files: &[gio::File], new_names: &[String]) -> Result<Vec<gio::File>, glib::Error> {
     let mut current: Vec<gio::File> = files.to_vec();
-    let renamed = rename_to(&mut current, new_names);
-    if renamed.is_err() {
+    if let Err(err) = rename_to(&mut current, new_names) {
         let old_names: Vec<String> = files.iter().map(base_name).collect();
         if let Err(err) = rename_to(&mut current, &old_names) {
             eprintln!("could not give the old names back: {err}");
         }
+        return Err(err);
     }
-    renamed
+    Ok(current)
 }
 
 /// Gives each of `current` its name, and keeps where it is now. Through a name of its own
@@ -140,7 +142,7 @@ fn base_name(file: &gio::File) -> String {
 pub fn ask(
     parent: &impl IsA<gtk::Widget>,
     files: Vec<gio::File>,
-    done: impl Fn(Result<(), glib::Error>) + 'static,
+    done: impl Fn(Result<Vec<gio::File>, glib::Error>) + 'static,
 ) {
     let names: Vec<String> = files
         .iter()

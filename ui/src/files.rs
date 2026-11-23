@@ -56,6 +56,8 @@ mod sidebar;
 mod tags;
 #[path = "files/thumbs.rs"]
 mod thumbs;
+#[path = "files/undo.rs"]
+mod undo;
 
 use browse::{home, info_file, GAP};
 use pane::{Pane, View, Where};
@@ -146,6 +148,10 @@ pub struct Prefs {
     pub hidden: bool,
     pub icon_size: i32,
     pub sidebar: bool,
+    pub group: pane::Group,
+    pub checks: bool,
+    /// The keys of the optional columns the list shows.
+    pub columns: Vec<String>,
 }
 
 impl Prefs {
@@ -178,6 +184,21 @@ impl Prefs {
                 .unwrap_or(64)
                 .clamp(pane::ICON_SIZES.0 as i32, pane::ICON_SIZES.1 as i32),
             sidebar: flag("sidebar", true),
+            group: file
+                .string("files", "group")
+                .ok()
+                .and_then(|g| pane::Group::from_name(&g))
+                .unwrap_or(pane::Group::None),
+            checks: flag("checks", false),
+            columns: file
+                .string_list("files", "columns")
+                .map(|keys| {
+                    keys.iter()
+                        .map(|k| k.to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(|_| ["modified", "size", "kind"].map(String::from).into()),
         }
     }
 
@@ -188,6 +209,10 @@ impl Prefs {
         file.set_boolean("files", "hidden", self.hidden);
         file.set_integer("files", "icon-size", self.icon_size);
         file.set_boolean("files", "sidebar", self.sidebar);
+        file.set_string("files", "group", self.group.name());
+        file.set_boolean("files", "checks", self.checks);
+        // KeyFile's own list form, which `string_list` reads.
+        file.set_string("files", "columns", &self.columns.join(";"));
         let path = Self::path();
         let written = path
             .parent()
@@ -420,6 +445,7 @@ fn menubar() -> gio::Menu {
             item("新增視窗", "win.new-window", Some("<Control>n")),
             item("新增分頁", "win.new-tab", Some("<Control>t")),
             item("新增檔案夾", "win.new-folder", Some("<Control><Shift>n")),
+            item("新增文字文件", "win.new-text-file", None),
             item("打開", "win.open", Some("<Alt>Down")),
             item("關閉分頁", "win.close-tab", Some("<Control>w")),
         ]),
@@ -430,6 +456,7 @@ fn menubar() -> gio::Menu {
             item("取得資訊", "win.info", Some("<Control>i")),
             item("重新命名", "win.rename", Some("F2")),
             item("壓縮", "win.compress", None),
+            item("解壓縮", "win.extract", None),
             item("製作複本", "win.duplicate", Some("<Control>d")),
             item("製作連結", "win.link", None),
             item("快速查看", "win.quick-look", Some("space")),
@@ -439,6 +466,7 @@ fn menubar() -> gio::Menu {
         None,
         &section(vec![
             item("丟到垃圾桶", "win.trash", Some("Delete")),
+            item("立即刪除⋯", "win.delete-now", Some("<Shift>Delete")),
             item("清空垃圾桶", "win.empty-trash", None),
         ]),
     );
@@ -446,10 +474,24 @@ fn menubar() -> gio::Menu {
     edit.append_section(
         None,
         &section(vec![
+            item("還原", "win.undo", Some("<Control>z")),
+            item("重做", "win.redo", Some("<Control><Shift>z")),
+        ]),
+    );
+    edit.append_section(
+        None,
+        &section(vec![
             item("剪下", "win.cut", Some("<Control>x")),
             item("拷貝", "win.copy", Some("<Control>c")),
             item("貼上", "win.paste", Some("<Control>v")),
+            item("複製路徑", "win.copy-path", Some("<Control><Shift>c")),
+        ]),
+    );
+    edit.append_section(
+        None,
+        &section(vec![
             item("全選", "win.select-all", Some("<Control>a")),
+            item("反向選取", "win.invert-selection", Some("<Control><Shift>i")),
         ]),
     );
     let view = gio::Menu::new();
@@ -464,6 +506,8 @@ fn menubar() -> gio::Menu {
     );
     let sorting = gio::Menu::new();
     sorting.append_submenu(Some("排序方式"), &ops::sort_menu());
+    sorting.append_submenu(Some("分組方式"), &ops::group_menu());
+    sorting.append_submenu(Some("顯示欄位"), &ops::columns_menu());
     view.append_section(None, &sorting);
     view.append_section(
         None,
@@ -471,8 +515,10 @@ fn menubar() -> gio::Menu {
             item("顯示側欄", "win.sidebar", None),
             item("顯示預覽", "win.preview", None),
             item("顯示隱藏檔案", "win.hidden", Some("<Control>h")),
+            item("顯示核取方塊", "win.checks", None),
         ]),
     );
+    view.append_section(None, &section(vec![item("重新整理", "win.reload", Some("F5"))]));
     let go = gio::Menu::new();
     go.append_section(
         None,
@@ -513,6 +559,11 @@ fn menubar() -> gio::Menu {
 
 thread_local! {
     static WINDOWS: RefCell<Vec<Rc<Window>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Every window's undo and redo follow what there is to undo.
+pub fn history_changed() {
+    WINDOWS.with_borrow(|all| all.iter().for_each(|win| win.history_changed()));
 }
 
 pub struct Window {
@@ -601,14 +652,17 @@ impl Window {
         let more_menu = gio::Menu::new();
         let first = gio::Menu::new();
         first.append(Some("新增檔案夾"), Some("win.new-folder"));
+        first.append(Some("新增文字文件"), Some("win.new-text-file"));
         first.append(Some("新增分頁"), Some("win.new-tab"));
         more_menu.append_section(None, &first);
         let arranging = gio::Menu::new();
         arranging.append_submenu(Some("排序方式"), &ops::sort_menu());
+        arranging.append_submenu(Some("分組方式"), &ops::group_menu());
         more_menu.append_section(None, &arranging);
         let showing = gio::Menu::new();
         showing.append(Some("顯示預覽"), Some("win.preview"));
         showing.append(Some("顯示隱藏檔案"), Some("win.hidden"));
+        showing.append(Some("顯示核取方塊"), Some("win.checks"));
         more_menu.append_section(None, &showing);
         let going = gio::Menu::new();
         going.append(Some("連接伺服器⋯"), Some("win.connect-server"));
@@ -816,6 +870,22 @@ impl Window {
             }
         });
         self.window.add_controller(keys);
+
+        // The mouse's back and forward buttons.
+        let buttons = gtk::GestureClick::builder().button(0).build();
+        buttons.set_propagation_phase(gtk::PropagationPhase::Capture);
+        buttons.connect_pressed(on!(self, |w, click, _, _, _| {
+            let direction = match click.current_button() {
+                8 => -1,
+                9 => 1,
+                _ => return,
+            };
+            click.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(pane) = w.pane() {
+                pane.step(direction);
+            }
+        }));
+        self.window.add_controller(buttons);
     }
 
     /// The window's keys, unless a field is being typed in or a dialog is over it.
@@ -848,6 +918,7 @@ impl Window {
             gdk::Key::Left if alt => return activate("back", None),
             gdk::Key::Right if alt => return activate("forward", None),
             gdk::Key::Up if alt => return activate("up", None),
+            gdk::Key::F5 => return activate("reload", None),
             _ => {}
         }
         if typing {
@@ -856,6 +927,7 @@ impl Window {
         let view = |name: &str| activate("view", Some(name.to_variant()));
         match key {
             gdk::Key::space => activate("quick-look", None),
+            gdk::Key::Delete if shift => activate("delete-now", None),
             gdk::Key::Delete => activate(
                 if self.here_is_trash() {
                     "delete-now"
@@ -865,6 +937,12 @@ impl Window {
                 None,
             ),
             gdk::Key::BackSpace if ctrl => activate("trash", None),
+            gdk::Key::BackSpace => activate("back", None),
+            gdk::Key::Return | gdk::Key::KP_Enter if alt => activate("info", None),
+            gdk::Key::F3 => {
+                self.search.grab_focus();
+                true
+            }
             gdk::Key::F2 => activate("rename", None),
             gdk::Key::Menu | gdk::Key::F10 if key == gdk::Key::Menu || shift => {
                 if let Some(pane) = self.pane() {
@@ -874,6 +952,11 @@ impl Window {
             }
             gdk::Key::Down if alt => activate("open", None),
             gdk::Key::i if ctrl => activate("info", None),
+            gdk::Key::z | gdk::Key::Z if ctrl && shift => activate("redo", None),
+            gdk::Key::z if ctrl => activate("undo", None),
+            gdk::Key::y if ctrl => activate("redo", None),
+            gdk::Key::C if ctrl => activate("copy-path", None),
+            gdk::Key::I if ctrl => activate("invert-selection", None),
             gdk::Key::c if ctrl => activate("copy", None),
             gdk::Key::x if ctrl => activate("cut", None),
             gdk::Key::v if ctrl => activate("paste", None),
@@ -886,6 +969,12 @@ impl Window {
             gdk::Key::_4 if ctrl => view("gallery"),
             gdk::Key::Escape if self.pane().is_some_and(|p| p.is_searching()) => {
                 self.search.set_text("");
+                true
+            }
+            gdk::Key::Escape => {
+                if let Some(pane) = self.pane() {
+                    pane.unselect_all();
+                }
                 true
             }
             _ if !ctrl && !alt => match key.to_unicode().filter(|c| !c.is_control() && !c.is_whitespace()) {
@@ -1044,7 +1133,9 @@ impl Window {
         enable("forward", pane.can_go_forward());
         enable("up", here.folder().and_then(|f| f.parent()).is_some());
         enable("new-folder", in_folder);
+        enable("new-text-file", in_folder);
         enable("paste", in_folder);
+        enable("copy-path", some);
         enable("open", some && !trash);
         enable("quick-look", some);
         enable("info", true);
@@ -1058,7 +1149,11 @@ impl Window {
         enable("compress", local && !trash && one_folder);
         enable("trash", some && !trash);
         enable("restore", some && trash);
-        enable("delete-now", some && trash);
+        enable("delete-now", some && (trash || local));
+        enable(
+            "extract",
+            local && !trash && matches!(chosen.as_slice(), [one] if ops::is_archive(one)),
+        );
         enable("reveal", some && chosen.len() == 1);
         let pictures = local
             && chosen
@@ -1072,6 +1167,20 @@ impl Window {
         enable("all-tags", local && !trash);
         self.back.set_sensitive(pane.can_go_back());
         self.forward.set_sensitive(pane.can_go_forward());
+        self.history_changed();
+    }
+
+    /// Whether there is anything to undo or redo, which every window shares.
+    fn history_changed(&self) {
+        for (name, on) in [("undo", undo::can_undo()), ("redo", undo::can_redo())] {
+            if let Some(action) = self
+                .actions
+                .lookup_action(name)
+                .and_downcast::<gio::SimpleAction>()
+            {
+                action.set_enabled(on);
+            }
+        }
     }
 
     fn set_state(&self, name: &str, state: glib::Variant) {
@@ -1122,6 +1231,23 @@ impl Window {
             }),
         );
         simple("new-folder", Box::new(ops::new_folder));
+        simple("new-text-file", Box::new(ops::new_text_file));
+        simple("undo", Box::new(|win, _| undo::undo(win)));
+        simple("redo", Box::new(|win, _| undo::redo(win)));
+        simple("reload", Box::new(|_, pane| pane.reload()));
+        simple("invert-selection", Box::new(|_, pane| pane.invert_selection()));
+        simple(
+            "copy-path",
+            Box::new(|win, pane| ops::copy_paths(win, &pane.selected_files())),
+        );
+        simple(
+            "extract",
+            Box::new(|win, pane| {
+                if let [archive] = pane.selected_files().as_slice() {
+                    ops::extract(win, pane, archive);
+                }
+            }),
+        );
         simple(
             "open",
             Box::new(|win, pane| ops::open(&Rc::downgrade(win), &pane.selected())),
@@ -1355,7 +1481,7 @@ impl Window {
                     return;
                 };
                 // Dates and sizes newest and largest first, as the Finder sorts them.
-                let order = if matches!(key.as_str(), "modified" | "size") {
+                let order = if matches!(key.as_str(), "modified" | "created" | "size") {
                     gtk::SortType::Descending
                 } else {
                     gtk::SortType::Ascending
@@ -1363,6 +1489,51 @@ impl Window {
                 pane.column_view.sort_by_column(Some(column), order);
             }),
         );
+        stateful(
+            "group",
+            prefs.group.name().to_variant(),
+            Box::new(|win, value| {
+                let Some(group) = value.get::<String>().and_then(|g| pane::Group::from_name(&g)) else {
+                    return;
+                };
+                win.prefs.borrow_mut().group = group;
+                win.prefs.borrow().save();
+                for (_, pane) in win.panes.borrow().iter() {
+                    pane.regroup();
+                }
+            }),
+        );
+        stateful(
+            "checks",
+            prefs.checks.to_variant(),
+            Box::new(|win, value| {
+                win.prefs.borrow_mut().checks = value.get::<bool>().unwrap_or(false);
+                win.prefs.borrow().save();
+                for (_, pane) in win.panes.borrow().iter() {
+                    pane.rebind();
+                }
+            }),
+        );
+        for (key, _) in pane::OPTIONAL_COLUMNS {
+            stateful(
+                &format!("column-{key}"),
+                prefs.columns.iter().any(|k| k == key).to_variant(),
+                Box::new(move |win, value| {
+                    let shown = value.get::<bool>().unwrap_or(false);
+                    {
+                        let columns = &mut win.prefs.borrow_mut().columns;
+                        columns.retain(|k| k != key);
+                        if shown {
+                            columns.push(key.to_owned());
+                        }
+                    }
+                    win.prefs.borrow().save();
+                    for (_, pane) in win.panes.borrow().iter() {
+                        pane.show_columns_for_mode();
+                    }
+                }),
+            );
+        }
         for (index, (tag, _)) in tags::TAGS.iter().enumerate() {
             stateful(
                 &format!("tag-{index}"),

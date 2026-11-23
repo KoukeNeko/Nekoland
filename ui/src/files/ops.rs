@@ -18,7 +18,9 @@ use gtk::{gdk, gio, glib};
 use crate::{
     browse::{bookmarks_path, free_name, info_file, is_dir, parse_bookmarks, size_of},
     pane::{Pane, Where},
-    rename, tags, Window,
+    rename, tags,
+    undo::{self, Change},
+    Window,
 };
 
 /// The clipboard types Files and the desktop copy files as.
@@ -26,6 +28,21 @@ const COPIED_FILES: &str = "x-special/gnome-copied-files";
 const URI_LIST: &str = "text/uri-list";
 /// The name a new folder is given, as the desktop names one.
 pub const NEW_FOLDER: &str = "未命名檔案夾";
+/// The name a new text file is given.
+const NEW_TEXT_FILE: &str = "未命名文件.txt";
+/// The kinds of archive bsdtar takes apart.
+const ARCHIVES: &[&str] = &[
+    "application/zip",
+    "application/x-tar",
+    "application/x-compressed-tar",
+    "application/x-bzip-compressed-tar",
+    "application/x-xz-compressed-tar",
+    "application/x-zstd-compressed-tar",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar",
+    "application/x-cpio",
+];
 /// What nekoland-settings is asked with for what Windows' programs add to a file's menu.
 const WINDOWS_MENU_FLAG: &str = "--windows-menu";
 
@@ -53,6 +70,7 @@ pub fn menu(
             first.append(Some("清空垃圾桶"), Some("win.empty-trash"));
         } else if here.folder().is_some() {
             first.append(Some("新增檔案夾"), Some("win.new-folder"));
+            first.append(Some("新增文字文件"), Some("win.new-text-file"));
         }
         menu.append_section(None, &first);
         menu.append_section(None, &section(&[("取得資訊", "win.info")]));
@@ -111,11 +129,19 @@ pub fn menu(
     doing.append(Some("取得資訊"), Some("win.info"));
     doing.append(Some(&rename_label), Some("win.rename"));
     doing.append(Some(&compress_label), Some("win.compress"));
+    if let [one] = chosen {
+        if is_archive(one) {
+            doing.append(Some("解壓縮"), Some("win.extract"));
+        }
+    }
     doing.append(Some("製作複本"), Some("win.duplicate"));
     doing.append(Some("製作連結"), Some("win.link"));
     doing.append(Some("快速查看"), Some("win.quick-look"));
     menu.append_section(None, &doing);
-    menu.append_section(None, &section(&[("拷貝", "win.copy")]));
+    menu.append_section(
+        None,
+        &section(&[("拷貝", "win.copy"), ("複製路徑", "win.copy-path")]),
+    );
 
     // The tags, as a row of dots to click.
     let tag_section = gio::Menu::new();
@@ -278,9 +304,32 @@ pub fn sort_menu() -> gio::Menu {
         ("名稱", "name"),
         ("種類", "kind"),
         ("修改日期", "modified"),
+        ("建立日期", "created"),
         ("大小", "size"),
     ] {
         menu.append(Some(label), Some(&format!("win.sort::{key}")));
+    }
+    menu
+}
+
+pub fn group_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (label, key) in [
+        ("無", "none"),
+        ("種類", "kind"),
+        ("修改日期", "modified"),
+        ("大小", "size"),
+    ] {
+        menu.append(Some(label), Some(&format!("win.group::{key}")));
+    }
+    menu
+}
+
+/// Which columns the list shows, for a right click on its header.
+pub fn columns_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (key, label) in crate::pane::OPTIONAL_COLUMNS {
+        menu.append(Some(label), Some(&format!("win.column-{key}")));
     }
     menu
 }
@@ -407,7 +456,7 @@ pub fn open(win: &Weak<Window>, chosen: &[gio::FileInfo]) {
 }
 
 /// The folder a folder item stands for: a mount's or a link's target, else itself.
-fn target(info: &gio::FileInfo) -> Option<gio::File> {
+pub fn target(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_string("standard::target-uri")
         .map(|uri| gio::File::for_uri(&uri))
         .or_else(|| info_file(info))
@@ -453,10 +502,16 @@ fn transfers_changed() {
     WATCHERS.with(|w| w.borrow_mut().retain(|watcher| watcher()));
 }
 
-pub fn transfer(verb: &str, folder: &Path, paths: &[PathBuf]) {
+/// Copies or moves `paths` into `folder` by nekoland-fileop; `remember` keeps what it did
+/// to undo.
+pub fn transfer(verb: &str, folder: &Path, paths: &[PathBuf], remember: bool) {
     if paths.is_empty() {
         return;
     }
+    // What the folder held, to tell the copies, which may have been given other names.
+    let names_before = names_in(folder);
+    let (moving, into) = (verb == "move", folder.to_owned());
+    let sources = paths.to_vec();
     let spawned = std::process::Command::new(crate::program::path("nekoland-fileop"))
         .arg(verb)
         .arg(folder)
@@ -506,6 +561,9 @@ pub fn transfer(verb: &str, folder: &Path, paths: &[PathBuf]) {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     TRANSFERS.with(|t| t.borrow_mut().retain(|(_, d)| !Rc::ptr_eq(d, &done)));
                     transfers_changed();
+                    if remember {
+                        undo::record(transferred(moving, &into, &sources, &names_before));
+                    }
                     return glib::ControlFlow::Break;
                 }
             }
@@ -515,6 +573,44 @@ pub fn transfer(verb: &str, folder: &Path, paths: &[PathBuf]) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+fn names_in(folder: &Path) -> std::collections::HashSet<std::ffi::OsString> {
+    std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a finished transfer did: each moved item that left its place for one in `folder`,
+/// or what is in `folder` that was not before the copying.
+fn transferred(
+    moving: bool,
+    folder: &Path,
+    sources: &[PathBuf],
+    names_before: &std::collections::HashSet<std::ffi::OsString>,
+) -> Change {
+    if moving {
+        Change::Moved(
+            sources
+                .iter()
+                .filter(|source| std::fs::symlink_metadata(source).is_err())
+                .filter_map(|source| Some((source.clone(), folder.join(source.file_name()?))))
+                .filter(|(_, moved)| std::fs::symlink_metadata(moved).is_ok())
+                .collect(),
+        )
+    } else {
+        let mut made: Vec<PathBuf> = names_in(folder)
+            .difference(names_before)
+            .map(|name| folder.join(name))
+            .collect();
+        made.sort();
+        Change::Made(made)
+    }
 }
 
 /// What is dropped on a folder: moved when it is on the same drive, copied when it is not
@@ -531,16 +627,16 @@ pub fn drop_into(files: &[gio::File], folder: &gio::File, modifiers: gdk::Modifi
             .into_iter()
             .filter(|p| *p != folder && p.parent() != Some(folder.as_path()))
             .collect();
-        transfer("move", &folder, &moving);
+        transfer("move", &folder, &moving, true);
     } else {
-        transfer("copy", &folder, &paths);
+        transfer("copy", &folder, &paths, true);
     }
 }
 
 pub fn duplicate(files: &[gio::File]) {
     for file in files {
         if let (Some(path), Some(folder)) = (file.path(), file.parent().and_then(|p| p.path())) {
-            transfer("copy", &folder, &[path]);
+            transfer("copy", &folder, &[path], true);
         }
     }
 }
@@ -561,6 +657,20 @@ pub fn copy_to_clipboard(win: &Window, files: &[gio::File], cut: bool) {
     ]);
     if let Err(err) = win.window.clipboard().set_content(Some(&provider)) {
         eprintln!("nekoland-files: cannot copy: {err}");
+    }
+}
+
+/// The paths of `files`, a line each, as text.
+pub fn copy_paths(win: &Window, files: &[gio::File]) {
+    let paths: Vec<String> = files
+        .iter()
+        .map(|f| {
+            f.path()
+                .map_or_else(|| f.uri().to_string(), |p| p.display().to_string())
+        })
+        .collect();
+    if !paths.is_empty() {
+        win.window.clipboard().set_text(&paths.join("\n"));
     }
 }
 
@@ -591,7 +701,7 @@ pub fn paste(win: &Rc<Window>, folder: gio::File) {
                     let (cut, uris) = parse_clipboard(&text, &mime_type);
                     let paths: Vec<PathBuf> =
                         uris.iter().filter_map(|u| gio::File::for_uri(u).path()).collect();
-                    transfer(if cut { "move" } else { "copy" }, &into, &paths);
+                    transfer(if cut { "move" } else { "copy" }, &into, &paths, true);
                 },
             );
         },
@@ -615,43 +725,66 @@ fn parse_clipboard(text: &str, mime_type: &str) -> (bool, Vec<String>) {
 // The trash.
 
 pub fn trash(win: &Rc<Window>, files: Vec<gio::File>) {
+    // How many are still on their way, and the places of those in the trash, to undo at once.
+    let trashed = Rc::new(RefCell::new((files.len(), Vec::new())));
     for file in files {
         let win = Rc::downgrade(win);
         let name = display_name(&file);
-        file.trash_async(glib::Priority::DEFAULT, gio::Cancellable::NONE, move |done| {
-            if let (Err(err), Some(win)) = (done, win.upgrade()) {
-                win.alert(&format!("無法把「{name}」丟到垃圾桶"), Some(err.message()));
-            }
-        });
+        let trashed = trashed.clone();
+        file.clone()
+            .trash_async(glib::Priority::DEFAULT, gio::Cancellable::NONE, move |done| {
+                let mut trashed = trashed.borrow_mut();
+                trashed.0 -= 1;
+                match done {
+                    Ok(()) => trashed.1.extend(file.path()),
+                    Err(err) => {
+                        if let Some(win) = win.upgrade() {
+                            win.alert(&format!("無法把「{name}」丟到垃圾桶"), Some(err.message()));
+                        }
+                    }
+                }
+                if trashed.0 == 0 {
+                    undo::record(Change::Trashed(std::mem::take(&mut trashed.1)));
+                }
+            });
     }
 }
 
 /// Puts what is in the trash back where it was.
 pub fn restore(win: &Rc<Window>, chosen: &[gio::FileInfo]) {
+    let mut restored = Vec::new();
     for info in chosen {
         let (Some(file), Some(orig)) = (info_file(info), info.attribute_byte_string("trash::orig-path"))
         else {
             continue;
         };
-        let to = gio::File::for_path(orig.as_str());
-        if let Some(parent) = to.parent() {
-            let _ = parent.make_directory_with_parents(gio::Cancellable::NONE);
-        }
-        if let Err(err) = file.move_(
-            &to,
-            gio::FileCopyFlags::NOFOLLOW_SYMLINKS,
-            gio::Cancellable::NONE,
-            None,
-        ) {
-            win.alert(
+        let orig = PathBuf::from(orig.as_str());
+        match put_back(&file, &orig) {
+            Ok(()) => restored.push(orig),
+            Err(err) => win.alert(
                 &format!("無法把「{}」放回原處", info.display_name()),
                 Some(err.message()),
-            );
+            ),
         }
     }
+    undo::record(Change::Made(restored));
 }
 
-/// Deletes for good, after asking: what is chosen in the trash.
+/// Moves an item in the trash back to where it came from.
+pub fn put_back(item: &gio::File, orig: &Path) -> Result<(), glib::Error> {
+    let to = gio::File::for_path(orig);
+    if let Some(parent) = to.parent() {
+        let _ = parent.make_directory_with_parents(gio::Cancellable::NONE);
+    }
+    item.move_(
+        &to,
+        gio::FileCopyFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+        None,
+    )
+}
+
+/// Deletes for good, after asking: what is chosen, in the trash or anywhere.
 pub fn delete_now(win: &Rc<Window>, files: Vec<gio::File>) {
     if files.is_empty() {
         return;
@@ -689,14 +822,23 @@ pub fn empty_trash(win: &Rc<Window>) {
     });
 }
 
-/// Deletes items in the trash, folders whole, away from the window's thread. The trash
-/// deletes a folder with what it holds itself, and refuses to change what is inside one.
+/// Deletes items, folders whole, away from the window's thread. The trash deletes a folder
+/// with what it holds itself, and refuses to change what is inside one; a folder on a disk
+/// is emptied first.
 fn delete_all(win: &Rc<Window>, files: Vec<gio::File>) {
     let (sender, receiver) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         for file in files {
-            if let Err(err) = file.delete(gio::Cancellable::NONE) {
-                let _ = sender.send(format!("{}：{}", display_name(&file), err.message()));
+            let deleted = match file.path() {
+                Some(path) if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) => {
+                    std::fs::remove_dir_all(&path).map_err(|err| err.to_string())
+                }
+                _ => file
+                    .delete(gio::Cancellable::NONE)
+                    .map_err(|err| err.message().to_owned()),
+            };
+            if let Err(err) = deleted {
+                let _ = sender.send(format!("{}：{err}", display_name(&file)));
             }
         }
     });
@@ -716,16 +858,49 @@ fn delete_all(win: &Rc<Window>, files: Vec<gio::File>) {
 // Making things.
 
 pub fn new_folder(win: &Rc<Window>, pane: &Rc<Pane>) {
+    make_new(
+        win,
+        pane,
+        NEW_FOLDER,
+        |file| file.make_directory(gio::Cancellable::NONE),
+        "無法建立檔案夾",
+    );
+}
+
+pub fn new_text_file(win: &Rc<Window>, pane: &Rc<Pane>) {
+    make_new(
+        win,
+        pane,
+        NEW_TEXT_FILE,
+        // Closed at once: the folder's watch tells of a new file once it is written.
+        |file| {
+            file.create(gio::FileCreateFlags::NONE, gio::Cancellable::NONE)?
+                .close(gio::Cancellable::NONE)
+        },
+        "無法建立文件",
+    );
+}
+
+/// Makes a new item of this name, or the next free one, where the tab is, chosen with its
+/// name to type over.
+fn make_new(
+    win: &Rc<Window>,
+    pane: &Rc<Pane>,
+    name: &str,
+    make: impl FnOnce(&gio::File) -> Result<(), glib::Error>,
+    failed: &str,
+) {
     let Some(folder) = pane.here().folder().and_then(|f| f.path()) else {
         return;
     };
-    let path = folder.join(NEW_FOLDER);
+    let path = folder.join(name);
     let path = if path.exists() { free_name(&path) } else { path };
     let file = gio::File::for_path(&path);
-    if let Err(err) = file.make_directory(gio::Cancellable::NONE) {
-        win.alert("無法建立檔案夾", Some(err.message()));
+    if let Err(err) = make(&file) {
+        win.alert(failed, Some(err.message()));
         return;
     }
+    undo::record(Change::Made(vec![path]));
     let win = Rc::downgrade(win);
     pane.select_when_listed(file.clone(), move |_| {
         if let Some(win) = win.upgrade() {
@@ -760,6 +935,9 @@ pub fn rename_one(win: &Rc<Window>, file: gio::File) {
             }
             match file.set_display_name(&new, gio::Cancellable::NONE) {
                 Ok(renamed) => {
+                    if let (Some(before), Some(after)) = (file.path(), renamed.path()) {
+                        undo::record(Change::Renamed(vec![(before, after)]));
+                    }
                     if let Some(pane) = win.pane() {
                         pane.select_when_listed(renamed, |_| {});
                     }
@@ -776,9 +954,20 @@ pub fn rename(win: &Rc<Window>, files: Vec<gio::File>) {
         1 => rename_one(win, files.into_iter().next().expect("one")),
         _ => {
             let weak = Rc::downgrade(win);
-            rename::ask(&win.window, files, move |done| {
-                if let (Err(err), Some(win)) = (done, weak.upgrade()) {
-                    win.alert("無法重新命名", Some(err.message()));
+            let before: Vec<Option<PathBuf>> = files.iter().map(|f| f.path()).collect();
+            rename::ask(&win.window, files, move |done| match done {
+                Ok(renamed) => undo::record(Change::Renamed(
+                    before
+                        .iter()
+                        .zip(&renamed)
+                        .filter_map(|(before, after)| Some((before.clone()?, after.path()?)))
+                        .filter(|(before, after)| before != after)
+                        .collect(),
+                )),
+                Err(err) => {
+                    if let Some(win) = weak.upgrade() {
+                        win.alert("無法重新命名", Some(err.message()));
+                    }
                 }
             });
         }
@@ -787,6 +976,7 @@ pub fn rename(win: &Rc<Window>, files: Vec<gio::File>) {
 
 /// Symbolic links to each chosen item, beside it.
 pub fn make_links(win: &Rc<Window>, files: &[gio::File]) {
+    let mut made = Vec::new();
     for file in files {
         let (Some(path), Some(folder)) = (file.path(), file.parent().and_then(|p| p.path())) else {
             continue;
@@ -797,13 +987,15 @@ pub fn make_links(win: &Rc<Window>, files: &[gio::File]) {
         } else {
             link
         };
-        if let Err(err) = std::os::unix::fs::symlink(&path, &link) {
-            win.alert(
+        match std::os::unix::fs::symlink(&path, &link) {
+            Ok(()) => made.push(link),
+            Err(err) => win.alert(
                 &format!("無法製作「{}」的連結", display_name(file)),
                 Some(&err.to_string()),
-            );
+            ),
         }
     }
+    undo::record(Change::Made(made));
 }
 
 /// A ZIP archive of what is chosen, beside it, by bsdtar or zip; its row shows how far
@@ -887,7 +1079,9 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
                 if let Some(pane) = &pane {
                     pane.set_job(&uri, None);
                 }
-                if !matches!(finished, Ok(Some(status)) if status.success()) {
+                if matches!(finished, Ok(Some(status)) if status.success()) {
+                    undo::record(Change::Made(vec![target.clone()]));
+                } else {
                     let _ = std::fs::remove_file(&target);
                     if let Some(win) = win.upgrade() {
                         win.alert("無法壓縮", None);
@@ -897,6 +1091,127 @@ pub fn compress(win: &Rc<Window>, pane: &Rc<Pane>, files: &[gio::File]) {
             }
         }
     });
+}
+
+pub fn is_archive(info: &gio::FileInfo) -> bool {
+    info.content_type().is_some_and(|kind| {
+        ARCHIVES
+            .iter()
+            .any(|archive| gio::content_type_is_a(&kind, archive))
+    })
+}
+
+/// An archive's name without what says it is one: `photos` of `photos.tar.gz`.
+fn archive_stem(name: &str) -> &str {
+    let lower = name.to_lowercase();
+    for suffix in [
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".txz",
+    ] {
+        if lower.ends_with(suffix) && lower.len() > suffix.len() {
+            return &name[..name.len() - suffix.len()];
+        }
+    }
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => &name[..dot],
+        _ => name,
+    }
+}
+
+/// Takes an archive apart beside it, by bsdtar: what it holds in a folder named after it,
+/// or its one item alone, as the Finder does; that is chosen once there.
+pub fn extract(win: &Rc<Window>, pane: &Rc<Pane>, archive: &gio::File) {
+    let (Some(path), Some(folder)) = (archive.path(), archive.parent().and_then(|p| p.path())) else {
+        return;
+    };
+    let into = folder.join(archive_stem(&display_name(archive)));
+    let into = if std::fs::symlink_metadata(&into).is_ok() {
+        free_name(&into)
+    } else {
+        into
+    };
+    if let Err(err) = std::fs::create_dir(&into) {
+        win.alert("無法解壓縮", Some(&err.to_string()));
+        return;
+    }
+    let (sender, receiver) = mpsc::channel();
+    let taking_apart = into.clone();
+    std::thread::spawn(move || {
+        let output = std::process::Command::new("bsdtar")
+            .arg("-xf")
+            .arg(&path)
+            .arg("-C")
+            .arg(&taking_apart)
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = sender.send(output);
+    });
+    let (pane, win) = (Rc::downgrade(pane), Rc::downgrade(win));
+    glib::timeout_add_local(Duration::from_millis(150), move || {
+        let finished = match receiver.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+            Ok(finished) => finished,
+        };
+        let failed = match &finished {
+            Ok(output) if output.status.success() => None,
+            Ok(output) => Some(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+            Err(err) => Some(err.to_string()),
+        };
+        if let Some(failed) = failed {
+            let _ = std::fs::remove_dir_all(&into);
+            if let Some(win) = win.upgrade() {
+                win.alert(
+                    "無法解壓縮",
+                    Some(&failed).filter(|f| !f.is_empty()).map(String::as_str),
+                );
+            }
+            return glib::ControlFlow::Break;
+        }
+        let made = hoist_only_item(&into);
+        undo::record(Change::Made(vec![made.clone()]));
+        if let Some(pane) = pane.upgrade() {
+            pane.select_when_listed(gio::File::for_path(&made), |_| {});
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// The one item a folder holds put in its place, or the folder when it holds more.
+fn hoist_only_item(folder: &Path) -> PathBuf {
+    let entries: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    let ([only], Some(parent)) = (entries.as_slice(), folder.parent()) else {
+        return folder.to_owned();
+    };
+    let Some(name) = only.file_name() else {
+        return folder.to_owned();
+    };
+    let to = parent.join(name);
+    // Its own name is the folder's own until the folder is gone.
+    let to = if to != folder && std::fs::symlink_metadata(&to).is_ok() {
+        free_name(&to)
+    } else {
+        to
+    };
+    let through = parent.join(format!(".nekoland-extract-{}", std::process::id()));
+    let hoisted = std::fs::rename(only, &through)
+        .and_then(|()| std::fs::remove_dir(folder))
+        .and_then(|()| std::fs::rename(&through, &to));
+    match hoisted {
+        Ok(()) => to,
+        Err(err) => {
+            eprintln!(
+                "nekoland-files: cannot take the one item out of {}: {err}",
+                folder.display()
+            );
+            if through.exists() && !folder.exists() {
+                let _ =
+                    std::fs::create_dir(folder).and_then(|()| std::fs::rename(&through, folder.join(name)));
+            }
+            folder.to_owned()
+        }
+    }
 }
 
 // Tags, pictures and the sidebar.
@@ -1162,6 +1477,39 @@ mod tests {
             parse_clipboard("# a comment\r\nfile:///a\r\n", URI_LIST),
             (false, vec!["file:///a".to_string()])
         );
+    }
+
+    #[test]
+    fn an_archive_is_named_without_its_kind() {
+        assert_eq!(archive_stem("photos.tar.gz"), "photos");
+        assert_eq!(archive_stem("Photos.TGZ"), "Photos");
+        assert_eq!(archive_stem("報告.zip"), "報告");
+        assert_eq!(archive_stem("v1.2.7z"), "v1.2");
+        assert_eq!(archive_stem(".tar.gz"), ".tar");
+        assert_eq!(archive_stem("README"), "README");
+    }
+
+    #[test]
+    fn the_one_item_of_an_archive_takes_its_folders_place() {
+        let dir = std::env::temp_dir().join(format!("nekoland-hoist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Named as the folder: in its place.
+        std::fs::create_dir_all(dir.join("project/project")).unwrap();
+        assert_eq!(hoist_only_item(&dir.join("project")), dir.join("project"));
+        assert!(!dir.join("project/project").exists());
+        // Named as another item beside it: the next free name.
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a/b.txt"), "B").unwrap();
+        std::fs::write(dir.join("b.txt"), "taken").unwrap();
+        let hoisted = hoist_only_item(&dir.join("a"));
+        assert_eq!(std::fs::read_to_string(&hoisted).unwrap(), "B");
+        assert!(!dir.join("a").exists());
+        // Several: the folder stays.
+        std::fs::create_dir_all(dir.join("c")).unwrap();
+        std::fs::write(dir.join("c/1"), "").unwrap();
+        std::fs::write(dir.join("c/2"), "").unwrap();
+        assert_eq!(hoist_only_item(&dir.join("c")), dir.join("c"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
