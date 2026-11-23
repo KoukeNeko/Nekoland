@@ -3,6 +3,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ffi::OsStr,
     io::BufRead,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -107,10 +108,7 @@ pub fn menu(
             }
         }
         if let Some(path) = info_file(info).and_then(|file| file.path()) {
-            let windows = windows_menu(&path);
-            if windows.n_items() > 0 {
-                first.append_submenu(Some("Windows"), &windows);
-            }
+            add_windows_menu(&first, &path);
         }
     }
     menu.append_section(None, &first);
@@ -373,19 +371,36 @@ fn open_with_menu(info: &gio::FileInfo) -> gio::Menu {
     menu
 }
 
+/// Adds to `section`, once nekoland-settings says them, what Windows' programs add to a file's
+/// right-click menu there; the menu shows meanwhile, as asking may start Wine and take seconds.
+fn add_windows_menu(section: &gio::Menu, file: &Path) {
+    let asked = gio::Subprocess::newv(
+        &[OsStr::new("nekoland-settings"), OsStr::new(WINDOWS_MENU_FLAG), file.as_os_str()],
+        gio::SubprocessFlags::STDOUT_PIPE,
+    );
+    let process = match asked {
+        Ok(process) => process,
+        Err(err) => return eprintln!("nekoland-files: {WINDOWS_MENU_FLAG}: {err}"),
+    };
+    let section = section.downgrade();
+    glib::spawn_future_local(async move {
+        let said = match process.communicate_utf8_future(None).await {
+            Ok((said, _)) => said.unwrap_or_default(),
+            Err(err) => return eprintln!("nekoland-files: {WINDOWS_MENU_FLAG}: {err}"),
+        };
+        let windows = windows_menu(&said);
+        if let Some(section) = section.upgrade().filter(|_| windows.n_items() > 0) {
+            section.append_submenu(Some("Windows"), &windows);
+        }
+    });
+}
+
 /// What Windows' programs add to a file's right-click menu there, as nekoland-settings says
 /// them: a line an item, its submenus' names and its own, tabs between.
-fn windows_menu(file: &Path) -> gio::Menu {
+fn windows_menu(said: &str) -> gio::Menu {
     let menu = gio::Menu::new();
-    let Ok(said) = std::process::Command::new("nekoland-settings")
-        .arg(WINDOWS_MENU_FLAG)
-        .arg(file)
-        .output()
-    else {
-        return menu;
-    };
     let mut submenus: Vec<(String, gio::Menu)> = Vec::new();
-    for line in String::from_utf8_lossy(&said.stdout).lines() {
+    for line in said.lines() {
         let mut into = menu.clone();
         let (mut above, names) = (String::new(), line.split('\t').collect::<Vec<_>>());
         let Some((label, parents)) = names.split_last() else {
