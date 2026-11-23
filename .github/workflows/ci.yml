@@ -14,7 +14,12 @@ jobs:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     # The Ubuntu Nekoland is made on and install.sh is tried on.
-    container: ubuntu:26.10
+    # Unconfined, as on a computer: under Docker's AppArmor profile, writing a
+    # datagram to an abstract socket, as Plaitway's systemd notification test does,
+    # blocks for good.
+    container:
+      image: ubuntu:26.10
+      options: --security-opt apparmor=unconfined
     env:
       DEBIAN_FRONTEND: noninteractive
       CARGO_TERM_COLOR: always
