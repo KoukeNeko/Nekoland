@@ -832,6 +832,33 @@ mod keyring {
         false
     }
 
+    /// What is kept for the profile: its user name and password. A locked keyring asks for
+    /// its own password, which `plaitway` does not do.
+    pub(super) async fn load(id: &str, kind: &str) -> Option<(String, String)> {
+        #[derive(Deserialize)]
+        struct Kept {
+            #[serde(default)]
+            username: String,
+            password: String,
+        }
+        match secrets::lookup(&item(id, kind)).await {
+            Ok(Some(value)) => match serde_json::from_str::<Kept>(&value) {
+                Ok(kept) => Some((kept.username, kept.password)),
+                Err(err) => {
+                    eprintln!("keyring: {id} ({kind}): {err}");
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(err) => {
+                if !err.matches(gio::IOErrorEnum::FailedHandled) {
+                    eprintln!("keyring: {err}");
+                }
+                None
+            }
+        }
+    }
+
     /// Keeps what was typed for the profile, as the Plaitway app keeps it.
     pub(super) async fn save(
         id: &str,
@@ -875,12 +902,14 @@ fn review_credentials(model: &Rc<Model>, parent: &gtk::Widget) {
         let (model, parent) = (model.clone(), parent.clone());
         glib::spawn_future_local(async move {
             let kind = profile.secret_kind();
-            if !profile.last_error.is_empty() || !keyring::has(&profile.id, &[kind]).await {
+            let kept =
+                if profile.last_error.is_empty() { keyring::load(&profile.id, kind).await } else { None };
+            let Some((user, secret)) = kept else {
                 let refused = Some(profile.last_error.clone()).filter(|err| !err.is_empty());
                 return ask_credentials(model, parent, profile, refused);
-            }
+            };
             let id = profile.id.clone();
-            plaitway(&["connect", &id], move |result| match result {
+            connect_as(&id, &user, &secret, move |result| match result {
                 Ok(_) => {
                     model.asking.borrow_mut().remove(&profile.id);
                 }
@@ -910,6 +939,17 @@ fn answer_failed(model: Rc<Model>, parent: gtk::Widget, profile: Profile, err: S
     } else {
         ask_credentials(model, parent, profile, Some(err));
     }
+}
+
+/// `plaitway connect` with the credentials given: the password on standard input, never in
+/// the arguments, where other processes can read it.
+fn connect_as(id: &str, username: &str, secret: &str, then: impl FnOnce(Result<String, String>) + 'static) {
+    let mut args = vec!["connect"];
+    if !username.is_empty() {
+        args.extend(["-username", username]);
+    }
+    args.push(id);
+    plaitway_with(&args, &[], Some(format!("{secret}\n")), move |result| then(result.map(|(out, _)| out)));
 }
 
 fn ask_credentials(model: Rc<Model>, parent: gtk::Widget, profile: Profile, refused: Option<String>) {
@@ -1003,13 +1043,8 @@ fn ask_credentials(model: Rc<Model>, parent: gtk::Widget, profile: Profile, refu
         let (user, secret) = (username.text().trim().to_string(), password.text().to_string());
         // The fields go with the dialog; they do not keep the secret.
         password.set_text("");
-        let mut args = vec!["connect".to_string()];
-        if asks_username {
-            args.extend(["-username".to_string(), user.clone()]);
-        }
-        args.push(profile.id.clone());
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        plaitway_with(&args, &[], Some(format!("{secret}\n")), move |result| match result {
+        let (id, name, typed) = (profile.id.clone(), user.clone(), secret.clone());
+        connect_as(&id, &name, &typed, move |result| match result {
             Ok(_) => {
                 model.asking.borrow_mut().remove(&profile.id);
                 glib::spawn_future_local(async move {
