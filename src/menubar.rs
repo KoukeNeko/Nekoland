@@ -48,7 +48,7 @@ use crate::{
     dock::DockCommand,
     glass::Tier,
     notification_center::NotificationCenter,
-    system::{self, Battery, Network, Volume},
+    system::{Battery, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
     Nekoland,
@@ -85,7 +85,8 @@ pub(crate) const GAP_BELOW_BAR: i32 = 4;
 /// How far a submenu tucks under the menu it opens from.
 const SUBMENU_OVERLAP: i32 = 4;
 const MAX_SEARCH_RESULTS: usize = 14;
-const NETWORK_POLL: Duration = Duration::from_secs(3);
+/// How often the screen recorder's file is looked at.
+const RECORDING_POLL: Duration = Duration::from_secs(3);
 /// How fast the bar's icons slide aside for one dragged among them.
 const ICON_SLIDE_RATE: f64 = 16.0;
 
@@ -355,7 +356,7 @@ pub struct MenuBar {
     pub(crate) network: Option<Network>,
     vpn: Option<Vec<crate::vpn::Tunnel>>,
     pub(crate) battery: Option<Battery>,
-    network_read: Option<Instant>,
+    recording_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
     titles: Vec<Title>,
     pub open: Option<OpenMenu>,
@@ -408,7 +409,7 @@ impl Default for MenuBar {
             network: None,
             vpn: None,
             battery: None,
-            network_read: None,
+            recording_read: None,
             icons: HashMap::new(),
             titles: Vec::new(),
             open: None,
@@ -1132,27 +1133,9 @@ impl MenuBar {
         }
         level.drawn = Some(key);
         let size: Size<i32, Logical> = level.rect.size;
-        let Ok(surface) = text::canvas(size.w, size.h) else {
+        let Some((surface, cr)) = crate::control::draw_panel(size.w, size.h, dark, &colors) else {
             return;
         };
-        let Ok(cr) = Context::new(&surface) else {
-            return;
-        };
-        let radius = f64::from(MENU_RADIUS);
-        text::rounded_rectangle(
-            &cr,
-            0.5,
-            0.5,
-            f64::from(size.w) - 1.0,
-            f64::from(size.h) - 1.0,
-            radius,
-        );
-        let (r, g, b, a) = crate::glass::tint(dark, Tier::Menu);
-        cr.set_source_rgba(r, g, b, a);
-        let _ = cr.fill_preserve();
-        cr.set_source_rgba(colors.edge.0, colors.edge.1, colors.edge.2, colors.edge.3);
-        cr.set_line_width(1.0);
-        let _ = cr.stroke();
 
         let label_font = font("", MENU_POINTS);
         let indent = f64::from(label_indent(&level.entries));
@@ -1502,10 +1485,10 @@ impl Nekoland {
         }
         if self
             .menu_bar
-            .network_read
-            .is_none_or(|read| read.elapsed() >= NETWORK_POLL)
+            .recording_read
+            .is_none_or(|read| read.elapsed() >= RECORDING_POLL)
         {
-            self.menu_bar.network_read = Some(Instant::now());
+            self.menu_bar.recording_read = Some(Instant::now());
             // The file names the recorder's process first; one that ended leaves the file behind.
             let recording = std::env::var_os("XDG_RUNTIME_DIR")
                 .and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(RECORDING_FILE)).ok())
@@ -1513,16 +1496,6 @@ impl Nekoland {
                 .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
             if recording != self.menu_bar.recording {
                 self.menu_bar.recording = recording;
-                self.menu_bar.items_revision += 1;
-            }
-            let network = system::read_network();
-            if network != self.menu_bar.network {
-                self.menu_bar.network = network;
-                self.menu_bar.items_revision += 1;
-            }
-            let battery = system::read_battery();
-            if battery != self.menu_bar.battery {
-                self.menu_bar.battery = battery;
                 self.menu_bar.items_revision += 1;
             }
         }
@@ -1775,6 +1748,14 @@ impl Nekoland {
             Event::Orientation(orientation) => self.orientation_changed(orientation),
             Event::Sound(volume) => {
                 bar.sound = volume;
+                bar.items_revision += 1;
+            }
+            Event::Network(network) => {
+                bar.network = network;
+                bar.items_revision += 1;
+            }
+            Event::Battery(battery) => {
+                bar.battery = battery;
                 bar.items_revision += 1;
             }
             Event::Vpn(tunnels) => {

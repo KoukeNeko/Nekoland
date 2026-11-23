@@ -13,7 +13,7 @@ use smithay::{
 use crate::{
     appgrid::AppGrid,
     glass::Tier,
-    menubar::{Command, Entry, Overlay, MENU_BAR_HEIGHT},
+    menubar::{text_size, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     motion::lerp,
     text::{self, Picture},
     windows::{is_managed, window_names},
@@ -259,7 +259,7 @@ impl BarColors {
         cr.set_line_width(1.0);
         let _ = cr.stroke();
         let inner = Rectangle::new(rect.loc + Point::from((6, 0)), rect.size - Size::from((14, 0)));
-        let width = text_width(typed, font).min(inner.size.w);
+        let width = text_size(typed, font).0.min(inner.size.w);
         if chosen {
             cr.rectangle(
                 f64::from(inner.loc.x + (inner.size.w - width) / 2) - 2.0,
@@ -326,19 +326,6 @@ pub(crate) fn expanded_height(output: Rectangle<i32, Logical>) -> i32 {
     MENU_BAR_HEIGHT + EXPANDED_PADDING * 2 + thumbnail_height(output) + label_height(output.size.w)
 }
 
-fn text_width(text: &str, font: &pango::FontDescription) -> i32 {
-    let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) else {
-        return 0;
-    };
-    let Ok(cr) = cairo::Context::new(&surface) else {
-        return 0;
-    };
-    let layout = text::new_layout(&cr);
-    layout.set_font_description(Some(font));
-    layout.set_text(text);
-    layout.pixel_size().0
-}
-
 fn show_centered(
     cr: &cairo::Context,
     text: &str,
@@ -399,9 +386,34 @@ fn strip_start(screen_width: i32, row: i32, at: i32, width: i32) -> i32 {
     centered.clamp(screen_width - edge - row, edge)
 }
 
+thread_local! {
+    /// The wallpapers of desktops that have their own, drawn at a size as their pictures in
+    /// the bar show them, by path, size and when the file changed: kept from one overview to
+    /// the next, as decoding a photo takes a good part of a second.
+    static WALLPAPER_TILES: std::cell::RefCell<WallpaperTiles> = std::cell::RefCell::default();
+}
+
+type WallpaperTiles =
+    std::collections::HashMap<(String, i32, i32, Option<std::time::SystemTime>), Option<cairo::ImageSurface>>;
+
 /// A wallpaper filling a desktop's picture `width` by `height`, cut to it as swaybg's fill
 /// mode does.
 fn wallpaper_tile(path: &str, width: i32, height: i32) -> Option<cairo::ImageSurface> {
+    let changed = std::fs::metadata(crate::config::expand_home(path))
+        .and_then(|meta| meta.modified())
+        .ok();
+    let key = (path.to_string(), width, height, changed);
+    WALLPAPER_TILES.with_borrow_mut(|tiles| {
+        // shortcut: forgets them all once there are many, as each count of desktops has its
+        // own width, rather than the oldest.
+        if tiles.len() > 32 {
+            tiles.clear();
+        }
+        tiles.entry(key).or_insert_with(|| draw_wallpaper_tile(path, width, height)).clone()
+    })
+}
+
+fn draw_wallpaper_tile(path: &str, width: i32, height: i32) -> Option<cairo::ImageSurface> {
     let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(crate::config::expand_home(path), -1, height * 2, true)
         .inspect_err(|err| tracing::warn!("{path}: {err}"))
         .ok()?;
@@ -489,9 +501,6 @@ pub struct Overview {
     bar_scroll: Option<f64>,
     /// The desktop being renamed, and what is typed for it so far.
     pub(crate) renaming: Option<Naming>,
-    /// The wallpapers of desktops that have their own, drawn at a width, as their pictures
-    /// in the bar show them: read once while the overview is open.
-    wallpaper_tiles: std::cell::RefCell<std::collections::HashMap<(String, i32), Option<cairo::ImageSurface>>>,
     /// The desktop in the opened-up bar the pointer is on, which shows its close button.
     hovered_desktop: Option<usize>,
     /// The slot under the pointer.
@@ -677,7 +686,6 @@ impl Nekoland {
             desktop_drag: None,
             bar_scroll: None,
             renaming: None,
-            wallpaper_tiles: Default::default(),
             hovered_desktop: None,
             hovered: None,
             outline: [Id::new(), Id::new(), Id::new(), Id::new()],
@@ -797,7 +805,7 @@ impl Nekoland {
         // The strip, where the menu bar was: names in a row, centered.
         let widths: Vec<i32> = names
             .iter()
-            .map(|name| text_width(name, &font) + NAME_PADDING * 2)
+            .map(|name| text_size(name, &font).0 + NAME_PADDING * 2)
             .collect();
         let row: i32 = widths.iter().sum::<i32>() + NAME_GAP * (count as i32 - 1).max(0);
         let active_at: i32 = widths.iter().take(active).map(|width| width + NAME_GAP).sum();
@@ -852,12 +860,7 @@ impl Nekoland {
         let own_wallpapers: Vec<Option<cairo::ImageSurface>> = (0..count)
             .map(|index| {
                 let path = self.overview_own_wallpaper(index)?;
-                let overview = self.overview.as_ref()?;
-                let mut tiles = overview.wallpaper_tiles.borrow_mut();
-                tiles
-                    .entry((path.clone(), tile_width))
-                    .or_insert_with(|| wallpaper_tile(&path, tile_width, tile_height))
-                    .clone()
+                wallpaper_tile(&path, tile_width, tile_height)
             })
             .collect();
         let mut x = first;
@@ -1556,8 +1559,20 @@ impl Nekoland {
         if !on_bar || overview.bar.scroll_end <= 0.0 || amount == 0.0 {
             return false;
         }
-        overview.bar_scroll = Some((overview.bar.scroll + amount * 3.0).clamp(0.0, overview.bar.scroll_end));
-        self.refresh_overview_bar();
+        let scroll = (overview.bar.scroll + amount * 3.0).clamp(0.0, overview.bar.scroll_end);
+        // Scrolling moves only the pictures and where they are clicked, as `bar_row` places
+        // them: nothing drawn changes, so nothing is drawn again.
+        let by = Point::from(((overview.bar.scroll.round() - scroll.round()) as i32, 0));
+        overview.bar_scroll = Some(scroll);
+        overview.bar.scroll = scroll;
+        for rect in &mut overview.bar.thumbnails {
+            rect.loc += by;
+        }
+        for item in &mut overview.bar.expanded_items {
+            if !matches!(item.action, BarAction::Add) {
+                item.rect.loc += by;
+            }
+        }
         true
     }
 

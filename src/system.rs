@@ -10,6 +10,8 @@ use crate::dbus::Event;
 
 /// How often the sound is looked at; wpctl has no way to say when it changes.
 const SOUND_POLL: Duration = Duration::from_secs(2);
+/// How often the network and the battery are looked at in sysfs.
+const POWER_AND_NETWORK_POLL: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Volume {
@@ -43,7 +45,7 @@ fn battery_from(kind: &str, scope: &str, capacity: &str, status: &str) -> Option
 /// The first of the computer's batteries.
 // shortcut: a second battery, as some ThinkPads have, is left out; weigh them by their energy
 // once one is seen.
-pub fn read_battery() -> Option<Battery> {
+fn read_battery() -> Option<Battery> {
     let read = |path: &std::path::Path, name: &str| std::fs::read_to_string(path.join(name)).unwrap_or_default();
     let mut supplies: Vec<std::path::PathBuf> =
         std::fs::read_dir("/sys/class/power_supply").ok()?.flatten().map(|entry| entry.path()).collect();
@@ -81,6 +83,37 @@ pub fn watch_sound(events: Sender<Event>) {
         });
     if let Err(err) = spawned {
         tracing::warn!("no sound item: {err}");
+    }
+}
+
+/// Watches the network and the battery on a thread, and says when either changes, so that
+/// sysfs is never read on the compositor's.
+pub fn watch_network_and_battery(events: Sender<Event>) {
+    let spawned = std::thread::Builder::new()
+        .name("nekoland-network".into())
+        .spawn(move || {
+            // The menu bar starts with neither, as it is told nothing until one is found.
+            let (mut network, mut battery) = (None, None);
+            loop {
+                let now = read_network();
+                if now != network {
+                    if events.send(Event::Network(now.clone())).is_err() {
+                        return;
+                    }
+                    network = now;
+                }
+                let now = read_battery();
+                if now != battery {
+                    if events.send(Event::Battery(now)).is_err() {
+                        return;
+                    }
+                    battery = now;
+                }
+                std::thread::sleep(POWER_AND_NETWORK_POLL);
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("no network or battery item: {err}");
     }
 }
 
@@ -457,7 +490,8 @@ pub fn player_command(bus: &str, method: &str) {
 
 /// The interface the computer is most likely online through: the first one that is up,
 /// or else the first one there is.
-pub fn read_network() -> Option<Network> {
+fn read_network() -> Option<Network> {
+    let addresses = ipv4_addresses();
     let mut interfaces: Vec<Network> = std::fs::read_dir("/sys/class/net")
         .ok()?
         .flatten()
@@ -472,7 +506,7 @@ pub fn read_network() -> Option<Network> {
             Some(Network {
                 wireless: Path::new(&dir).join("wireless").exists(),
                 connected: state.trim() == "up",
-                address: ipv4_address(&interface),
+                address: addresses.get(&interface).copied(),
                 interface,
             })
         })
@@ -481,23 +515,23 @@ pub fn read_network() -> Option<Network> {
     interfaces.into_iter().next()
 }
 
-fn ipv4_address(interface: &str) -> Option<Ipv4Addr> {
-    let mut found = None;
+/// The first IPv4 address of each interface, by its name.
+fn ipv4_addresses() -> HashMap<String, Ipv4Addr> {
+    let mut found = HashMap::new();
     // SAFETY: getifaddrs hands over a list that stays valid until freeifaddrs, and the
     // address of an AF_INET entry is a sockaddr_in.
     unsafe {
         let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
         if libc::getifaddrs(&mut list) != 0 {
-            return None;
+            return found;
         }
         let mut entry = list;
         while !entry.is_null() {
             let address = (*entry).ifa_addr;
-            let name = std::ffi::CStr::from_ptr((*entry).ifa_name).to_string_lossy();
-            if !address.is_null() && i32::from((*address).sa_family) == libc::AF_INET && name == interface {
+            if !address.is_null() && i32::from((*address).sa_family) == libc::AF_INET {
+                let name = std::ffi::CStr::from_ptr((*entry).ifa_name).to_string_lossy().into_owned();
                 let address = &*(address as *const libc::sockaddr_in);
-                found = Some(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
-                break;
+                found.entry(name).or_insert(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
             }
             entry = (*entry).ifa_next;
         }

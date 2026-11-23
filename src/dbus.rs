@@ -37,6 +37,10 @@ const DBUSMENU: &str = "com.canonical.dbusmenu";
 const LAUNCHER_ENTRY: &str = "com.canonical.Unity.LauncherEntry";
 const GTK_MENUS: &str = "org.gtk.Menus";
 const GTK_ACTIONS: &str = "org.gtk.Actions";
+/// How long a program has to answer. One thread asks for every menu and item in turn, so
+/// a program that froze would otherwise hold up all of them; a whole menu tree arrives
+/// well within this.
+const METHOD_TIMEOUT: Duration = Duration::from_secs(2);
 /// A program asking for a keyring prompt calls this on the prompt gnome-keyring gave it.
 const SECRET_PROMPT: &str = "org.freedesktop.Secret.Prompt";
 /// How long after asking a program is still the one the keyring's prompt is for.
@@ -143,6 +147,10 @@ pub enum Event {
     },
     /// The default output's volume, or None when there is no sound server to ask.
     Sound(Option<crate::system::Volume>),
+    /// The interface the computer is most likely online through, or None without one.
+    Network(Option<crate::system::Network>),
+    /// The computer's own battery, or None without one.
+    Battery(Option<crate::system::Battery>),
     /// The VPN helper's profiles, or None while it is not running.
     Vpn(Option<Vec<crate::vpn::Tunnel>>),
     /// Whether a microphone or a camera is open; the screen's sharing is the compositor's own.
@@ -263,7 +271,9 @@ impl Bus {
 
 /// Connects to the session bus and starts serving and asking on a thread.
 pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
-    let connection = Connection::session()?;
+    let connection = zbus::blocking::connection::Builder::session()?
+        .method_timeout(METHOD_TIMEOUT)
+        .build()?;
     let (requests, receiver) = mpsc::channel();
 
     let registered = Arc::new(Mutex::new(Vec::new()));

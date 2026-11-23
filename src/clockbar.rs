@@ -80,6 +80,10 @@ pub struct ClockBar {
     /// The event whose coming the sound was made for.
     sounded: Option<(String, i64)>,
     pub(crate) alert: Option<Alert>,
+    /// The face last worked out, with the second and the agenda's revision it was for: the bar
+    /// asks each frame, and what it shows and alerts for only changes with those; a change of
+    /// settings shows from the next second.
+    face: Option<(i64, u64, Face)>,
 }
 
 fn remember(list: &mut Vec<(String, i64)>, entry: (String, i64)) {
@@ -214,8 +218,19 @@ impl Nekoland {
     /// and the alerts that are due.
     pub(crate) fn clock_face(&mut self) -> Face {
         let seconds = now();
+        let revision = self.menu_bar.agenda.revision;
+        if let Some((_, _, face)) = self
+            .menu_bar
+            .clock_bar
+            .face
+            .as_ref()
+            .filter(|(at, seen, _)| (*at, *seen) == (seconds, revision))
+        {
+            return face.clone();
+        }
         let face = face(&self.config, &self.menu_bar.agenda, seconds);
         self.give_alerts(seconds);
+        self.menu_bar.clock_bar.face = Some((seconds, revision, face.clone()));
         face
     }
 

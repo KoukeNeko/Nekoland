@@ -52,13 +52,15 @@ pub(super) struct Wanted {
     /// The names its icon goes by; for a folder, those of each of its first applications.
     pub icons: Vec<Vec<String>>,
     pub folder: bool,
+    /// What its icon's sprite is kept by, from `icon_key`.
+    pub icon_key: String,
 }
 
-impl Wanted {
-    fn icon_key(&self) -> String {
-        let names: Vec<String> = self.icons.iter().map(|names| names.join(",")).collect();
-        format!("{}{}", if self.folder { "folder:" } else { "" }, names.join(";"))
-    }
+/// What the sprite of an icon with these names is kept by, made once for each application
+/// rather than at every frame it is shown.
+pub(super) fn icon_key(icons: &[Vec<String>], folder: bool) -> String {
+    let names: Vec<String> = icons.iter().map(|names| names.join(",")).collect();
+    format!("{}{}", if folder { "folder:" } else { "" }, names.join(";"))
 }
 
 /// The sprites, by what they show. An icon nothing was found for is kept as none, so that
@@ -89,7 +91,7 @@ impl Stock {
     }
 
     fn has(&self, wanted: &Wanted) -> bool {
-        self.icons.contains_key(&wanted.icon_key()) && self.labels.contains_key(&wanted.name)
+        self.icons.contains_key(&wanted.icon_key) && self.labels.contains_key(&wanted.name)
     }
 }
 
@@ -244,7 +246,7 @@ impl Stock {
             let middle = corner + Point::from((f64::from(board.pitch.w) / 2.0, f64::from(ICON_TOP + ICON / 2)));
             let pressed = if board.pressed == Some(index) { PRESSED_SIZE } else { 1.0 };
             let size = glide.size * board.lifts.of(index) * pressed;
-            if let Some(Some(icon)) = self.icons.get(&wanted.icon_key()) {
+            if let Some(Some(icon)) = self.icons.get(&wanted.icon_key) {
                 placed.push(Placed {
                     sprite: icon,
                     id: &glide.icon_id,
@@ -305,7 +307,7 @@ impl Stock {
         middle: Point<f64, Logical>,
         size: f64,
     ) -> Option<Placed<'a>> {
-        let icon = self.icons.get(&wanted.icon_key())?.as_ref()?;
+        let icon = self.icons.get(&wanted.icon_key)?.as_ref()?;
         Some(Placed {
             sprite: icon,
             id,
@@ -371,7 +373,7 @@ impl Nekoland {
         if self.app_stock.plate.is_none() {
             self.app_stock.plate = draw_plate();
         }
-        let key = wanted.icon_key();
+        let key = wanted.icon_key.clone();
         if !self.app_stock.icons.contains_key(&key) {
             let icon = self.draw_icon(wanted);
             self.app_stock.icons.insert(key, icon);
@@ -418,6 +420,7 @@ impl Nekoland {
                     name: app.name,
                     icons: vec![app.icons],
                     folder: false,
+                    icon_key: app.icon_key,
                 })
                 .collect()
         });

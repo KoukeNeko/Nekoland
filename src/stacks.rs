@@ -4,11 +4,11 @@
 use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex, OnceLock},
     time::UNIX_EPOCH,
 };
 
-use cairo::{Context, Format, ImageSurface};
+use cairo::{Context, ImageSurface};
 use gio::prelude::*;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -46,7 +46,7 @@ const GRID_HEADER: i32 = 36;
 pub const GRID_RADIUS: i32 = 14;
 
 /// A file or folder in a stack.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Item {
     pub path: PathBuf,
     pub name: String,
@@ -79,15 +79,7 @@ pub fn read_folder(folder: &Path, sort: Sort) -> Vec<Item> {
             } else {
                 // By its name, as file managers list folders: an empty sample of its content
                 // would make GIO take it for an empty file.
-                gio::File::for_path(&path)
-                    .query_info(
-                        "standard::fast-content-type",
-                        gio::FileQueryInfoFlags::NONE,
-                        gio::Cancellable::NONE,
-                    )
-                    .ok()
-                    .and_then(|info| info.attribute_string("standard::fast-content-type"))
-                    .map_or_else(|| "application/octet-stream".to_string(), |kind| kind.to_string())
+                gio::content_type_guess(Some(&path), &[]).0.to_string()
             };
             let modified = meta.mtime();
             let created = meta
@@ -112,7 +104,28 @@ pub fn read_folder(folder: &Path, sort: Sort) -> Vec<Item> {
     items
 }
 
-fn sort_items(items: &mut [Item], sort: Sort) {
+/// The items read on a thread: `None` until it is done.
+pub type FolderReading = Arc<Mutex<Option<Vec<Item>>>>;
+
+/// Reads what is in `folder` on a thread, as a folder of thousands holds the screen.
+pub fn read_folder_on_a_thread(folder: PathBuf, sort: Sort) -> FolderReading {
+    let read = Arc::new(Mutex::new(None));
+    let into = read.clone();
+    let spawned = std::thread::Builder::new()
+        .name("nekoland-folder".into())
+        .spawn(move || {
+            let items = read_folder(&folder, sort);
+            if let Ok(mut read) = into.lock() {
+                *read = Some(items);
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("could not read a folder: {err}");
+    }
+    read
+}
+
+pub(crate) fn sort_items(items: &mut [Item], sort: Sort) {
     let by_name = |a: &Item, b: &Item| a.name.to_lowercase().cmp(&b.name.to_lowercase());
     match sort {
         Sort::Name => items.sort_by(by_name),
@@ -188,35 +201,56 @@ pub type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
 /// Pixels read on a thread: `None` until it is done, then what it read, if anything.
 pub type Reading = Arc<Mutex<Option<Option<Pixels>>>>;
 
-/// Reads the picture at `path`, at most `pixels` big, on a thread.
+type PictureJob = (PathBuf, Size<i32, Logical>, Reading);
+
+/// Reads the picture at `path`, at most `pixels` big, on a thread, one picture at a time, as
+/// a folder of photos would otherwise start a thread for each.
 pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
+    static PICTURES: OnceLock<Option<mpsc::Sender<PictureJob>>> = OnceLock::new();
     let read = Arc::new(Mutex::new(None));
-    let into = read.clone();
-    std::thread::spawn(move || {
-        // Learning the size may read the whole file, hence here and not on the caller's thread.
-        let fits = gdk_pixbuf::Pixbuf::file_info(&path)
-            .is_some_and(|(_, w, h)| i64::from(w) * i64::from(h) <= MAX_PICTURE_PIXELS);
-        let found = fits
-            .then(|| gdk_pixbuf::Pixbuf::from_file_at_scale(&path, pixels.w, pixels.h, true))
-            .and_then(|read| {
-                read.inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
-                    .ok()
-            })
-            .map(|pixbuf| {
-                let stride = pixbuf.rowstride();
-                (
-                    pixbuf.read_pixel_bytes(),
-                    pixbuf.has_alpha(),
-                    pixbuf.width(),
-                    pixbuf.height(),
-                    stride,
-                )
+    let pictures = PICTURES.get_or_init(|| {
+        let (send, jobs) = mpsc::channel::<PictureJob>();
+        let spawned = std::thread::Builder::new()
+            .name("nekoland-pictures".into())
+            .spawn(move || {
+                for (path, pixels, into) in jobs {
+                    let found = read_picture(&path, pixels);
+                    if let Ok(mut read) = into.lock() {
+                        *read = Some(found);
+                    }
+                }
             });
-        if let Ok(mut read) = into.lock() {
-            *read = Some(found);
-        }
+        spawned
+            .inspect_err(|err| tracing::warn!("pictures are not read: {err}"))
+            .ok()
+            .map(|_| send)
     });
+    // Without the thread, the item keeps its kind's icon.
+    if let Some(pictures) = pictures {
+        let _ = pictures.send((path, pixels, read.clone()));
+    }
     read
+}
+
+fn read_picture(path: &Path, pixels: Size<i32, Logical>) -> Option<Pixels> {
+    // Learning the size may read the whole file, hence here and not on the caller's thread.
+    let fits = gdk_pixbuf::Pixbuf::file_info(path)
+        .is_some_and(|(_, w, h)| i64::from(w) * i64::from(h) <= MAX_PICTURE_PIXELS);
+    fits.then(|| gdk_pixbuf::Pixbuf::from_file_at_scale(path, pixels.w, pixels.h, true))
+        .and_then(|read| {
+            read.inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
+                .ok()
+        })
+        .map(|pixbuf| {
+            let stride = pixbuf.rowstride();
+            (
+                pixbuf.read_pixel_bytes(),
+                pixbuf.has_alpha(),
+                pixbuf.width(),
+                pixbuf.height(),
+                stride,
+            )
+        })
 }
 
 /// A picture's surface from pixels read on a thread.
@@ -246,7 +280,7 @@ pub fn paint_fitted(cr: &Context, icon: &ImageSurface, size: f64, alpha: f64) {
     let _ = cr.restore();
 }
 
-fn layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
+pub(crate) fn layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
     let layout = text::new_layout(cr);
     layout.set_font_description(Some(&text::font(&points.to_string())));
     layout.set_text(text);
@@ -254,13 +288,7 @@ fn layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
 }
 
 fn text_width(text: &str, points: f64) -> f64 {
-    let Ok(surface) = ImageSurface::create(Format::ARgb32, 1, 1) else {
-        return 0.0;
-    };
-    let Ok(cr) = Context::new(&surface) else {
-        return 0.0;
-    };
-    f64::from(layout(&cr, text, points).pixel_size().0)
+    f64::from(crate::menubar::text_size(text, &text::font(&points.to_string())).0)
 }
 
 /// `1301` as `1,301`.
@@ -550,6 +578,18 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_files_kind_is_told_by_its_name() {
+        let folder = std::env::temp_dir().join(format!("nekoland-kinds-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        // Empty, as a download just begun is: its name still says what it is.
+        std::fs::write(folder.join("paper.pdf"), b"").unwrap();
+        let items = read_folder(&folder, Sort::Name);
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "application/pdf");
+    }
 
     fn item(name: &str, kind: &str, added: i64) -> Item {
         Item {

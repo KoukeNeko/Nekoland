@@ -180,6 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map_err(|err| err.error)?;
     system::watch_sound(dbus_events.clone());
+    system::watch_network_and_battery(dbus_events.clone());
     system::watch_orientation(dbus_events.clone());
     vpn::watch(dbus_events.clone());
     privacy::watch_devices(dbus_events.clone());

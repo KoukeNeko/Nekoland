@@ -36,6 +36,7 @@ mod tiles;
 pub use tiles::Stock;
 use tiles::{Arrival, Board, Glide, Wanted};
 
+use crate::stacks::layout as text_layout;
 use crate::{
     config::{self, AppsView},
     dock::paint_pane,
@@ -106,6 +107,7 @@ struct GridApp {
     /// Everything it can be found by, in lower case.
     words: String,
     icons: Vec<String>,
+    icon_key: String,
     /// What a folder made with it is called.
     category: &'static str,
     /// Whether it came with the system, as Nekoland's own programs do.
@@ -594,6 +596,7 @@ fn installed() -> Vec<GridApp> {
                 id,
                 name,
                 words,
+                icon_key: tiles::icon_key(std::slice::from_ref(&icons), false),
                 icons,
                 category: category(&info),
                 info,
@@ -815,12 +818,16 @@ impl AppGrid {
                 name: self.apps[app].name.clone(),
                 icons: vec![self.apps[app].icons.clone()],
                 folder: false,
+                icon_key: self.apps[app].icon_key.clone(),
             },
             Entry::Folder(folder) => {
                 let folder = &self.folders[folder];
+                let icons: Vec<Vec<String>> =
+                    folder.apps.iter().take(9).map(|&app| self.apps[app].icons.clone()).collect();
                 Wanted {
                     name: folder.name.clone(),
-                    icons: folder.apps.iter().take(9).map(|&app| self.apps[app].icons.clone()).collect(),
+                    icon_key: tiles::icon_key(&icons, true),
+                    icons,
                     folder: true,
                 }
             }
@@ -1026,15 +1033,7 @@ impl AppGrid {
 }
 
 fn fade_since(at: Instant) -> f32 {
-    let t = (at.elapsed().as_secs_f64() / FADE_TIME).clamp(0.0, 1.0);
-    (1.0 - (1.0 - t).powi(3)) as f32
-}
-
-fn text_layout(cr: &Context, text: &str, points: f64) -> pango::Layout {
-    let layout = text::new_layout(cr);
-    layout.set_font_description(Some(&text::font(&points.to_string())));
-    layout.set_text(text);
-    layout
+    crate::control::ease_out(at.elapsed().as_secs_f64() / FADE_TIME) as f32
 }
 
 /// What a page's place shows, to be drawn: an application's icon and name, or a folder's

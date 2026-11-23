@@ -16,7 +16,7 @@ use crate::{
     control::{draw_panel, ease_out, show_line, OPEN_TIME},
     glass::Tier,
     menubar::{colors, font, show_text, text_size, Overlay, MENU_BAR_HEIGHT, MENU_RADIUS},
-    system::{self, Player},
+    system::{self, Battery, Player},
     text::{self, Picture},
     Nekoland,
 };
@@ -35,7 +35,7 @@ pub struct Widgets {
     found: Option<Receiver<Option<Player>>>,
     id: Id,
     picture: Option<Picture>,
-    drawn: Option<(Date, bool, Option<Player>)>,
+    drawn: Option<(Date, bool, Option<Player>, u64, Option<Battery>)>,
     rect: Rectangle<i32, Logical>,
     /// Where the agenda is in the panel, for a click there to open the calendar.
     agenda: Option<Rectangle<i32, Logical>>,
@@ -109,7 +109,13 @@ impl Nekoland {
             widgets.found = None;
         }
         let today = Date::today();
-        let drawn = (today, dark, widgets.player.clone());
+        let drawn = (
+            today,
+            dark,
+            widgets.player.clone(),
+            self.menu_bar.agenda.revision,
+            self.menu_bar.battery,
+        );
         if widgets.drawn.as_ref() == Some(&drawn) && widgets.picture.is_some() {
             return;
         }

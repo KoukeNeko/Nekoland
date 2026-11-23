@@ -6,6 +6,7 @@
 //! the menus a right click opens.
 
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     os::fd::{FromRawFd, OwnedFd},
     path::{Path, PathBuf},
@@ -114,6 +115,9 @@ pub struct Desktop {
     /// showed, to know when to draw them again.
     picture: Option<(Picture, Point<i32, Logical>)>,
     drawn: Option<Drawn>,
+    /// What the last refresh saw, so that a frame where none of it changed and no picture is
+    /// being read does nothing.
+    checked: Option<Checked>,
     /// The left button held down on the desktop.
     press: Option<Press>,
     /// The box being dragged out to choose items, and its picture.
@@ -148,6 +152,22 @@ pub struct Desktop {
 }
 
 type Looked = (PathBuf, bool, Size<i32, Logical>);
+
+/// The folder's change and order, whether it and free places are shown, the choice, the
+/// folder dropped on, the name typed and its candidates, Quick Look, the theme and the size.
+type Checked = (
+    i64,
+    Sort,
+    bool,
+    bool,
+    Vec<PathBuf>,
+    Option<PathBuf>,
+    Option<Rename>,
+    Option<Candidates>,
+    bool,
+    bool,
+    Size<i32, Logical>,
+);
 
 /// The cell each item was put in, by name, as column from the right and row from the top.
 type Places = std::collections::BTreeMap<String, [i32; 2]>;
@@ -376,21 +396,46 @@ impl Nekoland {
     /// the choice among them, a name being typed or the output's size have.
     pub fn refresh_desktop(&mut self) {
         let folder = desktop_folder().filter(|_| self.config.desktop_icons);
-        let items = match &folder {
-            Some(folder) => self.folder_items(folder, self.config.desktop_sort).to_vec(),
-            None => Vec::new(),
+        let sort = self.config.desktop_sort;
+        let changed = match &folder {
+            Some(folder) => self.folder_items(folder, sort).0,
+            None => i64::MIN,
         };
         let size = self.output_size();
         let dark = self.menu_bar_dark();
         let free = self.config.desktop_free;
+        let desktop = &self.desktop;
+        let checked = (
+            changed,
+            sort,
+            folder.is_some(),
+            free,
+            desktop.selected.clone(),
+            desktop.drop_target.clone(),
+            desktop.renaming.clone(),
+            desktop.candidates.clone(),
+            desktop.looking,
+            dark,
+            size,
+        );
+        if desktop.icon_reads.is_empty()
+            && desktop.reading.is_none()
+            && desktop.checked.as_ref() == Some(&checked)
+        {
+            return;
+        }
+        let items = match &folder {
+            Some(folder) => self.folder_items(folder, sort).1.to_vec(),
+            None => Vec::new(),
+        };
         let desktop = &mut self.desktop;
+        desktop.checked = Some(checked);
         if free && desktop.places.is_none() {
             desktop.places = Some(read_places());
         }
         // What went away is no longer chosen.
-        desktop
-            .selected
-            .retain(|path| items.iter().any(|item| item.path == *path));
+        let paths: HashSet<&PathBuf> = items.iter().map(|item| &item.path).collect();
+        desktop.selected.retain(|path| paths.contains(path));
         refresh_icons(desktop, &items);
         let looked = desktop.selected.last().filter(|_| desktop.looking);
         desktop.looking = looked.is_some();
@@ -727,6 +772,7 @@ impl Nekoland {
         places.extend(moved);
         write_places(&places);
         desktop.places = Some(places);
+        desktop.checked = None;
     }
 
     /// A folder on the desktop at `pos`, not under a window or the Dock, that what is
@@ -879,6 +925,7 @@ impl Nekoland {
                     if let Some(cell) = places.remove(&*old.to_string_lossy()) {
                         places.insert(name.to_string(), cell);
                         write_places(places);
+                        self.desktop.checked = None;
                     }
                 }
             }
@@ -1095,6 +1142,7 @@ impl Nekoland {
                     .collect();
                 write_places(&places);
                 self.desktop.places = Some(places);
+                self.desktop.checked = None;
                 self.config.desktop_free = true;
                 if let Err(err) = config::set("desktop_free = true") {
                     tracing::warn!("{err}");
@@ -1181,8 +1229,9 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
 /// Keeps an icon for each item, its kind's at first, then its picture once that is read on
 /// a thread; one read in has the items drawn again.
 fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
-    desktop.icons.retain(|(item, _)| items.contains(item));
-    desktop.icon_reads.retain(|(item, _)| items.contains(item));
+    let shown: HashSet<&Item> = items.iter().collect();
+    desktop.icons.retain(|(item, _)| shown.contains(item));
+    desktop.icon_reads.retain(|(item, _)| shown.contains(item));
     let mut done = Vec::new();
     desktop.icon_reads.retain(
         |(item, read)| match read.lock().ok().and_then(|mut read| read.take()) {
@@ -1200,12 +1249,16 @@ fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
             desktop.drawn = None;
         }
     }
-    for item in items {
-        let known = desktop.icons.iter().any(|(known, _)| known == item)
-            || desktop.icon_reads.iter().any(|(known, _)| known == item);
-        if known {
-            continue;
-        }
+    let missing: Vec<&Item> = {
+        let known: HashSet<&Item> = desktop
+            .icons
+            .iter()
+            .map(|(item, _)| item)
+            .chain(desktop.icon_reads.iter().map(|(item, _)| item))
+            .collect();
+        items.iter().filter(|item| !known.contains(item)).collect()
+    };
+    for item in missing {
         if let Some(icon) = stacks::kind_icon(item, ICON, (1.0, 1.0, 1.0)) {
             desktop.icons.push((item.clone(), icon));
         }

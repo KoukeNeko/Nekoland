@@ -259,6 +259,9 @@ pub struct AppInfo {
 #[derive(Default)]
 pub struct Apps {
     known: HashMap<String, AppInfo>,
+    /// The overview's badges, by application, title, icon size and scale, which it would
+    /// otherwise draw anew for every window each time it lays them out.
+    badges: HashMap<(String, String, i32, i32), Option<Picture>>,
 }
 
 impl Apps {
@@ -270,6 +273,21 @@ impl Apps {
 
     /// The icon over the name, as it sits under a window in the overview.
     pub fn badge(&mut self, app_id: &str, fallback_name: &str, icon_size: i32) -> Option<Picture> {
+        let key = (app_id.to_string(), fallback_name.to_string(), icon_size, picture_scale());
+        if let Some(badge) = self.badges.get(&key) {
+            return badge.clone();
+        }
+        // shortcut: forgets every badge once there are many, as titles that change pile up,
+        // rather than the oldest.
+        if self.badges.len() > 200 {
+            self.badges.clear();
+        }
+        let badge = self.draw_badge(app_id, fallback_name, icon_size);
+        self.badges.insert(key, badge.clone());
+        badge
+    }
+
+    fn draw_badge(&mut self, app_id: &str, fallback_name: &str, icon_size: i32) -> Option<Picture> {
         let info = self.info(app_id).clone();
         let name = info
             .name
@@ -394,7 +412,7 @@ thread_local! {
 }
 
 /// The same picture on a surface of its own, which whoever has it may draw on.
-fn copy_of(surface: &ImageSurface) -> Option<ImageSurface> {
+pub(crate) fn copy_of(surface: &ImageSurface) -> Option<ImageSurface> {
     let copy = ImageSurface::create(Format::ARgb32, surface.width(), surface.height()).ok()?;
     let (x, y) = surface.device_scale();
     copy.set_device_scale(x, y);

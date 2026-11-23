@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cairo::{Context, Format, ImageSurface, LineCap, LineJoin, Matrix, Operator};
+use cairo::{Context, ImageSurface, LineCap, LineJoin, Matrix, Operator};
 use gio::prelude::*;
 use smithay::{
     backend::renderer::element::Id,
@@ -38,9 +38,10 @@ use smithay::{
 
 use crate::{
     config::{self, DockPosition, MinimizeEffect, Show, Sort, Stack, View},
+    control::ease_out,
     dbus::LauncherUpdate,
     glass::Tier,
-    menubar::{close, Command, Entry, Overlay, MENU_BAR_HEIGHT},
+    menubar::{close, text_size, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
     windows::{is_managed, window_names, CONFIRM_APP_ID, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
@@ -365,10 +366,12 @@ pub enum DockCommand {
 struct Folder {
     path: PathBuf,
     sort: Sort,
-    /// When the folder last changed, and when that was looked at.
+    /// When the folder last changed as of its items, and when that was looked at.
     changed: i64,
     checked: Instant,
     items: Vec<Item>,
+    /// The items being read on a thread, and when the folder changed as they were.
+    reading: Option<(i64, stacks::FolderReading)>,
 }
 
 /// A kept folder opened over the Dock.
@@ -509,8 +512,9 @@ pub(crate) struct Drawn {
     art: i32,
     width: i32,
     rise: i32,
-    /// Each tile, where it is, how lifted in quarter points, pressed, solid and magnified.
-    tiles: Vec<(Tile, i32, u16, u8, u8, u16)>,
+    /// Where each tile is, how lifted in quarter points, pressed, solid and magnified; the
+    /// tiles themselves are `Dock::drawn_tiles`, cloned only when the Dock is drawn again.
+    placed: Vec<(i32, u16, u8, u8, u16)>,
     /// The tile files being dragged from a file manager would be dropped on.
     target: Option<Key>,
     /// The tile the keyboard is on.
@@ -626,6 +630,10 @@ pub struct Dock {
     pub(crate) icons: Vec<(String, i32, bool, Option<ImageSurface>)>,
     badges: Vec<(Option<String>, bool, Option<Picture>)>,
     pub(crate) drawn: Option<Drawn>,
+    drawn_tiles: Vec<Tile>,
+    /// What the pane was drawn for: width, theme, glass, side, height and radius, so that
+    /// icons hopping or pressed draw only their own picture again.
+    pane_drawn: Option<(i32, bool, bool, DockPosition, i32, i32)>,
     ids: Option<Ids>,
     last_tick: Option<Instant>,
     folders: Vec<Folder>,
@@ -697,11 +705,6 @@ fn paint_scaled(cr: &Context, image: &ImageSurface, x: f64, y: f64, scale: f64, 
     let _ = cr.set_source_surface(image, 0.0, 0.0);
     let _ = cr.paint_with_alpha(alpha);
     let _ = cr.restore();
-}
-
-fn ease_out(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
 }
 
 /// Overshoots a little before it settles, for the icon coming back up after a press.
@@ -837,11 +840,7 @@ fn draw_badge(cr: &Context, right: f64, top: f64, size: f64, text: &str, dark: b
 /// A name on a small pane of glass, as shown over a pointed-at icon.
 fn label_picture(name: &str, height: i32, radius: i32, points: f64, dark: bool) -> Option<Picture> {
     let font = text::font(&points.to_string());
-    let probe = Context::new(ImageSurface::create(Format::ARgb32, 1, 1).ok()?).ok()?;
-    let layout = text::new_layout(&probe);
-    layout.set_font_description(Some(&font));
-    layout.set_text(name);
-    let (text_width, text_height) = layout.pixel_size();
+    let (text_width, text_height) = text_size(name, &font);
     let width = text_width + 20;
     let surface = text::canvas(width, height).ok()?;
     {
@@ -891,7 +890,7 @@ impl Nekoland {
         let same = |one: &str, other: &str| one.eq_ignore_ascii_case(other);
         // As the Mac's recent applications: those not kept that ran and were quit, the
         // latest first, if launchers list them.
-        let recents = self.dock.recents.clone();
+        let mut recents_changed = false;
         for app_id in std::mem::take(&mut self.dock.was_running) {
             let quit = !anywhere.iter().any(|now| same(now, &app_id));
             let kept = self.config.dock.iter().any(|kept| same(kept, &app_id));
@@ -903,9 +902,10 @@ impl Nekoland {
                 self.dock.recents.retain(|recent| !same(recent, &app_id));
                 self.dock.recents.insert(0, app_id);
                 self.dock.recents.truncate(RECENTS);
+                recents_changed = true;
             }
         }
-        if self.dock.recents != recents {
+        if recents_changed {
             if let Some(path) = config::config_file(RECENTS_FILE) {
                 let written = std::fs::create_dir_all(path.parent().unwrap_or(&path))
                     .and_then(|_| std::fs::write(&path, self.dock.recents.join("\n")));
@@ -924,14 +924,15 @@ impl Nekoland {
         }
 
         let mut tile = |app_id: &str, is_running: bool, kept: bool| {
-            let info = self.apps.info(app_id).clone();
+            let info = self.apps.info(app_id);
             let launcher = self.dock.launchers.get(&app_id.to_lowercase());
             Tile::App {
                 app_id: app_id.to_string(),
                 name: info
                     .name
+                    .clone()
                     .unwrap_or_else(|| app_id.rsplit('.').next().unwrap_or(app_id).to_string()),
-                icon: info.icon_name,
+                icon: info.icon_name.clone(),
                 running: is_running,
                 active: active.as_deref().is_some_and(|active| same(active, app_id)),
                 kept,
@@ -944,9 +945,9 @@ impl Nekoland {
                 urgent: launcher.and_then(|launcher| launcher.urgent),
             }
         };
-        let kept = self.config.dock.clone();
+        let kept = &self.config.dock;
         let mut tiles = vec![Tile::Apps];
-        for app_id in &kept {
+        for app_id in kept {
             let is_running = running.iter().any(|running| same(running, app_id));
             tiles.push(tile(app_id, is_running, true));
         }
@@ -976,10 +977,12 @@ impl Nekoland {
 
         // The right end: kept folders, minimized windows, and the Trash last.
         tiles.push(Tile::Separator("right"));
-        for (index, stack) in self.config.stacks.clone().into_iter().enumerate() {
-            let path = stack.folder();
+        for index in 0..self.config.stacks.len() {
+            let stack = &self.config.stacks[index];
+            let (path, sort, show) = (stack.folder(), stack.sort, stack.show);
             let covers = self
-                .folder_items(&path, stack.sort)
+                .folder_items(&path, sort)
+                .1
                 .iter()
                 .take(3)
                 .cloned()
@@ -987,7 +990,7 @@ impl Nekoland {
             tiles.push(Tile::Stack {
                 index,
                 name: stacks::folder_name(&path),
-                show: stack.show,
+                show,
                 covers,
                 path,
             });
@@ -997,14 +1000,14 @@ impl Nekoland {
         if !self.config.dock_minimize_into_app {
             for window in minimized {
                 let (title, app_id) = window_names(&window);
-                let info = self.apps.info(&app_id).clone();
+                let info = self.apps.info(&app_id);
                 tiles.push(Tile::Window {
                     title: if title.is_empty() {
-                        info.name.unwrap_or(app_id)
+                        info.name.clone().unwrap_or(app_id)
                     } else {
                         title
                     },
-                    icon: info.icon_name,
+                    icon: info.icon_name.clone(),
                     window,
                 });
             }
@@ -1015,8 +1018,10 @@ impl Nekoland {
         tiles
     }
 
-    /// What is in a kept folder, read again when it has changed since it was last read.
-    pub(crate) fn folder_items(&mut self, path: &Path, sort: Sort) -> &[Item] {
+    /// What is in a kept folder, read again on a thread when it has changed since it was last
+    /// read, and when it changed as of the items given; until the first read is done it is
+    /// empty.
+    pub(crate) fn folder_items(&mut self, path: &Path, sort: Sort) -> (i64, &[Item]) {
         let index = match self.dock.folders.iter().position(|folder| folder.path == path) {
             Some(index) => index,
             None => {
@@ -1026,23 +1031,36 @@ impl Nekoland {
                     changed: i64::MIN,
                     checked: Instant::now() - FOLDER_CHECK,
                     items: Vec::new(),
+                    reading: None,
                 });
                 self.dock.folders.len() - 1
             }
         };
         let folder = &mut self.dock.folders[index];
-        if folder.sort != sort || folder.checked.elapsed() >= FOLDER_CHECK {
+        if let Some((changed, reading)) = &folder.reading {
+            if let Some(mut items) = reading.lock().ok().and_then(|mut read| read.take()) {
+                // The order may have been changed while it was read.
+                stacks::sort_items(&mut items, folder.sort);
+                folder.items = items;
+                folder.changed = *changed;
+                folder.reading = None;
+            }
+        }
+        if folder.sort != sort {
+            stacks::sort_items(&mut folder.items, sort);
+            folder.sort = sort;
+        }
+        if folder.reading.is_none() && folder.checked.elapsed() >= FOLDER_CHECK {
             use std::os::unix::fs::MetadataExt;
             let changed =
                 std::fs::metadata(path).map_or(0, |meta| meta.mtime_nsec() + meta.mtime() * 1_000_000_000);
-            if folder.sort != sort || changed != folder.changed {
-                folder.items = stacks::read_folder(path, sort);
-                folder.sort = sort;
-                folder.changed = changed;
+            if changed != folder.changed {
+                folder.reading = Some((changed, stacks::read_folder_on_a_thread(path.to_path_buf(), sort)));
             }
             folder.checked = Instant::now();
         }
-        &self.dock.folders[index].items
+        let folder = &self.dock.folders[index];
+        (folder.changed, &folder.items)
     }
 
     /// Whether anything is in the Trash, looked at again now and then.
@@ -1602,7 +1620,11 @@ impl Nekoland {
         self.refresh_preview(pointer, dark, menu_open, now);
         self.refresh_stack(pointer, dark, false);
         self.refresh_stack(None, dark, true);
-        self.draw_dock(dark, now);
+        // A hidden Dock is drawn again as it comes back, against what it last showed.
+        if self.dock_shown() {
+            self.draw_dock(dark, now);
+        }
+        self.dock_badges();
         self.refresh_dock_popups(dark, menu_open);
     }
 
@@ -1682,7 +1704,7 @@ impl Nekoland {
             art: s.art,
             width,
             rise,
-            tiles: self
+            placed: self
                 .dock
                 .tiles
                 .iter()
@@ -1691,7 +1713,6 @@ impl Nekoland {
                 .map(|((tile, motion), offset)| {
                     let (scale, alpha) = self.tile_scale(tile);
                     (
-                        tile.clone(),
                         ((motion.x + offset) * 2.0).round() as i32,
                         ((motion.lift * LIFT + self.hop(tile)) * 4.0).round() as u16,
                         (scale * 200.0).round() as u8,
@@ -1701,7 +1722,10 @@ impl Nekoland {
                 })
                 .collect(),
         };
-        if self.dock.drawn.as_ref() == Some(&drawn) && self.dock.picture.is_some() {
+        if self.dock.drawn.as_ref() == Some(&drawn)
+            && self.dock.drawn_tiles == self.dock.tiles
+            && self.dock.picture.is_some()
+        {
             return;
         }
 
@@ -1710,20 +1734,29 @@ impl Nekoland {
             DockPosition::Bottom => (long, high),
             _ => (high, long),
         };
-        let (pane_width, pane_height) = turn(width.max(1), s.height);
-        let Ok(pane) = text::canvas(pane_width, pane_height) else {
-            return;
-        };
-        if let Ok(cr) = Context::new(&pane) {
-            // Without glass under it, its tint is the more solid one, to read on.
-            paint_pane(
-                &cr,
-                f64::from(pane_width),
-                f64::from(pane_height),
-                f64::from(s.radius),
-                dark,
-                if glass { Tier::Bar } else { Tier::Menu },
-            );
+        let pane_drawn = (width, dark, glass, side, s.height, s.radius);
+        // Whatever forgot what was drawn, as a change of scale, forgets the pane too.
+        if self.dock.drawn.is_none()
+            || self.dock.pane_drawn != Some(pane_drawn)
+            || self.dock.picture.is_none()
+        {
+            let (pane_width, pane_height) = turn(width.max(1), s.height);
+            let Ok(pane) = text::canvas(pane_width, pane_height) else {
+                return;
+            };
+            if let Ok(cr) = Context::new(&pane) {
+                // Without glass under it, its tint is the more solid one, to read on.
+                paint_pane(
+                    &cr,
+                    f64::from(pane_width),
+                    f64::from(pane_height),
+                    f64::from(s.radius),
+                    dark,
+                    if glass { Tier::Bar } else { Tier::Menu },
+                );
+            }
+            self.dock.picture = text::picture(pane);
+            self.dock.pane_drawn = Some(pane_drawn);
         }
         // Icons are read at the biggest they grow to, and drawn down to the size they are.
         // While the Dock is resized its icons are scaled from the size it started at, rather
@@ -1734,6 +1767,7 @@ impl Nekoland {
         let Ok(surface) = text::canvas(icons_width, icons_height) else {
             return;
         };
+        let tiles = self.dock.tiles.clone();
         {
             let Ok(cr) = Context::new(&surface) else {
                 return;
@@ -1747,7 +1781,7 @@ impl Nekoland {
                 DockPosition::Right => cr.transform(Matrix::new(0.0, 1.0, 1.0, 0.0, 0.0, 0.0)),
             }
             let (r, g, b) = ink(dark);
-            for (tile, x, lift, scale, alpha, zoom) in &drawn.tiles {
+            for (tile, (x, lift, scale, alpha, zoom)) in tiles.iter().zip(&drawn.placed) {
                 let x = f64::from(*x) / 2.0;
                 let zoom = f64::from(*zoom) / 1000.0;
                 let art = f64::from(s.art) * zoom;
@@ -1921,9 +1955,9 @@ impl Nekoland {
                 }
             }
         }
-        self.dock.picture = text::picture(pane);
         self.dock.icons_picture = text::picture(surface);
         self.dock.drawn = Some(drawn);
+        self.dock.drawn_tiles = tiles;
     }
 
     /// Opens, keeps or closes the pictures of the pointed-at application's windows.
@@ -2385,17 +2419,7 @@ impl Nekoland {
             let picture = icon
                 .as_deref()
                 .and_then(|icon| self.dock_icon(icon, BADGE, dark))
-                .and_then(|icon| {
-                    let copy = ImageSurface::create(Format::ARgb32, icon.width(), icon.height()).ok()?;
-                    let (x, y) = icon.device_scale();
-                    copy.set_device_scale(x, y);
-                    {
-                        let cr = Context::new(&copy).ok()?;
-                        cr.set_source_surface(&icon, 0.0, 0.0).ok()?;
-                        cr.paint().ok()?;
-                    }
-                    text::picture(copy)
-                });
+                .and_then(|icon| text::picture(text::copy_of(&icon)?));
             self.dock.badges.push((icon, dark, picture));
         }
     }
@@ -2444,7 +2468,6 @@ impl Nekoland {
                 tag: Id::new(),
             });
         }
-        self.dock_badges();
     }
 
     /// Whether the Dock, or the pictures over it, are at a position, so that it is not a
@@ -3309,7 +3332,7 @@ impl Nekoland {
             return;
         };
         let folder = stack.folder();
-        let items = self.folder_items(&folder, stack.sort).to_vec();
+        let items = self.folder_items(&folder, stack.sort).1.to_vec();
         let name = stacks::folder_name(&folder);
         let Some(tile) = self
             .dock
@@ -4008,7 +4031,7 @@ mod tests {
 
     #[test]
     fn an_icon_is_trimmed_to_its_art() {
-        let surface = ImageSurface::create(Format::ARgb32, 100, 100).unwrap();
+        let surface = ImageSurface::create(cairo::Format::ARgb32, 100, 100).unwrap();
         {
             let cr = Context::new(&surface).unwrap();
             cr.set_source_rgb(1.0, 0.0, 0.0);
