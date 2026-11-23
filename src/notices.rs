@@ -59,6 +59,9 @@ struct Banner {
     id: Id,
     /// When it was first shown, to come in from then.
     came: Option<Instant>,
+    /// How long it had left when the pointer came to rest on it, the time it has again
+    /// once the pointer leaves.
+    paused: Option<Duration>,
     /// Where it stands from the top, and where it was before it last moved and when, to
     /// glide there.
     place: Option<(i32, f64, Instant)>,
@@ -383,6 +386,9 @@ impl Nekoland {
                         banner.notification = notification.clone();
                         banner.deadline = deadline;
                         banner.drawn_dark = None;
+                        if banner.paused.is_some() {
+                            banner.paused = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+                        }
                     }
                     None => self.notices.banners.insert(
                         0,
@@ -393,6 +399,7 @@ impl Nekoland {
                             drawn_dark: None,
                             id: Id::new(),
                             came: None,
+                            paused: None,
                             place: None,
                         },
                     ),
@@ -662,9 +669,25 @@ impl Nekoland {
         self.notice_at(pos).is_some()
     }
 
-    /// The pointer resting on a banner keeps it.
+    /// The pointer resting on a banner keeps it: its time stops, and goes on from where it
+    /// stopped once the pointer leaves.
     pub fn notice_motion(&mut self, pos: Point<f64, Logical>) {
-        self.notices.hovered = self.notice_at(pos);
+        let hovered = self.notice_at(pos);
+        if hovered == self.notices.hovered {
+            return;
+        }
+        let now = Instant::now();
+        for banner in &mut self.notices.banners {
+            let id = Some(banner.notification.id);
+            if id == self.notices.hovered {
+                if let Some(left) = banner.paused.take() {
+                    banner.deadline = Some(now + left);
+                }
+            } else if id == hovered {
+                banner.paused = banner.deadline.map(|deadline| deadline.saturating_duration_since(now));
+            }
+        }
+        self.notices.hovered = hovered;
     }
 
     /// A click on a banner: its program's default action if it has one, and it goes.
