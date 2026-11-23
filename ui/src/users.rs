@@ -170,11 +170,20 @@ fn fill(page: &adw::PreferencesPage, shown: &Rc<UsersPage>) {
         move |_| {
             let me = me.clone();
             let parent = page.clone();
-            ask_password(&parent, "變更密碼", "變更", Rc::new(|| {}), move |typed| {
+            ask_passwords(&parent, "變更密碼", "變更", true, Rc::new(|| {}), move |current, typed| {
+                let new = typed.clone();
                 as_root("變更密碼", &["chpasswd"], Some(format!("{me}:{typed}\n")), move |worked| {
                     if !worked {
-                        failed(&page, "無法變更密碼");
+                        return failed(&page, "無法變更密碼");
                     }
+                    // Logging in unlocks the keyring only while their passwords are the same.
+                    glib::spawn_future_local(async move {
+                        if let Err(err) = crate::secrets::change_login_password(&current, &new).await {
+                            eprintln!("login keyring's password not changed: {err}");
+                            let why = "鑰匙圈的密碼和輸入的目前密碼不同，登入時不會自動解鎖。";
+                            alert::notice(&page, "鑰匙圈密碼未變更", Some(why));
+                        }
+                    });
                 });
             });
         }
@@ -401,10 +410,28 @@ pub fn ask_password(
     cancelled: Rc<dyn Fn()>,
     then: impl FnOnce(String) + 'static,
 ) {
+    ask_passwords(page, title, action, false, cancelled, move |_, typed| then(typed));
+}
+
+/// A new password, typed twice, and with `current` the one it replaces too, which `then` gets
+/// first.
+fn ask_passwords(
+    page: &adw::PreferencesPage,
+    title: &str,
+    action: &str,
+    current: bool,
+    cancelled: Rc<dyn Fn()>,
+    then: impl FnOnce(String, String) + 'static,
+) {
+    let now = adw::PasswordEntryRow::builder().title("目前的密碼").build();
     let first = adw::PasswordEntryRow::builder().title("新密碼").build();
     let again = adw::PasswordEntryRow::builder().title("確認密碼").build();
     let alert = adw::AlertDialog::new(Some(title), None);
-    alert.set_extra_child(Some(&alert::form(&[first.upcast_ref(), again.upcast_ref()])));
+    let mut rows: Vec<&gtk::Widget> = vec![first.upcast_ref(), again.upcast_ref()];
+    if current {
+        rows.insert(0, now.upcast_ref());
+    }
+    alert.set_extra_child(Some(&alert::form(&rows)));
     alert.add_responses(&[("cancel", "取消"), ("do", action)]);
     alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
     alert.set_default_response(Some("do"));
@@ -419,7 +446,7 @@ pub fn ask_password(
             cancelled();
             return alert::notice(&page, "密碼不相符", Some("兩次輸入的密碼必須相同，且不能是空白。"));
         }
-        then(typed);
+        then(now.text().to_string(), typed);
     });
 }
 

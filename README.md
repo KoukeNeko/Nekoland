@@ -35,7 +35,9 @@ and builds it where there is none (or with `NEKOLAND_BUILD=1`), puts its program
 GTK and `xdg-desktop-portal` find them, a GRUB theme (`shell/grub`) for the boot menu, shown for five seconds at every boot, and a Plymouth splash (`shell/plymouth`) after it, both drawn at the screen's own size where GRUB boots the computer, the boot waiting at most ten seconds for the network to come up, `shell/config.toml` as the configuration unless
 there is one, and a few lines at the end of `~/.profile` (and of `~/.zprofile` when the login shell is zsh) that start Nekoland on logging in
 on the first console, tty1, in place of its shell, so that quitting it logs out; its log is
-`~/.local/state/nekoland.log`, the one before `nekoland.log.old`. Where netplan leaves the
+`~/.local/state/nekoland.log`, the one before `nekoland.log.old`. Logging in there unlocks the
+keyring with the login's password, as a desktop's login screen does (`pam_gnome_keyring` in
+`/etc/pam.d/login`), and makes it on the first login. Where netplan leaves the
 network to systemd-networkd, as on Ubuntu Server, it hands it to NetworkManager, whose
 connections Settings' 網路 page sets; run over SSH, that waits for the next boot, as applying
 it at once could cut the connection. Run it again to update. Without a checkout it clones into
@@ -231,7 +233,7 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   裝置模式 group sets each card's profile, as stereo, surround, Pro Audio or off.
   What is the system's, not Nekoland's, Settings changes as root through `sudo -A`, asking
   for the password with Nekoland's askpass: 使用者 changes the full name (`usermod`), the
-  password (`chpasswd`) and the picture (`~/.face`), whether the first console logs in by
+  password (`chpasswd`, asking for the current one to change the login keyring's with it) and the picture (`~/.face`), whether the first console logs in by
   itself (a getty drop-in), and adds, makes administrators of and removes other people;
   語言與地區 sets the language and the formats through `localectl`, shows a date, a time, a
   number and the currency as they then read, and adds a language with `locale-gen`; 印表機

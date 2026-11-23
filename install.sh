@@ -41,7 +41,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     libvte-2.91-gtk4-0 libpoppler-glib8t64 qpdf sane-utils slurp fonts-jetbrains-mono
     tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-eng zbar-tools
     udisks2 parted e2fsprogs btrfs-progs xfsprogs exfatprogs ntfs-3g dosfstools smartmontools zstd
-    gvfs-backends gnome-keyring rclone fuse3"
+    gvfs-backends gnome-keyring libpam-gnome-keyring rclone fuse3"
 # Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
 [ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 
@@ -152,6 +152,13 @@ sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-porta
 # xdg-desktop-portal-wlr reads its settings per desktop, by XDG_CURRENT_DESKTOP.
 sudo install -Dm 644 "$src/shell/xdpw-nekoland.ini" /etc/xdg/xdg-desktop-portal-wlr/Nekoland
 sudo install -Dm 644 "$src/shell/nekoland-lock.pam" /etc/pam.d/nekoland-lock
+# Logging in on the console unlocks the keyring with the login's password, as a desktop's
+# login screen does, and makes it on the first login; otherwise the first program after each
+# boot to need a kept password asks for the keyring's own.
+grep -q '^auth.*pam_gnome_keyring' /etc/pam.d/login ||
+    sudo sed -i '/^@include common-auth$/a auth       optional   pam_gnome_keyring.so' /etc/pam.d/login
+grep -q '^session.*pam_gnome_keyring' /etc/pam.d/login ||
+    sudo sed -i '/^@include common-session$/a session    optional   pam_gnome_keyring.so auto_start' /etc/pam.d/login
 # An override changes only the schemas compiled beside it, and GNOME's are in /usr/share.
 sudo install -Dm 644 -t /usr/share/glib-2.0/schemas "$src/shell/90_nekoland.gschema.override"
 sudo glib-compile-schemas /usr/share/glib-2.0/schemas

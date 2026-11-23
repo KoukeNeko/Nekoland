@@ -14,6 +14,8 @@ const SERVICE_PATH: &str = "/org/freedesktop/secrets";
 const SERVICE_IFACE: &str = "org.freedesktop.Secret.Service";
 const ITEM_IFACE: &str = "org.freedesktop.Secret.Item";
 const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
+/// The keyring that logging in unlocks, with the login's password.
+const LOGIN: &str = "/org/freedesktop/secrets/collection/login";
 /// What the service answers for "no object": no prompt needed, no collection.
 const NONE: &str = "/";
 
@@ -195,6 +197,35 @@ pub async fn lookup(attributes: &Attributes) -> Result<Option<String>, glib::Err
     .await;
     keyring.close().await;
     found
+}
+
+/// Changes the login keyring's password from `old` to `new`, so that logging in keeps unlocking
+/// it once the login's own password is changed. Without a login keyring there is nothing to do.
+pub async fn change_login_password(old: &str, new: &str) -> Result<(), glib::Error> {
+    let keyring = Keyring::open().await?;
+    let changed = async {
+        let login = path(LOGIN)?;
+        let properties = (SERVICE_IFACE, "Collections").to_variant();
+        let properties_iface = "org.freedesktop.DBus.Properties";
+        let reply = call(&keyring.bus, SERVICE_PATH, properties_iface, "Get", properties).await?;
+        let collections: Vec<ObjectPath> = reply
+            .child_value(0)
+            .as_variant()
+            .and_then(|collections| collections.get())
+            .ok_or_else(|| unexpected("Collections"))?;
+        if !collections.contains(&login) {
+            return Ok(());
+        }
+        let secret =
+            |text: &str| (keyring.session.clone(), Vec::<u8>::new(), text.as_bytes().to_vec(), "text/plain");
+        // gnome-keyring's own call, which its password dialogs and PAM's password change use.
+        let change = (login, secret(old), secret(new)).to_variant();
+        let interface = "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface";
+        call(&keyring.bus, SERVICE_PATH, interface, "ChangeWithMasterPassword", change).await.map(drop)
+    }
+    .await;
+    keyring.close().await;
+    changed
 }
 
 /// Keeps a password in the default keyring under the attributes and `label`, or forgets it
