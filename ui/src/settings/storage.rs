@@ -42,6 +42,9 @@ pub(crate) fn storage_page() -> adw::PreferencesPage {
     if let Some(storage) = storage_group() {
         page.add(&storage);
     }
+    let apps = group("");
+    apps.add(&subpage_row("應用程式", String::new, apps_page()));
+    page.add(&apps);
     let shown = Rc::new(Shown::default());
     // Measured each time the page is shown, as apps fill their caches again.
     page.connect_map(move |page| scan(page, &shown));
@@ -185,6 +188,129 @@ fn show(page: &adw::PreferencesPage, shown: &Rc<Shown>, found: Found) {
             });
         });
     });
+}
+
+/// The apps installed from each place, each to be removed, with its settings and data if
+/// asked, as Market removes it.
+fn apps_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let waiting = group("");
+    waiting.add(&adw::ActionRow::builder().title("應用程式").subtitle("正在讀取").build());
+    page.add(&waiting);
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let found = gio::spawn_blocking(|| {
+            let look = apps::Look::load();
+            let (dirs, themes) = (apps::data_dirs(), look.icon_themes());
+            sources::installed()
+                .into_iter()
+                .map(|(at, found)| {
+                    let with_icons: Vec<(sources::App, Option<PathBuf>)> = found
+                        .into_iter()
+                        .map(|app| {
+                            let icon = app_icon(&app, &dirs, &themes);
+                            (app, icon)
+                        })
+                        .collect();
+                    (at, with_icons)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await;
+        let Some(page) = page_weak.upgrade() else { return };
+        page.remove(&waiting);
+        let Ok(found) = found else {
+            let failed = group("");
+            failed.add(&adw::ActionRow::builder().title("應用程式").subtitle("無法讀取").build());
+            return page.add(&failed);
+        };
+        let mut any = false;
+        for (at, apps) in found {
+            if apps.is_empty() {
+                continue;
+            }
+            any = true;
+            let rows = group(sources::STANDARD[at as usize].0);
+            for (app, icon) in apps {
+                rows.add(&app_row(&page, &rows, app, icon));
+            }
+            page.add(&rows);
+        }
+        if !any {
+            let none = group("");
+            none.add(&adw::ActionRow::builder().title("沒有已安裝的軟體").css_classes(["dim-label"]).build());
+            page.add(&none);
+        }
+    });
+    page
+}
+
+/// The icon the Dock shows for an app: its desktop entry's, from the icon theme chosen in
+/// Appearance, else Nekoland's; else the one for an app without one.
+fn app_icon(app: &sources::App, dirs: &[PathBuf], themes: &[&str]) -> Option<PathBuf> {
+    let name = removal::launcher(app, &app.offers[0])
+        .and_then(|info| info.downcast_ref::<gio::DesktopAppInfo>()?.string("Icon"))
+        .map(|name| name.to_string())
+        .unwrap_or_default();
+    (!name.is_empty())
+        .then(|| apps::find_icon(dirs, themes, &name))
+        .flatten()
+        .or_else(|| apps::find_icon(dirs, themes, apps::NO_ICON))
+}
+
+fn app_row(
+    page: &adw::PreferencesPage,
+    rows: &adw::PreferencesGroup,
+    app: sources::App,
+    icon: Option<PathBuf>,
+) -> adw::ActionRow {
+    let offer = app.offers[0].clone();
+    let row = adw::ActionRow::builder()
+        .title(app.name.as_str())
+        .use_markup(false)
+        .subtitle(offer.size.as_str())
+        .build();
+    let icon = icon.map_or_else(|| gtk::Image::from_icon_name(apps::NO_ICON), gtk::Image::from_file);
+    icon.set_pixel_size(32);
+    row.add_prefix(&icon);
+    let remove = gtk::Button::builder().label("移除").valign(gtk::Align::Center).build();
+    let (page, rows, shown) = (page.downgrade(), rows.downgrade(), row.downgrade());
+    remove.connect_clicked(move |remove| {
+        let (page, rows, row) = (page.clone(), rows.clone(), shown.clone());
+        let (button, name, size) = (remove.clone(), app.name.clone(), offer.size.clone());
+        removal::confirm(remove, &app, &offer, move |plan, leftovers| {
+            let remove = button;
+            remove.set_sensitive(false);
+            if let Some(row) = row.upgrade() {
+                row.set_subtitle("正在移除");
+            }
+            let reason = format!("移除 {name}");
+            glib::spawn_future_local(async move {
+                let removed = gio::spawn_blocking(move || sources::run(&plan, &reason))
+                    .await
+                    .unwrap_or_else(|_| Err("移除時發生錯誤".to_string()));
+                let (Some(page), Some(rows), Some(row)) = (page.upgrade(), rows.upgrade(), row.upgrade()) else {
+                    return;
+                };
+                match removed {
+                    Ok(()) => {
+                        rows.remove(&row);
+                        removal::trash_leftovers(&page, &leftovers);
+                    }
+                    Err(err) => {
+                        remove.set_sensitive(true);
+                        row.set_subtitle(&size);
+                        // Asked for the password and cancelled: back as it was, with nothing to say.
+                        if !err.is_empty() {
+                            alert::notice(&page, &format!("無法移除 {name}"), Some(&err));
+                        }
+                    }
+                }
+            });
+        });
+    });
+    row.add_suffix(&remove);
+    row
 }
 
 /// The caches on this computer, measured, and the trash's size.

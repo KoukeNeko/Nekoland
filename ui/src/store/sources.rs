@@ -17,6 +17,15 @@ use std::{
     time::Duration,
 };
 
+/// The four places software comes from, each with its title and key; `installed` keys what
+/// it finds by the place's position here.
+pub const STANDARD: [(&str, &str); 4] = [
+    ("Flathub", "flathub"),
+    ("Snap Store", "snap"),
+    ("Ubuntu (apt)", "apt"),
+    ("Homebrew", "brew"),
+];
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {
     Apt,

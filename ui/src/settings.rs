@@ -47,6 +47,15 @@ mod vpn;
 mod sunshine;
 #[path = "settings/storage.rs"]
 mod storage;
+// Market's: what is installed and how it is removed.
+#[allow(dead_code)]
+#[path = "store/sources.rs"]
+mod sources;
+mod removal;
+// Where the Dock finds an app's icon.
+#[allow(dead_code)]
+#[path = "launcher/apps.rs"]
+mod apps;
 
 use lock_screen::*;
 use hover::*;

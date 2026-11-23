@@ -20,6 +20,7 @@ mod pling;
 mod selfupdate;
 #[path = "store/sources.rs"]
 mod sources;
+mod removal;
 mod themes;
 mod web;
 
@@ -32,7 +33,7 @@ use std::{
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use pling::{Look, Theme};
-use sources::{App, Kind, Offer, Repository};
+use sources::{App, Kind, Offer, Repository, STANDARD};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Store";
 /// Opens on a page other than Explore: browsers, installed, updates, icons, cursors, a sidebar row's index,
@@ -118,12 +119,6 @@ const CATEGORIES: [(&str, &str, &[&str]); 7] = [
     ),
 ];
 
-const STANDARD: [(&str, &str); 4] = [
-    ("Flathub", "flathub"),
-    ("Snap Store", "snap"),
-    ("Ubuntu (apt)", "apt"),
-    ("Homebrew", "brew"),
-];
 
 const CSS: &str = "
 .store-tile { border-radius: 22%; background: var(--nekoland-fill, alpha(currentColor, .08)); }
@@ -2502,7 +2497,7 @@ fn render(store: &Rc<Store>, detail: &Rc<Detail>) {
         ));
         detail.actions.append(&remove);
         if !app.cli {
-            if let Some(info) = launcher(&app, installed) {
+            if let Some(info) = removal::launcher(&app, installed) {
                 detail.actions.append(&open_button(info));
             }
         }
@@ -2865,28 +2860,6 @@ fn row_end(
     end.upcast()
 }
 
-/// The program an installed offer gave the system, to open it with.
-fn launcher(app: &App, offer: &Offer) -> Option<gio::AppInfo> {
-    let wanted: Vec<String> = match offer.kind {
-        Some(Kind::Flatpak) => vec![format!("{}.desktop", offer.id)],
-        Some(Kind::Snap) => vec![
-            format!("{}_{}.desktop", offer.id, offer.id),
-            format!("{}_", offer.id),
-        ],
-        _ => vec![format!("{}.desktop", app.key), format!("{}.desktop", offer.id)],
-    };
-    gio::AppInfo::all().into_iter().find(|info| {
-        let id = info.id().map(|id| id.to_lowercase()).unwrap_or_default();
-        wanted.iter().any(|want| {
-            if want.ends_with('_') {
-                id.starts_with(want)
-            } else {
-                id == want.to_lowercase()
-            }
-        })
-    })
-}
-
 fn start_install(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer, replacing: Option<Offer>) {
     let Some(vendor) = offer.repo else {
         install(store, detail, offer, replacing);
@@ -2941,60 +2914,19 @@ fn confirm_switch(store: &Rc<Store>, detail: &Rc<Detail>, to: Offer, from: Offer
     dialog.present(Some(&store.window));
 }
 
-/// Asks before removing an app, and whether its settings and data go with it: what the
-/// system keeps through the package manager, and what it left in the home to the trash.
 fn confirm_remove(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer) {
-    let (name, names) = {
-        let app = detail.app.borrow();
-        (app.name.clone(), leftover_names(&app, &offer))
-    };
-    let home = glib::home_dir();
-    let leftovers = sources::leftovers(&offer, &names, &home);
-
-    let everything = gtk::CheckButton::with_label("一併移除設定與資料");
-    let extra = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    extra.append(&everything);
-    if !leftovers.is_empty() {
-        let shown: Vec<String> = leftovers
-            .iter()
-            .map(|path| match path.strip_prefix(&home) {
-                Ok(inside) => format!("~/{}", inside.display()),
-                Err(_) => path.display().to_string(),
-            })
-            .collect();
-        let list = gtk::Label::builder()
-            .label(shown.join("\n"))
-            .xalign(0.0)
-            .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .css_classes(["dim-label", "caption"])
-            .visible(false)
-            .build();
-        everything.bind_property("active", &list, "visible").build();
-        extra.append(&list);
-    }
-    let alert = adw::AlertDialog::new(Some(&format!("移除 {name}？")), None);
-    alert.set_extra_child(Some(&extra));
-    alert.add_responses(&[("cancel", "取消"), ("do", "移除")]);
-    alert.set_response_appearance("do", adw::ResponseAppearance::Destructive);
-    alert.set_default_response(Some("cancel"));
-    alert.set_close_response("cancel");
-    alert.choose(
+    let app = detail.app.borrow().clone();
+    let (id, name) = (offer.id.clone(), app.name.clone());
+    removal::confirm(
         &store.window,
-        gio::Cancellable::NONE,
+        &app,
+        &offer,
         glib::clone!(
             #[weak]
             store,
             #[weak]
             detail,
-            move |response| {
-                if response != "do" {
-                    return;
-                }
-                let everything = everything.is_active();
-                let plan = sources::remove_plan(&offer, everything);
-                let id = offer.id.clone();
-                let leftovers = if everything { leftovers.clone() } else { Vec::new() };
+            move |plan, leftovers| {
                 let window = store.window.clone();
                 change(
                     &store,
@@ -3007,48 +2939,12 @@ fn confirm_remove(store: &Rc<Store>, detail: &Rc<Detail>, offer: Offer) {
                                 o.installed = None;
                             }
                         }
-                        trash_leftovers(&window, &leftovers);
+                        removal::trash_leftovers(&window, &leftovers);
                     }),
                 );
             }
         ),
     );
-}
-
-/// The names an app's folders in the home can have: its package, its AppStream ID, and its
-/// desktop file's ID and window class.
-fn leftover_names(app: &App, offer: &Offer) -> Vec<String> {
-    let mut names = vec![offer.id.clone(), app.key.trim_end_matches(".desktop").to_string()];
-    if let Some(info) = launcher(app, offer) {
-        if let Some(id) = info.id() {
-            names.push(id.trim_end_matches(".desktop").to_string());
-        }
-        if let Some(class) = info.downcast_ref::<gio::DesktopAppInfo>().and_then(|info| info.startup_wm_class()) {
-            names.push(class.to_string());
-        }
-    }
-    names.retain(|name| !name.is_empty());
-    names.sort();
-    names.dedup();
-    names
-}
-
-/// Moves what an app left behind to the trash, and says what could not be.
-fn trash_leftovers(window: &adw::ApplicationWindow, leftovers: &[PathBuf]) {
-    let failed: Vec<String> = leftovers
-        .iter()
-        // The package manager may have taken it already.
-        .filter(|path| std::fs::symlink_metadata(path).is_ok())
-        .filter_map(|path| {
-            gio::File::for_path(path)
-                .trash(gio::Cancellable::NONE)
-                .err()
-                .map(|err| format!("{}：{}", path.display(), err.message()))
-        })
-        .collect();
-    if !failed.is_empty() {
-        alert::notice(window, "有些設定與資料無法移到垃圾桶", Some(&failed.join("\n")));
-    }
 }
 
 /// Installs an offer; switching, the one it replaces is removed only once the new one is
