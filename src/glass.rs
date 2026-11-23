@@ -49,9 +49,9 @@ const MAX_SPREAD: f32 = 4.0;
 /// The kinds of glass, each with a look of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
-    /// The menu bar and the Dock themselves.
+    /// The menu bar and the Dock themselves, and the notifications' banners under the bar.
     Bar,
-    /// All other glass: menus, notifications, the Dock's popups, the overview and behind
+    /// All other glass: menus, the Notification Center, the Dock's popups, the overview and behind
     /// windows, which shows where they are see-through, as GTK's sidebars.
     Menu,
 }

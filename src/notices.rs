@@ -148,18 +148,20 @@ fn forget(kept: &mut Vec<Kept>, id: u32) -> bool {
 
 type Rgb = (f64, f64, f64);
 
+/// The ink, the second ink, and the tint a banner stands on: as solid as the menu bar's,
+/// over a blur as strong, the bar's look in Settings.
 fn colors(dark: bool) -> (Rgb, Rgb, (f64, f64, f64, f64)) {
     if dark {
         (
             (0.945, 0.937, 0.918),
             (0.663, 0.655, 0.671),
-            crate::glass::tint(dark, Tier::Menu),
+            crate::glass::tint(dark, Tier::Bar),
         )
     } else {
         (
             (0.090, 0.090, 0.102),
             (0.365, 0.361, 0.380),
-            crate::glass::tint(dark, Tier::Menu),
+            crate::glass::tint(dark, Tier::Bar),
         )
     }
 }
@@ -628,7 +630,7 @@ impl Nekoland {
                 fade: (1.0 - out) as f32,
                 id: &leaving.id,
                 rect: Rectangle::new(leaving.rect.loc + Point::from((away, 0)), leaving.rect.size),
-                glass: Some((Tier::Menu, RADIUS)),
+                glass: Some((Tier::Bar, RADIUS)),
                 alpha: 1.0,
                 picture: &leaving.picture,
             })
@@ -645,7 +647,7 @@ impl Nekoland {
                     fade,
                     id: &banner.id,
                     rect,
-                    glass: Some((Tier::Menu, RADIUS)),
+                    glass: Some((Tier::Bar, RADIUS)),
                     alpha: 1.0,
                     picture: banner.picture.as_ref()?,
                 })
