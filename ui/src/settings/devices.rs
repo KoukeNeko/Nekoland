@@ -22,6 +22,12 @@ const REFRESH: Duration = Duration::from_secs(3);
 /// opens it is.
 const INDENT: i32 = 20;
 const OPENER_WIDTH: i32 = 34;
+/// The distances libadwaita's preferences pages keep, which the cards, the tiles, the bars
+/// and the tabs here keep too: between groups, under a group's heading, and inside a row.
+const GROUP_GAP: i32 = 24;
+const HEADING_GAP: i32 = 12;
+const CARD_PADDING: i32 = 12;
+const TILE_GAP: i32 = 12;
 /// How many of the other devices a disabling takes along are named.
 const NAMED: usize = 3;
 
@@ -76,7 +82,7 @@ pub(crate) fn devices_page() -> adw::PreferencesPage {
             more.upcast_ref(),
         ],
     );
-    bar.set_margin_bottom(12);
+    bar.set_margin_bottom(HEADING_GAP);
     list.add(&bar);
     page.add(&summary);
     page.add(&attention);
@@ -254,13 +260,13 @@ fn card(
     state: (State, &str),
     action: Option<&gtk::Widget>,
 ) -> gtk::Box {
-    let card = gtk::Box::builder().spacing(16).css_classes(["card"]).build();
+    let card = gtk::Box::builder().spacing(12).css_classes(["card"]).build();
     let image = gtk::Image::builder()
         .icon_name(icon)
         .pixel_size(48)
-        .margin_start(18)
-        .margin_top(18)
-        .margin_bottom(18)
+        .margin_start(CARD_PADDING)
+        .margin_top(CARD_PADDING)
+        .margin_bottom(CARD_PADDING)
         .valign(gtk::Align::Center)
         .build();
     card.append(&image);
@@ -269,6 +275,8 @@ fn card(
         .spacing(2)
         .hexpand(true)
         .valign(gtk::Align::Center)
+        .margin_top(CARD_PADDING)
+        .margin_bottom(CARD_PADDING)
         .build();
     let label = |text: &str, classes: &[&str]| {
         gtk::Label::builder()
@@ -289,32 +297,39 @@ fn card(
     now.append(&label(state.1, &[]));
     words.append(&now);
     card.append(&words);
-    let end = action.map_or(18, |_| 0);
+    let end = action.map_or(CARD_PADDING, |_| 0);
     words.set_margin_end(end);
     if let Some(action) = action {
         action.set_valign(gtk::Align::Center);
-        action.set_margin_end(18);
+        action.set_margin_end(CARD_PADDING);
         card.append(action);
     }
     card
 }
 
 /// The kinds as tiles, three to a line, each opening the devices of its kind.
-fn kind_tiles(shown: &Rc<Shown>, devices: &[Device]) -> gtk::FlowBox {
-    let tiles = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .homogeneous(true)
-        .min_children_per_line(3)
-        .max_children_per_line(3)
-        .column_spacing(8)
-        .row_spacing(8)
+fn kind_tiles(shown: &Rc<Shown>, devices: &[Device]) -> gtk::Grid {
+    // A grid rather than a flow box, whose children keep padding of their own and would stand
+    // the tiles in from the cards over them.
+    let tiles = gtk::Grid::builder()
+        .column_homogeneous(true)
+        .row_homogeneous(true)
+        .column_spacing(TILE_GAP)
+        .row_spacing(TILE_GAP)
         .build();
+    let mut at = 0;
     for kind in model::KINDS {
         let of_kind = devices.iter().filter(|device| device.kind == kind).count();
         if of_kind == 0 {
             continue;
         }
-        let inside = gtk::Box::builder().spacing(10).build();
+        let inside = gtk::Box::builder()
+            .spacing(12)
+            .margin_top(CARD_PADDING)
+            .margin_bottom(CARD_PADDING)
+            .margin_start(CARD_PADDING)
+            .margin_end(CARD_PADDING)
+            .build();
         inside.append(&gtk::Image::from_icon_name(kind.icon()));
         let name = gtk::Label::builder()
             .label(kind.name())
@@ -343,19 +358,10 @@ fn kind_tiles(shown: &Rc<Shown>, devices: &[Device]) -> gtk::FlowBox {
             .child(&inside)
             .css_classes(["card"])
             .build();
-        inside.set_margin_top(10);
-        inside.set_margin_bottom(10);
-        inside.set_margin_start(4);
-        inside.set_margin_end(4);
         let shown = shown.clone();
         tile.connect_clicked(move |tile| open_kind(&shown, tile, kind));
-        tiles.append(&tile);
-    }
-    // A tile is a button already: the flow box's own child takes no focus of its own.
-    let mut child = tiles.first_child();
-    while let Some(next) = child {
-        next.set_focusable(false);
-        child = next.next_sibling();
+        tiles.attach(&tile, at % 3, at / 3, 1, 1);
+        at += 1;
     }
     tiles
 }
@@ -692,6 +698,7 @@ fn open_device(shown: &Rc<Shown>, from: &impl IsA<gtk::Widget>, device: &Device)
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .transition_duration(120)
+        .vhomogeneous(false)
         .build();
     for (index, (_, tab)) in tabs.iter().enumerate() {
         stack.add_named(tab, Some(&index.to_string()));
@@ -729,20 +736,20 @@ fn open_device(shown: &Rc<Shown>, from: &impl IsA<gtk::Widget>, device: &Device)
         (device.state, device.state.name()),
         action.as_ref().map(|button| button.upcast_ref()),
     );
-    // The card and the tabs stay over the tab shown, in the width of a page's groups.
-    let head = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(18)
-        .margin_top(12)
-        .margin_bottom(6)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-    head.append(&card);
-    switcher.set_halign(gtk::Align::Start);
-    head.append(&switcher);
-    let clamp = adw::Clamp::builder().maximum_size(600).child(&head).build();
-    vpn::push(from, &device.name, Some(clamp.upcast_ref()), &stack);
+    // Laid out as the page of devices is, its card and its bar where that page has them.
+    let page = adw::PreferencesPage::new();
+    let card_group = group("");
+    card_group.add(&card);
+    page.add(&card_group);
+    let tabs = group("");
+    switcher.set_valign(gtk::Align::Center);
+    let bar = line(4, &[&switcher]);
+    bar.set_height_request(bar_height());
+    bar.set_margin_bottom(HEADING_GAP);
+    tabs.add(&bar);
+    tabs.add(&stack);
+    page.add(&tabs);
+    vpn::push(from, &device.name, None, &page);
 }
 
 /// Whether the device can be disabled and uninstalled: one on a bus, not the computer itself
@@ -751,8 +758,8 @@ fn can_change(device: &Device) -> bool {
     device.kind.can_change() && !device.node.is_empty()
 }
 
-fn general_page(shown: &Rc<Shown>, device: &Device) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
+fn general_page(shown: &Rc<Shown>, device: &Device) -> gtk::Box {
+    let page = tab_page();
     let facts = group("");
     facts.add(&fact("位置", &model::location(device)));
     facts.add(&fact(
@@ -779,7 +786,7 @@ fn general_page(shown: &Rc<Shown>, device: &Device) -> adw::PreferencesPage {
         row.connect_activated(move |row| open_device(&shown, row, &above));
         facts.add(&row);
     }
-    page.add(&facts);
+    page.append(&facts);
     page
 }
 
@@ -791,10 +798,10 @@ fn connected_to(shown: &Shown, device: &Device) -> Option<Device> {
     model::parents(&all)[at].map(|above| all[above].clone())
 }
 
-fn driver_page(shown: &Rc<Shown>, device: &Device) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
+fn driver_page(shown: &Rc<Shown>, device: &Device) -> gtk::Box {
+    let page = tab_page();
     let facts = group("");
-    page.add(&facts);
+    page.append(&facts);
     // Last on the page, as Windows has it.
     if can_change(device) && ops::can_uninstall(device) {
         let remove = group("");
@@ -806,7 +813,7 @@ fn driver_page(shown: &Rc<Shown>, device: &Device) -> adw::PreferencesPage {
             glib::closure_local!(move |row: gtk::Widget| uninstall(&shown, &row, device.clone())),
         );
         remove.add(&row);
-        page.add(&remove);
+        page.append(&remove);
     }
     let Some(driver) = device.driver.clone() else {
         facts.add(&fact("驅動程式", State::NoDriver.name()));
@@ -842,9 +849,26 @@ fn button_row(title: &str) -> gtk::Widget {
     .expect("the button row just described")
 }
 
-fn details_page(device: &Device) -> adw::PreferencesPage {
+/// A tab's page: its groups, a group's distance apart.
+fn tab_page() -> gtk::Box {
+    gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(GROUP_GAP)
+        .build()
+}
+
+/// How high the bar over the devices is: as its buttons are, in the look shown.
+fn bar_height() -> i32 {
+    let button = gtk::Button::builder()
+        .icon_name("view-more-symbolic")
+        .css_classes(["flat"])
+        .build();
+    button.measure(gtk::Orientation::Vertical, -1).1
+}
+
+fn details_page(device: &Device) -> gtk::Box {
     let details = model::details(device);
-    let page = adw::PreferencesPage::new();
+    let page = tab_page();
     let choose = group("");
     let names: Vec<&str> = details.iter().map(|(name, _)| name.as_str()).collect();
     let property = adw::ComboRow::builder()
@@ -858,9 +882,9 @@ fn details_page(device: &Device) -> adw::PreferencesPage {
         "string",
     )));
     choose.add(&property);
-    page.add(&choose);
+    page.append(&choose);
     let values = group("值");
-    page.add(&values);
+    page.append(&values);
     let shown: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
     let show = move |at: usize| {
         for row in shown.borrow_mut().drain(..) {
@@ -892,20 +916,20 @@ fn details_page(device: &Device) -> adw::PreferencesPage {
     page
 }
 
-fn resources_page(resources: &[(&'static str, String)]) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
+fn resources_page(resources: &[(&'static str, String)]) -> gtk::Box {
+    let page = tab_page();
     let list = group("");
     for (kind, value) in resources {
         let row = fact(kind, value);
         row.add_css_class("numeric");
         list.add(&row);
     }
-    page.add(&list);
+    page.append(&list);
     page
 }
 
-fn power_page(device: &Device, power: model::Power) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
+fn power_page(device: &Device, power: model::Power) -> gtk::Box {
+    let page = tab_page();
     let list = group("");
     let switch = |title: &str, on: bool, set: fn(&Device, bool) -> Result<(), String>| {
         let row = adw::SwitchRow::builder().title(title).active(on).build();
@@ -939,7 +963,7 @@ fn power_page(device: &Device, power: model::Power) -> adw::PreferencesPage {
     if let Some(on) = power.wakeup {
         switch("允許這個裝置喚醒電腦", on, ops::set_wakeup);
     }
-    page.add(&list);
+    page.append(&list);
     page
 }
 
@@ -965,7 +989,7 @@ fn events_page(device: &Device) -> gtk::Stack {
         let page: gtk::Widget = match result {
             Ok(events) if events.is_empty() => adw::StatusPage::builder().title("沒有事件").build().upcast(),
             Ok(events) => {
-                let page = adw::PreferencesPage::new();
+                let page = tab_page();
                 let list = group("");
                 for (time, message) in events {
                     let row = adw::ActionRow::builder()
@@ -976,7 +1000,7 @@ fn events_page(device: &Device) -> gtk::Stack {
                         .build();
                     list.add(&row);
                 }
-                page.add(&list);
+                page.append(&list);
                 page.upcast()
             }
             Err(why) => adw::StatusPage::builder()
