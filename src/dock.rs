@@ -654,6 +654,9 @@ pub struct Dock {
     /// that were quit since, the latest first, kept in `RECENTS_FILE` between sessions.
     was_running: Vec<String>,
     recents: Vec<String>,
+    /// The applications shown as running, in the order they started: raising a window does
+    /// not move its icon, as on the Mac.
+    started: Vec<String>,
     /// Pictures of files and folders, by path.
     file_icons: Vec<(PathBuf, bool, Option<ImageSurface>)>,
     /// The pictures being read for them on a thread, as a large photo would hold the screen.
@@ -930,6 +933,13 @@ impl Nekoland {
             launcher.urgent = None;
         }
 
+        self.dock.started.retain(|app_id| running.iter().any(|now| same(now, app_id)));
+        for app_id in &running {
+            if !self.dock.started.iter().any(|started| same(started, app_id)) {
+                self.dock.started.push(app_id.clone());
+            }
+        }
+
         let mut tile = |app_id: &str, is_running: bool, kept: bool| {
             let info = self.apps.info(app_id);
             let launcher = self.dock.launchers.get(&app_id.to_lowercase());
@@ -958,9 +968,12 @@ impl Nekoland {
             let is_running = running.iter().any(|running| same(running, app_id));
             tiles.push(tile(app_id, is_running, true));
         }
-        let others: Vec<String> = running
-            .into_iter()
+        let others: Vec<String> = self
+            .dock
+            .started
+            .iter()
             .filter(|app_id| !kept.iter().any(|kept| same(kept, app_id)))
+            .cloned()
             .collect();
         let recents: Vec<String> = if self.config.dock_recents {
             self.dock
