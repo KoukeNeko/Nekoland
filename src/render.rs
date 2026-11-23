@@ -970,7 +970,15 @@ fn floating_elements(
             );
         }
     }
+    // An input method's candidates follow the caret anywhere, so they go over everything here,
+    // the Dock and the menu bar included; other popups stay among the windows.
+    let mut in_front = Vec::new();
     for (popup, origin) in &popups {
+        let elements = if matches!(popup, PopupKind::InputMethod(_)) {
+            &mut in_front
+        } else {
+            &mut elements
+        };
         // A menu grows out of what it was opened from, its glass with it.
         let pop = state
             .config
@@ -1053,7 +1061,8 @@ fn floating_elements(
             );
         }
     }
-    elements
+    in_front.extend(elements);
+    in_front
 }
 
 /// A window's surfaces, with its popups, where it is drawn on the output.
