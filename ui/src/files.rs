@@ -764,6 +764,7 @@ impl Window {
         tag_menu.set_popover(Some(&ops::tag_popover(&Rc::downgrade(&win))));
         win.add_actions();
         win.connect();
+        win.drag_title();
         win.new_tab(at);
         WINDOWS.with_borrow_mut(|all| all.push(win.clone()));
         let closing = Rc::downgrade(&win);
@@ -780,6 +781,35 @@ impl Window {
             pane.focus_content();
         }
         win
+    }
+
+    /// The folder shown is dragged by its name in the toolbar, as by the Finder's title, into
+    /// another folder or a program.
+    fn drag_title(self: &Rc<Self>) {
+        let drag = gtk::DragSource::builder()
+            .actions(gdk::DragAction::COPY | gdk::DragAction::MOVE)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let weak = Rc::downgrade(self);
+        drag.connect_prepare(move |source, x, y| {
+            let win = weak.upgrade()?;
+            let folder = win.pane()?.here().folder().filter(|f| !f.equal(&pane::trash()))?;
+            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&win.title))), x as i32, y as i32);
+            Some(gdk::ContentProvider::for_value(
+                &gdk::FileList::from_array(&[folder]).to_value(),
+            ))
+        });
+        // Held, the name is the folder's, not the toolbar's: the toolbar would move the window
+        // when the pointer leaps before the drag has seen it go far enough.
+        let hold = gtk::GestureClick::builder()
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        hold.connect_pressed(|hold, _, _, _| {
+            hold.set_state(gtk::EventSequenceState::Claimed);
+        });
+        self.title.add_controller(drag.clone());
+        self.title.add_controller(hold.clone());
+        hold.group_with(&drag);
     }
 
     pub fn pane(&self) -> Option<Rc<Pane>> {
