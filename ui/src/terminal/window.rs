@@ -1089,6 +1089,12 @@ fn save_session(windows: &[Rc<Window>]) {
 
 /// Opens the first window: the tabs of the last run when the settings keep them, else one tab.
 pub fn open_first(app: &adw::Application) {
+    open_first_in(app, &[]);
+}
+
+/// Opens the first window as `open_first` does, with a tab in each of `folders` too, or, with nothing to bring
+/// back, only those.
+pub fn open_first_in(app: &adw::Application, folders: &[PathBuf]) {
     let saved = if config::current().restore_session {
         restore::load()
     } else {
@@ -1096,7 +1102,12 @@ pub fn open_first(app: &adw::Application) {
     };
     if saved.is_empty() {
         let window = Window::new(app);
-        window.open_tab(None, None, None);
+        if folders.is_empty() {
+            window.open_tab(None, None, None);
+        }
+        for folder in folders {
+            window.open_tab(Some(folder.clone()), None, None);
+        }
         window.window.present();
         return;
     }
@@ -1107,6 +1118,11 @@ pub fn open_first(app: &adw::Application) {
             window.open_tab(None, None, None);
         }
         window.window.present();
+    }
+    if let Some(window) = shown_window() {
+        for folder in folders {
+            window.open_tab(Some(folder.clone()), None, None);
+        }
     }
 }
 

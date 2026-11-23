@@ -389,7 +389,11 @@ fn main() -> glib::ExitCode {
     if carry::is_carrying() {
         carry::wait_until_released(APP_ID);
     }
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // A folder given, as Files' "open in terminal" does, gets a tab there.
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
     if subcommand == Some(DROP_DOWN_COMMAND) {
         return toggle_drop_down(&app, &args[..1]);
     }
@@ -445,6 +449,17 @@ fn connect_app(app: &adw::Application) {
             Some(window) => window.window.present(),
             None => window::open_first(app),
         }
+    });
+    app.connect_open(|app, files, _| {
+        let folders: Vec<_> = files.iter().filter_map(|file| file.path()).collect();
+        let Some(window) = window::shown_window() else {
+            window::open_first_in(app, &folders);
+            return;
+        };
+        for folder in folders {
+            window.open_tab(Some(folder), None, None);
+        }
+        window.window.present();
     });
 }
 

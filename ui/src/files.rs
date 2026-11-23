@@ -1359,12 +1359,10 @@ impl Window {
             "terminal",
             Box::new(|win, pane| {
                 let folder = pane.here().folder().and_then(|f| f.path()).unwrap_or_else(home);
-                let spawned = std::process::Command::new("foot")
-                    .arg("--working-directory")
-                    .arg(&folder)
-                    .spawn();
-                if let Err(err) = spawned {
-                    win.alert("無法打開終端機", Some(&err.to_string()));
+                match std::process::Command::new(program::path("nekoland-terminal")).arg(&folder).spawn() {
+                    // With the terminal running, this one hands it the folder and ends at once.
+                    Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+                    Err(err) => win.alert("無法打開終端機", Some(&err.to_string())),
                 }
             }),
         );
