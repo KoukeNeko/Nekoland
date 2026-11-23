@@ -3,7 +3,7 @@
 //! carries on from Hamasen's servers.json and the passwords are its keyring items.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     ffi::OsStr,
     io::{Read, Write},
@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     alert,
-    browse::{self, hamasen_records, hamasen_servers, protocol, Kind, Server, PROTOCOLS},
+    browse::{self, hamasen_records, hamasen_servers, protocol, Kind, Server, EDGE, PROTOCOLS},
     ops, secrets, Window,
 };
 pub use crate::mount::{cancel, connecting, is_mounted, mount};
@@ -311,8 +311,7 @@ pub fn mount_at_login(app: &adw::Application) {
 }
 
 struct Form {
-    dialog: adw::Dialog,
-    save: gtk::Button,
+    alert: adw::AlertDialog,
     name: adw::EntryRow,
     protocol: adw::ComboRow,
     host: adw::EntryRow,
@@ -322,14 +321,21 @@ struct Form {
     password: adw::PasswordEntryRow,
     path: adw::EntryRow,
     auto_mount: adw::SwitchRow,
-    drive: adw::PreferencesGroup,
+    drive: gtk::Box,
     own_client: adw::SwitchRow,
     client_id: adw::EntryRow,
     client_secret: adw::PasswordEntryRow,
     guide: gtk::Box,
     record: RefCell<Map<String, Value>>,
-    /// rclone signing in to a cloud drive in the browser, stopped if the dialog closes.
-    authorizing: RefCell<Option<gio::Subprocess>>,
+}
+
+/// Where a server GVfs mounts is, as it is saved.
+struct Address {
+    scheme: &'static str,
+    host: String,
+    port: String,
+    user: String,
+    path: String,
 }
 
 fn entry_row(title: &str, text: &str) -> adw::EntryRow {
@@ -347,18 +353,12 @@ pub fn edit(win: &Rc<Window>, server: Option<&Server>) {
     let [name, host, region, user, path] = ["name", "host", "region", "user", "path"].map(text);
     let auto_mount = record.get("auto_mount").and_then(Value::as_bool).unwrap_or(false);
 
-    let guide = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
+    let guide = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
     guide.append(
         &gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
             .selectable(true)
-            .margin_top(6)
-            .margin_bottom(6)
             .label(
                 "1. 於 Google Cloud Console 建立專案。\n\
                  2. 於「API 和服務」→「程式庫」啟用 Google Drive API。\n\
@@ -375,27 +375,15 @@ pub fn edit(win: &Rc<Window>, server: Option<&Server>) {
             .halign(gtk::Align::Start)
             .build(),
     );
-    let cancel = gtk::Button::with_label("取消");
-    let save = gtk::Button::builder().label("儲存").css_classes(["suggested-action"]).build();
-    let header = adw::HeaderBar::builder()
-        .show_start_title_buttons(false)
-        .show_end_title_buttons(false)
-        .build();
-    header.pack_start(&cancel);
-    header.pack_end(&save);
-    let page = adw::PreferencesPage::new();
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&header);
-    view.set_content(Some(&page));
-    let dialog = adw::Dialog::builder()
-        .title(if server.is_some() { "伺服器" } else { "新增伺服器" })
-        .content_width(440)
-        .child(&view)
-        .build();
+    let own_client = adw::SwitchRow::builder().title("使用自己的用戶端 ID").build();
+    let client_id = entry_row("用戶端 ID", "");
+    let client_secret = adw::PasswordEntryRow::builder().title("用戶端密鑰").build();
+    let drive = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(EDGE).build();
+    drive.append(&alert::form(&[own_client.upcast_ref(), client_id.upcast_ref(), client_secret.upcast_ref()]));
+    drive.append(&guide);
 
     let form = Rc::new(Form {
-        dialog: dialog.clone(),
-        save: save.clone(),
+        alert: adw::AlertDialog::new(Some(if server.is_some() { "伺服器" } else { "新增伺服器" }), None),
         name: entry_row("名稱", &name),
         protocol: adw::ComboRow::builder()
             .title("通訊協定")
@@ -416,27 +404,36 @@ pub fn edit(win: &Rc<Window>, server: Option<&Server>) {
             .title("登入時掛載")
             .active(auto_mount)
             .build(),
-        drive: adw::PreferencesGroup::new(),
-        own_client: adw::SwitchRow::builder().title("使用自己的用戶端 ID").build(),
-        client_id: entry_row("用戶端 ID", ""),
-        client_secret: adw::PasswordEntryRow::builder().title("用戶端密鑰").build(),
+        drive,
+        own_client,
+        client_id,
+        client_secret,
         guide,
         record: RefCell::new(record),
-        authorizing: RefCell::new(None),
     });
-    let group = adw::PreferencesGroup::new();
-    for row in form.rows() {
-        group.add(&row);
-    }
-    form.drive.add(&form.own_client);
-    form.drive.add(&form.client_id);
-    form.drive.add(&form.client_secret);
-    form.drive.add(&form.guide);
-    page.add(&group);
-    page.add(&form.drive);
+    let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(EDGE).build();
+    let rows = form.rows();
+    content.append(&alert::form(&rows.iter().collect::<Vec<_>>()));
+    content.append(&form.drive);
+    form.alert.set_extra_child(Some(&content));
+    form.alert.add_responses(&[("cancel", "取消"), ("save", "儲存")]);
+    form.alert.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    form.alert.set_default_response(Some("save"));
+    form.alert.set_close_response("cancel");
     form.show_rows();
     form.protocol.connect_selected_notify(on!(&form, |f, _r| f.show_rows()));
     form.own_client.connect_active_notify(on!(&form, |f, _r| f.show_rows()));
+    let typed: [&adw::EntryRow; 6] = [
+        &form.host,
+        &form.user,
+        form.password.upcast_ref(),
+        &form.path,
+        &form.client_id,
+        form.client_secret.upcast_ref(),
+    ];
+    for row in typed {
+        row.connect_changed(on!(&form, |f, _r| f.show_rows()));
+    }
 
     if let Some(server) = server {
         let (id, weak) = (server.id.clone(), Rc::downgrade(&form));
@@ -452,27 +449,13 @@ pub fn edit(win: &Rc<Window>, server: Option<&Server>) {
             }
         });
     }
-    cancel.connect_clicked(glib::clone!(
-        #[weak]
-        dialog,
-        move |_| {
-            dialog.close();
-        }
-    ));
-    let weak = Rc::downgrade(win);
-    save.connect_clicked(on!(&form, |f, _b| {
-        if let Some(win) = weak.upgrade() {
-            f.save(&win);
-        }
-    }));
-    // The dialog holds the form until it closes; its handlers hold it weakly.
-    let held = RefCell::new(Some(form.clone()));
-    dialog.connect_closed(move |_| {
-        if let Some(process) = held.take().and_then(|f| f.authorizing.take()) {
-            process.force_exit();
+    // The answer holds the form until it comes.
+    let (answered, weak) = (form.clone(), Rc::downgrade(win));
+    form.alert.clone().choose(&win.window, gio::Cancellable::NONE, move |response| {
+        if let (true, Some(win)) = (response == "save", weak.upgrade()) {
+            answered.save(&win);
         }
     });
-    dialog.present(Some(&win.window));
 }
 
 impl Form {
@@ -494,12 +477,14 @@ impl Form {
         &PROTOCOLS[(self.protocol.selected() as usize).min(PROTOCOLS.len() - 1)]
     }
 
-    /// The rows the protocol uses, each named as it is there.
+    /// The rows the protocol uses, each named as it is there, and 儲存 once they are enough.
     fn show_rows(&self) {
         let p = self.chosen();
         let (host, user, password, path) = match p.kind {
             Kind::S3 => ("端點（選填）", "存取金鑰 ID", "私密存取金鑰", "儲存貯體"),
             _ if p.scheme == "nfs" => ("主機", "使用者", "密碼", "匯出路徑"),
+            // GVfs mounts the shares of an SMB host, not the host itself.
+            _ if p.scheme == "smb" => ("主機", "使用者", "密碼", "共用資料夾"),
             _ => ("主機", "使用者", "密碼", "路徑"),
         };
         self.host.set_title(host);
@@ -541,6 +526,48 @@ impl Form {
         self.client_id.set_visible(own);
         self.client_secret.set_visible(own);
         self.guide.set_visible(own);
+        self.alert.set_response_enabled("save", self.ready());
+    }
+
+    /// Whether the fields say enough to save the server.
+    fn ready(&self) -> bool {
+        let filled = |row: &adw::EntryRow| !row.text().trim().is_empty();
+        match self.chosen().kind {
+            Kind::Oauth => {
+                !self.drive.is_visible()
+                    || !self.own_client.is_active()
+                    || (filled(&self.client_id) && filled(self.client_secret.upcast_ref()))
+            }
+            Kind::S3 => filled(&self.user) && !self.password.text().is_empty(),
+            Kind::Gvfs => self.address().is_some(),
+        }
+    }
+
+    /// Where the fields say a GVfs server is, a pasted address filling in the rest; none
+    /// while that is not enough to mount it.
+    fn address(&self) -> Option<Address> {
+        let mut host = self.host.text().trim().to_owned();
+        let mut scheme = self.chosen().scheme;
+        let mut port = self.port.text().trim().to_owned();
+        let (mut user, mut path) = (self.user.text().trim().to_owned(), self.path.text().trim().to_owned());
+        if host.contains("://") {
+            let uri = glib::Uri::parse(&host, glib::UriFlags::NONE).ok()?;
+            if let Some(known) = protocol(&uri.scheme()).filter(|q| q.kind == Kind::Gvfs) {
+                scheme = known.scheme;
+            }
+            host = uri.host().map(|h| h.to_string()).unwrap_or_default();
+            if port.is_empty() && uri.port() > 0 {
+                port = uri.port().to_string();
+            }
+            if user.is_empty() {
+                user = uri.user().map(|u| unescape(&u)).unwrap_or_default();
+            }
+            if path.is_empty() {
+                path = unescape(&uri.path());
+            }
+        }
+        let share = scheme != "smb" || !path.trim_matches('/').is_empty();
+        (!host.is_empty() && share).then_some(Address { scheme, host, port, user, path })
     }
 
     /// The record's id, given one when it is new.
@@ -559,11 +586,8 @@ impl Form {
         for (key, value) in fields {
             record.insert(key.into(), value);
         }
-        match put(record) {
-            Ok(()) => {
-                self.dialog.close();
-            }
-            Err(why) => win.alert("無法儲存伺服器", Some(&why)),
+        if let Err(why) = put(record) {
+            win.alert("無法儲存伺服器", Some(&why));
         }
     }
 
@@ -580,23 +604,12 @@ impl Form {
         });
     }
 
-    fn missing(rows: &[(&adw::EntryRow, String)]) -> bool {
-        let mut any = false;
-        for (row, text) in rows {
-            if text.is_empty() {
-                row.add_css_class("error");
-                any = true;
-            }
-        }
-        any
-    }
-
     fn save(self: &Rc<Self>, win: &Rc<Window>) {
         let p = self.chosen();
         match p.kind {
             Kind::Oauth => self.save_oauth(win, p),
             Kind::S3 => self.save_s3(win, p),
-            Kind::Gvfs => self.save_gvfs(win, p),
+            Kind::Gvfs => self.save_gvfs(win),
         }
     }
 
@@ -610,53 +623,51 @@ impl Form {
         let mut argv = vec![rclone().into_os_string(), "config".into(), "create".into(), remote.clone().into(), p.rclone_type.into()];
         // Google's shared rclone client ID is being retired, so a personal one is offered.
         if p.scheme == "gdrive" && self.own_client.is_active() {
-            let (client, secret) = (self.client_id.text().trim().to_owned(), self.client_secret.text().trim().to_owned());
-            let secret_row: adw::EntryRow = self.client_secret.clone().upcast();
-            if Self::missing(&[(&self.client_id, client.clone()), (&secret_row, secret.clone())]) {
-                return;
-            }
-            argv.extend(["client_id".into(), client.into(), "client_secret".into(), secret.into()]);
+            argv.extend([
+                "client_id".into(),
+                self.client_id.text().trim().into(),
+                "client_secret".into(),
+                self.client_secret.text().trim().into(),
+            ]);
         }
         let argv: Vec<&OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
-        // It opens the browser to sign in, and waits for it.
+        let failed = format!("無法授權 {}", p.label);
         let process = match spawn(&argv, &[]) {
             Ok(process) => process,
-            Err(err) => return alert::notice(&self.dialog, &format!("無法授權 {}", p.label), Some(err.message())),
+            Err(err) => return win.alert(&failed, Some(err.message())),
         };
-        self.save.set_sensitive(false);
-        self.save.set_label("授權中");
-        self.authorizing.replace(Some(process.clone()));
-        let (form, win) = (Rc::downgrade(self), Rc::downgrade(win));
+        // It opens the browser to sign in and waits for it, until it is stopped.
+        let waiting = adw::AlertDialog::new(Some(&format!("{} 授權中", p.label)), Some("請在瀏覽器中登入。"));
+        waiting.add_response("cancel", "取消");
+        let stopped = Rc::new(Cell::new(false));
+        let (stopping, stop) = (stopped.clone(), process.clone());
+        waiting.connect_response(None, move |_, _| {
+            stopping.set(true);
+            stop.force_exit();
+        });
+        waiting.present(Some(&win.window));
+        let (form, win) = (self.clone(), Rc::downgrade(win));
         glib::spawn_future_local(async move {
             let signed_in = finish(&process).await;
-            let (Some(form), Some(win)) = (form.upgrade(), win.upgrade()) else { return };
-            form.authorizing.take();
+            if stopped.get() {
+                return;
+            }
+            waiting.force_close();
+            let Some(win) = win.upgrade() else { return };
             match signed_in {
                 Ok(()) => form.commit(&win, vec![("name", name.into()), ("scheme", p.scheme.into()), ("remote", remote.into())]),
-                Err(why) => {
-                    form.save.set_sensitive(true);
-                    form.save.set_label("儲存");
-                    // Nothing is said when the dialog was closed and rclone stopped with it.
-                    if !why.is_empty() {
-                        alert::notice(&form.dialog, &format!("無法授權 {}", p.label), Some(&why));
-                    }
-                }
+                Err(why) => win.alert(&failed, Some(&why)),
             }
         });
     }
 
     fn save_s3(&self, win: &Rc<Window>, p: &'static browse::Protocol) {
-        let (key, secret) = (self.user.text().trim().to_owned(), self.password.text().to_string());
-        let secret_row: adw::EntryRow = self.password.clone().upcast();
-        if Self::missing(&[(&self.user, key.clone()), (&secret_row, secret.clone())]) {
-            return;
-        }
         let bucket = self.path.text().trim().to_owned();
         let name = [self.name.text().trim().to_owned(), bucket.clone(), p.label.to_owned()]
             .into_iter()
             .find(|n| !n.is_empty())
             .unwrap_or_default();
-        self.keep_password(win, secret);
+        self.keep_password(win, self.password.text().to_string());
         self.commit(
             win,
             vec![
@@ -664,63 +675,27 @@ impl Form {
                 ("scheme", p.scheme.into()),
                 ("host", self.host.text().trim().into()),
                 ("region", self.region.text().trim().into()),
-                ("user", key.into()),
+                ("user", self.user.text().trim().into()),
                 ("path", bucket.into()),
             ],
         );
     }
 
-    fn save_gvfs(&self, win: &Rc<Window>, p: &'static browse::Protocol) {
-        let mut host = self.host.text().trim().to_owned();
-        if host.is_empty() {
-            self.host.add_css_class("error");
-            return;
-        }
-        let mut scheme = p.scheme;
-        let mut port = self.port.text().trim().to_owned();
-        let (mut user, mut path) = (self.user.text().trim().to_owned(), self.path.text().trim().to_owned());
-        // A pasted address fills in the other fields.
-        if host.contains("://") {
-            let Ok(uri) = glib::Uri::parse(&host, glib::UriFlags::NONE) else {
-                self.host.add_css_class("error");
-                return;
-            };
-            if let Some(known) = protocol(&uri.scheme()).filter(|q| q.kind == Kind::Gvfs) {
-                scheme = known.scheme;
-            }
-            host = uri.host().map(|h| h.to_string()).unwrap_or_default();
-            if port.is_empty() && uri.port() > 0 {
-                port = uri.port().to_string();
-            }
-            if user.is_empty() {
-                user = uri.user().map(|u| unescape(&u)).unwrap_or_default();
-            }
-            if path.is_empty() {
-                path = unescape(&uri.path());
-            }
-            if host.is_empty() {
-                self.host.add_css_class("error");
-                return;
-            }
-        }
-        // GVfs mounts the shares of an SMB host, not the host itself.
-        if scheme == "smb" && path.trim_matches('/').is_empty() {
-            self.path.add_css_class("error");
-            self.path.set_title("路徑（SMB 須指定共用資料夾）");
-            return;
-        }
+    fn save_gvfs(&self, win: &Rc<Window>) {
+        // 儲存 is only offered once there is an address.
+        let Some(address) = self.address() else { return };
         self.keep_password(win, self.password.text().to_string());
-        let name = Some(self.name.text().trim().to_owned()).filter(|n| !n.is_empty()).unwrap_or(host.clone());
-        let port: Value = port.parse::<u64>().map_or(Value::Null, Value::from);
+        let name = Some(self.name.text().trim().to_owned()).filter(|n| !n.is_empty()).unwrap_or(address.host.clone());
+        let port: Value = address.port.parse::<u64>().map_or(Value::Null, Value::from);
         self.commit(
             win,
             vec![
                 ("name", name.into()),
-                ("scheme", scheme.into()),
-                ("host", host.into()),
+                ("scheme", address.scheme.into()),
+                ("host", address.host.into()),
                 ("port", port),
-                ("user", user.into()),
-                ("path", path.into()),
+                ("user", address.user.into()),
+                ("path", address.path.into()),
             ],
         );
     }
