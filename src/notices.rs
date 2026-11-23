@@ -57,6 +57,19 @@ struct Banner {
     picture: Option<Picture>,
     drawn_dark: Option<bool>,
     id: Id,
+    /// When it was first shown, to come in from then.
+    came: Option<Instant>,
+    /// Where it stands from the top, and where it was before it last moved and when, to
+    /// glide there.
+    place: Option<(i32, f64, Instant)>,
+}
+
+/// A banner gone, still going back out the way it came.
+struct Leaving {
+    picture: Picture,
+    id: Id,
+    rect: Rectangle<i32, Logical>,
+    left: Instant,
 }
 
 /// A notification kept after its banner, for the Notification Center.
@@ -73,6 +86,7 @@ pub struct Notices {
     /// Do Not Disturb, from the control center: no banners come up.
     pub(crate) quiet: bool,
     banners: Vec<Banner>,
+    leaving: Vec<Leaving>,
     hovered: Option<u32>,
     /// What the Notification Center lists, newest first.
     pub(crate) kept: Vec<Kept>,
@@ -378,6 +392,8 @@ impl Nekoland {
                             picture: None,
                             drawn_dark: None,
                             id: Id::new(),
+                            came: None,
+                            place: None,
                         },
                     ),
                 }
@@ -429,9 +445,20 @@ impl Nekoland {
     }
 
     fn drop_banner(&mut self, id: u32) -> bool {
-        let before = self.notices.banners.len();
-        self.notices.banners.retain(|banner| banner.notification.id != id);
-        self.notices.banners.len() != before
+        let Some(index) = self.notices.banners.iter().position(|banner| banner.notification.id == id) else {
+            return false;
+        };
+        let rect = self.notice_rects().into_iter().find(|(shown, _)| *shown == index).map(|(_, rect)| rect);
+        let banner = self.notices.banners.remove(index);
+        if let (Some(rect), Some(picture), true) = (rect, banner.picture, self.config.animations) {
+            self.notices.leaving.push(Leaving {
+                picture,
+                id: banner.id,
+                rect,
+                left: Instant::now(),
+            });
+        }
+        true
     }
 
     /// A banner's time is up. Its notification is closed only if it is not kept, since the
@@ -522,6 +549,24 @@ impl Nekoland {
             banner.picture = draw_banner(&notification, icon, dark, previews);
             banner.drawn_dark = Some(dark);
         }
+
+        // Each shown banner glides from where it is to where it now stands, as one above it
+        // comes or goes.
+        let now = Instant::now();
+        let mut top = 0;
+        for banner in self.notices.banners.iter_mut().take(MAX_SHOWN) {
+            let Some(picture) = &banner.picture else {
+                continue;
+            };
+            banner.came.get_or_insert(now);
+            match banner.place {
+                Some((place, _, _)) if place == top => {}
+                Some(_) => banner.place = Some((top, shown_top(banner.place), now)),
+                None => banner.place = Some((top, f64::from(top), now)),
+            }
+            top += picture.size.h + GAP;
+        }
+        self.notices.leaving.retain(|leaving| crate::motion::notice_out(leaving.left).is_some());
     }
 
     /// Where each shown banner is, newest at the top.
@@ -534,18 +579,26 @@ impl Nekoland {
         else {
             return Vec::new();
         };
-        let mut y = area.loc.y + MENU_BAR_HEIGHT + MARGIN;
+        let top = area.loc.y + MENU_BAR_HEIGHT + MARGIN;
+        let right = area.loc.x + area.size.w - WIDTH - MARGIN;
+        let animated = self.config.animations;
+        let mut y = top;
         let mut rects = Vec::new();
         for (index, banner) in self.notices.banners.iter().enumerate().take(MAX_SHOWN) {
             let Some(picture) = &banner.picture else {
                 continue;
             };
-            let rect = Rectangle::new(
-                (area.loc.x + area.size.w - WIDTH - MARGIN, y).into(),
-                picture.size,
-            );
+            let (x, y_shown) = match (animated, banner.came) {
+                // Out past the side of the screen, by all of its width and the margin.
+                (true, Some(came)) => {
+                    let (come, _) = crate::motion::notice_in(came);
+                    let away = (1.0 - come) * f64::from(WIDTH + MARGIN);
+                    (right + away.round() as i32, top + shown_top(banner.place).round() as i32)
+                }
+                _ => (right, y),
+            };
+            rects.push((index, Rectangle::new((x, y_shown).into(), picture.size)));
             y += picture.size.h + GAP;
-            rects.push((index, rect));
         }
         rects
     }
@@ -555,12 +608,29 @@ impl Nekoland {
         if !self.banners_shown() {
             return Vec::new();
         }
+        let animated = self.config.animations;
+        let leaving = self.notices.leaving.iter().filter_map(|leaving| {
+            let out = crate::motion::notice_out(leaving.left)?;
+            let away = (out * f64::from(WIDTH + MARGIN)).round() as i32;
+            Some(Overlay {
+                fade: (1.0 - out) as f32,
+                id: &leaving.id,
+                rect: Rectangle::new(leaving.rect.loc + Point::from((away, 0)), leaving.rect.size),
+                glass: Some((Tier::Menu, RADIUS)),
+                alpha: 1.0,
+                picture: &leaving.picture,
+            })
+        });
         self.notice_rects()
             .into_iter()
             .filter_map(|(index, rect)| {
                 let banner = &self.notices.banners[index];
+                let fade = match (animated, banner.came) {
+                    (true, Some(came)) => crate::motion::notice_in(came).1 as f32,
+                    _ => 1.0,
+                };
                 Some(Overlay {
-                    fade: 1.0,
+                    fade,
                     id: &banner.id,
                     rect,
                     glass: Some((Tier::Menu, RADIUS)),
@@ -568,6 +638,7 @@ impl Nekoland {
                     picture: banner.picture.as_ref()?,
                 })
             })
+            .chain(leaving)
             .collect()
     }
 
@@ -605,6 +676,15 @@ impl Nekoland {
         self.activate_notice(id);
         true
     }
+}
+
+/// Where a banner stands from the top of the banners now, gliding from where it was to its
+/// place.
+fn shown_top(place: Option<(i32, f64, Instant)>) -> f64 {
+    let Some((place, from, moved)) = place else {
+        return 0.0;
+    };
+    from + (f64::from(place) - from) * crate::motion::notice_moved(moved)
 }
 
 /// Where the names programs send notifications under are kept, one a line, for Settings to
@@ -701,6 +781,15 @@ mod tests {
         assert_eq!(ids(&kept), [3, 1]);
         assert!(!forget(&mut kept, 2));
         assert_eq!(ids(&kept), [3, 1]);
+    }
+
+    #[test]
+    fn a_banner_glides_from_where_it_was_to_its_place() {
+        assert_eq!(shown_top(None), 0.0);
+        let long_ago = Instant::now() - Duration::from_secs(5);
+        assert!((shown_top(Some((120, 0.0, long_ago))) - 120.0).abs() < 0.5);
+        let just_now = Instant::now() + Duration::from_secs(5);
+        assert_eq!(shown_top(Some((120, 40.0, just_now))), 40.0);
     }
 
     #[test]

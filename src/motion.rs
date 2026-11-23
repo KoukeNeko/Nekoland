@@ -148,6 +148,31 @@ fn seconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64()
 }
 
+/// A notification's banner coming in from past the side of the screen, a little past its
+/// place and back, as iOS's come down.
+const NOTICE_IN: Spring = Spring::new(0.46, 0.76);
+/// How long a banner coming in takes to be fully there to see.
+const NOTICE_FADE: f64 = 0.16;
+/// A banner going back out the way it came, without swinging.
+const NOTICE_OUT: Spring = Spring::new(0.3, 1.0);
+
+/// How far in a banner that `came` a moment ago is, 0 to 1 and a little past, and how much
+/// there to see, 0 to 1.
+pub fn notice_in(came: Instant) -> (f64, f64) {
+    (NOTICE_IN.at(came), (seconds_since(came) / NOTICE_FADE).min(1.0))
+}
+
+/// How far out a banner that `left` a moment ago is, 0 to 1; None once it is gone.
+pub fn notice_out(left: Instant) -> Option<f64> {
+    (!NOTICE_OUT.is_over(left)).then(|| NOTICE_OUT.at(left))
+}
+
+/// How far a banner making room for another, or closing a gap, has gone from where it was
+/// `moved` to its new place, 0 to 1.
+pub fn notice_moved(moved: Instant) -> f64 {
+    MORPH.at(moved)
+}
+
 /// A window opening: lively, and a little past its size before it rests.
 const OPEN: Spring = Spring::new(0.40, 0.80);
 /// A window with no icon to come out of starts this much of its size.
