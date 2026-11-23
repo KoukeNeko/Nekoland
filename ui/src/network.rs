@@ -1,7 +1,8 @@
 //! Settings' 網路 page, through NetworkManager's `nmcli`: each Ethernet port, joined and
 //! left, with its addresses and how they are set. Wi-Fi has its own page; its networks'
 //! addresses are set here. NetworkManager's VPNs, turned on and off, added from a file and
-//! removed, are on the VPN page.
+//! removed, are on the VPN page. Under them, the proxy, the hosts file's own entries and
+//! the firewall.
 
 use std::{
     cell::RefCell,
@@ -13,7 +14,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::{
-    alert, fact_row, group, output,
+    alert, as_root, fact_row, group, output,
     bluetooth,
     wifi::{follow_network, nmcli, nmcli_fields, radio_on, setting, up_with},
 };
@@ -546,7 +547,7 @@ struct NetworkPage {
 
 pub fn network_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    let kept = [hotspot_group(), Some(proxy_group()), firewall_group()]
+    let kept = [hotspot_group(), Some(proxy_group()), Some(hosts_group()), firewall_group()]
         .into_iter()
         .flatten()
         .collect();
@@ -874,6 +875,157 @@ fn proxy_group() -> adw::PreferencesGroup {
         show(how.selected());
     });
     proxy
+}
+
+const HOSTS: &str = "/etc/hosts";
+
+/// The entries of a hosts file that were added to it, by their line, as their address and
+/// names: not the loopback's and IPv6's that the system keeps there.
+fn own_hosts(text: &str) -> Vec<(usize, String, String)> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let mut words = line.split('#').next().unwrap_or_default().split_whitespace();
+            let address: IpAddr = words.next()?.parse().ok()?;
+            let system = address.is_loopback()
+                || matches!(address, IpAddr::V6(v6) if v6.is_multicast() || v6.segments()[0] == 0xfe00);
+            let names = words.collect::<Vec<_>>().join(" ");
+            (!system && !names.is_empty()).then(|| (index, address.to_string(), names))
+        })
+        .collect()
+}
+
+/// A host typed as its address and then its names, as a line of the hosts file.
+fn host_line(typed: &str) -> Result<String, &'static str> {
+    let wrong = "請以「位址 名稱」的格式輸入主機。";
+    let mut words = typed.split_whitespace();
+    let address: IpAddr = words.next().and_then(|word| word.parse().ok()).ok_or(wrong)?;
+    let names: Vec<&str> = words.collect();
+    let valid = |name: &&str| {
+        name.len() <= 253
+            && !name.starts_with(['-', '.'])
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    };
+    if names.is_empty() || !names.iter().all(valid) {
+        return Err(wrong);
+    }
+    Ok(format!("{address}\t{}", names.join(" ")))
+}
+
+/// The hosts file changed by `change`, written as root; the group is listed again after.
+fn change_hosts(
+    parent: &impl IsA<gtk::Widget>,
+    (reason, failed): (&str, &'static str),
+    change: impl FnOnce(&str) -> Option<String>,
+    then: impl FnOnce(bool) + 'static,
+) {
+    // Read again, so what was changed since it was listed is kept.
+    let text = match std::fs::read_to_string(HOSTS) {
+        Ok(text) => text,
+        Err(err) => return alert::notice(parent, failed, Some(&format!("{HOSTS}: {err}"))),
+    };
+    let Some(changed) = change(&text) else {
+        return then(false);
+    };
+    let parent = parent.clone().upcast::<gtk::Widget>();
+    as_root(reason, &["sh", "-c", &format!("cat > {HOSTS}")], Some(changed), move |worked| {
+        if !worked {
+            alert::notice(&parent, failed, None);
+        }
+        then(worked);
+    });
+}
+
+/// The hosts file's own entries, each removed with its button, and a field for another.
+fn hosts_group() -> adw::PreferencesGroup {
+    let hosts = group("主機");
+    let added = adw::EntryRow::builder().title("新增主機").show_apply_button(true).build();
+    let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
+    hosts.add(&added);
+    list_hosts(&hosts, &added, &rows);
+    added.connect_apply(glib::clone!(
+        #[weak]
+        hosts,
+        #[strong]
+        rows,
+        move |field| {
+            let line = match host_line(&field.text()) {
+                Ok(line) => line,
+                Err(why) => return alert::notice(field, "無法新增主機", Some(why)),
+            };
+            let (field, hosts, rows) = (field.clone(), hosts.clone(), rows.clone());
+            change_hosts(
+                &field.clone(),
+                ("新增主機", "無法新增主機"),
+                |text| {
+                    let ended = text.is_empty() || text.ends_with('\n');
+                    Some(format!("{text}{}{line}\n", if ended { "" } else { "\n" }))
+                },
+                move |worked| {
+                    if worked {
+                        field.set_text("");
+                    }
+                    list_hosts(&hosts, &field, &rows);
+                },
+            );
+        }
+    ));
+    hosts
+}
+
+/// Lists the hosts file's own entries above the field for another, again after each change.
+fn list_hosts(group: &adw::PreferencesGroup, added: &adw::EntryRow, rows: &Rc<RefCell<Vec<adw::ActionRow>>>) {
+    for row in rows.borrow_mut().drain(..) {
+        group.remove(&row);
+    }
+    group.remove(added);
+    let text = std::fs::read_to_string(HOSTS).unwrap_or_default();
+    for (index, address, names) in own_hosts(&text) {
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(&names))
+            .subtitle(&address)
+            .build();
+        let remove = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("移除")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        let line = text.lines().nth(index).unwrap_or_default().to_string();
+        remove.connect_clicked(glib::clone!(
+            #[weak]
+            group,
+            #[weak]
+            added,
+            #[strong]
+            rows,
+            move |remove| {
+                let (button, line) = (remove.clone(), line.clone());
+                let (group, added, rows) = (group.clone(), added.clone(), rows.clone());
+                alert::confirm(remove, "移除這個主機？", None, "移除", move || {
+                    change_hosts(
+                        &button,
+                        ("移除主機", "無法移除主機"),
+                        // Only the line listed, where it still is.
+                        |text| {
+                            (text.lines().nth(index) == Some(line.as_str())).then(|| {
+                                text.lines()
+                                    .enumerate()
+                                    .filter(|(at, _)| *at != index)
+                                    .map(|(_, kept)| format!("{kept}\n"))
+                                    .collect()
+                            })
+                        },
+                        move |_| list_hosts(&group, &added, &rows),
+                    );
+                });
+            }
+        ));
+        row.add_suffix(&remove);
+        group.add(&row);
+        rows.borrow_mut().push(row);
+    }
+    group.add(added);
 }
 
 /// Where ufw keeps whether it is on, which anyone may read.
@@ -1455,5 +1607,24 @@ mod tests {
             Ok("['localhost', '127.0.0.0/8']".into())
         );
         assert_eq!(host_list(""), Ok("[]".into()));
+    }
+
+    #[test]
+    fn only_added_hosts_are_listed_and_typed_ones_are_checked() {
+        let text = "127.0.0.1\tlocalhost\n127.0.1.1\tpc\n# 10.0.0.9 old\n192.168.1.10 nas files # mine\n\
+                    ::1 ip6-localhost\nfe00::0 ip6-localnet\nff02::1 ip6-allnodes\nfd00::5 printer\n";
+        assert_eq!(
+            own_hosts(text),
+            vec![
+                (3, "192.168.1.10".into(), "nas files".into()),
+                (7, "fd00::5".into(), "printer".into())
+            ]
+        );
+        assert_eq!(host_line(" 10.0.0.2  nas  nas.lan "), Ok("10.0.0.2\tnas nas.lan".into()));
+        assert_eq!(host_line("fd00::5 printer"), Ok("fd00::5\tprinter".into()));
+        assert!(host_line("10.0.0.2").is_err());
+        assert!(host_line("nas 10.0.0.2").is_err());
+        assert!(host_line("10.0.0.2 -bad").is_err());
+        assert!(host_line("10.0.0.2 a;rm").is_err());
     }
 }
