@@ -178,6 +178,9 @@ pub struct Config {
     /// How many minutes the launcher's clipboard history keeps what was copied: 0 keeps
     /// nothing, and a negative number keeps it without end.
     pub clipboard_history: i64,
+    /// Programs, by the name of their executable, that asked to read the clipboard in the
+    /// background as a clipboard manager does, and whether they may.
+    pub clipboard_readers: std::collections::BTreeMap<String, bool>,
     /// Whether resting the pointer on a file on the desktop or in a Dock folder shows a
     /// panel of what it is and holds, after how many seconds, and in which style.
     pub hover_info: bool,
@@ -821,6 +824,7 @@ impl Default for Config {
             desktop_sort: Sort::Name,
             desktop_free: false,
             clipboard_history: -1,
+            clipboard_readers: Default::default(),
             hover_info: true,
             // FinderHover's own, after the pointer stops.
             hover_delay: 0.1,
@@ -1197,18 +1201,28 @@ const DICTATION: &str = "if ! command -v nerd-dictation >/dev/null || ! command 
 
 /// Starts a shell command as a client of this compositor.
 pub fn spawn(command: &str) {
+    spawned(command);
+}
+
+/// Runs `command` with `sh`, as `spawn` does, and gives the shell's process id.
+pub fn spawned(command: &str) -> Option<u32> {
     match Command::new("sh").arg("-c").arg(command).spawn() {
         // Waited for off the compositor's thread, or it would stay a zombie, which a check
         // such as dictation's `kill -0` takes for still running.
         Ok(mut child) => {
+            let pid = child.id();
             let waited = std::thread::Builder::new()
                 .name("nekoland-spawn".into())
                 .spawn(move || child.wait());
             if let Err(err) = waited {
                 tracing::warn!("{command}: {err}");
             }
+            Some(pid)
         }
-        Err(err) => tracing::warn!("{command}: {err}"),
+        Err(err) => {
+            tracing::warn!("{command}: {err}");
+            None
+        }
     }
 }
 

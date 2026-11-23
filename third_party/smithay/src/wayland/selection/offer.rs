@@ -127,7 +127,7 @@ where
         self: Arc<Self>,
         dh: &Handle,
         handle: &mut D,
-        _: ClientId,
+        client: ClientId,
         msg: Message<ObjectId, OwnedFd>,
     ) -> Option<Arc<dyn ObjectData<D>>> {
         let dh = DisplayHandle::from(dh.clone());
@@ -174,8 +174,14 @@ where
             }
         };
 
+        let data_control = matches!(
+            self.device_kind,
+            DataDeviceKind::WlrDataControl | DataDeviceKind::ExtDataControl
+        );
         if !self.source.contains_mime_type(&mime_type) {
             debug!("Denying a {object_name}.receive with invalid mime type");
+        } else if data_control && !handle.allow_data_control_read(client) {
+            debug!("Denying a {object_name}.receive the compositor did not allow");
         } else {
             match &self.source {
                 OfferReplySource::Client(source) => {

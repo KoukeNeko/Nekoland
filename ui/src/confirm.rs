@@ -1,5 +1,6 @@
 //! `nekoland-confirm restart|shutdown|logout|empty-trash`: asks before the commands that
-//! end the session or lose files for good, then carries out the one asked about.
+//! end the session or lose files for good, then carries out the one asked about; and
+//! `clipboard`, whether a program may read the clipboard.
 
 slint::include_modules!();
 
@@ -9,34 +10,37 @@ slint::include_modules!();
 mod apps;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let which = std::env::args().nth(1).unwrap_or_default();
-    let (question, consequence, action, command): (&str, &str, &str, &[&str]) = match which.as_str() {
-        "restart" => (
-            "要立即重新開機嗎？",
-            "未儲存的變更可能會遺失。",
-            "重新開機",
-            &["systemctl", "reboot"],
-        ),
-        "shutdown" => (
-            "要立即關機嗎？",
-            "未儲存的變更可能會遺失。",
-            "關機",
-            &["systemctl", "poweroff"],
-        ),
-        "logout" => (
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let which = arguments.first().map(String::as_str).unwrap_or_default();
+    let fixed = |question: &str, consequence: &str, action: &str, command: &[&str]| {
+        let command = command.iter().map(|part| part.to_string()).collect();
+        (question.to_string(), consequence.to_string(), action.to_string(), command)
+    };
+    let (question, consequence, action, command): (String, String, String, Vec<String>) = match which {
+        "restart" => fixed("要立即重新開機嗎？", "未儲存的變更可能會遺失。", "重新開機", &["systemctl", "reboot"]),
+        "shutdown" => fixed("要立即關機嗎？", "未儲存的變更可能會遺失。", "關機", &["systemctl", "poweroff"]),
+        "logout" => fixed(
             "要登出嗎？",
             "所有程式都會結束，未儲存的變更可能會遺失。",
             "登出",
             &["nekoland", "msg", "quit"],
         ),
-        "empty-trash" => (
+        "empty-trash" => fixed(
             "要清空垃圾桶嗎？",
             "垃圾桶裡的項目會永久刪除，無法復原。",
             "清空垃圾桶",
             &["gio", "trash", "--empty"],
         ),
+        // `clipboard NAME SETTING`: the compositor refused a program reading the clipboard in
+        // the background, and gives the setting that allows it.
+        "clipboard" if arguments.len() == 3 => (
+            format!("要允許「{}」讀取剪貼簿嗎？", arguments[1]),
+            "它可以在背景讀取之後拷貝的所有內容。".to_string(),
+            "允許".to_string(),
+            vec!["nekoland".into(), "msg".into(), format!("set {}", arguments[2])],
+        ),
         other => {
-            return Err(format!("expected restart, shutdown, logout or empty-trash, not {other:?}").into())
+            return Err(format!("expected restart, shutdown, logout, empty-trash or clipboard, not {other:?}").into())
         }
     };
 
@@ -44,12 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slint::set_xdg_app_id("nekoland-confirm")?;
     dialog.set_question(question.into());
     dialog.set_consequence(consequence.into());
-    dialog.set_action(action.into());
+    dialog.set_action(action.as_str().into());
     dialog.set_glass_opacity(apps::Look::load().glass_opacity);
     dialog.on_cancelled(|| {
         let _ = slint::quit_event_loop();
     });
-    let command: Vec<String> = command.iter().map(|part| part.to_string()).collect();
     let refused = format!("無法{action}");
     let weak = dialog.as_weak();
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

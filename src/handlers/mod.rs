@@ -69,6 +69,10 @@ impl SelectionHandler for Nekoland {
         }
     }
 
+    fn allow_data_control_read(&mut self, client: smithay::reexports::wayland_server::backend::ClientId) -> bool {
+        self.may_read_clipboard(client)
+    }
+
     fn send_selection(
         &mut self,
         ty: SelectionTarget,
@@ -84,6 +88,63 @@ impl SelectionHandler for Nekoland {
                 tracing::warn!("reading the {ty:?} selection from an X11 program: {err}");
             }
         }
+    }
+}
+
+impl Nekoland {
+    /// Whether a program may read the clipboard in the background, as a clipboard manager
+    /// does: Nekoland's own may, and another is asked the first time and refused until the
+    /// person allows it, as the Mac asks before a program reads the pasteboard.
+    // shortcut: a program is known by its executable's name, which another could take; a
+    // sandbox's app id once clipboard managers come in sandboxes.
+    fn may_read_clipboard(&mut self, client: smithay::reexports::wayland_server::backend::ClientId) -> bool {
+        let Some(pid) = self.display_handle.backend_handle().get_client_credentials(client).ok().map(|it| it.pid) else {
+            return false;
+        };
+        let exe = |pid: i32| {
+            let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+            Some(path.file_name()?.to_string_lossy().into_owned())
+        };
+        let parent = |pid: i32| -> Option<i32> {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            // The program's name, in parentheses, may hold spaces; the parent is field 4.
+            stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+        };
+        // Every program the Dock starts descends from the compositor, so the walk stops there.
+        let compositor = std::process::id() as i32;
+        let mut ancestor = Some(pid);
+        while let Some(process) = ancestor.filter(|&process| process > 1 && process != compositor) {
+            let service = u32::try_from(process).is_ok_and(|process| self.clipboard_services.contains(&process));
+            if service || exe(process).is_some_and(|name| name.starts_with("nekoland-")) {
+                return true;
+            }
+            ancestor = parent(process);
+        }
+        let Some(name) = exe(pid) else { return false };
+        if let Some(&allowed) = self.config.clipboard_readers.get(&name) {
+            return allowed;
+        }
+        let line = |allowed: bool| {
+            let mut readers = self.config.clipboard_readers.clone();
+            readers.insert(name.clone(), allowed);
+            let readers: Vec<String> =
+                readers.iter().map(|(name, allowed)| format!("{} = {allowed}", toml::Value::String(name.clone()))).collect();
+            format!("clipboard_readers = {{ {} }}", readers.join(", "))
+        };
+        let (refused, allowing) = (line(false), line(true));
+        if let Err(err) = crate::config::set(&refused) {
+            tracing::warn!("{refused}: {err}");
+            return false;
+        }
+        self.reload_config();
+        // shortcut: the allowing line holds the list as it stands now, so of two programs
+        // asked about at once and both allowed, the later one alone stays allowed.
+        crate::config::spawn(&format!(
+            "nekoland-confirm clipboard {} {}",
+            crate::config::quote(&name),
+            crate::config::quote(&allowing)
+        ));
+        false
     }
 }
 

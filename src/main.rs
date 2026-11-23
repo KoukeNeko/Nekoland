@@ -293,12 +293,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if data.remote {
             // shortcut: text only, and xrdp's side is looked at twice a second; bridge the
             // selections in the compositor once other kinds of content are wanted across.
-            config::spawn(include_str!("../shell/xrdp-clipboard.sh"));
+            data.clipboard_services.extend(config::spawned(include_str!("../shell/xrdp-clipboard.sh")));
         }
         // The launcher's clipboard history; it ends with the display it watches. Without a
         // type, wl-paste takes one from the name of the file its output goes to, and the log
         // would make it skip pictures.
-        config::spawn("wl-paste --watch nekoland-launcher --remember-clipboard > /dev/null");
+        data.clipboard_services.extend(config::spawned("wl-paste --watch nekoland-launcher --remember-clipboard > /dev/null"));
         // The polkit agent, which asks for the password when a program, such as Bitwarden's
         // system authentication, asks polkit.
         config::spawn("exec nekoland-polkit-agent");

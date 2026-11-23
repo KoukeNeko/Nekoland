@@ -13,6 +13,8 @@
 
 use std::os::unix::io::OwnedFd;
 
+use wayland_server::backend::ClientId;
+
 use crate::input::{Seat, SeatHandler};
 
 pub mod data_device;
@@ -49,6 +51,13 @@ pub trait SelectionHandler: Sized + SeatHandler {
         seat: Seat<Self>,
         user_data: &Self::SelectionUserData,
     ) {
+    }
+
+    /// Whether `client` may read the selection through a data-control offer, which a
+    /// clipboard manager reads in the background with; the offer is refused otherwise.
+    #[allow(unused_variables)]
+    fn allow_data_control_read(&mut self, client: ClientId) -> bool {
+        true
     }
 }
 

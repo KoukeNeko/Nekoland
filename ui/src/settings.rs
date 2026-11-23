@@ -3049,6 +3049,27 @@ fn privacy_page(config: &Config) -> adw::PreferencesPage {
         row.add_prefix(&gtk::Image::from_icon_name(icon));
         permissions.add(&row);
     }
+    // Programs that read the clipboard in the background, by the name the compositor asked
+    // about them by.
+    let readers = config.0.get("clipboard_readers").and_then(toml::Value::as_table).cloned().unwrap_or_default();
+    let asked = if readers.is_empty() { "沒有應用程式".to_string() } else { format!("{} 個應用程式", readers.len()) };
+    let rows = group("");
+    if readers.is_empty() {
+        rows.add(&adw::ActionRow::builder().title("沒有應用程式").css_classes(["dim-label"]).build());
+    }
+    let kept = Rc::new(RefCell::new(readers.clone()));
+    for (name, allowed) in readers {
+        let row = adw::SwitchRow::builder().title(name.as_str()).active(allowed.as_bool().unwrap_or(false)).build();
+        let kept = kept.clone();
+        row.connect_active_notify(move |row| {
+            kept.borrow_mut().insert(name.clone(), row.is_active().into());
+            set(&format!("clipboard_readers = {}", toml::Value::Table(kept.borrow().clone())));
+        });
+        rows.add(&row);
+    }
+    let row = subpage_row("剪貼簿", move || asked.clone(), page_of_groups(&[rows]));
+    row.add_prefix(&gtk::Image::from_icon_name("edit-paste-symbolic"));
+    permissions.add(&row);
     page.add(&permissions);
     let history = group("");
     history.add(&integer_choice_row(
