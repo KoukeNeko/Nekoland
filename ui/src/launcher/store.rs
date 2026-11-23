@@ -4,6 +4,8 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
+use gtk::{gio, prelude::*};
+
 use serde::{Deserialize, Serialize};
 
 /// How many things copied the clipboard's history keeps.
@@ -55,9 +57,24 @@ pub struct Store {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Copied {
+    /// What was copied as text; for files, their paths, and for a picture, what it is.
     pub text: String,
     /// Seconds since the epoch.
     pub at: i64,
+    /// Files copied, as a file manager copies them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<PathBuf>,
+    /// A picture copied, kept in a file of its own named for its type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<PathBuf>,
+}
+
+impl Copied {
+    /// The type a picture copied was offered as, from its file's name.
+    pub fn picture_type(&self) -> Option<String> {
+        let kind = self.picture.as_ref()?.extension()?.to_str()?;
+        Some(format!("image/{kind}"))
+    }
 }
 
 fn data_dir() -> Option<PathBuf> {
@@ -140,33 +157,130 @@ impl Store {
     }
 }
 
+/// What the history holds, without what is older than Settings keeps.
 pub fn clipboard() -> Vec<Copied> {
-    read("clipboard.json")
+    let mut history: Vec<Copied> = read("clipboard.json");
+    if let Some(minutes) = kept_minutes() {
+        history.retain(|copied| copied.at >= now() - minutes * 60);
+    }
+    history
 }
 
+/// Keeps `history`, and lets go of the pictures it no longer holds.
 pub fn set_clipboard(history: &[Copied]) {
     write("clipboard.json", &history);
+    let Some(folder) = pictures_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(&folder) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !history.iter().any(|copied| copied.picture.as_ref() == Some(&path)) {
+            if let Err(err) = std::fs::remove_file(&path) {
+                eprintln!("{}: {err}", path.display());
+            }
+        }
+    }
 }
 
-/// `--remember-clipboard`, which `wl-paste --watch` runs with what was copied on stdin:
-/// puts it first in the history, unless a password manager said it is a secret.
+fn pictures_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("clipboard"))
+}
+
+/// How many minutes the history keeps what was copied, as Settings sets it in the
+/// compositor's configuration: None without end, and 0 for nothing at all.
+fn kept_minutes() -> Option<i64> {
+    let output = std::process::Command::new("nekoland").args(["msg", "config"]).output().ok()?;
+    let config: toml::Table = toml::from_str(&String::from_utf8_lossy(&output.stdout)).ok()?;
+    config.get("clipboard_history")?.as_integer().filter(|minutes| *minutes >= 0)
+}
+
+fn wl_paste(arguments: &[&str]) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("wl-paste").args(arguments).output();
+    match output {
+        Ok(output) if output.status.success() => Some(output.stdout),
+        Ok(_) => None,
+        Err(err) => {
+            eprintln!("wl-paste: {err}");
+            None
+        }
+    }
+}
+
+/// `--remember-clipboard`, which `wl-paste --watch` runs when something is copied: puts
+/// it first in the history in the most useful of the kinds it was copied as, files, text
+/// or a picture, unless a password manager said it is a secret.
 pub fn remember_clipboard() {
-    let mut text = String::new();
-    if let Err(err) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
-        // Not text: a picture, say, which the history does not keep.
+    // What wl-paste hands over is asked for again below in the kind kept; read, so that
+    // wl-paste is not cut off writing it.
+    if let Err(err) = std::io::copy(&mut std::io::stdin(), &mut std::io::sink()) {
         eprintln!("clipboard: {err}");
+    }
+    let minutes = kept_minutes();
+    if minutes == Some(0) {
         return;
     }
-    let secret = std::process::Command::new("wl-paste")
-        .arg("--list-types")
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("x-kde-passwordManagerHint"));
-    if secret || text.trim().is_empty() || text.len() > CLIPBOARD_LONGEST {
+    let types = String::from_utf8_lossy(&wl_paste(&["--list-types"]).unwrap_or_default()).into_owned();
+    let types: Vec<&str> = types.lines().collect();
+    if types.contains(&"x-kde-passwordManagerHint") {
         return;
     }
+    let at = now();
+    let files: Vec<PathBuf> = types
+        .contains(&"text/uri-list")
+        .then(|| wl_paste(&["--no-newline", "--type", "text/uri-list"]))
+        .flatten()
+        .map(|list| {
+            String::from_utf8_lossy(&list)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .filter_map(|uri| gio::File::for_uri(uri).path())
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_text = |kind: &&str| kind.starts_with("text/plain") || ["UTF8_STRING", "STRING", "TEXT"].contains(kind);
+    let copied = if !files.is_empty() {
+        let text = files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+        Copied { text, at, files, picture: None }
+    } else if types.iter().any(is_text) {
+        let Some(text) = wl_paste(&["--no-newline", "--type", "text"]) else { return };
+        let text = String::from_utf8_lossy(&text).into_owned();
+        if text.trim().is_empty() || text.len() > CLIPBOARD_LONGEST {
+            return;
+        }
+        Copied { text, at, files: Vec::new(), picture: None }
+    } else if let Some(kind) = types.iter().find_map(|kind| kind.strip_prefix("image/")) {
+        let Some(picture) = keep_picture(kind) else { return };
+        let text = match gtk::gdk_pixbuf::Pixbuf::file_info(&picture) {
+            Some((_, width, height)) => format!("圖片 {width} × {height}"),
+            None => "圖片".into(),
+        };
+        Copied { text, at, files: Vec::new(), picture: Some(picture) }
+    } else {
+        return;
+    };
     let mut history = clipboard();
-    history.retain(|copied| copied.text != text);
-    history.insert(0, Copied { text, at: now() });
+    history.retain(|old| (&old.text, &old.files, &old.picture) != (&copied.text, &copied.files, &copied.picture));
+    history.insert(0, copied);
     history.truncate(CLIPBOARD_KEPT);
     set_clipboard(&history);
+}
+
+/// The picture on the clipboard, offered as `image/{kind}`, kept in a file named for what
+/// it holds, so that the same picture copied again is kept once.
+fn keep_picture(kind: &str) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    if !kind.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) {
+        return None;
+    }
+    let bytes = wl_paste(&["--type", &format!("image/{kind}")])?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let folder = pictures_dir()?;
+    let path = folder.join(format!("{:016x}.{kind}", hasher.finish()));
+    let written = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&path, &bytes));
+    if let Err(err) = written {
+        eprintln!("{}: {err}", path.display());
+        return None;
+    }
+    Some(path)
 }

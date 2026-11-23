@@ -83,6 +83,9 @@ enum Action {
     Open,
     Copy(String),
     Paste(String),
+    /// What the clipboard's history holds at this place, as it was copied.
+    CopyCopied(usize),
+    PasteCopied(usize),
     ShowInFiles(PathBuf),
     Trash(PathBuf),
     Edit,
@@ -190,11 +193,35 @@ fn spawn(program: &str, arguments: &[&str]) {
 
 /// Puts text on the clipboard, waiting until it is there.
 fn copy(text: &str) {
-    let child = std::process::Command::new("wl-copy").stdin(std::process::Stdio::piped()).spawn();
+    copy_as(text.as_bytes(), None);
+}
+
+/// Puts what was copied back on the clipboard as it was copied: files, a picture or text.
+fn copy_again(copied: &store::Copied) {
+    if !copied.files.is_empty() {
+        let uris: Vec<String> = copied.files.iter().map(|path| gio::File::for_path(path).uri().into()).collect();
+        copy_as(uris.join("\r\n").as_bytes(), Some("text/uri-list"));
+    } else if let (Some(picture), Some(kind)) = (&copied.picture, copied.picture_type()) {
+        match std::fs::read(picture) {
+            Ok(bytes) => copy_as(&bytes, Some(&kind)),
+            Err(err) => eprintln!("{}: {err}", picture.display()),
+        }
+    } else {
+        copy(&copied.text);
+    }
+}
+
+/// Puts `bytes` on the clipboard as `kind`, or as text, waiting until they are there.
+fn copy_as(bytes: &[u8], kind: Option<&str>) {
+    let mut command = std::process::Command::new("wl-copy");
+    if let Some(kind) = kind {
+        command.args(["--type", kind]);
+    }
+    let child = command.stdin(std::process::Stdio::piped()).spawn();
     match child {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
-                if let Err(err) = stdin.write_all(text.as_bytes()) {
+                if let Err(err) = stdin.write_all(bytes) {
                     eprintln!("wl-copy: {err}");
                 }
             }
@@ -245,8 +272,14 @@ fn ago(at: i64) -> String {
 }
 
 /// What was copied is a link, a file's path or text, by its name and theme icons.
-fn copied_kind(text: &str) -> (&'static str, String) {
-    let text = text.trim();
+fn copied_kind(copied: &store::Copied) -> (&'static str, String) {
+    if copied.picture.is_some() {
+        return ("圖片", "image-x-generic".into());
+    }
+    if let Some(path) = copied.files.first() {
+        return ("檔案", file_icon(path, path.is_dir()).join("\n"));
+    }
+    let text = copied.text.trim();
     if text.lines().count() == 1 {
         if text.starts_with("https://") || text.starts_with("http://") {
             return ("連結", "web-browser".into());
@@ -510,7 +543,7 @@ impl State {
                 .take(VIEW_MOST)
                 .map(|(index, copied)| {
                     Found::new(first_line(&copied.text), Target::Copied(index))
-                        .icon(Some(copied_kind(&copied.text).1))
+                        .icon(Some(copied_kind(copied).1))
                 })
                 .collect(),
             View::Emoji => {
@@ -773,15 +806,23 @@ impl State {
         let facts = match self.found.get(index).map(|found| &found.target) {
             Some(Target::Copied(copied)) => self.clipboard.get(*copied).map_or_else(Vec::new, |copied| {
                 let fact = |label: &str, value: String| Fact { label: label.into(), value: value.into() };
-                vec![
-                    fact("類型", copied_kind(&copied.text).0.into()),
-                    fact("字元", calc::format(copied.text.chars().count() as f64)),
-                    fact("複製時間", date_time(copied.at)),
-                ]
+                let mut facts = vec![fact("類型", copied_kind(copied).0.into())];
+                if copied.files.len() > 1 {
+                    facts.push(fact("項目", calc::format(copied.files.len() as f64)));
+                } else if copied.files.is_empty() && copied.picture.is_none() {
+                    facts.push(fact("字元", calc::format(copied.text.chars().count() as f64)));
+                }
+                facts.push(fact("複製時間", date_time(copied.at)));
+                facts
             }),
             _ => Vec::new(),
         };
         ui.set_facts(ModelRc::from(Rc::new(VecModel::from(facts))));
+        let picture = match self.found.get(index).map(|found| &found.target) {
+            Some(Target::Copied(copied)) => self.clipboard.get(*copied).and_then(|copied| copied.picture.as_deref()),
+            _ => None,
+        };
+        ui.set_detail_picture(picture.and_then(|path| slint::Image::load_from_path(path).ok()).unwrap_or_default());
         let detail = match self.found.get(index).map(|found| &found.target) {
             Some(Target::Copied(copied)) => self.clipboard.get(*copied).map(|copied| copied.text.clone()),
             Some(Target::Snippet(snippet)) => {
@@ -842,10 +883,9 @@ impl State {
                 (named("移到垃圾桶"), "", Action::Trash(path.clone())),
             ],
             Target::Copied(copied) => {
-                let text = self.clipboard.get(*copied).map(|copied| copied.text.clone()).unwrap_or_default();
                 vec![
-                    (named("貼上"), "↵", Action::Paste(text.clone())),
-                    (named("複製"), "Ctrl ↵", Action::Copy(text)),
+                    (named("貼上"), "↵", Action::PasteCopied(*copied)),
+                    (named("複製"), "Ctrl ↵", Action::CopyCopied(*copied)),
                     (named("從紀錄中移除"), "", Action::Forget(*copied)),
                     (named("清除剪貼簿紀錄"), "", Action::ClearClipboard),
                 ]
@@ -858,7 +898,7 @@ impl State {
                 let text =
                     self.store.snippets.get(*snippet).map(|snippet| snippet.text.clone()).unwrap_or_default();
                 let text =
-                    expand_placeholders(&text, self.clipboard.first().map(|copied| copied.text.as_str()));
+                    expand_placeholders(&text, self.clipboard.iter().find(|copied| copied.files.is_empty() && copied.picture.is_none()).map(|copied| copied.text.as_str()));
                 vec![
                     (named("貼上"), "↵", Action::Paste(text.clone())),
                     (named("複製"), "Ctrl ↵", Action::Copy(text)),
@@ -1037,6 +1077,19 @@ impl State {
             Action::Paste(text) => {
                 self.count(&target);
                 paste(&text);
+                self.quit();
+            }
+            Action::CopyCopied(index) => {
+                if let Some(copied) = self.clipboard.get(index) {
+                    copy_again(copied);
+                }
+                self.quit();
+            }
+            Action::PasteCopied(index) => {
+                if let Some(copied) = self.clipboard.get(index) {
+                    copy_again(copied);
+                    msg("after-launcher paste");
+                }
                 self.quit();
             }
             Action::ShowInFiles(path) => {

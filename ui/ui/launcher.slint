@@ -139,6 +139,8 @@ export component Launcher inherits Window {
     in property <length> content-height;
     // What the item in hand holds, shown beside the list.
     in property <string> detail;
+    // A copied picture, shown in place of the detail's text.
+    in property <image> detail-picture;
     in property <[Fact]> facts;
     // What Return does to the item in hand, and the rest Ctrl+K lists.
     in property <string> primary;
@@ -627,7 +629,15 @@ export component Launcher inherits Window {
             }
             property <length> fact-height: 28px;
             property <length> facts-height: root.facts.length > 0 ? 2 * root.row-inset + 1px + root.facts.length * fact-height : 0;
-            Flickable {
+            if root.detail-picture.width > 0: Image {
+                x: root.edge;
+                y: root.edge;
+                width: parent.width - 2 * root.edge;
+                height: parent.height - parent.facts-height - 2 * root.edge;
+                source: root.detail-picture;
+                image-fit: contain;
+            }
+            if root.detail-picture.width == 0: Flickable {
                 x: 1px;
                 y: 0;
                 width: parent.width - 1px;

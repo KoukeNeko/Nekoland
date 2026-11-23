@@ -558,7 +558,7 @@ fn build(app: &adw::Application) {
                 "VPN" => vpn::vpn_page().upcast(),
                 "外觀" => appearance_page(config, &look).upcast(),
                 "協助工具" => accessibility_page(config).upcast(),
-                "隱私" => privacy_page().upcast(),
+                "隱私" => privacy_page(config).upcast(),
                 "桌布" => wallpaper_page(config, &autostart).upcast(),
                 "桌面與 Dock" => desktop_page(config).upcast(),
                 "選單列" => menu_bar_page(config).upcast(),
@@ -2993,7 +2993,10 @@ const PERMISSIONS: [(&str, &str, &str, &str); 7] = [
 ];
 
 /// The applications that asked for each permission, with whether they have it.
-fn privacy_page() -> adw::PreferencesPage {
+/// How many minutes the launcher's clipboard history keeps what was copied; -1 without end.
+const CLIPBOARD_HISTORY: [i64; 5] = [0, 30, 480, 10080, -1];
+
+fn privacy_page(config: &Config) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
         .inspect_err(|err| eprintln!("session bus: {err}"))
@@ -3048,6 +3051,13 @@ fn privacy_page() -> adw::PreferencesPage {
     }
     page.add(&permissions);
     let history = group("");
+    history.add(&integer_choice_row(
+        config,
+        "剪貼簿紀錄",
+        "clipboard_history",
+        (&CLIPBOARD_HISTORY, &["不記錄", "30 分鐘", "8 小時", "7 天", "不限"]),
+        -1,
+    ));
     history.add(&gsettings_switch(
         "記錄最近使用的檔案",
         "org.gnome.desktop.privacy",

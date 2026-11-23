@@ -175,6 +175,9 @@ pub struct Config {
     pub desktop_sort: Sort,
     /// Whether the files stay where they are dragged on the desktop instead of in order.
     pub desktop_free: bool,
+    /// How many minutes the launcher's clipboard history keeps what was copied: 0 keeps
+    /// nothing, and a negative number keeps it without end.
+    pub clipboard_history: i64,
     /// Whether resting the pointer on a file on the desktop or in a Dock folder shows a
     /// panel of what it is and holds, after how many seconds, and in which style.
     pub hover_info: bool,
@@ -817,6 +820,7 @@ impl Default for Config {
             desktop_icons: true,
             desktop_sort: Sort::Name,
             desktop_free: false,
+            clipboard_history: -1,
             hover_info: true,
             // FinderHover's own, after the pointer stops.
             hover_delay: 0.1,
