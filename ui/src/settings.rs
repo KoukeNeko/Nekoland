@@ -1544,10 +1544,10 @@ fn menu_bar_clock_summary() -> String {
     parts.join("・")
 }
 
-/// 桌布: the pictures to pick from, how one fills the desktop, and the desktop's items.
+/// 桌布: the desktop as it looks, the pictures to pick from, how one fills the desktop, and
+/// the desktop's items.
 fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    let wall = group("");
     // Without a wallpaper of Nekoland's own, the one swaybg is started with at login.
     let current = config
         .0
@@ -1562,6 +1562,16 @@ fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw:
             })
         });
     let pictures = Rc::new(RefCell::new(wallpapers(current.as_deref())));
+
+    let mode = Rc::new(Cell::new(config.choice(&WALLPAPER_MODES, "wallpaper_mode")));
+    let (preview, show) = wallpaper_preview(&mode);
+    if let Some(path) = &current {
+        show(path.clone());
+    }
+    let shown = group("");
+    shown.add(&preview);
+    page.add(&shown);
+
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         .max_children_per_line(8)
@@ -1569,6 +1579,7 @@ fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw:
         .column_spacing(6)
         .row_spacing(6)
         .homogeneous(true)
+        .css_classes(["wallpapers"])
         .build();
     for path in pictures.borrow().iter() {
         flow.append(&wallpaper_thumbnail(path));
@@ -1583,6 +1594,7 @@ fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw:
     let autostart = autostart.clone();
     let use_wallpaper = Rc::new(move |path: &Path| {
         set(&format!("wallpaper = {}", toml_string(&path.to_string_lossy())));
+        show(path.to_path_buf());
         // A wallpaper started at login would stay under this one; it is not started again.
         // shortcut: the one running now stays until the session ends; stopping it needs its process.
         let mut commands = autostart.borrow_mut();
@@ -1600,65 +1612,136 @@ fn wallpaper_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw:
             }
         }
     });
-    // The pictures go under the heading, as a group's rows would come before them.
-    flow.set_visible(flow.first_child().is_some());
-    wall.add(&flow);
-    wall.add(&switch_row(config, "桌面項目", "desktop_icons"));
-    page.add(&wall);
 
-    let options = adw::PreferencesGroup::new();
-    options.add(&choice_row(
-        config,
-        "填滿方式",
-        "wallpaper_mode",
-        &WALLPAPER_MODES,
-        &["填滿", "符合", "置中"],
-    ));
-    let choose = gtk::Button::builder()
-        .label("選擇⋯")
-        .valign(gtk::Align::Center)
+    // Another picture is added as the last tile, after the ones offered.
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("其他圖片")
+        .css_classes(["card", "activatable"])
+        .width_request(96)
+        .height_request(60)
         .build();
-    choose.connect_clicked(move |button| {
-        let images = gtk::FileFilter::new();
-        // What swaybg reads, through the same gdk-pixbuf.
-        images.add_pixbuf_formats();
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&images);
-        let dialog = gtk::FileDialog::builder()
-            .title("選擇圖片")
-            .filters(&filters)
-            .build();
-        let (flow, pictures, use_wallpaper) = (flow.clone(), pictures.clone(), use_wallpaper.clone());
-        let window = button.root().and_downcast::<gtk::Window>();
-        dialog.open(window.as_ref(), gio::Cancellable::NONE, move |chosen| {
-            let path = match chosen.map(|file| file.path()) {
-                Ok(Some(path)) => path,
-                Ok(None) => return eprintln!("wallpaper: the file chosen has no local path"),
-                Err(err) if err.matches(gtk::DialogError::Dismissed) => return,
-                Err(err) => return eprintln!("wallpaper: {err}"),
-            };
-            let index = pictures.borrow().iter().position(|picture| *picture == path);
-            let index = index.unwrap_or_else(|| {
-                flow.append(&wallpaper_thumbnail(&path));
-                flow.set_visible(true);
-                pictures.borrow_mut().push(path.clone());
-                pictures.borrow().len() - 1
+    let add_tile = gtk::FlowBoxChild::builder().child(&add).focusable(false).build();
+    flow.append(&add_tile);
+    add.connect_clicked({
+        let flow = flow.clone();
+        move |button| {
+            let images = gtk::FileFilter::new();
+            // What swaybg reads, through the same gdk-pixbuf.
+            images.add_pixbuf_formats();
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&images);
+            let dialog = gtk::FileDialog::builder()
+                .title("選擇圖片")
+                .filters(&filters)
+                .build();
+            let (flow, pictures, use_wallpaper) = (flow.clone(), pictures.clone(), use_wallpaper.clone());
+            let window = button.root().and_downcast::<gtk::Window>();
+            dialog.open(window.as_ref(), gio::Cancellable::NONE, move |chosen| {
+                let path = match chosen.map(|file| file.path()) {
+                    Ok(Some(path)) => path,
+                    Ok(None) => return eprintln!("wallpaper: the file chosen has no local path"),
+                    Err(err) if err.matches(gtk::DialogError::Dismissed) => return,
+                    Err(err) => return eprintln!("wallpaper: {err}"),
+                };
+                let index = pictures.borrow().iter().position(|picture| *picture == path);
+                let index = index.unwrap_or_else(|| {
+                    let index = pictures.borrow().len();
+                    flow.insert(&wallpaper_thumbnail(&path), index as i32);
+                    pictures.borrow_mut().push(path.clone());
+                    index
+                });
+                if let Some(child) = flow.child_at_index(index as i32) {
+                    flow.select_child(&child);
+                }
+                use_wallpaper(&path);
             });
-            if let Some(child) = flow.child_at_index(index as i32) {
-                flow.select_child(&child);
-            }
-            use_wallpaper(&path);
-        });
+        }
     });
-    let other = adw::ActionRow::builder().title("其他圖片").build();
-    other.add_suffix(&choose);
-    other.set_activatable_widget(Some(&choose));
-    options.add(&other);
+    let pick = group("");
+    pick.add(&flow);
+    page.add(&pick);
+
+    let options = group("");
+    let fill = segmented(&["填滿", "符合", "置中"], mode.get());
+    fill.set_valign(gtk::Align::Center);
+    fill.connect_notify_local(Some("active"), {
+        let preview = preview.clone();
+        move |fill, _| {
+            let chosen = fill.property::<u32>("active");
+            if let Some(name) = WALLPAPER_MODES.get(chosen as usize) {
+                set(&format!("wallpaper_mode = {name:?}"));
+                mode.set(chosen);
+                preview.queue_draw();
+            }
+        }
+    });
+    let fill_row = adw::ActionRow::builder().title("填滿方式").build();
+    fill_row.add_suffix(&fill);
+    options.add(&fill_row);
+    options.add(&switch_row(config, "桌面項目", "desktop_icons"));
     page.add(&options);
     page
 }
 
-/// A wallpaper as the 桌布 group shows it to be chosen.
+/// The desktop as the first display shows its wallpaper, in that display's shape, and the
+/// way to show another picture on it.
+fn wallpaper_preview(mode: &Rc<Cell<u32>>) -> (gtk::AspectFrame, Rc<dyn Fn(PathBuf)>) {
+    let (screen_width, screen_height) = lock_preview_size();
+    let (screen_width, screen_height) = (f64::from(screen_width), f64::from(screen_height));
+    // The picture read small, with its own size.
+    let shown: Rc<RefCell<Option<(Pixbuf, f64, f64)>>> = Rc::default();
+    let area = gtk::DrawingArea::builder().css_classes(["card"]).build();
+    area.set_overflow(gtk::Overflow::Hidden);
+    area.set_draw_func({
+        let (mode, shown) = (mode.clone(), shown.clone());
+        move |_, cr, width, height| {
+            let Some((pixbuf, own_width, own_height)) = &*shown.borrow() else {
+                return;
+            };
+            // As the compositor puts it: scaled for the mode, centred, over black.
+            let scale = match WALLPAPER_MODES.get(mode.get() as usize) {
+                Some(&"fit") => (screen_width / own_width).min(screen_height / own_height),
+                Some(&"center") => 1.0,
+                _ => (screen_width / own_width).max(screen_height / own_height),
+            } * f64::from(width)
+                / screen_width;
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            let _ = cr.paint();
+            cr.translate(
+                (f64::from(width) - own_width * scale) / 2.0,
+                (f64::from(height) - own_height * scale) / 2.0,
+            );
+            cr.scale(
+                own_width * scale / f64::from(pixbuf.width()),
+                own_height * scale / f64::from(pixbuf.height()),
+            );
+            cr.set_source_pixbuf(pixbuf, 0.0, 0.0);
+            let _ = cr.paint();
+        }
+    });
+    let frame = gtk::AspectFrame::builder()
+        .ratio((screen_width / screen_height) as f32)
+        .obey_child(false)
+        .child(&area)
+        .height_request(280)
+        .build();
+    let show = Rc::new(move |path: PathBuf| {
+        let (area, shown) = (area.downgrade(), shown.clone());
+        glib::spawn_future_local(async move {
+            let own = Pixbuf::file_info(&path).map(|(_, width, height)| (f64::from(width), f64::from(height)));
+            // Twice the preview's points, for a display at double scale.
+            let small = read_scaled(path, 1120, 700).await;
+            if let (Some(own), Some(small), Some(area)) = (own, small, area.upgrade()) {
+                *shown.borrow_mut() = Some((small, own.0, own.1));
+                area.queue_draw();
+            }
+        });
+    });
+    (frame, show)
+}
+
+
 const NOTIFICATION_SECONDS: [i64; 4] = [3, 5, 10, 20];
 const HOT_CORNERS: [&str; 4] = ["none", "overview", "apps", "lock"];
 const HOT_CORNER_NAMES: [&str; 4] = ["無", "所有視窗", "應用程式", "鎖定螢幕"];
@@ -1672,6 +1755,7 @@ const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
 /// What clicking a GTK title bar does, as GNOME names it.
 const TITLEBAR_ACTIONS: [&str; 3] = ["toggle-maximize", "minimize", "none"];
 
+/// A wallpaper as the 桌布 group shows it to be chosen.
 fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)
@@ -1688,33 +1772,43 @@ fn wallpaper_thumbnail(path: &Path) -> gtk::Picture {
 fn show_thumbnail(picture: &gtk::Picture, path: PathBuf) {
     let picture = picture.downgrade();
     glib::spawn_future_local(async move {
-        // A Pixbuf stays on the thread that read it; its pixels come back.
-        let read = gio::spawn_blocking(move || {
-            Pixbuf::from_file_at_scale(&path, 320, 200, true).map(|pixbuf| {
-                let format = if pixbuf.has_alpha() {
-                    gdk::MemoryFormat::R8g8b8a8
-                } else {
-                    gdk::MemoryFormat::R8g8b8
-                };
-                (
-                    pixbuf.read_pixel_bytes(),
-                    pixbuf.width(),
-                    pixbuf.height(),
-                    pixbuf.rowstride(),
-                    format,
-                )
-            })
-        })
-        .await;
-        match (read, picture.upgrade()) {
-            (Ok(Ok((pixels, width, height, stride, format))), Some(picture)) => {
-                let texture = gdk::MemoryTexture::new(width, height, format, &pixels, stride as usize);
-                picture.set_paintable(Some(&texture));
-            }
-            (Ok(Err(err)), _) => eprintln!("{err}"),
-            _ => {}
+        if let (Some(small), Some(picture)) = (read_scaled(path, 320, 200).await, picture.upgrade()) {
+            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&small)));
         }
     });
+}
+
+/// A picture read on a thread of its own, made to fit `width` by `height`.
+async fn read_scaled(path: PathBuf, width: i32, height: i32) -> Option<Pixbuf> {
+    // A Pixbuf stays on the thread that read it; its pixels come back.
+    let read = gio::spawn_blocking(move || {
+        Pixbuf::from_file_at_scale(&path, width, height, true).map(|pixbuf| {
+            (
+                pixbuf.read_pixel_bytes(),
+                pixbuf.has_alpha(),
+                pixbuf.width(),
+                pixbuf.height(),
+                pixbuf.rowstride(),
+            )
+        })
+    })
+    .await;
+    match read {
+        Ok(Ok((pixels, alpha, width, height, stride))) => Some(Pixbuf::from_bytes(
+            &pixels,
+            gtk::gdk_pixbuf::Colorspace::Rgb,
+            alpha,
+            8,
+            width,
+            height,
+            stride,
+        )),
+        Ok(Err(err)) => {
+            eprintln!("{err}");
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 /// GNOME's interface settings, which GTK reads through the settings portal, and Qt and

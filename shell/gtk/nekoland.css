@@ -905,6 +905,13 @@ window.background.system-alert:not(.desktopwindow) { --window-bg-color: transpar
 /* The screen-share picker's tiles: as much room around a thumbnail as between it and its
  * name, and corners that follow the thumbnail's 12 at that distance. */
 flowbox.thumbnails > flowboxchild { padding: 8px; border-radius: 20px; }
+/* Settings' wallpapers: the one in use ringed in ink, as what is chosen is solid ink, the
+ * ring following the thumbnail's 12 corners at its distance. */
+flowbox.wallpapers > flowboxchild { padding: 3px; border-radius: 15px; }
+flowbox.wallpapers > flowboxchild:selected {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--nekoland-ink);
+}
 
 @media (prefers-color-scheme: dark) {
   :root {
