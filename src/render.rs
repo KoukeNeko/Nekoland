@@ -1226,7 +1226,8 @@ fn popup_pivot(popup: &PopupKind, rect: Rectangle<i32, Logical>) -> Point<i32, L
 
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
 const WINDOW_RADIUS: i32 = 14;
-/// How far past a window not GTK's its glass shows, as GTK's shows at its edge.
+/// How far past a window not GTK's its glass shows, in physical pixels, as GTK's shows at its
+/// edge at any scale.
 const RIM: i32 = 1;
 
 /// `windows`, front to back, each where it is drawn, over `backdrop` and on glass of what is
@@ -1297,11 +1298,12 @@ fn windows_on_glass(
         let rim = framed.filter(|_| ![CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()));
         let (area, radius) = match rim {
             Some((body, radius)) => {
+                let body = body.to_physical_precise_round(scale);
                 let outer = Rectangle::new(
                     body.loc - Point::from((RIM, RIM)),
                     body.size + Size::from((2 * RIM, 2 * RIM)),
                 );
-                (Some(outer.to_physical_precise_round(scale)), radius + RIM)
+                (Some(outer), (f64::from(radius) * scale).round() as i32 + RIM)
             }
             None => {
                 // An X11 program's menus and tooltips are mostly transparent shadow margin,
@@ -1311,7 +1313,8 @@ fn windows_on_glass(
                     .filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
                 let radius = framed.map_or(corner, |(_, radius)| radius);
                 // Nor behind one that covers all of it, which would never show.
-                (area.filter(|_| !hides_glass(window, *pose, radius)), radius)
+                let area = area.filter(|_| !hides_glass(window, *pose, radius));
+                (area, (f64::from(radius) * scale).round() as i32)
             }
         };
         let area = area.filter(|area| !area.is_empty());
@@ -1320,7 +1323,6 @@ fn windows_on_glass(
             if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
                 tracing::warn!("glass: {err}");
             }
-            let radius = (f64::from(radius) * scale).round() as i32;
             elements.extend(
                 glass
                     .window_pane(id.clone(), area, radius)
