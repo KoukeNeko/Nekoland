@@ -339,7 +339,7 @@ pub(crate) fn icons_section() -> gtk::Box {
         &[
             card("", &sheet).upcast_ref(),
             strip("手繪", icons_in(Path::new(DRAWN_ICONS))).upcast_ref(),
-            strip("自動演算", converted_icons()).upcast_ref(),
+            strip("自動演算", themes::converted_icons()).upcast_ref(),
         ],
     )
 }

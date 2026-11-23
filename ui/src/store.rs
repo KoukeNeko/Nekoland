@@ -30,7 +30,7 @@ mod web;
 
 use std::{
     cell::{Cell, RefCell},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
 
@@ -613,6 +613,70 @@ fn dock_icon(names: &[&str]) -> Option<PathBuf> {
     })
 }
 
+thread_local! {
+    /// Whether Appearance's switch has other apps' icons made into Nekoland's, which Market
+    /// then does for the apps it shows too.
+    static RESTYLES: bool = !themes::converted_icons().is_empty();
+    /// Icons waiting to be made into Nekoland's, each with where it is shown and how large.
+    static TO_RESTYLE: RefCell<Vec<(PathBuf, glib::WeakRef<gtk::Box>, i32)>> = RefCell::default();
+}
+
+/// Where the Nekoland icon made from the icon file `source` is kept: in the cache, not the
+/// icon theme, as the app is not installed. nekoland-conform-icons names it after the file
+/// without .svg or .png.
+// shortcut: made once, not again when icon-overrides.json changes; delete the folder to redo them.
+fn restyled(source: &Path) -> PathBuf {
+    let name = source.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = name.strip_suffix(".svg").or_else(|| name.strip_suffix(".png")).unwrap_or(&name);
+    restyled_dir().join(format!("{name}.svg"))
+}
+
+fn restyled_dir() -> PathBuf {
+    glib::user_cache_dir().join("nekoland/market-icons")
+}
+
+/// Makes `source` into a Nekoland icon and shows it in `holder`; the icons asked for while
+/// a page is built are made together, by one run of the tool.
+fn restyle_later(source: PathBuf, holder: &gtk::Box, size: i32) {
+    let first = TO_RESTYLE.with_borrow_mut(|queued| {
+        queued.push((source, holder.downgrade(), size));
+        queued.len() == 1
+    });
+    if !first {
+        return;
+    }
+    glib::idle_add_local_once(|| {
+        let queued = TO_RESTYLE.take();
+        let mut sources: Vec<PathBuf> = queued.iter().map(|(source, _, _)| source.clone()).collect();
+        sources.sort();
+        sources.dedup();
+        background(
+            move || {
+                let tool = program::path("nekoland-conform-icons");
+                std::process::Command::new(&tool)
+                    .arg("--out")
+                    .arg(restyled_dir())
+                    .args(&sources)
+                    .stdout(std::process::Stdio::null())
+                    .status()
+                    .inspect_err(|err| eprintln!("{}: {err}", tool.display()))
+            },
+            move |_| {
+                for (source, holder, size) in queued {
+                    let (Some(holder), made) = (holder.upgrade(), restyled(&source)) else { continue };
+                    if !made.is_file() {
+                        continue;
+                    }
+                    while let Some(child) = holder.first_child() {
+                        holder.remove(&child);
+                    }
+                    holder.append(&gtk::Image::builder().file(made.to_string_lossy()).pixel_size(size).build());
+                }
+            },
+        );
+    });
+}
+
 fn local_icon(app: &App, size: i32) -> gtk::Widget {
     let names: Vec<&str> = [app.icon_name.as_str(), app.key.as_str()]
         .into_iter()
@@ -623,11 +687,19 @@ fn local_icon(app: &App, size: i32) -> gtk::Widget {
         return gtk::Image::builder().file(path.to_string_lossy()).pixel_size(size).build().upcast();
     }
     if let Some(path) = &app.icon {
-        return gtk::Image::builder()
-            .file(path.to_string_lossy())
-            .pixel_size(size)
-            .build()
-            .upcast();
+        let own = gtk::Image::builder().file(path.to_string_lossy()).pixel_size(size).build();
+        if !RESTYLES.with(|on| *on) {
+            return own.upcast();
+        }
+        let made = restyled(path);
+        if made.is_file() {
+            return gtk::Image::builder().file(made.to_string_lossy()).pixel_size(size).build().upcast();
+        }
+        // Its own icon until Nekoland's is made from it.
+        let holder = gtk::Box::builder().halign(gtk::Align::Start).valign(gtk::Align::Center).build();
+        holder.append(&own);
+        restyle_later(path.clone(), &holder, size);
+        return holder.upcast();
     }
     let themed = gdk::Display::default().is_some_and(|display| {
         !app.icon_name.is_empty() && gtk::IconTheme::for_display(&display).has_icon(&app.icon_name)
@@ -1841,7 +1913,7 @@ fn installed_with_icons() -> std::collections::BTreeMap<u8, Vec<App>> {
         else {
             continue;
         };
-        if std::path::Path::new(icon.as_str()).is_absolute() {
+        if Path::new(icon.as_str()).is_absolute() {
             app.icon = Some(PathBuf::from(icon.as_str()));
         } else {
             app.icon_name = icon.to_string();

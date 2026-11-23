@@ -137,9 +137,6 @@ pub(crate) fn theme_row(config: &Config, title: &str, key: &'static str, gsettin
 
 /// The hand-drawn icons of Nekoland's own icon theme, as install.sh puts them.
 pub(crate) const DRAWN_ICONS: &str = "/usr/local/share/icons/Nekoland/scalable/apps";
-/// What nekoland-conform-icons marks the icons it makes with.
-pub(crate) const CONVERTED_MARK: &[u8] = b"<!-- conform-icons -->";
-
 /// The SVG icons in `dir`, by name.
 pub(crate) fn icons_in(dir: &Path) -> Vec<PathBuf> {
     let mut icons: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -153,26 +150,12 @@ pub(crate) fn icons_in(dir: &Path) -> Vec<PathBuf> {
     icons
 }
 
-/// The icons made from other applications' own, in the person's half of Nekoland's theme.
-pub(crate) fn converted_icons() -> Vec<PathBuf> {
-    use std::io::Read;
-    icons_in(&themes::user_dir().join("Nekoland/scalable/apps"))
-        .into_iter()
-        .filter(|path| {
-            let mut head = [0; 64];
-            std::fs::File::open(path)
-                .and_then(|mut file| file.read(&mut head))
-                .is_ok_and(|read| head[..read].starts_with(CONVERTED_MARK))
-        })
-        .collect()
-}
-
 /// Whether other applications' icons are redrawn on Nekoland's tile; turning it on makes
 /// them, off removes them, and either way the compositor looks its icons up again.
 pub(crate) fn converted_icons_row() -> adw::SwitchRow {
     let row = adw::SwitchRow::builder()
         .title("轉換其他應用程式的圖示")
-        .active(!converted_icons().is_empty())
+        .active(!themes::converted_icons().is_empty())
         .build();
     row.connect_active_notify(|row| {
         let remove = !row.is_active();
@@ -203,7 +186,7 @@ pub(crate) fn own_icons_dialog(parent: &adw::ActionRow) {
     let page = adw::PreferencesPage::new();
     for (title, icons) in [
         ("手繪", icons_in(Path::new(DRAWN_ICONS))),
-        ("自動演算", converted_icons()),
+        ("自動演算", themes::converted_icons()),
     ] {
         let icons_group = adw::PreferencesGroup::builder()
             .title(title)

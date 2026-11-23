@@ -24,6 +24,30 @@ pub fn user_dir() -> PathBuf {
     glib::user_data_dir().join("icons")
 }
 
+/// What nekoland-conform-icons marks the icons it makes with.
+pub const CONVERTED_MARK: &[u8] = b"<!-- conform-icons -->";
+
+/// The icons made from other applications' own, in the person's half of Nekoland's theme;
+/// there are some while Appearance's switch for them is on.
+pub fn converted_icons() -> Vec<PathBuf> {
+    use std::io::Read;
+    let mut icons: Vec<PathBuf> = std::fs::read_dir(user_dir().join("Nekoland/scalable/apps"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "svg"))
+        .filter(|path| {
+            let mut head = [0; 64];
+            std::fs::File::open(path)
+                .and_then(|mut file| file.read(&mut head))
+                .is_ok_and(|read| head[..read].starts_with(CONVERTED_MARK))
+        })
+        .collect();
+    icons.sort();
+    icons
+}
+
 pub fn is_cursor_theme(path: &Path) -> bool {
     path.join("cursors").is_dir()
 }
