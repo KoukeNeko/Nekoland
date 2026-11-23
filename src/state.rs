@@ -48,6 +48,9 @@ pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
 
 pub const ABOVE_WINDOWS: [Layer; 2] = [Layer::Overlay, Layer::Top];
 pub const BELOW_WINDOWS: [Layer; 2] = [Layer::Bottom, Layer::Background];
+/// How often a window drawn nowhere is told a frame was shown, as Smithay's examples do for
+/// surfaces hidden from every output.
+const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Nekoland {
     pub start_time: std::time::Instant,
@@ -448,6 +451,14 @@ impl Nekoland {
         self.space
             .elements()
             .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        // Minimized windows and those on other desktops are drawn nowhere, but still get a
+        // frame now and then: Chromium's GPU process otherwise blocks waiting for one, and
+        // the program stops answering.
+        self.minimized
+            .iter()
+            .map(|(window, _)| window)
+            .chain(self.workspaces.parked_windows())
+            .for_each(|window| window.send_frame(output, time, Some(HIDDEN_FRAME_INTERVAL), |_, _| None));
         let mut layers = layer_map_for_output(output);
         layers
             .layers()
