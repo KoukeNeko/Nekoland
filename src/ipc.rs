@@ -181,6 +181,12 @@ fn display_named(state: &crate::Nekoland, name: &str) -> Option<Output> {
 
 /// Does what a message asks; a question gets its answer back.
 fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
+    // Where the pointer is, `X Y` in points, for a wallpaper under the windows to follow it.
+    // Asked many times a second, so the displays are not drawn again for it.
+    if message == "cursor" {
+        let location = state.seat.get_pointer()?.current_location();
+        return Some(format!("{:.0} {:.0}\n", location.x, location.y));
+    }
     if let Some(redraw) = &state.redraw {
         redraw.ping();
     }
