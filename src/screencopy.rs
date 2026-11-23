@@ -4,14 +4,14 @@
 //! shared memory, when the output is next drawn; ext-image-copy-capture's frames of an
 //! output (`image_capture`) wait and are copied with these.
 //!
-//! shortcut: shared memory only, no dmabufs, so each frame goes through the CPU; offer
-//! dmabufs if sharing a large screen proves slow.
+//! A wlr frame of a whole display may also be a dmabuf, drawn into on the GPU: Sunshine
+//! takes nothing else.
 
 use std::{sync::Mutex, time::Duration};
 
 use smithay::{
     backend::{
-        allocator::Fourcc,
+        allocator::{dmabuf::Dmabuf, Buffer, Fourcc},
         renderer::{
             damage::OutputDamageTracker, element::RenderElement, gles::GlesRenderer, Bind, ExportMem,
             Offscreen, TextureMapping,
@@ -32,7 +32,7 @@ use smithay::{
         },
     },
     utils::{Physical, Rectangle, Size, Transform},
-    wayland::shm::with_buffer_contents_mut,
+    wayland::{dmabuf::get_dmabuf, shm::with_buffer_contents_mut},
 };
 
 use crate::{render::CLEAR_COLOR, Nekoland};
@@ -47,6 +47,8 @@ pub struct FrameData {
     /// The part of the output, in its pixels.
     region: Rectangle<i32, Physical>,
     cursor: bool,
+    /// Whether a dmabuf was offered for it, as for a whole display.
+    dmabuf: bool,
     /// Set once the client gave a buffer: a frame is copied only once.
     used: Mutex<bool>,
 }
@@ -105,6 +107,17 @@ impl Frame {
     }
 }
 
+/// The format a wlr frame of a whole display offers as a dmabuf.
+const DMABUF_FORMAT: Fourcc = Fourcc::Xrgb8888;
+
+/// Whether `buffer` is a dmabuf for a whole display `size` large, in the format offered.
+fn fits_dmabuf(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
+    get_dmabuf(buffer).is_ok_and(|dmabuf| {
+        dmabuf.format().code == DMABUF_FORMAT
+            && (dmabuf.width(), dmabuf.height()) == (size.w as u32, size.h as u32)
+    })
+}
+
 /// Whether `buffer` is shared memory in the one format frames are copied in, `size` large.
 pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
     with_buffer_contents_mut(buffer, |_, len, shm| {
@@ -143,7 +156,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Nekoland {
     fn request(
         _state: &mut Self,
         _client: &Client,
-        _manager: &ZwlrScreencopyManagerV1,
+        manager: &ZwlrScreencopyManagerV1,
         request: zwlr_screencopy_manager_v1::Request,
         _data: &(),
         _dh: &DisplayHandle,
@@ -189,17 +202,21 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Nekoland {
                 output: None,
                 region: whole,
                 cursor: false,
+                dmabuf: false,
                 used: Mutex::new(true),
             };
             data_init.init(frame, data).failed();
             return;
         };
+        // Drawn straight into, a dmabuf holds the whole display only.
+        let dmabuf = manager.version() >= 3 && region == whole;
         let frame = data_init.init(
             frame,
             FrameData {
                 output: Some(output),
                 region,
                 cursor: cursor != 0,
+                dmabuf,
                 used: Mutex::new(false),
             },
         );
@@ -210,6 +227,9 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Nekoland {
             (region.size.w * BYTES_PER_PIXEL) as u32,
         );
         if frame.version() >= 3 {
+            if dmabuf {
+                frame.linux_dmabuf(DMABUF_FORMAT as u32, region.size.w as u32, region.size.h as u32);
+            }
             frame.buffer_done();
         }
     }
@@ -241,8 +261,8 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Nekoland {
             frame.post_error(zwlr_screencopy_frame_v1::Error::AlreadyUsed, "the frame was copied already");
             return;
         }
-        // The buffer must be the one the frame said.
-        if !fits(&buffer, data.region.size) {
+        // The buffer must be one the frame said.
+        if !fits(&buffer, data.region.size) && !(data.dmabuf && fits_dmabuf(&buffer, data.region.size)) {
             frame.post_error(zwlr_screencopy_frame_v1::Error::InvalidBuffer, "not the buffer the frame asked for");
             return;
         }
@@ -301,7 +321,13 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
         let drawn = (size, output.current_scale().fractional_scale(), transform);
         // The region was cut from the output as it was when the frame was asked for; a
         // display made smaller since then no longer holds it.
-        let copied = if Rectangle::from_size(size).contains_rect(frame.region) {
+        let copied = if let Ok(dmabuf) = get_dmabuf(&frame.buffer) {
+            if frame.region == Rectangle::from_size(size) {
+                draw_into(renderer, drawn, elements, dmabuf.clone())
+            } else {
+                Err("the display changed size since the frame was asked for".into())
+            }
+        } else if Rectangle::from_size(size).contains_rect(frame.region) {
             copy_into(renderer, drawn, elements, frame.region, &frame.buffer)
         } else {
             Err("the display changed size since the frame was asked for".into())
@@ -359,6 +385,21 @@ pub fn copy_into<E: RenderElement<GlesRenderer>>(
             memory[at..at + row].copy_from_slice(&pixels[from..from + row]);
         }
     })?;
+    Ok(())
+}
+
+/// Draws `elements` into `dmabuf`, a whole display's frame, as `copy_into` draws them, and
+/// waits for the GPU to finish before the client reads it.
+fn draw_into<E: RenderElement<GlesRenderer>>(
+    renderer: &mut GlesRenderer,
+    (size, scale, transform): (Size<i32, Physical>, f64, Transform),
+    elements: &[E],
+    mut dmabuf: Dmabuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut target = renderer.bind(&mut dmabuf)?;
+    let mut damage = OutputDamageTracker::new(size, scale, transform);
+    let drawn = damage.render_output(renderer, &mut target, 0, elements, CLEAR_COLOR)?;
+    drawn.sync.wait()?;
     Ok(())
 }
 

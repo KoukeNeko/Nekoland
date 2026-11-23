@@ -829,8 +829,9 @@ it in effect, or says why not; `'unset KEY'` puts one back at its default.
   overview stay on the first, and displays are not hot-plugged.
 - X11 programs that ignore the DPI and GDK scale they are given, as xclock does, are
   drawn at half their size on a scaled display.
-- Screen capture copies through the CPU, not dmabufs, and the screen does not turn off
-  when idle.
+- Screen capture copies through the CPU, except a whole display over wlr-screencopy,
+  which is drawn into a dmabuf when the program gives one, as Sunshine does; and the
+  screen does not turn off when idle.
 - X11 windows have no title bars.
 - Notifications show no buttons for their actions, and the Notification Center forgets
   them when Nekoland restarts.
