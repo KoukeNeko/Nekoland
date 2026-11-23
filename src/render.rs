@@ -8,7 +8,7 @@ use smithay::{
             solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
-            AsRenderElements, Id, Kind,
+            AsRenderElements, Element, Id, Kind,
         },
         gles::{element::PixelShaderElement, GlesRenderer},
         utils::{CommitCounter, RendererSurfaceStateUserData},
@@ -58,6 +58,7 @@ render_elements! {
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
     RoundedThumbnail=RelocateRenderElement<RescaleRenderElement<crate::rounded::RoundedSurface>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
+    BentGlass=CropRenderElement<RelocateRenderElement<RescaleRenderElement<Pane>>>,
     Solid=SolidColorRenderElement,
     Ghost=GhostElement,
     ZoomedPicture=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
@@ -217,7 +218,7 @@ pub fn scene_elements(
         };
         let mut elements = switcher_front(state, renderer, output_geometry.loc, scale);
         elements.extend(state.desktop_front_elements(renderer, output_geometry.loc, scale));
-        elements.extend(dock_front(state, renderer, output_geometry.loc, scale));
+        elements.extend(dock_front(state, renderer, glass.as_deref(), output_geometry.loc, scale));
         elements.extend(menu_bar_sliding(state, renderer, output_geometry, scale));
         elements.extend(floating_elements(state, renderer, output, glass, &under, &on_top));
         elements.extend(under);
@@ -416,7 +417,7 @@ pub fn scene_elements(
         .ok()
         .map(SceneElement::Picture)
     }));
-    scene.extend(dock_front(state, renderer, output_geometry.loc, scale));
+    scene.extend(dock_front(state, renderer, None, output_geometry.loc, scale));
     scene.extend(floating);
     scene.extend(elements);
     Ok(scene)
@@ -529,7 +530,7 @@ fn switcher_front(
         })
         .collect();
     for (window, rect, _, _) in thumbnails {
-        elements.extend(window_fitted(renderer, window, *rect, output_loc, scale));
+        elements.extend(window_fitted(renderer, window, None, *rect, output_loc, scale));
     }
     elements
 }
@@ -581,6 +582,7 @@ fn menu_bar_sliding(
 fn dock_front(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
+    glass: Option<&Glass>,
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Vec<SceneElement> {
@@ -589,6 +591,10 @@ fn dock_front(
         .dock_genies()
         .into_iter()
         .flat_map(|genie| {
+            // The glass its see-through parts show, of what is where it was, goes with it.
+            let pane = glass.zip(genie_glass(state, &genie.window, genie.from, output_loc, scale)).and_then(
+                |(glass, (area, radius))| glass.window_pane(window_glass_id(&genie.window), area, radius),
+            );
             if scaled {
                 // Straight to its place in the Dock, shrinking as it goes.
                 let t = 1.0 - (1.0 - genie.progress.clamp(0.0, 1.0)).powi(3);
@@ -598,12 +604,13 @@ fn dock_front(
                     (mix(from.loc.x, into.loc.x), mix(from.loc.y, into.loc.y)).into(),
                     (mix(from.size.w, into.size.w), mix(from.size.h, into.size.h)).into(),
                 );
-                return window_fitted(renderer, &genie.window, rect, output_loc, scale);
+                return window_fitted(renderer, &genie.window, pane.as_ref(), rect, output_loc, scale);
             }
             draw_genie(
                 renderer,
                 genie.frame,
                 &genie.window,
+                pane.as_ref(),
                 genie.from,
                 genie.into,
                 genie.progress,
@@ -626,7 +633,7 @@ fn dock_front(
         .map(SceneElement::Picture)
     }));
     for (window, rect) in state.dock_thumbnails() {
-        elements.extend(window_fitted(renderer, &window, rect, output_loc, scale));
+        elements.extend(window_fitted(renderer, &window, None, rect, output_loc, scale));
     }
     elements
 }
@@ -647,6 +654,7 @@ fn draw_genie(
     renderer: &mut GlesRenderer,
     frame: Frame,
     window: &Window,
+    pane: Option<&Pane>,
     from: Rectangle<i32, Logical>,
     into: Rectangle<i32, Logical>,
     progress: f64,
@@ -730,14 +738,52 @@ fn draw_genie(
                 CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::Desktop),
             );
         }
+        let offset = offset.to_physical(output_scale).to_i32_round();
+        elements.extend(pane.and_then(|pane| bent_glass(pane, scale, offset, output_scale, crop)));
     }
     elements
+}
+
+/// `pane`, the glass behind a window, stretched by `scale` as the window is and put where
+/// the window's top left then is, `at`, as much of it as is within `crop`.
+fn bent_glass(
+    pane: &Pane,
+    scale: impl Into<Scale<f64>>,
+    at: Point<i32, Physical>,
+    output_scale: f64,
+    crop: Rectangle<i32, Physical>,
+) -> Option<SceneElement> {
+    let origin = pane.geometry(Scale::from(output_scale)).loc;
+    let scaled = RescaleRenderElement::from_element(pane.clone(), origin, scale);
+    let placed = RelocateRenderElement::from_element(scaled, at - origin, Relocate::Relative);
+    CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::BentGlass)
+}
+
+/// Where the glass behind a window on its way into the Dock or out is, and how round, as
+/// where it is when it is not minimized, `from`: for one that has glass behind it whole.
+fn genie_glass(
+    state: &Nekoland,
+    window: &Window,
+    from: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+    scale: f64,
+) -> Option<(Rectangle<i32, Physical>, i32)> {
+    let corner = (f64::from(WINDOW_RADIUS) * crate::windows::roundness(window).0).round() as i32;
+    if !is_managed(window)
+        || is_x11_drawing_own_frame(window)
+        || state.shadow_radius(window, corner).is_some()
+    {
+        return None;
+    }
+    let area = Rectangle::new(from.loc - output_loc, from.size).to_physical_precise_round(scale);
+    Some((area, (f64::from(corner) * scale).round() as i32))
 }
 
 /// A window scaled down to fit `rect`, in the middle of it, its shadow cut off.
 fn window_fitted(
     renderer: &mut GlesRenderer,
     window: &Window,
+    pane: Option<&Pane>,
     rect: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     scale: f64,
@@ -771,6 +817,7 @@ fn window_fitted(
         );
         CropRenderElement::from_element(placed, scale, crop).map(SceneElement::Desktop)
     })
+    .chain(pane.and_then(|pane| bent_glass(pane, factor, at.to_physical_precise_round(scale), scale, crop)))
     .collect()
 }
 
@@ -1345,6 +1392,19 @@ fn windows_on_glass(
         scene.extend(elements.into_iter().rev());
     }
     if let Some(glass) = glass {
+        // A window on its way into the Dock keeps the glass of what is under where it was.
+        for genie in state.dock_genies() {
+            let (Some((area, _)), Some(size)) =
+                (genie_glass(state, &genie.window, genie.from, output_loc, scale), output_size)
+            else {
+                continue;
+            };
+            let id = window_glass_id(&genie.window);
+            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
+                tracing::warn!("glass: {err}");
+            }
+            kept.push(id);
+        }
         glass.keep_windows(&kept);
     }
     scene.reverse();

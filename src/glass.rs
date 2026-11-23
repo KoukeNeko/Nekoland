@@ -572,6 +572,7 @@ fn pass(
 }
 
 /// The glass behind one surface.
+#[derive(Clone)]
 pub struct Pane {
     id: Id,
     commit: CommitCounter,
@@ -640,6 +641,10 @@ impl RenderElement<GlesRenderer> for Pane {
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
         let texture = self.texture.size().to_f64();
+        // Its corners and light are where they are on the whole pane, of which this may be a
+        // part, stretched, as a window's bands are on their way into the Dock.
+        let stretch = (dst.size.w as f64 / src.size.w, dst.size.h as f64 / src.size.h);
+        let whole = (self.src.size.w * stretch.0, self.src.size.h * stretch.1);
         frame.render_texture_from_to(
             &self.texture,
             src,
@@ -652,15 +657,15 @@ impl RenderElement<GlesRenderer> for Pane {
             &[
                 Uniform::new(
                     "uv_origin",
-                    ((src.loc.x / texture.w) as f32, (src.loc.y / texture.h) as f32),
+                    ((self.src.loc.x / texture.w) as f32, (self.src.loc.y / texture.h) as f32),
                 ),
                 Uniform::new(
                     "uv_size",
-                    ((src.size.w / texture.w) as f32, (src.size.h / texture.h) as f32),
+                    ((self.src.size.w / texture.w) as f32, (self.src.size.h / texture.h) as f32),
                 ),
-                Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
+                Uniform::new("size", (whole.0 as f32, whole.1 as f32)),
                 Uniform::new("radius", self.radius as f32),
-                Uniform::new("edge", if dst.loc.y > 0 { 1.0f32 } else { 0.0 }),
+                Uniform::new("edge", if self.dst.loc.y > 0 { 1.0f32 } else { 0.0 }),
             ],
         )
     }
