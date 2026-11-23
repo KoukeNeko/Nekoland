@@ -491,7 +491,7 @@ fn ask_api(
 
 // The page.
 
-fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
+pub(crate) fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
     gtk::Button::builder()
         .icon_name(icon)
         .tooltip_text(tooltip)

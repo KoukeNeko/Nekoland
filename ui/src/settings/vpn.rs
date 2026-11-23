@@ -5,6 +5,7 @@
 //! keeps, so that profiles carried over from it keep theirs.
 
 use super::*;
+use super::sunshine::icon_button;
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 
@@ -381,20 +382,6 @@ const TUNNEL_MODES: [(&str, &str, &str); 3] = [
     ("TUNNEL_MODE_FULL", "full", "完整通道"),
     ("TUNNEL_MODE_SPLIT", "split", "分割通道"),
 ];
-
-/// Decimal units, as the file manager counts them.
-fn format_bytes(count: u64) -> String {
-    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
-    if count < 1000 {
-        return format!("{count} B");
-    }
-    let (mut value, mut unit) = (count as f64, 0);
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
 
 fn format_uptime(seconds: i64) -> String {
     let total = seconds.max(0);
@@ -1765,11 +1752,11 @@ fn open_profile(from: &adw::ActionRow, model: &Rc<Model>, id: &str) {
 
         traffic.set_visible(profile.connected());
         let rate = shown.rate(&profile.id);
-        let per_second = |bytes: f64| format!("{}/秒", format_bytes(bytes.round() as u64));
+        let per_second = |bytes: f64| format!("{}/秒", glib::format_size(bytes.round() as u64));
         received_rate.set_label(&rate.map_or("–".into(), |(rx, _)| per_second(rx)));
         sent_rate.set_label(&rate.map_or("–".into(), |(_, tx)| per_second(tx)));
-        received.set_subtitle(&format_bytes(profile.status.rx_bytes));
-        sent.set_subtitle(&format_bytes(profile.status.tx_bytes));
+        received.set_subtitle(&glib::format_size(profile.status.rx_bytes));
+        sent.set_subtitle(&glib::format_size(profile.status.tx_bytes));
         graph.queue_draw();
 
         // The endpoint in use, or the ones the profile names while it is not connected.
@@ -1830,15 +1817,6 @@ fn navigation_row(title: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).activatable(true).build();
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row
-}
-
-fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .icon_name(icon)
-        .tooltip_text(tooltip)
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
-        .build()
 }
 
 fn rate_label() -> gtk::Label {

@@ -294,16 +294,19 @@ pub(crate) fn multi_output_group(outputs: &[AudioDevice], changed: Rc<dyn Fn()>)
 /// Calls `then` once PipeWire is back with the multi-output device there or not, or after
 /// five seconds.
 pub(crate) fn when_multi_output_is(there: bool, then: Rc<dyn Fn()>) {
-    let mut tries = 0;
-    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        tries += 1;
-        let nodes = audio_nodes();
-        let back = nodes.iter().any(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT);
-        if (back && nodes.iter().any(|device| device.name == MULTI_OUTPUT) == there) || tries == 25 {
-            then();
-            return glib::ControlFlow::Break;
+    glib::spawn_future_local(async move {
+        for _ in 0..25 {
+            glib::timeout_future(std::time::Duration::from_millis(200)).await;
+            // pw-dump takes a while, which the window is not held up for.
+            let Ok(nodes) = gio::spawn_blocking(audio_nodes).await else {
+                break;
+            };
+            let back = nodes.iter().any(|device| device.class == "Audio/Sink" && device.name != MULTI_OUTPUT);
+            if back && nodes.iter().any(|device| device.name == MULTI_OUTPUT) == there {
+                break;
+            }
         }
-        glib::ControlFlow::Continue
+        then();
     });
 }
 

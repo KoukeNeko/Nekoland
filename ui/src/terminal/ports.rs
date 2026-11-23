@@ -23,10 +23,26 @@ pub fn snapshot() -> Option<Snapshot> {
         return None;
     }
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for process in proc::read_procs() {
-        children.entry(process.ppid).or_default().push(process.pid);
+    for (pid, ppid) in parents() {
+        children.entry(ppid).or_default().push(pid);
     }
     Some(Snapshot { children, listeners })
+}
+
+/// Every process with the one that started it, from its stat alone: the rest the task manager reads is not needed
+/// here, each tick.
+fn parents() -> Vec<(i32, i32)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter_map(|pid: i32| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            Some((pid, proc::parse_stat(&stat)?.1.get(1)?.parse().ok()?))
+        })
+        .collect()
 }
 
 impl Snapshot {

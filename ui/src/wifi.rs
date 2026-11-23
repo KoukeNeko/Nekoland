@@ -3,6 +3,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::Rc,
 };
 
@@ -176,24 +177,52 @@ fn kept_networks() -> Vec<Kept> {
         &["-t", "-f", "UUID,TYPE,DEVICE,STATE", "connection", "show"],
     )
     .unwrap_or_default();
-    list.lines()
+    let wifi: Vec<(String, Option<String>)> = list
+        .lines()
         .filter_map(|line| {
             let [uuid, kind, device, state] = &nmcli_fields(line)[..] else {
                 return None;
             };
-            if kind != network::WIFI_TYPE {
-                return None;
-            }
-            // Its name may not be the network's: the network's is asked for.
-            let ssid = setting(uuid, "802-11-wireless.ssid")?;
-            Some(Kept {
-                ssid,
-                uuid: uuid.clone(),
-                // Still joining, as while the password is tried, it is not up yet.
-                device: (state == ACTIVATED).then(|| device.clone()),
-            })
+            // Still joining, as while the password is tried, it is not up yet.
+            (kind == network::WIFI_TYPE).then(|| (uuid.clone(), (state == ACTIVATED).then(|| device.clone())))
         })
+        .collect();
+    if wifi.is_empty() {
+        return Vec::new();
+    }
+    // Their names may not be the networks': the networks' are asked for, all in one call.
+    let mut args = vec!["-t", "-f", "connection.uuid,802-11-wireless.ssid", "connection", "show"];
+    for (uuid, _) in &wifi {
+        args.extend(["uuid", uuid.as_str()]);
+    }
+    let ssids = parse_ssids(&output("nmcli", &args).unwrap_or_default());
+    wifi.into_iter()
+        .filter_map(|(uuid, device)| Some(Kept { ssid: ssids.get(&uuid)?.clone(), uuid, device }))
         .collect()
+}
+
+/// The network of each kept one by its UUID, from what `nmcli -t -f
+/// connection.uuid,802-11-wireless.ssid connection show uuid …` printed: a `field:value` line
+/// each, the value escaped as in a terse line.
+fn parse_ssids(text: &str) -> HashMap<String, String> {
+    let mut ssids = HashMap::new();
+    let mut uuid = None;
+    for line in text.lines() {
+        let Some((field, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = nmcli_fields(value).join(":");
+        match field {
+            "connection.uuid" => uuid = Some(value),
+            "802-11-wireless.ssid" => {
+                if let Some(uuid) = uuid.take() {
+                    ssids.insert(uuid, value);
+                }
+            }
+            _ => {}
+        }
+    }
+    ssids
 }
 
 /// One setting of a kept network, or one of what it has while it is up, as IP4.ADDRESS.
@@ -582,6 +611,11 @@ struct WifiPage {
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The network being joined, said on its row while the page is put there again.
     joining: RefCell<Option<String>>,
+    /// How many times the networks were asked for; an answer to an older ask is dropped.
+    asked: Cell<u64>,
+    /// Whether NetworkManager changed while the page was out of sight, to be filled as it
+    /// comes back.
+    missed: Cell<bool>,
 }
 
 pub fn wifi_page() -> adw::PreferencesPage {
@@ -589,7 +623,19 @@ pub fn wifi_page() -> adw::PreferencesPage {
     let shown = Rc::new(WifiPage::default());
     fill_wifi_page(&page, &shown);
     let followed = shown.clone();
-    follow_network(&page, move |page| fill_wifi_page(page, &followed));
+    follow_network(&page, move |page| {
+        if page.is_mapped() {
+            fill_wifi_page(page, &followed);
+        } else {
+            followed.missed.set(true);
+        }
+    });
+    let followed = shown.clone();
+    page.connect_map(move |page| {
+        if followed.missed.take() {
+            fill_wifi_page(page, &followed);
+        }
+    });
     // What was heard may be old: heard again, and shown once it has been.
     let weak = page.downgrade();
     let again = shown.clone();
@@ -665,13 +711,39 @@ pub(crate) fn follow_network(page: &adw::PreferencesPage, fill: impl Fn(&adw::Pr
     });
 }
 
+/// Asks NetworkManager for the radio and the networks off the main thread, nmcli being slow
+/// with many kept, and fills `page` with the answer.
 fn fill_wifi_page(page: &adw::PreferencesPage, shown: &Rc<WifiPage>) {
+    let asked = shown.asked.get() + 1;
+    shown.asked.set(asked);
+    let (weak, shown) = (page.downgrade(), shown.clone());
+    glib::spawn_future_local(async move {
+        let read = gio::spawn_blocking(|| {
+            let on = radio_on();
+            let networks = (on == Some(true)).then(|| (kept_networks(), heard_networks()));
+            (on, networks)
+        })
+        .await;
+        let (Ok((on, networks)), Some(page)) = (read, weak.upgrade()) else {
+            return;
+        };
+        if shown.asked.get() == asked {
+            show_wifi_page(&page, &shown, on, networks);
+        }
+    });
+}
+
+fn show_wifi_page(
+    page: &adw::PreferencesPage,
+    shown: &Rc<WifiPage>,
+    on: Option<bool>,
+    networks: Option<(Vec<Kept>, Vec<Heard>)>,
+) {
     for group in shown.groups.take() {
         page.remove(&group);
     }
     let mut groups = Vec::new();
     let done = refill(page, shown);
-    let on = radio_on();
 
     let radio = group("");
     let switch = adw::SwitchRow::builder()
@@ -686,9 +758,7 @@ fn fill_wifi_page(page: &adw::PreferencesPage, shown: &Rc<WifiPage>) {
     radio.add(&switch);
     groups.push(radio);
 
-    if on == Some(true) {
-        let kept = kept_networks();
-        let heard = heard_networks();
+    if let Some((kept, heard)) = networks {
         let joining = shown.joining.borrow().clone();
 
         // The network joined, as the radio's group has it on the Mac.
@@ -820,6 +890,14 @@ mod tests {
     #[test]
     fn nmcli_fields_keep_escaped_colons() {
         assert_eq!(nmcli_fields(r"*:72:WPA2:Caf\:e\\"), ["*", "72", "WPA2", r"Caf:e\"]);
+    }
+
+    #[test]
+    fn kept_networks_are_named_by_their_ssid() {
+        let text = "connection.uuid:a-1\n802-11-wireless.ssid:Home\\:5G\n\nconnection.uuid:b-2\n";
+        let ssids = parse_ssids(text);
+        assert_eq!(ssids.get("a-1").map(String::as_str), Some("Home:5G"));
+        assert_eq!(ssids.get("b-2"), None);
     }
 
     #[test]

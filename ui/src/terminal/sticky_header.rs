@@ -3,7 +3,10 @@
 //! prompt landed is not known when its OSC 133 mark passes: the prompt's text is kept instead, and the prompt is the
 //! nearest row above the top that starts with one of them. Without shell integration nothing is pinned.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gtk::{gdk, glib, prelude::*};
 use vte4::prelude::*;
@@ -35,7 +38,12 @@ pub struct StickyHeader {
     prompts: RefCell<Vec<String>>,
     /// The prompt pinned now.
     pinned: RefCell<Option<Pinned>>,
+    /// The view the pin was looked for in, as `view` has it.
+    looked_in: Cell<Option<View>>,
 }
+
+/// The settings' generation, the top row and whether the view is at the bottom.
+type View = (u64, i64, bool);
 
 struct Pinned {
     row: i64,
@@ -55,6 +63,7 @@ impl StickyHeader {
             scheme: theme::scheme_of(profile),
             prompts: RefCell::default(),
             pinned: RefCell::default(),
+            looked_in: Cell::default(),
         });
         header.connect();
         header
@@ -119,8 +128,23 @@ impl StickyHeader {
         }
     }
 
+    /// Refreshes after output, when it can change the pin: the rows above the top stay as they were, so only a new
+    /// prompt, a move of the view or a change of the settings can.
+    pub fn refresh_after_output(&self, new_prompt: bool) {
+        if new_prompt || self.view() != self.looked_in.get() {
+            self.refresh();
+        }
+    }
+
+    fn view(&self) -> Option<View> {
+        let adjustment = self.screen.vadjustment()?;
+        let at_bottom = adjustment.value() + adjustment.page_size() + BOTTOM_SLACK >= adjustment.upper();
+        Some((config::generation(), adjustment.value() as i64, at_bottom))
+    }
+
     /// Pins the prompt of the output at the top of the view, or none, as the view and the settings are now.
     pub fn refresh(&self) {
+        self.looked_in.set(self.view());
         let pinned = self.find_pinned();
         self.area.set_visible(pinned.is_some());
         if let Some(pinned) = &pinned {
@@ -143,15 +167,27 @@ impl StickyHeader {
         if prompts.is_empty() {
             return None;
         }
-        let first = (adjustment.lower() as i64).max(adjustment.value() as i64 - SEARCH_ROWS);
+        let top = adjustment.value() as i64;
+        let first = (adjustment.lower() as i64).max(top - SEARCH_ROWS);
+        let is_prompt = |text: &str| prompts.iter().any(|prompt| text.starts_with(prompt));
+        // The rows above the top are read at once. A line wrapped over several rows has no newline between them, so
+        // the nearest prompt's line starts at most as many rows above the top as lines follow it; rows below that
+        // are passed over, and the row it starts on is looked for one by one from there.
+        let columns = self.screen.column_count();
+        let (above, _) = self.screen.text_range_format(vte4::Format::Text, first, 0, top - 1, columns);
+        let lines_after = above?.lines().rev().position(|line| is_prompt(line.trim_end()))?;
+        let latest = top - 1 - lines_after as i64;
         let mut found = None;
-        let row = pinned_prompt(adjustment.value() as i64, first, |row| {
+        let row = pinned_prompt(top, first, |row| {
+            if row != top && row > latest {
+                return false;
+            }
             let text = self.row_text(row);
-            let is_prompt = prompts.iter().any(|prompt| text.starts_with(prompt.as_str()));
-            if is_prompt {
+            let matched = is_prompt(&text);
+            if matched {
                 found = Some(text);
             }
-            is_prompt
+            matched
         })?;
         Some(Pinned { row, text: found.unwrap_or_default(), markup: self.row_markup(row) })
     }

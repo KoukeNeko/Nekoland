@@ -413,10 +413,12 @@ impl Pane {
         }
         let shown = self.take_pictures(bytes);
         let fired = self.feed_through_triggers(&shown);
-        if let Some(prompt) = osc::prompt_text(bytes).filter(|_| signals.contains(&Signal::PromptStart)) {
+        let prompt = osc::prompt_text(bytes).filter(|_| signals.contains(&Signal::PromptStart));
+        let new_prompt = prompt.is_some();
+        if let Some(prompt) = prompt {
             self.sticky.remember_prompt(prompt);
         }
-        self.sticky.refresh();
+        self.sticky.refresh_after_output(new_prompt);
         let mut events = Vec::new();
         for signal in signals {
             match signal {

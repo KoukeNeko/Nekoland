@@ -942,60 +942,113 @@ fn build(app: &adw::Application) {
         ))),
     ));
     window.add_controller(find);
-    // Settings changed elsewhere show on the pages: looked for as the window comes and goes,
-    // and every few seconds while it is in front. Its own changes rebuild nothing.
-    let seen = RefCell::new(outside_settings());
-    let refresh = Rc::new(move || {
-        let now = outside_settings();
-        let elsewhere = changed_elsewhere(&seen.borrow(), &now, &WROTE.take());
-        seen.replace(now);
-        if !elsewhere {
-            return;
-        }
-        let config = Config::load();
-        remember_look(&config);
-        // The Dock adds and takes login items too; the list kept here is written back whole.
-        autostart.replace(config.autostart());
-        let shown = stack.visible_child_name();
-        let scrolled = shown
-            .as_ref()
-            .and_then(|name| stack.child_by_name(name))
-            .and_then(|page| page_scroll(&page))
-            .map(|scroll| scroll.value());
-        let transition = stack.transition_type();
-        stack.set_transition_type(gtk::StackTransitionType::None);
-        for name in REBUILT_PAGES {
-            if let Some(old) = stack.child_by_name(name) {
-                stack.remove(&old);
-                let page = make_page(name, &config);
-                stack.add_named(&page, Some(name));
-                if shown.as_deref() == Some(name) {
-                    if let (Some(offset), Some(scroll)) = (scrolled, page_scroll(&page)) {
-                        scroll_once_laid_out(&scroll, offset);
+    // Settings changed elsewhere show on the pages: GNOME's as they change, the compositor's
+    // looked for as the window comes and goes and every few seconds while it is in front.
+    // Its own changes rebuild nothing.
+    let watched: Vec<(&str, gio::Settings)> = [
+        INTERFACE,
+        WM_PREFERENCES,
+        A11Y_INTERFACE,
+        "org.gnome.desktop.privacy",
+    ]
+    .into_iter()
+    .filter(|schema| {
+        gio::SettingsSchemaSource::default().is_some_and(|source| source.lookup(schema, true).is_some())
+    })
+    .map(|schema| (schema, gio::Settings::new(schema)))
+    .collect();
+    let seen = RefCell::new(None);
+    let refresh = Rc::new(glib::clone!(
+        #[strong]
+        watched,
+        move |config: &str| {
+            let now = outside_settings(config, &watched);
+            let own = WROTE.take();
+            // Until the first answer there is nothing to compare with.
+            let Some(before) = seen.replace(Some(now)) else {
+                return;
+            };
+            if !changed_elsewhere(&before, seen.borrow().as_ref().unwrap(), &own) {
+                return;
+            }
+            let config = Config::load();
+            remember_look(&config);
+            // The Dock adds and takes login items too; the list kept here is written back whole.
+            autostart.replace(config.autostart());
+            let shown = stack.visible_child_name();
+            let scrolled = shown
+                .as_ref()
+                .and_then(|name| stack.child_by_name(name))
+                .and_then(|page| page_scroll(&page))
+                .map(|scroll| scroll.value());
+            let transition = stack.transition_type();
+            stack.set_transition_type(gtk::StackTransitionType::None);
+            for name in REBUILT_PAGES {
+                if let Some(old) = stack.child_by_name(name) {
+                    stack.remove(&old);
+                    let page = make_page(name, &config);
+                    stack.add_named(&page, Some(name));
+                    if shown.as_deref() == Some(name) {
+                        if let (Some(offset), Some(scroll)) = (scrolled, page_scroll(&page)) {
+                            scroll_once_laid_out(&scroll, offset);
+                        }
                     }
                 }
             }
+            if let Some(shown) = shown {
+                stack.set_visible_child_name(&shown);
+            }
+            stack.set_transition_type(transition);
         }
-        if let Some(shown) = shown {
-            stack.set_visible_child_name(&shown);
+    ));
+    // The compositor is asked off the main thread, once at a time; what GNOME has is read
+    // as its answer comes back, so a change made meanwhile is in it.
+    let asking = Rc::new(Cell::new(false));
+    let look_again = Rc::new(move || {
+        if asking.replace(true) {
+            return;
         }
-        stack.set_transition_type(transition);
+        let refresh = refresh.clone();
+        let asking = asking.clone();
+        glib::spawn_future_local(async move {
+            let config = gio::spawn_blocking(|| ipc::msg("config")).await.ok().flatten();
+            asking.set(false);
+            refresh(&config.unwrap_or_default());
+        });
     });
+    for (_, settings) in &watched {
+        settings.connect_changed(
+            None,
+            glib::clone!(
+                #[strong]
+                look_again,
+                move |_, _| look_again()
+            ),
+        );
+    }
     window.connect_is_active_notify(glib::clone!(
         #[strong]
-        refresh,
-        move |_| refresh()
+        look_again,
+        move |_| look_again()
     ));
     let in_front = window.downgrade();
-    glib::timeout_add_seconds_local(2, move || {
-        let Some(window) = in_front.upgrade() else {
-            return glib::ControlFlow::Break;
-        };
-        if window.is_active() {
-            refresh();
-        }
-        glib::ControlFlow::Continue
-    });
+    glib::timeout_add_seconds_local(
+        2,
+        glib::clone!(
+            #[strong]
+            look_again,
+            move || {
+                let Some(window) = in_front.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if window.is_active() {
+                    look_again();
+                }
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
+    look_again();
     window.present();
     focus::let_fields_go(&window);
 }
@@ -1063,28 +1116,22 @@ fn scroll_once_laid_out(scroll: &gtk::Adjustment, offset: f64) {
     handler.replace(Some(id));
 }
 
-/// The compositor's settings and the GNOME ones the pages show, by name: `key` for the
-/// compositor's, `schema key` for GNOME's, as Settings names them when it changes them.
-fn outside_settings() -> BTreeMap<String, String> {
+/// The compositor's settings, from `nekoland msg config`, and the GNOME ones the pages show,
+/// by name: `key` for the compositor's, `schema key` for GNOME's, as Settings names them
+/// when it changes them.
+fn outside_settings(config: &str, gnome: &[(&str, gio::Settings)]) -> BTreeMap<String, String> {
     let mut all = BTreeMap::new();
-    for line in output("nekoland", &["msg", "config"]).unwrap_or_default().lines() {
+    for line in config.lines() {
         if let Some((key, value)) = line.split_once(" = ") {
             all.insert(key.to_string(), value.to_string());
         }
     }
-    for schema in [
-        INTERFACE,
-        WM_PREFERENCES,
-        A11Y_INTERFACE,
-        "org.gnome.desktop.privacy",
-    ] {
-        for line in output("gsettings", &["list-recursively", schema])
-            .unwrap_or_default()
-            .lines()
-        {
-            if let [schema, key, value] = line.splitn(3, ' ').collect::<Vec<_>>()[..] {
-                all.insert(format!("{schema} {key}"), value.to_string());
-            }
+    for (schema, settings) in gnome {
+        let Some(keys) = settings.settings_schema().map(|found| found.list_keys()) else {
+            continue;
+        };
+        for key in keys {
+            all.insert(format!("{schema} {key}"), settings.value(&key).print(true).into());
         }
     }
     all
