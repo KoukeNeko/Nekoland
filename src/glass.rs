@@ -269,7 +269,8 @@ impl Glass {
         Ok(())
     }
 
-    /// The same for what is `behind` the window named `id`, over `area` of the `output`.
+    /// The same for what is `behind` the window named `id`, over `area` of the `output`;
+    /// `behind` goes back to front, as the scene is put together from the bottom up.
     pub fn update_window<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -301,7 +302,7 @@ impl Glass {
             (&self.down, &self.up, spread),
             (canvas, scale),
             &[area],
-            behind,
+            behind.iter().rev(),
         )
     }
 
@@ -337,19 +338,20 @@ impl Glass {
 }
 
 impl Blur {
-    fn update<E: RenderElement<GlesRenderer>>(
+    /// `behind` goes front to back.
+    fn update<'a, E: RenderElement<GlesRenderer> + 'a>(
         &mut self,
         renderer: &mut GlesRenderer,
         (down, up, spread): (&GlesTexProgram, &GlesTexProgram, f32),
         (canvas, scale): (Rectangle<i32, Physical>, f64),
         areas: &[Rectangle<i32, Physical>],
-        behind: &[E],
+        behind: impl IntoIterator<Item = &'a E>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let size = canvas.size;
         // What is behind, and where the panes are, as the textures have them.
         let shift = Point::from((-canvas.loc.x, -canvas.loc.y));
         let behind: Vec<_> = behind
-            .iter()
+            .into_iter()
             .map(|element| RelocateRenderElement::from_element(element, shift, Relocate::Relative))
             .collect();
         let areas: Vec<_> = areas

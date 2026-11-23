@@ -28,7 +28,7 @@ use crate::{
     grabs::MoveSurfaceGrab,
     menubar::Command,
     state::{Nekoland, ABOVE_WINDOWS, BELOW_WINDOWS},
-    windows::{window_names, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
+    windows::{app_id, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
 };
 
 /// Sticky keys: a modifier let go with no other key pressed between stays on for the next key
@@ -244,14 +244,7 @@ impl Nekoland {
 
                 // A window holding the pointer keeps it from the menu bar, the Dock and the corners.
                 if !locked && held.is_none() {
-                    self.menu_bar_motion(pos);
-                    self.dock_motion(pos);
-                    self.desktop_motion(pos);
-                    self.hover_motion(pos);
-                    self.notice_motion(pos);
-                    self.overview_motion(pos);
-                    self.corner_motion(pos);
-                    self.snap_layouts_motion(pos);
+                    self.compositor_motion(pos);
                 }
                 let under = self.surface_under(pos);
                 self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
@@ -282,14 +275,7 @@ impl Nekoland {
                 let pointer = self.seat.get_pointer().unwrap();
 
                 if !locked {
-                    self.menu_bar_motion(pos);
-                    self.dock_motion(pos);
-                    self.desktop_motion(pos);
-                    self.hover_motion(pos);
-                    self.notice_motion(pos);
-                    self.overview_motion(pos);
-                    self.corner_motion(pos);
-                    self.snap_layouts_motion(pos);
+                    self.compositor_motion(pos);
                 }
                 let under = self.surface_under(pos);
                 self.focus_under_pointer(under.as_ref().map(|(surface, _)| surface));
@@ -430,6 +416,19 @@ impl Nekoland {
             .is_some_and(|window| self.focused_window() == Some(window))
     }
 
+    /// What the compositor draws itself follows the pointer to `pos`: the menu bar, the
+    /// Dock, the desktop, the corners and the rest.
+    fn compositor_motion(&mut self, pos: Point<f64, Logical>) {
+        self.menu_bar_motion(pos);
+        self.dock_motion(pos);
+        self.desktop_motion(pos);
+        self.hover_motion(pos);
+        self.notice_motion(pos);
+        self.overview_motion(pos);
+        self.corner_motion(pos);
+        self.snap_layouts_motion(pos);
+    }
+
     /// The surface holding the pointer at `at`, where it is, and how; one that no longer has
     /// the keyboard lets it go.
     fn pointer_held(
@@ -503,7 +502,7 @@ impl Nekoland {
         }
         if self.overview.is_some() && self.overview_covers(pos) {
             self.overview_click(pos);
-        } else if let Some((layer, _)) = self.layer_under(pos, ABOVE_WINDOWS) {
+        } else if let Some((layer, _)) = self.layer_under(pos, &ABOVE_WINDOWS) {
             self.focus_layer(&layer);
         } else if self.overview.is_some() {
             self.overview_click(pos);
@@ -511,7 +510,7 @@ impl Nekoland {
             // A title bar or grip of an X11 window.
         } else if let Some((window, location)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
             // The on-screen keyboard types into the window in front, so never takes its place.
-            if window_names(&window).1 == KEYBOARD_APP_ID {
+            if app_id(&window) == KEYBOARD_APP_ID {
                 return;
             }
             self.focus_window(&window);
@@ -531,7 +530,7 @@ impl Nekoland {
             }
         } else if left_or_right && self.desktop_press(pos, button == BUTTON_RIGHT, serial) {
             self.set_keyboard_focus(None);
-        } else if let Some((layer, _)) = self.layer_under(pos, BELOW_WINDOWS) {
+        } else if let Some((layer, _)) = self.layer_under(pos, &BELOW_WINDOWS) {
             self.focus_layer(&layer);
         } else {
             self.set_keyboard_focus(None);
@@ -628,8 +627,8 @@ impl Nekoland {
             key: xkb::keysym_get_name(sym),
         };
         let inhibited = self.shortcuts_inhibited();
-        let app_id = self.focused_window().map(|window| window_names(&window).1);
-        let found = shortcuts::find(self.config.shortcut_scheme, &self.config.shortcuts, &combo);
+        let app_id = self.focused_window().map(|window| app_id(&window));
+        let found = shortcuts::find(&self.shortcut_bindings, &combo);
         // Ctrl with a letter in a terminal is the program's, though the Mac's Emacs keys
         // move the cursor elsewhere: tmux and readline take them as they are.
         let terminal_own = |action: &shortcuts::Action| {
@@ -729,7 +728,7 @@ impl Nekoland {
         match action.id {
             // As Raycast opens: its key closes it again.
             "launcher" => {
-                if focused.as_ref().is_some_and(|window| window_names(window).1 == LAUNCHER_APP_ID) {
+                if focused.as_ref().is_some_and(|window| app_id(window) == LAUNCHER_APP_ID) {
                     self.close_launcher_unless(None);
                 } else {
                     config::spawn(&self.config.launcher);
@@ -761,7 +760,7 @@ impl Nekoland {
             "close-window" => close(focused),
             "quit-app" => {
                 if let Some(window) = focused {
-                    self.quit_app(&window_names(&window).1);
+                    self.quit_app(&app_id(&window));
                 }
             }
             "minimize" => {
@@ -796,7 +795,7 @@ impl Nekoland {
             }
             "app-windows" => {
                 if let Some(window) = focused {
-                    self.show_app_windows(&window_names(&window).1);
+                    self.show_app_windows(&app_id(&window));
                 }
             }
             "next-app-window" => self.focus_next_app_window(),
@@ -878,7 +877,7 @@ impl Nekoland {
     /// Asks the window that has the keyboard to do an application action, with the keys its
     /// application does it with; `shift` adds Shift to them.
     pub fn app_action(&mut self, action: &shortcuts::Action, shift: bool) {
-        let app_id = self.focused_window().map(|window| window_names(&window).1).unwrap_or_default();
+        let app_id = self.focused_window().map(|window| app_id(&window)).unwrap_or_default();
         for combo in shortcuts::native(action, &app_id, &self.config.app_shortcuts) {
             self.send_combo(&if shift { combo.with_shift() } else { combo });
         }
@@ -985,7 +984,7 @@ impl Nekoland {
         if self.super_tap && matches!(sym, Keysym::Super_L | Keysym::Super_R) && !self.shortcuts_inhibited() {
             self.super_tap = false;
             let alone = Combo::parse(shortcuts::SUPER_ALONE).expect("Super alone is a combination");
-            if let Some((action, _)) = shortcuts::find(self.config.shortcut_scheme, &self.config.shortcuts, &alone) {
+            if let Some((action, _)) = shortcuts::find(&self.shortcut_bindings, &alone) {
                 self.run_action(action, false);
             }
         }

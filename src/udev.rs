@@ -4,7 +4,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     sync::Mutex,
     time::{Duration, Instant},
@@ -28,6 +28,7 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement, surface::render_elements_from_surface_tree, Kind,
+                RenderElementStates,
             },
             gles::GlesRenderer,
             ImportDma, ImportMemWl,
@@ -59,7 +60,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
 
 use crate::{
-    config::{Config, Projection},
+    config::{Config, Projection, Rotation},
     cursor::Cursors,
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
@@ -121,7 +122,7 @@ struct Udev {
     /// The connectors seen so far, to tell which were plugged in or out since.
     scanner: DrmScanner,
     /// The `mode`, `scale` and `rotation` settings the outputs were last set up with.
-    applied: String,
+    applied: DisplaySettings,
     /// While it is open, the power button and the lid are Nekoland's.
     _power_keys: Option<zbus::zvariant::OwnedFd>,
 }
@@ -180,7 +181,7 @@ pub fn init_udev(
         displays: HashMap::new(),
         globals: HashMap::new(),
         scanner: DrmScanner::new(),
-        applied: applied_settings(&state.config, state.stream_mode),
+        applied: DisplaySettings::of(&state.config, state.stream_mode),
         gamma: HashMap::new(),
         ramps: HashMap::new(),
         filters: HashMap::new(),
@@ -357,8 +358,9 @@ fn render(
         return;
     }
     // After a frame with nothing new, the next waits a refresh, as a shown frame waits for
-    // its vblank: a program drawing where nothing of it shows, which is told at once that
-    // its frame was shown, would otherwise have everything drawn again as fast as it can.
+    // its vblank: a program shown but drawing nothing new, as one asking for frames without
+    // damage, is told at once that its frame was shown and would otherwise have everything
+    // drawn again as fast as it can. Not after an idle look, which no program asked for.
     if let Some(wait) = hold_after_empty(udev, crtc) {
         let timed = udev.clone();
         let loop_handle = handle.clone();
@@ -375,18 +377,9 @@ fn render(
         return;
     }
     let state = &mut *data;
-    state.tick_overview();
-    state.tick_motion();
-    state.refresh_menu_bar();
-    state.dock_ids();
-    state.refresh_dock();
-    state.refresh_desktop();
-    state.refresh_hover();
-    state.refresh_apps();
-    state.refresh_notices();
-    state.refresh_fps();
+    state.prepare_frame();
     let mut guard = udev.borrow_mut();
-    if guard.applied != applied_settings(&state.config, state.stream_mode) {
+    if !guard.applied.holds(&state.config, state.stream_mode) {
         apply_display_settings(&mut guard, state);
     }
     let Udev {
@@ -412,8 +405,8 @@ fn render(
         ramps.clear();
     }
     let filter = &state.config.color_filter;
-    let applied = filters.get(&crtc).cloned().unwrap_or(Some("none".into()));
-    if applied.is_some_and(|applied| applied != *filter) {
+    let applied = filters.get(&crtc).map_or(Some("none"), Option::as_deref);
+    if applied.is_some_and(|applied| applied != filter) {
         match set_colour_matrix(manager.device(), crtc, filter_matrix(filter)) {
             Ok(()) => {
                 filters.insert(crtc, Some(filter.clone()));
@@ -457,6 +450,7 @@ fn render(
     }
 
     // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
+    let mut drawn = None;
     let queued = if state.screens_off || state.space.output_geometry(output).is_none() {
         if dark.insert(crtc) {
             if let Err(err) = surface.with_compositor(|compositor| compositor.clear()) {
@@ -469,10 +463,24 @@ fn render(
             surface.reset_buffers();
         }
         let frames = state.take_screencopy(output);
-        let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
-            warn!("render: {err}");
-            false
-        });
+        let queued = match draw(
+            state,
+            renderer,
+            surface,
+            output,
+            cursors,
+            glass.get_mut(&crtc),
+            frames,
+        ) {
+            Ok((queued, states)) => {
+                drawn = Some(states);
+                queued
+            }
+            Err(err) => {
+                warn!("render: {err}");
+                false
+            }
+        };
         state.capture_windows(renderer);
         queued
     };
@@ -503,6 +511,12 @@ fn render(
         if let Err(err) = handle.insert_source(timer, move |_, _, data| {
             timed.borrow_mut().retrying.remove(&crtc);
             render(&timed, crtc, data, &loop_handle);
+            // An idle look that drew nothing new holds back no program's next frame, which
+            // would otherwise reach the screen a refresh late; one held back stays held.
+            let mut guard = timed.borrow_mut();
+            if guard.empty.get(&crtc).is_some_and(|(_, held)| !*held) {
+                guard.empty.remove(&crtc);
+            }
             TimeoutAction::Drop
         }) {
             warn!("could not schedule a redraw: {err}");
@@ -510,7 +524,7 @@ fn render(
         }
     }
 
-    state.finish_frame(&output);
+    state.finish_frame(&output, drawn.as_ref());
     let _ = data.display_handle.flush_clients();
 }
 
@@ -787,22 +801,48 @@ fn set_colour_matrix(
 }
 
 /// The settings the outputs are set up from, to tell when they change.
-fn applied_settings(config: &Config, stream: Option<((u16, u16), Option<u32>)>) -> String {
-    format!(
-        "{:?}",
-        (
+struct DisplaySettings {
+    stream: Option<((u16, u16), Option<u32>)>,
+    mode: Option<String>,
+    display_modes: BTreeMap<String, String>,
+    scale: Option<f64>,
+    display_scales: BTreeMap<String, f64>,
+    rotation: Rotation,
+    display_rotations: BTreeMap<String, Rotation>,
+    display_positions: BTreeMap<String, [i32; 2]>,
+    display_order: Vec<String>,
+    projection: Projection,
+}
+
+impl DisplaySettings {
+    fn of(config: &Config, stream: Option<((u16, u16), Option<u32>)>) -> Self {
+        Self {
             stream,
-            &config.mode,
-            &config.display_modes,
-            config.scale,
-            &config.display_scales,
-            config.rotation,
-            &config.display_rotations,
-            &config.display_positions,
-            &config.display_order,
-            config.projection(),
-        )
-    )
+            mode: config.mode.clone(),
+            display_modes: config.display_modes.clone(),
+            scale: config.scale,
+            display_scales: config.display_scales.clone(),
+            rotation: config.rotation,
+            display_rotations: config.display_rotations.clone(),
+            display_positions: config.display_positions.clone(),
+            display_order: config.display_order.clone(),
+            projection: config.projection(),
+        }
+    }
+
+    /// Whether the settings are still these, compared in place: it is asked at every frame.
+    fn holds(&self, config: &Config, stream: Option<((u16, u16), Option<u32>)>) -> bool {
+        self.stream == stream
+            && self.mode == config.mode
+            && self.display_modes == config.display_modes
+            && self.scale == config.scale
+            && self.display_scales == config.display_scales
+            && self.rotation == config.rotation
+            && self.display_rotations == config.display_rotations
+            && self.display_positions == config.display_positions
+            && self.display_order == config.display_order
+            && self.projection == config.projection()
+    }
 }
 
 /// An output's size in points, as its mode, scale and rotation make it, mapped or not.
@@ -890,7 +930,7 @@ fn ordered_outputs(udev: &Udev, config: &Config) -> Vec<(crtc::Handle, Output, b
 /// Sets every output to the mode, scale and rotation the settings now ask for, lays the
 /// outputs out side by side again, and fits the windows to them.
 fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
-    udev.applied = applied_settings(&state.config, state.stream_mode);
+    udev.applied = DisplaySettings::of(&state.config, state.stream_mode);
     // What Sunshine captures is the main display.
     let main = ordered_outputs(udev, &state.config)
         .into_iter()
@@ -959,7 +999,7 @@ fn reprobe_modes(udev: &mut Udev, state: &mut Nekoland) {
     }
 }
 
-/// Returns whether a frame was handed to the display.
+/// Returns whether a frame was handed to the display, and what it showed of each element.
 fn draw(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
@@ -968,7 +1008,7 @@ fn draw(
     cursors: &mut Cursors,
     glass: Option<&mut Glass>,
     screencopy: Vec<crate::screencopy::Frame>,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<(bool, RenderElementStates), Box<dyn std::error::Error>> {
     let output_origin = state
         .space
         .output_geometry(output)
@@ -997,14 +1037,15 @@ fn draw(
         .map_err(|err| err.to_string())?;
     wait_until_drawn(&frame);
     let is_empty = frame.is_empty;
+    let states = frame.states;
     if !screencopy.is_empty() {
         crate::screencopy::copy(renderer, output, &elements, cursor, screencopy);
     }
     if is_empty {
-        return Ok(false);
+        return Ok((false, states));
     }
     surface.queue_frame(()).map_err(|err| err.to_string())?;
-    Ok(true)
+    Ok((true, states))
 }
 
 /// Where the display cannot be told to wait for the renderer, waits for it here. Without

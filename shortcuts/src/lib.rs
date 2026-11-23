@@ -1364,37 +1364,51 @@ pub fn action(id: &str) -> Option<&'static Action> {
     ACTIONS.iter().find(|action| action.id == id)
 }
 
-/// Every action with its keys in `scheme`, the configuration's first: a key the
-/// configuration gives one action is taken from the action the scheme gave it to.
-pub fn bindings(scheme: Scheme, custom: &Custom) -> Vec<(&'static Action, Vec<Combo>)> {
-    let own = custom.get(&scheme);
-    let own_keys = |action: &Action| -> Option<Vec<Combo>> {
-        own?.get(action.id)
-            .map(|keys| keys.iter().filter_map(|text| Combo::parse(text)).collect())
-    };
-    let taken: HashSet<Combo> = ACTIONS.iter().filter_map(own_keys).flatten().collect();
+/// The keys the configuration gives `action` in `scheme`, if it gives it any.
+fn own_keys(scheme: Scheme, custom: &Custom, action: &Action) -> Option<Vec<Combo>> {
+    custom
+        .get(&scheme)?
+        .get(action.id)
+        .map(|keys| keys.iter().filter_map(|text| Combo::parse(text)).collect())
+}
+
+/// The keys `action` has in `scheme`: the configuration's, or else its defaults without
+/// those in `taken`, which the configuration gives to other actions.
+fn keys_besides(scheme: Scheme, custom: &Custom, action: &Action, taken: &HashSet<Combo>) -> Vec<Combo> {
+    own_keys(scheme, custom, action).unwrap_or_else(|| {
+        action
+            .defaults(scheme)
+            .into_iter()
+            .filter(|combo| !taken.contains(combo))
+            .collect()
+    })
+}
+
+/// Every key the configuration gives some action in `scheme`.
+fn taken(scheme: Scheme, custom: &Custom) -> HashSet<Combo> {
     ACTIONS
         .iter()
-        .map(|action| {
-            let keys = own_keys(action).unwrap_or_else(|| {
-                action
-                    .defaults(scheme)
-                    .into_iter()
-                    .filter(|combo| !taken.contains(combo))
-                    .collect()
-            });
-            (action, keys)
-        })
+        .filter_map(|action| own_keys(scheme, custom, action))
+        .flatten()
         .collect()
 }
 
-/// The keys `id` has in `scheme`.
+/// Every action with its keys in `scheme`, the configuration's first: a key the
+/// configuration gives one action is taken from the action the scheme gave it to.
+pub fn bindings(scheme: Scheme, custom: &Custom) -> Vec<(&'static Action, Vec<Combo>)> {
+    let taken = taken(scheme, custom);
+    ACTIONS
+        .iter()
+        .map(|action| (action, keys_besides(scheme, custom, action, &taken)))
+        .collect()
+}
+
+/// The keys `id` has in `scheme`, as `bindings` gives them, worked out for it alone.
 pub fn keys(scheme: Scheme, custom: &Custom, id: &str) -> Vec<Combo> {
-    bindings(scheme, custom)
-        .into_iter()
-        .find(|(action, _)| action.id == id)
-        .map(|(_, keys)| keys)
-        .unwrap_or_default()
+    let Some(action) = action(id) else {
+        return Vec::new();
+    };
+    keys_besides(scheme, custom, action, &taken(scheme, custom))
 }
 
 /// Whether the configuration gives `id` keys of its own in `scheme`.
@@ -1402,10 +1416,10 @@ pub fn is_custom(scheme: Scheme, custom: &Custom, id: &str) -> bool {
     custom.get(&scheme).is_some_and(|own| own.contains_key(id))
 }
 
-/// The action `combo` does in `scheme`, and whether it was found as one that Shift extends,
-/// with Shift added to its keys.
-pub fn find(scheme: Scheme, custom: &Custom, combo: &Combo) -> Option<(&'static Action, bool)> {
-    let bindings = bindings(scheme, custom);
+/// The action `combo` does among `bindings`, as `bindings()` makes them once for a
+/// configuration, and whether it was found as one that Shift extends, with Shift added to
+/// its keys.
+pub fn find(bindings: &[(&'static Action, Vec<Combo>)], combo: &Combo) -> Option<(&'static Action, bool)> {
     let bound = |combo: &Combo| {
         bindings
             .iter()
@@ -1552,23 +1566,23 @@ mod tests {
     fn linux_keeps_ctrl_for_applications_and_macos_takes_super() {
         let none = Custom::new();
         assert_eq!(
-            find(Scheme::Linux, &none, &combo("Ctrl+C")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Linux, &none), &combo("Ctrl+C")).map(|(action, _)| action.id),
             None
         );
         assert_eq!(
-            find(Scheme::Macos, &none, &combo("Super+C")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Macos, &none), &combo("Super+C")).map(|(action, _)| action.id),
             Some("copy")
         );
         assert_eq!(
-            find(Scheme::Linux, &none, &combo("Super+Left")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Linux, &none), &combo("Super+Left")).map(|(action, _)| action.id),
             Some("arrange-left")
         );
         assert_eq!(
-            find(Scheme::Macos, &none, &combo("Super+Left")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Macos, &none), &combo("Super+Left")).map(|(action, _)| action.id),
             Some("line-start")
         );
         assert_eq!(
-            find(Scheme::Windows, &none, &combo("Super")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Windows, &none), &combo("Super")).map(|(action, _)| action.id),
             Some("apps")
         );
     }
@@ -1576,10 +1590,13 @@ mod tests {
     #[test]
     fn shift_extends_a_movement_only() {
         let none = Custom::new();
-        let found =
-            find(Scheme::Macos, &none, &combo("Shift+Super+Left")).map(|(action, shift)| (action.id, shift));
+        let found = find(&bindings(Scheme::Macos, &none), &combo("Shift+Super+Left"))
+            .map(|(action, shift)| (action.id, shift));
         assert_eq!(found, Some(("line-start", true)));
-        assert_eq!(find(Scheme::Macos, &none, &combo("Shift+Super+C")), None);
+        assert_eq!(
+            find(&bindings(Scheme::Macos, &none), &combo("Shift+Super+C")),
+            None
+        );
     }
 
     #[test]
@@ -1590,22 +1607,26 @@ mod tests {
         )]
         .into();
         assert_eq!(
-            find(Scheme::Linux, &custom, &combo("Super+Q")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Linux, &custom), &combo("Super+Q")).map(|(action, _)| action.id),
             Some("lock")
         );
         assert_eq!(
             keys(Scheme::Linux, &custom, "close-window"),
             vec![combo("Alt+F4")]
         );
-        assert_eq!(find(Scheme::Linux, &custom, &combo("Super+L")), None);
+        assert_eq!(find(&bindings(Scheme::Linux, &custom), &combo("Super+L")), None);
         // Only in the scheme it was given in.
         assert_eq!(
-            find(Scheme::Windows, &custom, &combo("Super+L")).map(|(action, _)| action.id),
+            find(&bindings(Scheme::Windows, &custom), &combo("Super+L")).map(|(action, _)| action.id),
             Some("lock")
         );
         let off: Custom = [(Scheme::Linux, [("lock".to_string(), vec![])].into())].into();
         assert!(keys(Scheme::Linux, &off, "lock").is_empty());
         assert!(is_custom(Scheme::Linux, &off, "lock"));
+        // One action's keys, worked out alone, are those of the whole table.
+        for (action, bound) in bindings(Scheme::Linux, &custom) {
+            assert_eq!(keys(Scheme::Linux, &custom, action.id), bound, "{}", action.id);
+        }
     }
 
     #[test]

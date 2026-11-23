@@ -11,7 +11,7 @@ use smithay::{
             AsRenderElements, Id, Kind,
         },
         gles::{element::PixelShaderElement, GlesRenderer},
-        utils::CommitCounter,
+        utils::{CommitCounter, RendererSurfaceStateUserData},
     },
     desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
     output::Output,
@@ -34,8 +34,8 @@ use crate::{
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
     windows::{
-        has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, window_names,
-        ALERT_APP_IDS, CONFIRM_APP_ID, LAUNCHER_APP_ID,
+        app_id, has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, ALERT_APP_IDS,
+        CONFIRM_APP_ID, LAUNCHER_APP_ID,
     },
     Nekoland,
 };
@@ -150,13 +150,13 @@ pub fn scene_elements(
                 .output_geometry(output)
                 .ok_or("output is not mapped")?
                 .loc;
-            let mut elements = layer_elements(renderer, output, [Layer::Overlay, Layer::Overlay], false);
+            let mut elements = layer_elements(renderer, output, &[Layer::Overlay]);
             // The system's alerts ask over a fullscreen window too, on its glass.
             let alerts: Vec<(Window, Pose)> = state
                 .space
                 .elements()
                 .rev()
-                .filter(|other| ALERT_APP_IDS.contains(&window_names(other).1.as_str()))
+                .filter(|other| ALERT_APP_IDS.contains(&app_id(other).as_str()))
                 .filter_map(|alert| Some((alert.clone(), state.window_pose(alert)?)))
                 .collect();
             let fullscreen = window_elements(state, renderer, &window, output_loc, scale);
@@ -172,7 +172,7 @@ pub fn scene_elements(
             .space
             .elements()
             .rev()
-            .filter(|window| state.config.glass.contains_key(&window_names(window).1))
+            .filter(|window| state.config.glass.contains_key(&app_id(window)))
             .cloned()
             .collect();
         let windows: Vec<Window> = state
@@ -198,7 +198,7 @@ pub fn scene_elements(
             .desktop_elements(renderer, output_geometry.loc, scale)
             .into_iter()
             .collect();
-        backdrop.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+        backdrop.extend(layer_elements(renderer, output, &BELOW_WINDOWS));
         under.extend(windows_on_glass(state, renderer, output, glass.as_deref_mut(), &posed, backdrop));
         let mut overlays = state.fps_overlays();
         overlays.extend(state.identify_overlays());
@@ -332,7 +332,7 @@ pub fn scene_elements(
         1.0,
         Kind::Unspecified,
     ))];
-    backdrop.extend(layer_elements(renderer, output, BELOW_WINDOWS, false));
+    backdrop.extend(layer_elements(renderer, output, &BELOW_WINDOWS));
     let posed: Vec<(Window, Pose)> = resting()
         .map(|slot| {
             let pose = Pose {
@@ -957,7 +957,7 @@ fn floating_elements(
         let radius = state
             .config
             .glass
-            .get(&window_names(window).1)
+            .get(&app_id(window))
             .copied()
             .unwrap_or_default();
         if let Some(pose) = state.window_pose(window) {
@@ -1226,15 +1226,20 @@ fn windows_on_glass(
         .unwrap_or_default();
     let scale = output.current_scale().fractional_scale();
     let output_size = output.current_mode().map(|mode| mode.size);
+    // Back to front while it is put together, each window added on top, and turned round once
+    // at the end.
     let mut scene = backdrop;
+    scene.reverse();
     let mut kept = Vec::new();
     // From the bottom up, so the glass of each one shows those under it, theirs included.
     for (window, pose) in windows.iter().rev() {
         // Where a window being dragged will go shows under it, over the rest.
         if let Some(target) = state.snap.target.as_ref().filter(|target| &target.window == window) {
-            let mut preview = snap_preview(&state.snap.ids, target.rect, output_loc, scale);
-            preview.append(&mut scene);
-            scene = preview;
+            scene.extend(
+                snap_preview(&state.snap.ids, target.rect, output_loc, scale)
+                    .into_iter()
+                    .rev(),
+            );
         }
         let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
         if rounds_x11_corners(window) {
@@ -1249,16 +1254,19 @@ fn windows_on_glass(
         // would blur: X11 gives no way to tell their shadow from their body, and they draw
         // their own background anyway.
         let area = area.filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
+        let radius = if has_square_corners(window) {
+            0
+        } else {
+            WINDOW_RADIUS
+        };
+        // Nor behind one that covers all of it, which would never show.
+        let area = area.filter(|_| !hides_glass(window, *pose, radius));
         if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
             let id = window_glass_id(window);
             if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
                 tracing::warn!("glass: {err}");
             }
-            let radius = if has_square_corners(window) {
-                0
-            } else {
-                (f64::from(WINDOW_RADIUS) * scale).round() as i32
-            };
+            let radius = (f64::from(radius) * scale).round() as i32;
             elements.extend(
                 glass
                     .window_pane(id.clone(), area, radius)
@@ -1268,19 +1276,66 @@ fn windows_on_glass(
         }
         // The confirmation and the launcher are their card alone, with no room for a shadow of
         // their own.
-        let app_id = window_names(window).1;
-        if rounds_x11_corners(window) || [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id.as_str()) {
+        if rounds_x11_corners(window) || [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()) {
             let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
             let focused = state.focused_window().as_ref() == Some(window);
-            elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));
+            elements.extend(crate::rounded::shadow(
+                renderer,
+                window,
+                output_loc,
+                body,
+                WINDOW_RADIUS,
+                pose.alpha,
+                focused,
+            ));
         }
-        elements.append(&mut scene);
-        scene = elements;
+        scene.extend(elements.into_iter().rev());
     }
     if let Some(glass) = glass {
         glass.keep_windows(&kept);
     }
+    scene.reverse();
     scene
+}
+
+/// Whether a Wayland window drawn as `pose` is opaque wherever its glass would show, which
+/// is then never seen: the opaque region it gives covers all of it but its corners, `radius`
+/// round, which GTK leaves out. Not while it fades, nor when it is drawn larger than it is,
+/// with corners rounder than the glass's.
+fn hides_glass(window: &Window, pose: Pose, radius: i32) -> bool {
+    let Some(toplevel) = window.toplevel() else {
+        return false;
+    };
+    let (actual, shown) = (pose.actual.size, pose.shown.size);
+    if pose.alpha < 1.0 || shown.w <= 0 || shown.h <= 0 {
+        return false;
+    }
+    // The corners in the surface's own points, smaller as it is drawn larger: left out to
+    // be safe.
+    let (corner_w, corner_h) = (radius * actual.w / shown.w, radius * actual.h / shown.h);
+    if actual.w <= 2 * corner_w || actual.h <= 2 * corner_h {
+        return false;
+    }
+    let body = Rectangle::new(window.geometry().loc, actual);
+    let without_corners = [
+        Rectangle::new(
+            body.loc + Point::from((corner_w, 0)),
+            body.size - Size::from((2 * corner_w, 0)),
+        ),
+        Rectangle::new(
+            body.loc + Point::from((0, corner_h)),
+            body.size - Size::from((0, 2 * corner_h)),
+        ),
+    ];
+    with_states(toplevel.wl_surface(), |states| {
+        let Some(surface) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+            return false;
+        };
+        let surface = surface.lock().unwrap();
+        surface.opaque_regions().is_some_and(|opaque| {
+            Rectangle::subtract_rects_many(without_corners, opaque.iter().copied()).is_empty()
+        })
+    })
 }
 
 /// How opaque the white of the box choosing desktop items is, inside and at its edge; a
@@ -1356,20 +1411,13 @@ fn is_top_panel(map: &smithay::desktop::LayerMap, surface: &LayerSurface) -> boo
     geometry.loc.y == 0 && geometry.size.h <= TOP_PANEL_MAX_HEIGHT
 }
 
-/// The surfaces of some layers. In the overview the desktops' bar takes the place of
-/// a panel at the top edge, which is then left out.
-fn layer_elements(
-    renderer: &mut GlesRenderer,
-    output: &Output,
-    layers: [Layer; 2],
-    without_top_panel: bool,
-) -> Vec<SceneElement> {
+/// The surfaces of some layers, front to back.
+fn layer_elements(renderer: &mut GlesRenderer, output: &Output, layers: &[Layer]) -> Vec<SceneElement> {
     let scale = output.current_scale().fractional_scale();
     let map = layer_map_for_output(output);
     layers
-        .into_iter()
-        .flat_map(|layer| map.layers_on(layer).rev())
-        .filter(|surface| !(without_top_panel && is_top_panel(&map, surface)))
+        .iter()
+        .flat_map(|layer| map.layers_on(*layer).rev())
         .flat_map(|surface| {
             let location = map.layer_geometry(surface).unwrap_or_default().loc;
             AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(

@@ -235,9 +235,10 @@ thread_local! {
     static SHADOW_PROGRAM: OnceCell<Option<GlesPixelProgram>> = const { OnceCell::new() };
 }
 
-/// A window's shadow element, kept so that its identity, and with it what the renderer
-/// knows of its damage, lasts from frame to frame.
+/// A window's shadow element on the output at `output_loc`, kept so that its identity, and
+/// with it what the renderer knows of its damage, lasts from frame to frame.
 struct ShadowState {
+    output_loc: Point<i32, Logical>,
     element: PixelShaderElement,
     strength: f32,
     focused: bool,
@@ -262,11 +263,13 @@ fn shadow_program(renderer: &mut GlesRenderer) -> Option<GlesPixelProgram> {
     })
 }
 
-/// The shadow of `window`, drawn where it is shown as `body`, with corners `radius` round,
-/// at `strength` of its full darkness, as it is with the focus or without.
+/// The shadow of `window` on the output at `output_loc`, drawn where it is shown as `body`
+/// there, with corners `radius` round, at `strength` of its full darkness, as it is with
+/// the focus or without.
 pub fn shadow(
     renderer: &mut GlesRenderer,
     window: &Window,
+    output_loc: Point<i32, Logical>,
     body: Rectangle<i32, Logical>,
     radius: i32,
     strength: f32,
@@ -285,20 +288,35 @@ pub fn shadow(
             Uniform::new("focused", f32::from(u8::from(focused))),
         ]
     };
-    let mut state = window.user_data().get_or_insert(|| RefCell::new(None::<ShadowState>)).borrow_mut();
-    match state.as_mut() {
-        Some(state) => {
+    // One an output: a single one moved to each output's place in turn would be damaged at
+    // every frame with two.
+    // shortcut: those of outputs moved or gone stay with the window; drop them if outputs
+    // are ever rearranged often.
+    let mut states = window
+        .user_data()
+        .get_or_insert(|| RefCell::new(Vec::<ShadowState>::new()))
+        .borrow_mut();
+    let state = match states.iter().position(|state| state.output_loc == output_loc) {
+        Some(index) => {
+            let state = &mut states[index];
             state.element.resize(area, None);
             if state.strength != strength || state.focused != focused {
                 state.element.update_uniforms(uniforms());
                 state.strength = strength;
                 state.focused = focused;
             }
+            state
         }
         None => {
             let element = PixelShaderElement::new(program, area, None, 1.0, uniforms(), Kind::Unspecified);
-            *state = Some(ShadowState { element, strength, focused });
+            states.push(ShadowState {
+                output_loc,
+                element,
+                strength,
+                focused,
+            });
+            states.last_mut()?
         }
-    }
-    state.as_ref().map(|state| SceneElement::Shadow(state.element.clone()))
+    };
+    Some(SceneElement::Shadow(state.element.clone()))
 }

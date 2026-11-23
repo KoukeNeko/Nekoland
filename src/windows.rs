@@ -238,6 +238,21 @@ pub fn window_names(window: &Window) -> (String, String) {
     }
 }
 
+/// The identifier of a window's application, without its title: what most callers want,
+/// many of them at every frame.
+pub fn app_id(window: &Window) -> String {
+    match window.underlying_surface() {
+        WindowSurface::Wayland(toplevel) => with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().unwrap().app_id.clone())
+                .unwrap_or_default()
+        }),
+        WindowSurface::X11(surface) => surface.class(),
+    }
+}
+
 /// Menus and tooltips of X11 programs are windows too, but not ones to list, switch to or arrange.
 pub fn is_managed(window: &Window) -> bool {
     !window
@@ -325,7 +340,7 @@ impl Nekoland {
             root = parent;
         }
         if let Some(window) = self.window_for_surface(&root).filter(is_managed) {
-            if self.focused_window().as_ref() != Some(&window) && window_names(&window).1 != KEYBOARD_APP_ID {
+            if self.focused_window().as_ref() != Some(&window) && app_id(&window) != KEYBOARD_APP_ID {
                 self.set_keyboard_focus(Some(key_focus_of(&window)));
             }
         }
@@ -370,7 +385,7 @@ impl Nekoland {
     /// clicked or given the keyboard.
     pub fn close_launcher_unless(&self, keep: Option<&Window>) {
         for window in self.space.elements() {
-            if window_names(window).1 == LAUNCHER_APP_ID && Some(window) != keep {
+            if app_id(window) == LAUNCHER_APP_ID && Some(window) != keep {
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.send_close();
                 }
@@ -434,7 +449,7 @@ impl Nekoland {
         self.raise_pins();
         // The on-screen keyboard types into the window that has the keyboard, so it never
         // takes it, whatever asks: a click, its own activation, the switcher.
-        if window_names(window).1 != KEYBOARD_APP_ID {
+        if app_id(window) != KEYBOARD_APP_ID {
             self.set_keyboard_focus(Some(key_focus_of(window)));
         }
     }
@@ -446,12 +461,12 @@ impl Nekoland {
             .space
             .elements()
             .filter(|window| {
-                let app_id = window_names(window).1;
+                let app_id = app_id(window);
                 [PIN_APP_ID, KEYBOARD_APP_ID].contains(&app_id.as_str()) || ALERT_APP_IDS.contains(&app_id.as_str())
             })
             .cloned()
             .collect();
-        pins.sort_by_key(|window| ALERT_APP_IDS.contains(&window_names(window).1.as_str()));
+        pins.sort_by_key(|window| ALERT_APP_IDS.contains(&app_id(window).as_str()));
         for pin in &pins {
             self.space.raise_element(pin, false);
         }
@@ -463,7 +478,7 @@ impl Nekoland {
             .space
             .elements()
             .rev()
-            .find(|window| window.alive() && is_managed(window) && window_names(window).1 != KEYBOARD_APP_ID)
+            .find(|window| window.alive() && is_managed(window) && app_id(window) != KEYBOARD_APP_ID)
             .cloned();
         match top {
             Some(window) => self.focus_window(&window),
@@ -484,7 +499,7 @@ impl Nekoland {
         let free = matches!(placement_of(window), Placement::Free | Placement::Arranged);
         if let Some(area) = self.usable_area().filter(|_| free) {
             let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
-            let app_id = window_names(window).1;
+            let app_id = app_id(window);
             // The launcher opens down from a fifth of the way, as its results come; the
             // on-screen keyboard sits at the bottom, over the Dock.
             let y = if app_id == LAUNCHER_APP_ID {
@@ -702,7 +717,7 @@ impl Nekoland {
             .space
             .elements()
             .rev()
-            .find(|window| !ALERT_APP_IDS.contains(&window_names(window).1.as_str()))?;
+            .find(|window| !ALERT_APP_IDS.contains(&app_id(window).as_str()))?;
         self.is_fullscreen(top).then(|| top.clone())
     }
 
@@ -958,11 +973,11 @@ impl Nekoland {
         let Some(focused) = self.focused_window().filter(is_managed) else {
             return;
         };
-        let app_id = window_names(&focused).1;
+        let focused_app = app_id(&focused);
         let furthest = self
             .space
             .elements()
-            .find(|window| is_managed(window) && window_names(window).1 == app_id)
+            .find(|window| is_managed(window) && app_id(window) == focused_app)
             .cloned();
         if let Some(window) = furthest.filter(|window| *window != focused) {
             self.focus_window(&window);

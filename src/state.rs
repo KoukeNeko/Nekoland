@@ -2,7 +2,14 @@ use std::{collections::HashSet, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
-    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
+    backend::renderer::element::{default_primary_scanout_output_compare, RenderElementStates},
+    desktop::{
+        layer_map_for_output,
+        utils::{
+            send_frames_surface_tree, surface_primary_scanout_output, update_surface_primary_scanout_output,
+        },
+        LayerSurface, PopupManager, Space, Window, WindowSurfaceType,
+    },
     input::{keyboard::Keycode, pointer::{CursorImageStatus, MotionEvent}, Seat, SeatState},
     output::Output,
     reexports::{
@@ -15,7 +22,7 @@ use smithay::{
     },
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, SurfaceData},
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
         output::OutputManagerState,
@@ -55,6 +62,9 @@ const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_secs(1);
 pub struct Nekoland {
     pub start_time: std::time::Instant,
     pub config: Config,
+    /// Every shortcut action with its keys, as the configuration gives them: looked up at
+    /// every key press, so made once as it is read.
+    pub shortcut_bindings: Vec<(&'static shortcuts::Action, Vec<shortcuts::Combo>)>,
     /// The swaybg drawing the configured wallpaper.
     pub wallpaper: Option<std::process::Child>,
     /// The swaybg of the wallpaper before, until the new one has drawn over it.
@@ -240,6 +250,7 @@ impl Nekoland {
 
         Self {
             start_time,
+            shortcut_bindings: shortcuts::bindings(config.shortcut_scheme, &config.shortcuts),
             config,
             wallpaper: None,
             old_wallpaper: None,
@@ -369,15 +380,13 @@ impl Nekoland {
     pub fn layer_under(
         &self,
         pos: Point<f64, Logical>,
-        layers: [Layer; 2],
+        layers: &[Layer],
     ) -> Option<(LayerSurface, Point<i32, Logical>)> {
         let output = self.space.output_under(pos).next()?;
         let output_loc = self.space.output_geometry(output)?.loc;
         let map = layer_map_for_output(output);
         let local = pos - output_loc.to_f64();
-        let layer = layers
-            .into_iter()
-            .find_map(|layer| map.layer_under(layer, local))?;
+        let layer = layers.iter().find_map(|layer| map.layer_under(*layer, local))?;
         let layer_loc = map.layer_geometry(layer)?.loc;
         Some((layer.clone(), layer_loc + output_loc))
     }
@@ -396,7 +405,7 @@ impl Nekoland {
         {
             return None;
         }
-        let layer_surface_under = |layers| {
+        let layer_surface_under = |layers: &[Layer]| {
             let (layer, location) = self.layer_under(pos, layers)?;
             layer
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
@@ -416,11 +425,11 @@ impl Nekoland {
 
         // A fullscreen window covers the panels; only the overlay layer stays above it.
         if self.overview.is_none() && self.fullscreen_window().is_some() {
-            return layer_surface_under([Layer::Overlay, Layer::Overlay]).or_else(window_under);
+            return layer_surface_under(&[Layer::Overlay]).or_else(window_under);
         }
-        layer_surface_under(ABOVE_WINDOWS)
+        layer_surface_under(&ABOVE_WINDOWS)
             .or_else(window_under)
-            .or_else(|| layer_surface_under(BELOW_WINDOWS))
+            .or_else(|| layer_surface_under(&BELOW_WINDOWS))
     }
 
     /// Points the pointer, where it stands, into whatever is under it now: once what it was
@@ -443,14 +452,60 @@ impl Nekoland {
         pointer.frame(self);
     }
 
+    /// What every backend does before it draws an output: moves what animates on, and
+    /// brings what the compositor draws itself up to date.
+    pub fn prepare_frame(&mut self) {
+        self.tick_overview();
+        self.tick_motion();
+        self.refresh_menu_bar();
+        self.dock_ids();
+        self.refresh_dock();
+        self.refresh_desktop();
+        self.refresh_hover();
+        self.refresh_apps();
+        self.refresh_notices();
+        self.refresh_fps();
+    }
+
     /// What every backend does once an output has been drawn: tell its surfaces that a
-    /// frame was shown, and drop what has gone away.
-    pub fn finish_frame(&mut self, output: &Output) {
+    /// frame was shown, and drop what has gone away. `drawn` is what the frame showed of
+    /// each element; a surface is then told only by the output it is most shown on, and one
+    /// shown on none, as a window covered by others, now and then. Without it every surface
+    /// is told, as by a backend that shows no picture of its own.
+    pub fn finish_frame(&mut self, output: &Output, drawn: Option<&RenderElementStates>) {
         let time = self.start_time.elapsed();
         let throttle = Some(Duration::ZERO);
-        self.space
-            .elements()
-            .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        if let Some(states) = drawn {
+            let update = |surface: &WlSurface, data: &SurfaceData| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    data,
+                    states,
+                    default_primary_scanout_output_compare,
+                );
+            };
+            self.space
+                .elements()
+                .for_each(|window| window.with_surfaces(update));
+            layer_map_for_output(output)
+                .layers()
+                .for_each(|layer| layer.with_surfaces(update));
+            let hidden = Some(HIDDEN_FRAME_INTERVAL);
+            self.space
+                .elements()
+                .for_each(|window| window.send_frame(output, time, hidden, surface_primary_scanout_output));
+            layer_map_for_output(output)
+                .layers()
+                .for_each(|layer| layer.send_frame(output, time, hidden, surface_primary_scanout_output));
+        } else {
+            self.space
+                .elements()
+                .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+            layer_map_for_output(output)
+                .layers()
+                .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        }
         // Minimized windows and those on other desktops are drawn nowhere, but still get a
         // frame now and then: Chromium's GPU process otherwise blocks waiting for one, and
         // the program stops answering.
@@ -459,12 +514,7 @@ impl Nekoland {
             .map(|(window, _)| window)
             .chain(self.workspaces.parked_windows())
             .for_each(|window| window.send_frame(output, time, Some(HIDDEN_FRAME_INTERVAL), |_, _| None));
-        let mut layers = layer_map_for_output(output);
-        layers
-            .layers()
-            .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
-        layers.cleanup();
-        drop(layers);
+        layer_map_for_output(output).cleanup();
         if let Some(surface) = self.lock_surface(output) {
             send_frames_surface_tree(surface.wl_surface(), output, time, throttle, |_, _| Some(output.clone()));
         }
@@ -474,7 +524,10 @@ impl Nekoland {
 
         self.space.refresh();
         self.popups.cleanup();
-        self.refresh_foreign_toplevels();
+        // Once a round of the outputs: taskbars need not hear of a change twice as fast with two.
+        if self.space.outputs().next().is_none_or(|first| first == output) {
+            self.refresh_foreign_toplevels();
+        }
     }
 }
 
@@ -538,6 +591,7 @@ impl Nekoland {
         let old_font = std::mem::take(&mut self.config.font);
         let old_icon_theme = std::mem::take(&mut self.config.icon_theme);
         self.config = Config::load();
+        self.shortcut_bindings = shortcuts::bindings(self.config.shortcut_scheme, &self.config.shortcuts);
         self.turn_with_orientation();
         // What the bar and the Dock show may have changed with it.
         self.dock.drawn = None;

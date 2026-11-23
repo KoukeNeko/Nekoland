@@ -202,16 +202,7 @@ pub fn init_headless(
             state.fit_windows_to_display();
             info!("{OUTPUT_NAME}: {}x{}", wanted.size.w, wanted.size.h);
         }
-        state.tick_overview();
-        state.tick_motion();
-        state.refresh_menu_bar();
-        state.dock_ids();
-        state.refresh_dock();
-        state.refresh_desktop();
-        state.refresh_hover();
-        state.refresh_apps();
-        state.refresh_notices();
-        state.refresh_fps();
+        state.prepare_frame();
         let mut renderer = renderer.borrow_mut();
         // Nothing is shown here: the screen is drawn only into the frames Sunshine asks for.
         let frames = state.take_screencopy(&output);
@@ -234,7 +225,8 @@ pub fn init_headless(
         }
         state.capture_windows(&mut renderer);
         drop(renderer);
-        state.finish_frame(&output);
+        // Nothing is shown here, so whatever is mapped counts as shown.
+        state.finish_frame(&output, None);
         let _ = state.display_handle.flush_clients();
     };
 
