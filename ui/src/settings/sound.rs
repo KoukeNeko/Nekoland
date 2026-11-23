@@ -28,8 +28,15 @@ pub(crate) fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) 
     let weak = page.downgrade();
     let quiet: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
     glib::spawn_future_local(async move {
+        let (mut text, mut clients) = (String::new(), HashSet::new());
         while let Ok(bytes) = changes.read_bytes_future(64 * 1024, glib::Priority::DEFAULT).await {
             let Some(page) = weak.upgrade().filter(|_| !bytes.is_empty()) else { break };
+            text.push_str(&String::from_utf8_lossy(&bytes));
+            // The page's own pw-dump and pw-top come and go as clients; looking again for them
+            // would start them again, and so on for as long as the page is open.
+            if !pipewire_changed(&mut text, &mut clients) {
+                continue;
+            }
             if let Some(waiting) = quiet.take() {
                 waiting.remove();
             }
@@ -51,6 +58,29 @@ pub(crate) fn follow_devices(page: &adw::PreferencesPage, shown: Rc<SoundPage>) 
             glib::timeout_add_seconds_local_once(1, move || follow_devices(&page, shown));
         }
     });
+}
+
+/// Whether the updates `pw-dump --monitor` has finished printing in `text`, each a JSON array
+/// ending in a line of its own `]`, change more than which clients are connected; they are
+/// taken out of `text`, and `clients` follows the clients there are.
+pub(crate) fn pipewire_changed(text: &mut String, clients: &mut HashSet<u64>) -> bool {
+    let mut changed = false;
+    while let Some(end) = text.find("\n]\n") {
+        let update: String = text.drain(..end + 3).collect();
+        let Ok(serde_json::Value::Array(objects)) = serde_json::from_str(&update) else {
+            changed = true;
+            continue;
+        };
+        for object in objects {
+            let id = object["id"].as_u64().unwrap_or(u64::MAX);
+            if object["type"] == "PipeWire:Interface:Client" {
+                clients.insert(id);
+            } else if !(object["info"].is_null() && clients.remove(&id)) {
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// What the sound page shows: its groups, and the devices they were made for.

@@ -3332,6 +3332,25 @@ mod tests {
     }
 
     #[test]
+    fn clients_coming_and_going_are_not_a_change_to_pipewire() {
+        let (mut clients, mut text) = (HashSet::new(), String::new());
+        let client = "[\n  {\n    \"id\": 90,\n    \"type\": \"PipeWire:Interface:Client\",\n    \"info\": {}\n  }\n]\n";
+        let gone = "[\n  {\n    \"id\": 90,\n    \"info\": null\n  }\n]\n";
+        // Printed in pieces, as it is read.
+        text.push_str(&client[..20]);
+        assert!(!pipewire_changed(&mut text, &mut clients));
+        text.push_str(&client[20..]);
+        text.push_str(gone);
+        assert!(!pipewire_changed(&mut text, &mut clients));
+        assert!(text.is_empty() && clients.is_empty());
+
+        text.push_str("[\n  {\n    \"id\": 58,\n    \"type\": \"PipeWire:Interface:Node\",\n    \"info\": {}\n  }\n]\n");
+        assert!(pipewire_changed(&mut text, &mut clients));
+        text.push_str("[\n  {\n    \"id\": 58,\n    \"info\": null\n  }\n]\n");
+        assert!(pipewire_changed(&mut text, &mut clients));
+    }
+
+    #[test]
     fn sound_cards_are_read_with_the_profiles_they_have() {
         let dump = r#"[
             {"id": 46, "info": {"props": {"media.class": "Audio/Device", "device.description": "USB DAC"},
