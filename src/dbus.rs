@@ -372,6 +372,7 @@ impl Watcher {
         &self,
         service: &str,
         #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) {
         let sender = header
@@ -379,9 +380,11 @@ impl Watcher {
             .map(|sender| sender.to_string())
             .unwrap_or_default();
         // Programs give either their bus name or, from their unique name, an object path.
+        // A bus name is kept as its owner's unique name, which is what its NewIcon and other
+        // signals come from; otherwise a changed icon, as Discord's in a call, is never seen.
         let (bus, path) = match service.strip_prefix('/') {
             Some(_) => (sender, service.to_string()),
-            None => (service.to_string(), "/StatusNotifierItem".to_string()),
+            None => (unique_owner(connection, service).await, "/StatusNotifierItem".to_string()),
         };
         let key = format!("{bus}{path}");
         let added = {
@@ -639,6 +642,24 @@ impl Registrar {
 
     #[zbus(signal)]
     async fn window_unregistered(emitter: &SignalEmitter<'_>, window_id: u32) -> zbus::Result<()>;
+}
+
+/// The unique name that owns `service`, or `service` itself when it has no owner to ask.
+async fn unique_owner(connection: &zbus::Connection, service: &str) -> String {
+    let Ok(name) = zbus::names::BusName::try_from(service) else {
+        return service.to_string();
+    };
+    let owner = match zbus::fdo::DBusProxy::new(connection).await {
+        Ok(dbus) => dbus.get_name_owner(name).await,
+        Err(err) => Err(err.into()),
+    };
+    match owner {
+        Ok(owner) => owner.to_string(),
+        Err(err) => {
+            tracing::debug!("status item {service}: no owner: {err}");
+            service.to_string()
+        }
+    }
 }
 
 /// Turns the signals the menu bar cares about into requests and events.
