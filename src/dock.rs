@@ -2923,6 +2923,7 @@ impl Nekoland {
             settings("應用程式", "一般"),
             settings("電源選項", "電源"),
             settings("系統", "關於"),
+            run("裝置管理員", "nekoland-devices"),
             settings("網路連線", "網路"),
             run("磁碟管理", "nekoland-disks"),
             Entry::separator(),

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Device Manager
+Name[zh_TW]=裝置管理員
+Comment=See the hardware, its drivers and resources, and disable or uninstall devices
+Comment[zh_TW]=檢視硬體、驅動程式與資源，停用或解除安裝裝置
+Exec=nekoland-devices
+Icon=io.github.koukeneko.Nekoland.Devices
+Categories=System;Settings;HardwareSettings;

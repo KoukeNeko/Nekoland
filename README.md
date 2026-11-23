@@ -768,6 +768,22 @@ is not unmounted or formatted. An external drive can be 退出; the menu reads i
 清除磁碟 wipes it. 開啟映像檔 makes a loop drive of an image, shown under 映像檔. A job's
 progress is shown in the bar over the buttons, with 取消.
 
+`nekoland-devices`, from `ui/`, is 裝置管理員, Windows' Device Manager: the devices udev
+knows of, read again every three seconds, under the kinds Windows sorts them into (顯示卡,
+網路介面卡, 磁碟機, 鍵盤, 通用序列匯流排控制器…), or 依連線 as a tree of what each is
+connected to, from the computer through ACPI, the PCI buses and the USB hubs. A device
+without its driver is marked 沒有驅動程式, and its kind in the sidebar with it. 顯示隱藏的裝置
+adds what is software or the firmware's own: virtual interfaces, loop drives, input made by
+programs, ACPI and platform devices. 內容, or a double click, shows a device's 一般, its
+驅動程式 from `modinfo`, its 詳細資料 property by property as udev keeps them, the IRQs and
+memory and I/O ranges a PCI device uses, the 電源管理 switches of runtime suspend and
+wakeup, and its 事件 from the kernel's log since the computer started. 停用裝置 lets go of it,
+or keeps a USB device off the bus, and a rule in
+`/etc/udev/rules.d/61-nekoland-disabled.rules` keeps it so across restarts until 啟用裝置;
+解除安裝裝置 takes it off its bus until 掃描硬體變更 rescans PCI, or a USB device is plugged in
+again. These are done as root through `sudo -A`, as 磁碟 does them; the controller of the
+drive the system runs from is not disabled or uninstalled. It is in the Super+X menu.
+
 It reaches what libadwaita draws from its variables: windows, header bars, sidebars,
 cards, popovers, dialogs and the accent. Not GTK 3 or Qt programs, Flatpak applications,
 which use their own runtime's libraries and do not read the host's `gtk.css`, nor what an

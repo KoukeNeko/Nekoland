@@ -65,6 +65,10 @@ name = "nekoland-disks"
 path = "src/disks.rs"
 
 [[bin]]
+name = "nekoland-devices"
+path = "src/devices.rs"
+
+[[bin]]
 name = "nekoland-preview"
 path = "src/preview.rs"
 
