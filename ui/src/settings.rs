@@ -355,6 +355,10 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(windows::MENU_FLAG) {
         return windows::menu(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    // libadwaita asks the portal for dark or light once, as it starts, and Settings can open
+    // at login before the portal can start, as for a VPN asking for its password: it would
+    // stay light. GNOME's setting, which Settings itself writes, is read and followed instead.
+    std::env::set_var("ADW_DISABLE_PORTAL", "1");
     // The environment comes along so that a page asked for while Settings is open is shown.
     let app = adw::Application::builder()
         .application_id(APP_ID)
