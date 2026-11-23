@@ -119,11 +119,12 @@ fn has_render_node() -> bool {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `nekoland msg WORD` talks to the compositor that is already running.
+    // `nekoland msg WORDS` talks to the compositor that is already running. Words given apart
+    // are one message, as when quoted: unquoted, they once started a second compositor.
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if let [command, message] = arguments.as_slice() {
+    if let [command, words @ ..] = arguments.as_slice() {
         if command == "msg" {
-            return Ok(ipc::send(message)?);
+            return Ok(ipc::send(&words.join(" "))?);
         }
     }
 
