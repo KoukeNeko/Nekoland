@@ -719,26 +719,42 @@ fn change_profile(parent: &impl IsA<gtk::Widget>, title: String, args: &[&str]) 
     });
 }
 
-/// Moves a profile to `place`, a place from 1 or up or down. The helper tells its watchers
-/// nothing of the new order, so the profiles are read again once it is taken.
+/// Moves a profile to `place`, a place from 1 or up or down.
 fn move_profile(parent: &impl IsA<gtk::Widget>, model: &Rc<Model>, id: &str, place: &str) {
     let (parent, model) = (parent.as_ref().clone(), model.clone());
     plaitway(&["move", id, place], move |result| {
         if let Err(err) = result {
             return alert::notice(&parent, "無法重新排序", Some(&err));
         }
-        // The menu bar's VPN item reads the new order too.
-        output("nekoland", &["msg", "vpn"]);
-        plaitway(&["list", "-json"], move |listed| {
-            match listed.map(|text| serde_json::from_str::<Snapshot>(&text)) {
-                Ok(Ok(snapshot)) => {
-                    model.apply(Event { snapshot: Some(snapshot), changed: None, removed: None });
-                    model.changed();
-                }
-                Ok(Err(err)) => eprintln!("{CLI} list: {err}"),
-                Err(err) => eprintln!("{CLI} list: {err}"),
+        reread(model);
+    });
+}
+
+/// Changes a profile's name or settings with `set`.
+fn set_profile(parent: &impl IsA<gtk::Widget>, model: &Rc<Model>, args: &[&str]) {
+    let (parent, model) = (parent.as_ref().clone(), model.clone());
+    plaitway(args, move |result| {
+        if let Err(err) = result {
+            alert::notice(&parent, "無法儲存", Some(&err));
+        }
+        // Read either way: a refused change puts the page back as the helper has it.
+        reread(model);
+    });
+}
+
+/// Reads the profiles again. The helper tells its watchers nothing of a new order, name or
+/// setting, so without this the page and the menu bar keep the old ones.
+fn reread(model: Rc<Model>) {
+    output("nekoland", &["msg", "vpn"]);
+    plaitway(&["list", "-json"], move |listed| {
+        match listed.map(|text| serde_json::from_str::<Snapshot>(&text)) {
+            Ok(Ok(snapshot)) => {
+                model.apply(Event { snapshot: Some(snapshot), changed: None, removed: None });
+                model.changed();
             }
-        });
+            Ok(Err(err)) => eprintln!("{CLI} list: {err}"),
+            Err(err) => eprintln!("{CLI} list: {err}"),
+        }
     });
 }
 
@@ -1546,7 +1562,7 @@ fn open_profile(from: &adw::ActionRow, model: &Rc<Model>, id: &str) {
                 return;
             }
             if let Some(profile) = model.profile(&id) {
-                change_profile(widget, "無法儲存".into(), &["set", &flag, &profile.id]);
+                set_profile(widget, &model, &["set", &flag, &profile.id]);
             }
         }
     };
