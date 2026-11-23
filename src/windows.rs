@@ -722,6 +722,7 @@ impl Nekoland {
     /// to, are moved and shrunk to lie inside it, so that none is left partly off screen.
     // shortcut: windows on the workspaces not shown are fitted only as they are put back.
     pub fn fit_windows_to_display(&mut self) {
+        self.fit_lock_to_displays();
         let windows: Vec<Window> = self.space.elements().filter(|window| is_managed(window)).cloned().collect();
         for window in &windows {
             // One left on no output, its display unplugged, goes to the main one.

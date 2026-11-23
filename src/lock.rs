@@ -164,6 +164,23 @@ impl Nekoland {
     }
 
     /// The locker's surface on an output.
+    /// Sizes the lock's surfaces to their displays again, after a display's size changed.
+    pub fn fit_lock_to_displays(&mut self) {
+        let Some(lock) = &self.lock else {
+            return;
+        };
+        for (output, surface) in &lock.surfaces {
+            let Some(geometry) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let size = (geometry.size.w as u32, geometry.size.h as u32).into();
+            if surface.with_pending_state(|state| state.size) != Some(size) {
+                surface.with_pending_state(|state| state.size = Some(size));
+                surface.send_configure();
+            }
+        }
+    }
+
     pub fn lock_surface(&self, output: &Output) -> Option<&LockSurface> {
         let lock = self.lock.as_ref()?;
         lock.surfaces
