@@ -45,6 +45,8 @@ mod design;
 mod vpn;
 #[path = "settings/sunshine.rs"]
 mod sunshine;
+#[path = "settings/storage.rs"]
+mod storage;
 
 use lock_screen::*;
 use hover::*;
@@ -554,6 +556,7 @@ fn build(app: &adw::Application) {
                 "一般" => general_page(config, &autostart).upcast(),
                 "印表機" => printers::printers_page().upcast(),
                 "軟體更新" => updates_page().upcast(),
+                "儲存空間" => storage::storage_page().upcast(),
                 "備份" => backup::backup_page().upcast(),
                 "Windows App" => windows::windows_page().upcast(),
                 "共享" => sharing_page().upcast(),
@@ -593,6 +596,7 @@ fn build(app: &adw::Application) {
             ("一般", "preferences-system-symbolic"),
             ("通知", "preferences-system-notifications-symbolic"),
             ("軟體更新", "software-update-available-symbolic"),
+            ("儲存空間", "drive-harddisk-symbolic"),
             ("備份", "document-save-symbolic"),
             ("Windows App", "application-x-executable-symbolic"),
         ],
