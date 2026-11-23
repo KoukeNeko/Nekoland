@@ -2,14 +2,7 @@ use std::{collections::HashSet, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
-    backend::renderer::element::{default_primary_scanout_output_compare, RenderElementStates},
-    desktop::{
-        layer_map_for_output,
-        utils::{
-            send_frames_surface_tree, surface_primary_scanout_output, update_surface_primary_scanout_output,
-        },
-        LayerSurface, PopupManager, Space, Window, WindowSurfaceType,
-    },
+    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Space, Window, WindowSurfaceType},
     input::{keyboard::Keycode, pointer::{CursorImageStatus, MotionEvent}, Seat, SeatState},
     output::Output,
     reexports::{
@@ -22,7 +15,7 @@ use smithay::{
     },
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
-        compositor::{CompositorClientState, CompositorState, SurfaceData},
+        compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
         output::OutputManagerState,
@@ -469,44 +462,16 @@ impl Nekoland {
     }
 
     /// What every backend does once an output has been drawn: tell its surfaces that a
-    /// frame was shown, and drop what has gone away. `drawn` is what the frame showed of
-    /// each element; a surface is then told only by the output it is most shown on, and one
-    /// shown on none, as a window covered by others, now and then. Without it every surface
-    /// is told, as by a backend that shows no picture of its own.
-    pub fn finish_frame(&mut self, output: &Output, drawn: Option<&RenderElementStates>) {
+    /// frame was shown, and drop what has gone away.
+    pub fn finish_frame(&mut self, output: &Output) {
         let time = self.start_time.elapsed();
         let throttle = Some(Duration::ZERO);
-        if let Some(states) = drawn {
-            let update = |surface: &WlSurface, data: &SurfaceData| {
-                update_surface_primary_scanout_output(
-                    surface,
-                    output,
-                    data,
-                    states,
-                    default_primary_scanout_output_compare,
-                );
-            };
-            self.space
-                .elements()
-                .for_each(|window| window.with_surfaces(update));
-            layer_map_for_output(output)
-                .layers()
-                .for_each(|layer| layer.with_surfaces(update));
-            let hidden = Some(HIDDEN_FRAME_INTERVAL);
-            self.space
-                .elements()
-                .for_each(|window| window.send_frame(output, time, hidden, surface_primary_scanout_output));
-            layer_map_for_output(output)
-                .layers()
-                .for_each(|layer| layer.send_frame(output, time, hidden, surface_primary_scanout_output));
-        } else {
-            self.space
-                .elements()
-                .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
-            layer_map_for_output(output)
-                .layers()
-                .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
-        }
+        self.space
+            .elements()
+            .for_each(|window| window.send_frame(output, time, throttle, |_, _| Some(output.clone())));
+        layer_map_for_output(output)
+            .layers()
+            .for_each(|layer| layer.send_frame(output, time, throttle, |_, _| Some(output.clone())));
         // Minimized windows and those on other desktops are drawn nowhere, but still get a
         // frame now and then: Chromium's GPU process otherwise blocks waiting for one, and
         // the program stops answering.

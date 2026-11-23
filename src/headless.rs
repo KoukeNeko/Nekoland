@@ -226,7 +226,7 @@ pub fn init_headless(
         state.capture_windows(&mut renderer);
         drop(renderer);
         // Nothing is shown here, so whatever is mapped counts as shown.
-        state.finish_frame(&output, None);
+        state.finish_frame(&output);
         let _ = state.display_handle.flush_clients();
     };
 

@@ -28,7 +28,6 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement, surface::render_elements_from_surface_tree, Kind,
-                RenderElementStates,
             },
             gles::GlesRenderer,
             ImportDma, ImportMemWl,
@@ -450,7 +449,6 @@ fn render(
     }
 
     // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
-    let mut drawn = None;
     let queued = if state.screens_off || state.space.output_geometry(output).is_none() {
         if dark.insert(crtc) {
             if let Err(err) = surface.with_compositor(|compositor| compositor.clear()) {
@@ -463,24 +461,10 @@ fn render(
             surface.reset_buffers();
         }
         let frames = state.take_screencopy(output);
-        let queued = match draw(
-            state,
-            renderer,
-            surface,
-            output,
-            cursors,
-            glass.get_mut(&crtc),
-            frames,
-        ) {
-            Ok((queued, states)) => {
-                drawn = Some(states);
-                queued
-            }
-            Err(err) => {
-                warn!("render: {err}");
-                false
-            }
-        };
+        let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
+            warn!("render: {err}");
+            false
+        });
         state.capture_windows(renderer);
         queued
     };
@@ -524,7 +508,7 @@ fn render(
         }
     }
 
-    state.finish_frame(&output, drawn.as_ref());
+    state.finish_frame(&output);
     let _ = data.display_handle.flush_clients();
 }
 
@@ -1008,7 +992,7 @@ fn draw(
     cursors: &mut Cursors,
     glass: Option<&mut Glass>,
     screencopy: Vec<crate::screencopy::Frame>,
-) -> Result<(bool, RenderElementStates), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let output_origin = state
         .space
         .output_geometry(output)
@@ -1037,15 +1021,14 @@ fn draw(
         .map_err(|err| err.to_string())?;
     wait_until_drawn(&frame);
     let is_empty = frame.is_empty;
-    let states = frame.states;
     if !screencopy.is_empty() {
         crate::screencopy::copy(renderer, output, &elements, cursor, screencopy);
     }
     if is_empty {
-        return Ok((false, states));
+        return Ok(false);
     }
     surface.queue_frame(()).map_err(|err| err.to_string())?;
-    Ok((true, states))
+    Ok(true)
 }
 
 /// Where the display cannot be told to wait for the renderer, waits for it here. Without

@@ -145,12 +145,6 @@ impl Nekoland {
                     let seconds = time.as_secs();
                     pending.frame.presentation_time((seconds >> 32) as u32, seconds as u32, time.subsec_nanos());
                     pending.frame.ready();
-                    // A shared window covered by others is drawn on no output, so it is told
-                    // here that its frame was shown, to keep up with the sharing.
-                    if let Some(output) = self.space.outputs().next().cloned() {
-                        let elapsed = self.start_time.elapsed();
-                        window.send_frame(&output, elapsed, None, |_, _| Some(output.clone()));
-                    }
                 }
                 Err(err) => {
                     tracing::warn!("window capture: {err}");

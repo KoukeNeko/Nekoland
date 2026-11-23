@@ -213,10 +213,10 @@ pub fn init_winit(
                     .to_physical(output.current_scale().fractional_scale())
                     .to_i32_round();
                 let elements = zoomed(scene, around, state.config.zoom);
-                let (changed, drawn) = match changes.damage_output(1, &elements) {
-                    Ok((damage, states)) => (damage.cloned(), Some(states)),
-                    Err(_) => (None, None),
-                };
+                let changed = changes
+                    .damage_output(1, &elements)
+                    .ok()
+                    .and_then(|(damage, _)| damage.cloned());
                 let submitted = changed.is_some();
                 if let Some(changed) = changed {
                     // The buffer's age is known once it is bound. Mesa's software EGL, as
@@ -243,7 +243,7 @@ pub fn init_winit(
                 }
                 state.capture_windows(backend.renderer());
 
-                state.finish_frame(&output, drawn.as_ref());
+                state.finish_frame(&output);
                 if submitted {
                     state.count_frame();
                 }
