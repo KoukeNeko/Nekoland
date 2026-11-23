@@ -38,6 +38,23 @@ pub fn confirm(
     });
 }
 
+/// Asks before removing something, and whether what it keeps (`kept`, as the choice says it)
+/// goes with it; `then` removes it, told that.
+pub fn confirm_removal(parent: &impl IsA<gtk::Widget>, title: &str, kept: &str, then: impl FnOnce(bool) + 'static) {
+    let everything = gtk::CheckButton::with_label(kept);
+    let alert = adw::AlertDialog::new(Some(title), None);
+    alert.set_extra_child(Some(&everything));
+    alert.add_responses(&[("cancel", "取消"), ("do", "移除")]);
+    alert.set_response_appearance("do", adw::ResponseAppearance::Destructive);
+    alert.set_default_response(Some("cancel"));
+    alert.set_close_response("cancel");
+    alert.choose(parent, gio::Cancellable::NONE, move |response| {
+        if response == "do" {
+            then(everything.is_active());
+        }
+    });
+}
+
 /// Asks for one line of text, starting from `text` with its first `chosen` characters chosen
 /// (-1 for all); `then` gets what was typed, trimmed, unless it is empty. The field is
 /// returned for what else it needs, such as a placeholder.

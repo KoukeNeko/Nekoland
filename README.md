@@ -523,21 +523,27 @@ manager protocol, other programs' windows, screen capture and the lock.
 
 Other computers come in over RDP through xrdp and xorgxrdp, whose X server Nekoland
 covers as a window without a frame, following its size as the client's window changes.
-Settings' 共享 page turns the `xrdp` service on and off, through `sudo -A` and
+Settings' 共享 page installs xrdp (with `xorgxrdp` and `pipewire-module-xrdp`, left off)
+and removes it, its configuration too when that is chosen, turns the `xrdp` service on and off, through `sudo -A` and
 `nekoland-askpass` (not from inside an xrdp session, which would end it), shows the
 address and port to connect to, and gives xrdp sessions Nekoland by writing `~/.xsession`, which
 xrdp's session script runs; one already there is kept in `~/.config/nekoland/xsession`
 and put back when the session is set to the system's again.
 The same page has 遠端登入, which turns OpenSSH's server on and off (`ssh.socket` where
-there is one) and shows the `ssh` command to reach this computer with. With Samba installed
-(`sudo apt install samba`), 檔案共享 shares the Public folder over SMB as
+there is one) and shows the `ssh` command to reach this computer with. 檔案共享 installs Samba
+(left off) and removes it, with the share, the Samba password and what was set up for
+them when that is chosen, and shares the Public folder over SMB as
 `Public-USER`: turning it on asks for a Samba password, adds the person to `sambashare`,
 turns on users' shares in `/etc/samba/smb.conf` and starts `smbd`.
 
+As on a Mac, what is turned on there is let through the firewall (ufw, 網路's 防火牆)
+from the LAN only, the private networks, and taken out again as it is turned off or
+removed; ufw keeps the rules while it is off, for when it is turned on.
 遠端登入 also has Sunshine, for Moonlight clients. Settings installs it from LizardByte's
 newest release, the package built for this Ubuntu (its SHA-256 checked), with a udev rule
-that gives the person its virtual input devices, and removes it again, keeping its
-settings and paired devices. Turned on, it runs as a user service, either streaming the
+that gives the person its virtual input devices and lets its ports through the firewall
+from the LAN (it turns on and off without a password), and removes it again, with its
+settings, paired devices and login when that is chosen. Turned on, it runs as a user service, either streaming the
 desktop at the computer (`nekoland-sunshine.service`) or a session of its own
 (`nekoland-remote-session.service`): `nekoland --headless`, a compositor with no display
 of its own whose screen, `HEADLESS-1` (1920×1080 unless the configuration gives it a mode),

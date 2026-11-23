@@ -13,6 +13,10 @@ const DESKTOP_UNIT: &str = "nekoland-sunshine.service";
 const SESSION_UNIT: &str = "nekoland-remote-session.service";
 const UDEV_RULE: &str = "/etc/udev/rules.d/61-nekoland-sunshine.rules";
 /// What Sunshine's package copies to /etc as it is set up, which removing it leaves behind.
+/// The comment ufw keeps on the rules that let Sunshine in from the LAN.
+const FIREWALL_RULES: &str = "nekoland-sunshine";
+/// Sunshine's `port`, which its other ports are counted from.
+const DEFAULT_PORT: u32 = 47989;
 const PACKAGE_COPIES: [&str; 2] = ["/etc/udev/rules.d/60-sunshine.rules", "/etc/modules-load.d/60-sunshine.conf"];
 const WEB_UI: &str = "https://localhost:47990";
 const KEYRING_SCHEMA: &str = "org.nekoland.Sunshine";
@@ -89,7 +93,10 @@ fn package_url(release: &str, os_release: &str, arch: &str) -> Option<(String, S
 /// Downloads the newest Sunshine for this system, checked against the sum GitHub gives for
 /// it. Returns where it is.
 fn download_package() -> Result<PathBuf, String> {
-    let release = said(Command::new("curl").args(["-fsSL", RELEASES]))?;
+    // GitHub answers an address that asked too often this hour with 403 or 429.
+    let release = said(Command::new("curl").args(["-fsSL", RELEASES])).map_err(|err| {
+        if err.ends_with("error: 403") || err.ends_with("error: 429") { "GitHub 暫時拒絕查詢版本，請稍後再試。".to_string() } else { err }
+    })?;
     let os_release = std::fs::read_to_string("/etc/os-release").map_err(|err| err.to_string())?;
     let arch = said(Command::new("dpkg").arg("--print-architecture"))?;
     let (url, sum) = package_url(&release, &os_release, arch.trim()).ok_or("Sunshine 沒有這個系統版本的套件")?;
@@ -134,14 +141,57 @@ EOF
 getent group render >/dev/null && usermod -aG render "$1"
 udevadm control --reload-rules
 udevadm trigger --property-match=DEVNAME=/dev/uinput --property-match=DEVNAME=/dev/uhid
-"#
+{firewall}"#,
+        firewall = sharing::firewall_allow(FIREWALL_RULES, &firewall_ports(&std::fs::read_to_string(conf_path()).unwrap_or_default()))
     )
 }
 
-fn remove_script() -> String {
+/// The ports Sunshine listens on, as its documentation has them: offsets from its `port`
+/// setting, 47989 unless set.
+// shortcut: read as it is installed; a port changed after needs Sunshine installed again
+// to be let through the firewall, since turning it on and off asks no password.
+fn firewall_ports(conf: &str) -> Vec<String> {
+    let base = conf_entries(conf)
+        .into_iter()
+        .find_map(|(key, value)| (key == "port").then(|| value.parse::<u32>().ok()).flatten())
+        .unwrap_or(DEFAULT_PORT);
+    vec![
+        format!("{},{},{},{}/tcp", base - 5, base, base + 1, base + 21),
+        format!("{}:{},{},{}/udp", base + 9, base + 11, base + 13, base + 21),
+    ]
+}
+
+/// `purge` takes its system-wide configuration too.
+fn remove_script(purge: bool) -> String {
     let apt = apt::APT_GET[..apt::APT_GET.len() - 2].join(" ");
+    let verb = if purge { "purge" } else { "remove" };
     let copies = PACKAGE_COPIES.join(" ");
-    format!("set -e\n{apt} remove sunshine\nrm -f {UDEV_RULE} {copies}\nudevadm control --reload-rules\n")
+    let firewall = sharing::firewall_deny(FIREWALL_RULES);
+    format!("set -e\n{apt} {verb} sunshine\nrm -f {UDEV_RULE} {copies}\nudevadm control --reload-rules\n{firewall}")
+}
+
+/// What Sunshine keeps for this person: its settings and paired devices, the units Settings
+/// wrote for it and its login in the keyring.
+async fn remove_own_data() {
+    LOGIN.set(None);
+    if let Some(user) = web_user() {
+        if let Err(err) = secrets::clear(&keyring_item(&user)).await {
+            eprintln!("keyring: {err}");
+        }
+    }
+    let units = glib::user_config_dir().join("systemd/user");
+    let removed = [
+        (units.join(DESKTOP_UNIT), std::fs::remove_file(units.join(DESKTOP_UNIT))),
+        (units.join(SESSION_UNIT), std::fs::remove_file(units.join(SESSION_UNIT))),
+        (sunshine_dir(), std::fs::remove_dir_all(sunshine_dir())),
+    ];
+    for (path, removed) in removed {
+        match removed {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => eprintln!("{}: {err}", path.display()),
+            _ => {}
+        }
+    }
+    run("systemctl", &["--user", "daemon-reload"]);
 }
 
 // Running.
@@ -430,7 +480,7 @@ fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
         .build()
 }
 
-fn text_button(label: &str) -> gtk::Button {
+pub(crate) fn text_button(label: &str) -> gtk::Button {
     gtk::Button::builder().label(label).valign(gtk::Align::Center).build()
 }
 
@@ -629,7 +679,7 @@ pub(crate) fn add_sunshine_rows(page: &adw::PreferencesPage, rows: &adw::Prefere
         show,
         move |remove| {
             let (service, busy, show) = (service.clone(), busy.clone(), show.clone());
-            alert::confirm(remove, "移除 Sunshine？", Some("已配對的裝置與設定會保留。"), "移除", move || {
+            alert::confirm_removal(remove, "移除 Sunshine？", "一併移除設定與已配對的裝置", move |purge| {
                 busy.set(true);
                 show();
                 service.set_subtitle("正在移除");
@@ -638,13 +688,18 @@ pub(crate) fn add_sunshine_rows(page: &adw::PreferencesPage, rows: &adw::Prefere
                     if let Ok(Err(err)) = stopped {
                         eprintln!("Sunshine: {err}");
                     }
-                    let script = remove_script();
+                    let script = remove_script(purge);
                     as_root("移除 Sunshine", &["sh", "-c", &script], None, move |worked| {
-                        busy.set(false);
-                        show();
-                        if !worked {
-                            alert::notice(&service, "無法移除 Sunshine", None);
-                        }
+                        glib::spawn_future_local(async move {
+                            if worked && purge {
+                                remove_own_data().await;
+                            }
+                            busy.set(false);
+                            show();
+                            if !worked {
+                                alert::notice(&service, "無法移除 Sunshine", None);
+                            }
+                        });
                     });
                 });
             });
@@ -947,6 +1002,12 @@ mod tests {
         );
         assert_eq!(with_conf_value(conf, "port", None), "# comment = kept\nsunshine_name = desk\n");
         assert_eq!(with_conf_value("", "capture", Some("wlr")), "capture = wlr\n");
+    }
+
+    #[test]
+    fn sunshines_ports_follow_its_port_setting() {
+        assert_eq!(firewall_ports(""), ["47984,47989,47990,48010/tcp", "47998:48000,48002,48010/udp"]);
+        assert_eq!(firewall_ports("port = 50000\n"), ["49995,50000,50001,50021/tcp", "50009:50011,50013,50021/udp"]);
     }
 
     #[test]
