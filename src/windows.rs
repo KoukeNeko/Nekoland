@@ -31,12 +31,13 @@ use crate::{
 /// The application ID of Nekoland's own launcher.
 pub const LAUNCHER_APP_ID: &str = "nekoland-launcher";
 /// The application ID of Nekoland's confirmation dialog, which leaves its shadow to the
-/// compositor so that its glass ends at its card.
+/// compositor so that its glass ends at its card, as the launcher does.
 pub const CONFIRM_APP_ID: &str = "nekoland-confirm";
-/// The system's alerts, each a window of its own that asks before the session goes on: kept
-/// in front of every other window, as the Mac's.
-pub const ALERT_APP_IDS: [&str; 4] = [
+/// The system's alerts, each a window of its own that asks before the session goes on, and the
+/// launcher, which looks as they do: kept in front of every other window, as the Mac's.
+pub const ALERT_APP_IDS: [&str; 5] = [
     CONFIRM_APP_ID,
+    LAUNCHER_APP_ID,
     "io.github.koukeneko.Nekoland.Askpass",
     "io.github.koukeneko.Nekoland.KeyringPrompt",
     "io.github.koukeneko.Nekoland.ScreenShare",

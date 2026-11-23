@@ -35,7 +35,7 @@ use crate::{
     text::Picture,
     windows::{
         has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, window_names,
-        ALERT_APP_IDS, CONFIRM_APP_ID,
+        ALERT_APP_IDS, CONFIRM_APP_ID, LAUNCHER_APP_ID,
     },
     Nekoland,
 };
@@ -1266,8 +1266,10 @@ fn windows_on_glass(
             );
             kept.push(id);
         }
-        // The confirmation is its card alone, with no room for a shadow of its own.
-        if rounds_x11_corners(window) || window_names(window).1 == CONFIRM_APP_ID {
+        // The confirmation and the launcher are their card alone, with no room for a shadow of
+        // their own.
+        let app_id = window_names(window).1;
+        if rounds_x11_corners(window) || [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id.as_str()) {
             let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
             let focused = state.focused_window().as_ref() == Some(window);
             elements.extend(crate::rounded::shadow(renderer, window, body, WINDOW_RADIUS, pose.alpha, focused));

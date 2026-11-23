@@ -291,9 +291,9 @@ export component Launcher inherits Window {
         list.content-y = Math.min(0px, list.content-y);
     }
 
-    // The glass under it is the compositor's; this is its tint.
+    // The glass under it is the compositor's, as under the system's alerts; this is its tint.
     SmoothRect {
-        radius: 16px;
+        radius: Theme.radius-xl;
         background: (Theme.dark ? #222226 : #fbfaf8).with-alpha(root.glass-opacity);
         border-width: 1px;
         border-color: Theme.dark ? #ffffff29 : #ffffff59;

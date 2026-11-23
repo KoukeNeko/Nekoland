@@ -798,7 +798,7 @@ impl Default for Config {
             night_shift_to: TimeOfDay(7 * 60),
             night_shift_warmth: 0.7,
             color_profile: None,
-            glass: HashMap::from([("nekoland-launcher".into(), 16)]),
+            glass: HashMap::new(),
             dock: [
                 "org.gnome.Nautilus",
                 "org.gnome.TextEditor",

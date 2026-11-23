@@ -64,7 +64,7 @@ wallpaper and an input method. Every key is optional:
 | `terminal`, `launcher` | Commands behind the shortcuts below |
 | `launcher_search` | What the launcher takes before the text to search for |
 | `volume_up`, `volume_down`, `volume_mute`, `brightness_up`, `brightness_down` | Commands behind the media keys |
-| `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw: `{ nekoland-launcher = 16 }` unless set |
+| `glass` | Other layer surfaces or windows drawn on glass, by namespace or application ID, with the corner radius they draw; none unless set |
 | `dock` | The applications kept in the Dock, by desktop entry name; the Dock writes it back when they are rearranged |
 | `stacks` | The folders at the Dock's right end, each `{ path, sort, show, view }`: `sort` is `name`, `added`, `modified`, `created` or `kind`, `show` is `stack` or `folder`, `view` is `fan`, `grid`, `list` or `auto`; the downloads folder unless set, written back by the Dock |
 | `apps_view` | How the applications are shown: `overview` (the default), `launchpad`, `shelf` or `sidebar`; see Overview |
