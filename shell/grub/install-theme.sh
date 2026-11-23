@@ -46,8 +46,16 @@ font_size=$("$python" "$here/make-theme.py" "$width" "$height" "$work/theme")
 "$python" -m fontTools varLib.instancer "$font" wght=500 wdth=100 -o "$work/medium.ttf" --quiet
 grub-mkfont -n Nekoland -s "$font_size" --no-hinting -o "$work/theme/nekoland.pf2" "$work/medium.ttf"
 
-sudo rm -rf "$dest"
-sudo install -Dm 644 -t "$dest" "$work"/theme/*
+# Rebuilding grub.cfg takes a while, so it is left as it is when neither the theme nor what
+# is set for it below changes; a theme not installed yet differs.
+changed=false
+if ! diff -rq "$work/theme" "$dest" >/dev/null 2>&1; then
+    sudo rm -rf "$dest"
+    sudo install -Dm 644 -t "$dest" "$work"/theme/*
+    changed=true
+fi
+settings() { cat "$defaults" /etc/default/grub.d/99-nekoland.cfg 2>/dev/null | cksum; }
+settings_before=$(settings)
 
 # Set KEY=VALUE in /etc/default/grub, replacing any line (even a commented one) for KEY.
 set_default() {
@@ -81,4 +89,6 @@ done
 CFG
 
 sh "$here/../plymouth/install-splash.sh" "$mode"
-sudo update-grub
+if $changed || [ "$(settings)" != "$settings_before" ]; then
+    sudo update-grub
+fi

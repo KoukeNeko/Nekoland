@@ -19,8 +19,16 @@ trap 'rm -rf "$work"' EXIT
 # The system's Python, which apt's python3-pil is for, not one first on PATH.
 /usr/bin/python3 "$here/make-theme.py" "${mode%x*}" "${mode#*x}" "$work/theme"
 
-sudo rm -rf "$dest"
-sudo install -Dm 644 -t "$dest" "$work"/theme/*
+# Rebuilding the initramfs takes a while, so it is left as it is when neither the theme nor
+# which theme Plymouth uses changes; a theme not installed yet differs.
+changed=false
+if ! diff -rq "$work/theme" "$dest" >/dev/null 2>&1; then
+    sudo rm -rf "$dest"
+    sudo install -Dm 644 -t "$dest" "$work"/theme/*
+    changed=true
+fi
+chosen() { { cat /etc/plymouth/plymouthd.conf; readlink -f /usr/share/plymouth/themes/default.plymouth; } 2>/dev/null | cksum; }
+chosen_before=$(chosen)
 # Plymouth reads the theme from plymouthd.conf, and dracut, which builds Ubuntu's initramfs,
 # copies the theme it names; the default.plymouth alternative is for what reads that instead.
 # Only its theme is changed: what else is set there, as ShowDelay or DeviceScale, stays.
@@ -62,4 +70,6 @@ fi
 sudo systemctl daemon-reload
 
 # The initramfs carries the theme, so it is rebuilt.
-sudo update-initramfs -u
+if $changed || [ "$(chosen)" != "$chosen_before" ]; then
+    sudo update-initramfs -u
+fi
