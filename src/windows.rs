@@ -93,10 +93,6 @@ pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
 /// without the focus.
 const OWN_SHADOW_MIN: i32 = 10;
 
-/// The tiled states a window left where it was put is given for the sides of the display it
-/// reaches, which GTK draws square, as it does a tiled window.
-const SIDE_STATES: [ToplevelState; 2] = [ToplevelState::TiledLeft, ToplevelState::TiledRight];
-
 /// The smallest and largest size a window says it can be; 0 is no limit.
 pub fn size_limits(window: &Window) -> (Size<i32, Logical>, Size<i32, Logical>) {
     match window.underlying_surface() {
@@ -609,55 +605,16 @@ impl Nekoland {
         (edge_to_edge && id != KEYBOARD_APP_ID && window_names(window).0 != SHOT_OVERLAY_TITLE).then_some(0)
     }
 
-    /// Whether a window left where it was put reaches the left or right of the part of its
-    /// display that windows go in, where its corners are square to lie against the edge.
-    pub fn is_against_side(&self, window: &Window) -> bool {
-        if !matches!(placement_of(window), Placement::Free) {
-            return false;
-        }
-        let area = self.output_of(window).and_then(|output| self.usable_area_on(&output));
-        let (Some(frame), Some(area)) = (self.frame(window), area) else {
-            return false;
-        };
-        frame.loc.x <= area.loc.x || frame.loc.x + frame.size.w >= area.loc.x + area.size.w
-    }
-
-    /// Before each frame: tells the programs of windows left where they were put which
-    /// sides of the display they reach, and turns the corners the compositor draws toward
-    /// square or round.
+    /// Before each frame: turns the corners the compositor draws toward square or round.
     pub fn refresh_corners(&mut self) {
         let now = Instant::now();
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for window in windows {
-            let against = self.is_against_side(&window);
-            let goal = match window.underlying_surface() {
-                WindowSurface::Wayland(toplevel) => {
-                    if matches!(placement_of(&window), Placement::Free) {
-                        let changed = toplevel.with_pending_state(|pending| {
-                            let had = SIDE_STATES.map(|state| pending.states.contains(state));
-                            SIDE_STATES.iter().for_each(|state| {
-                                pending.states.unset(*state);
-                            });
-                            if against {
-                                SIDE_STATES.iter().for_each(|state| {
-                                    pending.states.set(*state);
-                                });
-                            }
-                            had != [against; 2]
-                        });
-                        if changed && toplevel.is_initial_configure_sent() {
-                            toplevel.send_pending_configure();
-                        }
-                    }
-                    !has_square_corners(&window)
-                }
-                WindowSurface::X11(_) => true,
-            };
-            // Round where it was put and away from the sides, as GTK's are.
+            // Round where it was put, as GTK's are; square only maximized, fullscreen or tiled.
             let goal = if self.cuts_corners(&window) {
-                matches!(placement_of(&window), Placement::Free) && !against
+                matches!(placement_of(&window), Placement::Free)
             } else {
-                goal
+                window.x11_surface().is_some() || !has_square_corners(&window)
             };
             let goal = f64::from(u8::from(goal));
             let corners = &data(&window).corners;
