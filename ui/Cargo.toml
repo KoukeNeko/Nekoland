@@ -110,6 +110,7 @@ slint = "1.18"
 toml = "0.8"
 unicode-width = "0.2"
 vte4 = { version = "0.8", features = ["v0_76"] }
+x11rb = "0.13"
 xcursor = "0.3"
 
 [build-dependencies]

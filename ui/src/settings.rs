@@ -347,6 +347,10 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(windows::WINE_FLAG) {
         return windows::run(std::env::args().nth(2).as_deref());
     }
+    // The compositor runs this when X11 programs are to draw at another density.
+    if std::env::args().nth(1).as_deref() == Some(windows::DPI_FLAG) {
+        return windows::match_all_dpi();
+    }
     // Files asks this what Windows' programs add to a file's menu, with no window.
     if std::env::args().nth(1).as_deref() == Some(windows::MENU_FLAG) {
         return windows::menu(&std::env::args().skip(2).collect::<Vec<_>>());

@@ -3359,6 +3359,7 @@ dependencies = [
  "toml 0.8.23",
  "unicode-width",
  "vte4",
+ "x11rb",
  "xcursor",
 ]
 

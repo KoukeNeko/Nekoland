@@ -242,19 +242,20 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   hard-linked to the last, now or daily through a systemd user timer
   (`nekoland-settings --backup`). Windows App installs Wine and keeps bottles of it, each a
   prefix with its own Windows folders and programs: it runs a Windows program in the one
-  chosen, turns DXVK on and off and installs fonts and runtimes there through winetricks,
+  chosen, turns DXVK and VKD3D-Proton (Direct3D 8 to 12 on Vulkan) on and off and installs fonts and runtimes there through winetricks,
   has its programs open their windows on Wayland itself rather than through XWayland
   (Wine's Wayland driver), sets the Windows it says it is, and opens Wine's settings, registry editor, task manager
   and uninstaller for it; a bottle made there can run with the newest of Kron4ek's builds
-  of Wine, which the page downloads, in place of Ubuntu's, and which uses the kernel's
+  of Wine, which the page downloads, in place of Ubuntu's, and does unless told otherwise, and which uses the kernel's
   ntsync that `install.sh` loads at boot (Ubuntu's Wine 10.0 is too old for it). A bottle follows Nekoland's
   appearance: dark, it goes without Wine's theme, in Nekoland's colours or libadwaita's,
-  and its programs are told Windows is dark; a Windows program opened from Files
+  and its programs are told Windows is dark; its DPI is set to X11's as that changes
+  (`nekoland-settings --wine-dpi`), so that Wine draws at the display's scale; a Windows program opened from Files
   (`nekoland-settings --wine`) is given the look first. It also
   installs Windows 11 Enterprise's
   90-day evaluation in a dockur/windows container under rootless podman with KVM, and adds
   a program of it as an application that opens as its own window through FreeRDP's
-  RemoteApp (`nekoland-settings --windows-app`): the page has Windows list the programs in
+  RemoteApp (`nekoland-settings --windows-app`), at the display's scale: the page has Windows list the programs in
   its Start menu, with their icons and the types of file they open, so that such a file
   opens in Windows from Files. One connection is kept for all of them, in which an agent
   of Nekoland's (`ui/src/windows/agent.ps1`) starts the programs and tells their windows

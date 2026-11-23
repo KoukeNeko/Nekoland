@@ -69,6 +69,60 @@ const MENU_AGAIN: &str = "--again";
 const LOOK_FILE: &str = "nekoland-look";
 const COLORS_FILE: &str = "nekoland-colors.reg";
 const COLORS_KEY: &str = "HKEY_CURRENT_USER\\Control Panel\\Colors";
+/// What a bottle was last given for its fonts, which is also the file it was given from.
+const FONTS_FILE: &str = "nekoland-fonts.reg";
+/// The fonts Windows' programs name for Chinese, Japanese and Korean, and for fixed-width
+/// text, with the fonts Nekoland has for them; Wine draws CJK text in anything else as boxes,
+/// and fixed-width text in a proportional font.
+const FONT_REPLACEMENTS: [(&str, &str); 36] = [
+    ("Microsoft JhengHei", "Noto Sans CJK TC"),
+    ("Microsoft JhengHei UI", "Noto Sans CJK TC"),
+    ("微軟正黑體", "Noto Sans CJK TC"),
+    ("PMingLiU", "Noto Serif CJK TC"),
+    ("MingLiU", "Noto Serif CJK TC"),
+    ("新細明體", "Noto Serif CJK TC"),
+    ("細明體", "Noto Serif CJK TC"),
+    ("Microsoft YaHei", "Noto Sans CJK SC"),
+    ("Microsoft YaHei UI", "Noto Sans CJK SC"),
+    ("微软雅黑", "Noto Sans CJK SC"),
+    ("SimHei", "Noto Sans CJK SC"),
+    ("黑体", "Noto Sans CJK SC"),
+    ("SimSun", "Noto Serif CJK SC"),
+    ("NSimSun", "Noto Serif CJK SC"),
+    ("宋体", "Noto Serif CJK SC"),
+    ("MS Gothic", "Noto Sans CJK JP"),
+    ("MS PGothic", "Noto Sans CJK JP"),
+    ("MS UI Gothic", "Noto Sans CJK JP"),
+    ("ＭＳ ゴシック", "Noto Sans CJK JP"),
+    ("ＭＳ Ｐゴシック", "Noto Sans CJK JP"),
+    ("Meiryo", "Noto Sans CJK JP"),
+    ("Meiryo UI", "Noto Sans CJK JP"),
+    ("Yu Gothic", "Noto Sans CJK JP"),
+    ("Yu Gothic UI", "Noto Sans CJK JP"),
+    ("MS Mincho", "Noto Serif CJK JP"),
+    ("MS PMincho", "Noto Serif CJK JP"),
+    ("ＭＳ 明朝", "Noto Serif CJK JP"),
+    ("Malgun Gothic", "Noto Sans CJK KR"),
+    ("Gulim", "Noto Sans CJK KR"),
+    ("Dotum", "Noto Sans CJK KR"),
+    ("굴림", "Noto Sans CJK KR"),
+    ("돋움", "Noto Sans CJK KR"),
+    ("Batang", "Noto Serif CJK KR"),
+    ("Consolas", "Liberation Mono"),
+    ("Courier New", "Liberation Mono"),
+    ("Lucida Console", "Liberation Mono"),
+];
+/// Windows' interface fonts, which Wine has or stands in for without CJK: their CJK text
+/// comes from Noto Sans CJK, as on Windows from the font each is linked to.
+const LINKED_FONTS: [&str; 6] = [
+    "Segoe UI",
+    "Tahoma",
+    "MS Shell Dlg",
+    "MS Shell Dlg 2",
+    "Microsoft Sans Serif",
+    "Arial",
+];
+const CJK_LINK: &str = "NotoSansCJK-Regular.ttc,Noto Sans CJK TC";
 /// The dark colours of shell/gtk/nekoland.css and of libadwaita, as Windows writes them:
 /// paper, sheet, fill, line, ink, faint ink, what is chosen, and ink on it.
 const DARK_NEKOLAND: [&str; 8] = [
@@ -448,11 +502,110 @@ fn match_look(prefix: &Path) -> Result<(), String> {
     std::fs::write(prefix.join(LOOK_FILE), wanted).map_err(failed)
 }
 
+/// What Wine's registry is to hold for a bottle to draw text in the fonts Nekoland has, as
+/// regedit reads it: UTF-16, for the fonts' names in Chinese, Japanese and Korean.
+fn font_registry() -> Vec<u8> {
+    let mut registry = "Windows Registry Editor Version 5.00\n\n\
+                        [HKEY_CURRENT_USER\\Software\\Wine\\Fonts\\Replacements]\n"
+        .to_string();
+    for (name, font) in FONT_REPLACEMENTS {
+        registry += &format!("\"{name}\"=\"{font}\"\n");
+    }
+    registry +=
+        "\n[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontLink\\SystemLink]\n";
+    // A list of strings, each ended, and the list too.
+    let link: Vec<String> = CJK_LINK
+        .encode_utf16()
+        .chain([0, 0])
+        .flat_map(u16::to_le_bytes)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    for name in LINKED_FONTS {
+        registry += &format!("\"{name}\"=hex(7):{}\n", link.join(","));
+    }
+    [0xfeff]
+        .into_iter()
+        .chain(registry.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+/// Gives a bottle the fonts Nekoland has for what Windows' programs name, when they are not
+/// what it was last given.
+fn match_fonts(prefix: &Path) -> Result<(), String> {
+    let registry = font_registry();
+    let given = prefix.join(FONTS_FILE);
+    if !prefix.join("user.reg").exists() || std::fs::read(&given).is_ok_and(|had| had == registry) {
+        return Ok(());
+    }
+    // Kept as what was given only once it has been.
+    let giving = prefix.join("nekoland-fonts-new.reg");
+    std::fs::write(&giving, &registry).map_err(|err| err.to_string())?;
+    said(
+        Command::new(wine_of(prefix))
+            .arg("regedit")
+            .arg("/S")
+            .arg(&giving)
+            .env("WINEPREFIX", prefix),
+    )?;
+    std::fs::rename(giving, given).map_err(|err| err.to_string())
+}
+
+/// The dots an inch X11 programs draw at, as Nekoland's XSettings say: the display's scale
+/// and the text's, which Windows' programs are given as their DPI.
+fn x11_dpi() -> Option<u32> {
+    let path = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-xsettings.conf");
+    let settings = std::fs::read_to_string(path).ok()?;
+    let dpi: f64 = settings.lines().find_map(|line| line.strip_prefix("Xft/DPI "))?.trim().parse().ok()?;
+    // XSettings have it in 1024ths.
+    Some((dpi / 1024.0).round() as u32).filter(|dpi| *dpi > 0)
+}
+
+/// Gives a bottle the DPI X11 programs draw at, when it was not the last one it was given:
+/// Wine's programs read it as they start, through XWayland or on Wayland itself.
+fn match_dpi(prefix: &Path) -> Result<(), String> {
+    let Some(dpi) = x11_dpi() else {
+        return Ok(());
+    };
+    let given = prefix.join(DPI_FILE);
+    if !prefix.join("user.reg").exists()
+        || std::fs::read_to_string(&given).is_ok_and(|had| had.trim() == dpi.to_string())
+    {
+        return Ok(());
+    }
+    said(
+        Command::new(wine_of(prefix))
+            .args(["reg", "add", r"HKCU\Control Panel\Desktop", "/v", "LogPixels", "/t", "REG_DWORD"])
+            .args(["/d", &dpi.to_string(), "/f"])
+            .env("WINEPREFIX", prefix),
+    )?;
+    std::fs::write(given, dpi.to_string()).map_err(|err| err.to_string())
+}
+
+/// `nekoland-settings --wine-dpi`: gives every bottle the DPI X11 programs draw at now.
+pub fn match_all_dpi() -> glib::ExitCode {
+    let mut failed = false;
+    for (name, prefix) in bottles() {
+        if let Err(why) = match_dpi(&prefix) {
+            eprintln!("{DPI_FLAG}: {name}: {why}");
+            failed = true;
+        }
+    }
+    if failed {
+        glib::ExitCode::FAILURE
+    } else {
+        glib::ExitCode::SUCCESS
+    }
+}
+
 /// `nekoland-settings --wine FILE`: opens a Windows program from Files in Wine's own bottle,
 /// in Nekoland's look.
 pub fn run(file: Option<&str>) -> glib::ExitCode {
     let prefix = default_prefix();
-    if let Err(why) = match_look(&prefix) {
+    if let Err(why) = match_look(&prefix)
+        .and_then(|()| match_dpi(&prefix))
+        .and_then(|()| match_fonts(&prefix))
+    {
         eprintln!("{WINE_FLAG}: {why}");
     }
     let Some(file) = file else {
@@ -472,8 +625,11 @@ pub fn run(file: Option<&str>) -> glib::ExitCode {
 
 /// Starts a program in a bottle with the bottle's Wine, left to run by itself.
 fn start_in(prefix: &Path, args: &[&OsStr]) -> Result<(), glib::Error> {
-    // The program is opened all the same in the look the bottle has.
-    if let Err(why) = match_look(prefix) {
+    // The program is opened all the same in the look and size the bottle has.
+    if let Err(why) = match_look(prefix)
+        .and_then(|()| match_dpi(prefix))
+        .and_then(|()| match_fonts(prefix))
+    {
         eprintln!("wine: {why}");
     }
     let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
@@ -1451,12 +1607,18 @@ fn install_stage(log: &str) -> (String, bool) {
 /// from its input, not from words any program on the computer can list, and before it
 /// connects, as `+auth-only` wants it.
 fn rdp_args(user: &str) -> Vec<String> {
-    vec![
+    let mut args = vec![
         format!("/v:127.0.0.1:{RDP_PORT}"),
         format!("/u:{user}"),
         "/from-stdin:force".into(),
         "/cert:ignore".into(),
-    ]
+    ];
+    // Windows draws at the density X11 programs do, which FreeRDP's windows are, rather than
+    // at a dot a point and be shown small.
+    if let Some(dpi) = x11_dpi() {
+        args.push(format!("/scale-desktop:{}", (dpi * 100 / 96).clamp(100, 500)));
+    }
+    args
 }
 
 /// Runs FreeRDP with the password at its input.
@@ -1813,6 +1975,128 @@ fn tag(windows: &[String], (name, app): &(String, String)) -> bool {
         })
 }
 
+x11rb::atom_manager! {
+    DropAtoms: DropAtomsCookie {
+        XdndAware, XdndProxy, XdndPosition, XdndStatus, XdndDrop, XdndFinished, XdndSelection,
+        XdndActionCopy,
+        URI_LIST: b"text/uri-list",
+        DROPPED: b"NEKOLAND_DROPPED",
+    }
+}
+
+/// What files are dropped on: FreeRDP's windows take none themselves, so they are each sent
+/// on to a window of this one's, and the files are opened in the window's program in Windows,
+/// from where they are through the drive of this computer's whole tree.
+struct DropTarget {
+    conn: std::sync::Arc<x11rb::rust_connection::RustConnection>,
+    window: u32,
+    atoms: DropAtoms,
+    /// The program each of FreeRDP's windows shows, by its X window.
+    programs: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u32, String>>>,
+}
+
+impl DropTarget {
+    fn start() -> Result<Self, Box<dyn std::error::Error>> {
+        use x11rb::{connection::Connection, protocol::xproto::*, wrapper::ConnectionExt as _};
+        let (conn, screen) = x11rb::connect(None)?;
+        let root = conn.setup().roots[screen].root;
+        let atoms = DropAtoms::new(&conn)?.reply()?;
+        let window = conn.generate_id()?;
+        conn.create_window(0, window, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &Default::default())?;
+        // The XDND version: 5, the one Smithay speaks.
+        conn.change_property32(PropMode::REPLACE, window, atoms.XdndAware, AtomEnum::ATOM, &[5])?;
+        conn.change_property32(PropMode::REPLACE, window, atoms.XdndProxy, AtomEnum::WINDOW, &[window])?;
+        conn.flush()?;
+        let target = Self {
+            conn: std::sync::Arc::new(conn),
+            window,
+            atoms,
+            programs: Default::default(),
+        };
+        let (conn, programs) = (target.conn.clone(), target.programs.clone());
+        std::thread::spawn(move || {
+            if let Err(err) = take_drops(&conn, window, atoms, &programs) {
+                eprintln!("{OPEN_FLAG}: dropping files: {err}");
+            }
+        });
+        Ok(target)
+    }
+
+    /// Has what is dropped on FreeRDP's `windows` sent here.
+    fn take(&self, windows: &[String]) {
+        use x11rb::{connection::Connection, protocol::xproto::*, wrapper::ConnectionExt as _};
+        for window in windows.iter().filter_map(|window| window.parse().ok()) {
+            let _ = self
+                .conn
+                .change_property32(PropMode::REPLACE, window, self.atoms.XdndAware, AtomEnum::ATOM, &[5]);
+            let _ = self.conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                self.atoms.XdndProxy,
+                AtomEnum::WINDOW,
+                &[self.window],
+            );
+        }
+        let _ = self.conn.flush();
+    }
+}
+
+/// Answers the drags that come over FreeRDP's windows, and has the files dropped opened.
+fn take_drops(
+    conn: &x11rb::rust_connection::RustConnection,
+    window: u32,
+    atoms: DropAtoms,
+    programs: &std::sync::Mutex<std::collections::HashMap<u32, String>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::{connection::Connection, protocol::xproto::*, protocol::Event};
+    let tell = |to: u32, kind: u32, data: [u32; 5]| -> Result<(), Box<dyn std::error::Error>> {
+        conn.send_event(false, to, EventMask::NO_EVENT, ClientMessageEvent::new(32, to, kind, data))?;
+        conn.flush()?;
+        Ok(())
+    };
+    // Where the files being dropped go, and the window they come from.
+    let mut dropped = None;
+    loop {
+        match conn.wait_for_event()? {
+            // The message's window is the one under the pointer, the first number the source's.
+            Event::ClientMessage(message) if message.type_ == atoms.XdndPosition => {
+                let source = message.data.as_data32()[0];
+                let takes = programs.lock().unwrap().contains_key(&message.window);
+                let action = if takes { atoms.XdndActionCopy } else { x11rb::NONE };
+                tell(source, atoms.XdndStatus, [message.window, takes.into(), 0, 0, action])?;
+            }
+            Event::ClientMessage(message) if message.type_ == atoms.XdndDrop => {
+                let data = message.data.as_data32();
+                dropped = Some((message.window, data[0]));
+                conn.convert_selection(window, atoms.XdndSelection, atoms.URI_LIST, atoms.DROPPED, data[2])?;
+                conn.flush()?;
+            }
+            Event::SelectionNotify(notice) if notice.requestor == window => {
+                let Some((target, source)) = dropped.take() else { continue };
+                let list = if notice.property == x11rb::NONE {
+                    Vec::new()
+                } else {
+                    conn.get_property(true, window, atoms.DROPPED, AtomEnum::ANY, 0, u32::MAX)?
+                        .reply()?
+                        .value
+                };
+                let program = programs.lock().unwrap().get(&target).cloned();
+                let files: Vec<String> = String::from_utf8_lossy(&list)
+                    .lines()
+                    .filter_map(|uri| gio::File::for_uri(uri.trim()).path())
+                    .filter_map(|file| windows_path(&file))
+                    .collect();
+                let opened = program.is_some_and(|program| {
+                    !files.is_empty() && files.iter().all(|file| ask(&format!("run\t{program}\t{file}")).is_ok())
+                });
+                let action = if opened { atoms.XdndActionCopy } else { x11rb::NONE };
+                tell(source, atoms.XdndFinished, [target, opened.into(), action, 0, 0])?;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// How Windows names `file`, any of this computer's.
 fn windows_path(file: &Path) -> Option<String> {
     let file = std::path::absolute(file).ok()?;
@@ -1867,6 +2151,9 @@ fn keep_connection() -> Result<(), String> {
     ]);
     let connect = || start_freerdp(&args, &password, false).map_err(|err| format!("xfreerdp3: {err}"));
     let mut connection = connect()?;
+    let drops = DropTarget::start()
+        .inspect_err(|err| eprintln!("{OPEN_FLAG}: files cannot be dropped on Windows' windows: {err}"))
+        .ok();
     // The identity each of Windows' windows was given, and FreeRDP's windows that have it:
     // once given it, they are not named after the handle any more.
     let mut tagged: std::collections::HashMap<String, ((String, String), Vec<String>)> = Default::default();
@@ -1930,7 +2217,22 @@ fn keep_connection() -> Result<(), String> {
                 None => x_windows(&shown.handle),
             };
             if tag(&windows, &identity) {
+                if let Some(drops) = &drops {
+                    drops.take(&windows);
+                }
                 tagged.insert(shown.handle.clone(), (identity, windows));
+            }
+        }
+        if let Some(drops) = &drops {
+            let mut programs = drops.programs.lock().unwrap();
+            programs.clear();
+            for shown in &shown {
+                // By its path, the Store's too: started through Explorer, those drop the file.
+                for window in tagged.get(&shown.handle).into_iter().flat_map(|(_, windows)| windows) {
+                    if let Ok(window) = window.parse() {
+                        programs.insert(window, shown.program.clone());
+                    }
+                }
             }
         }
         // The desktop is to be shown, in the session this connection is to.
@@ -2163,6 +2465,11 @@ fn shell_menu(prefix: &Path, file: &str, item: &[String]) -> Option<std::process
         .output()
         .ok()
 }
+
+/// `nekoland-settings --wine-dpi` gives every bottle the density X11 programs draw at now.
+pub const DPI_FLAG: &str = "--wine-dpi";
+/// The file in a bottle that says which density it was last given.
+const DPI_FILE: &str = "nekoland-dpi";
 
 /// `nekoland-settings --windows-menu FILE [ITEM…]`: says what Windows' programs add to the
 /// file's right-click menu, a line an item, its submenus' names and its own with tabs
@@ -2797,6 +3104,36 @@ impl MachineView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cjk_link_is_written_as_a_list_of_one_name() {
+        let registry: Vec<u16> = font_registry()
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let registry = String::from_utf16(&registry).unwrap();
+        assert!(registry.starts_with("\u{feff}Windows Registry Editor Version 5.00"));
+        assert!(registry.contains("\"微軟正黑體\"=\"Noto Sans CJK TC\""));
+        let link = registry
+            .lines()
+            .find_map(|line| line.strip_prefix("\"Segoe UI\"=hex(7):"))
+            .unwrap();
+        let bytes: Vec<u8> = link
+            .split(',')
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), format!("{CJK_LINK}\0\0"));
+    }
+
+    #[test]
+    fn wine_11_is_newer_than_wine_9() {
+        assert!(runner_version("wine-11.2-amd64") > runner_version("wine-9.22-amd64"));
+        assert!(runner_version("wine-11.22-amd64") > runner_version("wine-11.3-amd64"));
+    }
 
     #[test]
     fn the_evaluation_ends_ninety_days_after_installing() {
