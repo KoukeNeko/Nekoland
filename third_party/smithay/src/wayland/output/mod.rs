@@ -40,6 +40,7 @@
 //!         subpixel: Subpixel::HorizontalRgb,  // subpixel information
 //!         make: "Screens Inc".into(),     // make of the monitor
 //!         model: "Monitor Ultra".into(),  // model of the monitor
+//!         serial_number: "KL11C28J04XJ".into(), // serial number of the monitor
 //!     },
 //! );
 //! // create a global, if you want to advertise it to clients
@@ -73,6 +74,7 @@
 mod handlers;
 pub(crate) mod xdg;
 
+use std::mem;
 use std::sync::{atomic::Ordering, Arc};
 
 use crate::{
@@ -321,6 +323,29 @@ impl Output {
         }
     }
 
+    /// Sends `wl_surface.leave` for all surfaces on output
+    pub fn leave_all(&self) {
+        let mut inner = self.inner.0.lock().unwrap();
+        #[allow(clippy::mutable_key_type)]
+        let surfaces = mem::take(&mut inner.surfaces);
+        let Some(handle) = inner.handle.as_ref().and_then(|handle| handle.upgrade()) else {
+            return;
+        };
+        drop(inner);
+
+        for surface in surfaces {
+            let Ok(surface) = surface.upgrade() else {
+                continue;
+            };
+
+            if let Ok(client) = handle.get_client(surface.id()) {
+                for output in self.client_outputs_internal(client) {
+                    surface.leave(&output);
+                }
+            }
+        }
+    }
+
     pub(crate) fn cleanup_surfaces(&self) {
         let mut inner = self.inner.0.lock().unwrap();
         inner.surfaces.retain(|s| s.is_alive());
@@ -331,21 +356,43 @@ impl Output {
 #[macro_export]
 macro_rules! delegate_output {
     ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        $crate::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::reexports::wayland_server::protocol::wl_output::WlOutput: $crate::wayland::output::WlOutputData
-        ] => $crate::wayland::output::OutputManagerState);
-        $crate::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1: ()
-        ] => $crate::wayland::output::OutputManagerState);
+        const _: () = {
+            use $crate::{
+                reexports::{
+                    wayland_protocols::xdg::xdg_output::zv1::server::{
+                        zxdg_output_manager_v1::ZxdgOutputManagerV1, zxdg_output_v1::ZxdgOutputV1,
+                    },
+                    wayland_server::{
+                        delegate_dispatch, delegate_global_dispatch, protocol::wl_output::WlOutput,
+                    },
+                },
+                wayland::output::{OutputManagerState, OutputUserData, WlOutputData, XdgOutputUserData},
+            };
 
-        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::reexports::wayland_server::protocol::wl_output::WlOutput: $crate::wayland::output::OutputUserData
-        ] => $crate::wayland::output::OutputManagerState);
-        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_v1::ZxdgOutputV1: $crate::wayland::output::XdgOutputUserData
-        ] => $crate::wayland::output::OutputManagerState);
-        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1: ()
-        ] => $crate::wayland::output::OutputManagerState);
+            delegate_global_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [WlOutput: WlOutputData] => OutputManagerState
+            );
+
+            delegate_global_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [ZxdgOutputManagerV1: ()] => OutputManagerState
+            );
+
+            delegate_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [WlOutput: OutputUserData] => OutputManagerState
+            );
+
+            delegate_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [ZxdgOutputV1: XdgOutputUserData] => OutputManagerState
+            );
+
+            delegate_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [ZxdgOutputManagerV1: ()] => OutputManagerState
+            );
+        };
     };
 }

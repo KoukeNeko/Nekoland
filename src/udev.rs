@@ -19,7 +19,7 @@ use smithay::{
         },
         drm::{
             compositor::{FrameFlags, PrimaryPlaneElement, RenderFrameResult},
-            exporter::gbm::GbmFramebufferExporter,
+            exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, Framebuffer, NodeType,
         },
@@ -63,7 +63,7 @@ use crate::{
     cursor::Cursors,
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
-    CalloopData, Nekoland,
+    Nekoland,
 };
 
 // How soon to look again when a frame had nothing new to show.
@@ -126,11 +126,11 @@ struct Udev {
 type SharedUdev = Rc<RefCell<Udev>>;
 
 pub fn init_udev(
-    event_loop: &mut EventLoop<'static, CalloopData>,
-    data: &mut CalloopData,
+    event_loop: &mut EventLoop<'static, Nekoland>,
+    data: &mut Nekoland,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let handle = event_loop.handle();
-    let state = &mut data.state;
+    let state = &mut *data;
 
     let (mut session, session_notifier) = LibSeatSession::new()?;
     let seat = session.seat();
@@ -146,7 +146,7 @@ pub fn init_udev(
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     if supports_syncobj_eventfd(&fd) {
-        state.syncobj_state = Some(DrmSyncobjState::new::<Nekoland>(&data.display_handle, fd.clone()));
+        state.syncobj_state = Some(DrmSyncobjState::new::<Nekoland>(&state.display_handle, fd.clone()));
     }
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd)?;
@@ -158,7 +158,7 @@ pub fn init_udev(
     let manager: OutputManager = DrmOutputManager::new(
         drm,
         GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT),
-        GbmFramebufferExporter::new(gbm.clone(), None),
+        GbmFramebufferExporter::new(gbm.clone(), NodeFilter::None),
         Some(gbm),
         [Fourcc::Abgr8888, Fourcc::Argb8888],
         render_formats,
@@ -207,7 +207,7 @@ pub fn init_udev(
         // The global lives as long as the compositor does.
         let _global = state
             .dmabuf_state
-            .create_global_with_default_feedback::<Nekoland>(&data.display_handle, &feedback);
+            .create_global_with_default_feedback::<Nekoland>(&state.display_handle, &feedback);
         let importer = udev.clone();
         state.dmabuf_import = Some(Box::new(move |dmabuf| {
             importer.borrow_mut().renderer.import_dmabuf(dmabuf, None).is_ok()
@@ -237,9 +237,9 @@ pub fn init_udev(
                 }
                 return;
             }
-            data.state.add_pointer_device(device.clone());
+            data.add_pointer_device(device.clone());
         }
-        data.state.process_input_event(event)
+        data.process_input_event(event)
     })?;
 
     {
@@ -251,7 +251,7 @@ pub fn init_udev(
                 if udev.borrow_mut().locked_pending.remove(&crtc) {
                     let output = udev.borrow().surfaces.get(&crtc).map(|(_, output)| output.clone());
                     if let Some(output) = output {
-                        data.state.locked_frame_shown(&output);
+                        data.locked_frame_shown(&output);
                     }
                 }
                 if let Some((surface, _)) = udev.borrow().surfaces.get(&crtc) {
@@ -273,10 +273,10 @@ pub fn init_udev(
         handle.insert_source(UdevBackend::new(&seat)?, move |event, _, data| {
             if matches!(event, UdevEvent::Changed { device_id } if device_id == device) {
                 let mut backend = udev.borrow_mut();
-                if let Err(err) = rescan(&mut backend, &mut data.state) {
+                if let Err(err) = rescan(&mut backend, &mut *data) {
                     warn!("could not look for displays: {err}");
                 }
-                reprobe_modes(&mut backend, &mut data.state);
+                reprobe_modes(&mut backend, &mut *data);
             }
         })?;
     }
@@ -294,7 +294,7 @@ pub fn init_udev(
                     warn!("libinput did not resume");
                 }
                 let mut backend = udev.borrow_mut();
-                if let Err(err) = backend.manager.activate(false) {
+                if let Err(err) = backend.manager.lock().activate(false) {
                     warn!("could not take the display back: {err}");
                 }
                 // Whoever had the display meanwhile may have left ramps of their own.
@@ -316,14 +316,14 @@ pub fn init_udev(
         let loop_handle = handle.clone();
         let (ping, source) = make_ping()?;
         handle.insert_source(source, move |_, _, data| render_all(&udev, data, &loop_handle))?;
-        data.state.redraw = Some(ping);
+        data.redraw = Some(ping);
     }
 
     let loop_handle = handle.clone();
     handle.insert_idle(move |data| render_all(&udev, data, &loop_handle));
 
     // The state keeps the session alive, which has to outlive everything opened through it.
-    data.state.switch_vt = Some(Box::new(move |vt| {
+    data.switch_vt = Some(Box::new(move |vt| {
         if let Err(err) = session.change_vt(vt) {
             warn!("could not switch to VT {vt}: {err}");
         }
@@ -332,7 +332,7 @@ pub fn init_udev(
     Ok(())
 }
 
-fn render_all(udev: &SharedUdev, data: &mut CalloopData, handle: &LoopHandle<'static, CalloopData>) {
+fn render_all(udev: &SharedUdev, data: &mut Nekoland, handle: &LoopHandle<'static, Nekoland>) {
     let crtcs: Vec<_> = udev.borrow().surfaces.keys().copied().collect();
     for crtc in crtcs {
         render(udev, crtc, data, handle);
@@ -344,14 +344,14 @@ fn render_all(udev: &SharedUdev, data: &mut CalloopData, handle: &LoopHandle<'st
 fn render(
     udev: &SharedUdev,
     crtc: crtc::Handle,
-    data: &mut CalloopData,
-    handle: &LoopHandle<'static, CalloopData>,
+    data: &mut Nekoland,
+    handle: &LoopHandle<'static, Nekoland>,
 ) {
     // Its vblank draws it next.
     if udev.borrow().pending.contains(&crtc) {
         return;
     }
-    let state = &mut data.state;
+    let state = &mut *data;
     state.tick_overview();
     state.tick_motion();
     state.refresh_menu_bar();
@@ -534,6 +534,7 @@ fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, c
             subpixel: connector.subpixel().into(),
             make: "Unknown".into(),
             model: "Unknown".into(),
+            serial_number: "Unknown".into(),
         },
     );
     for mode in modes {
@@ -554,6 +555,7 @@ fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, c
 
     let surface = udev
         .manager
+        .lock()
         .initialize_output::<GlesRenderer, SceneElement>(
             crtc,
             drm_mode,

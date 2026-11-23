@@ -4,13 +4,15 @@ use smithay::{
     delegate_data_control, delegate_fractional_scale, delegate_input_method_manager,
     delegate_primary_selection, delegate_single_pixel_buffer, delegate_text_input_manager,
     delegate_keyboard_shortcuts_inhibit, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_activation, delegate_xdg_decoration,
+    delegate_pointer_constraints, delegate_relative_pointer, delegate_xdg_activation,
+    delegate_xdg_decoration,
     desktop::{PopupKind, PopupManager},
+    input::pointer::PointerHandle,
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         wayland_server::{protocol::wl_surface::WlSurface, DisplayHandle},
     },
-    utils::{Logical, Rectangle},
+    utils::{Logical, Point, Rectangle},
     wayland::{
         compositor::with_states,
         fractional_scale::{with_fractional_scale, FractionalScaleHandler, FractionalScaleManagerState},
@@ -18,6 +20,8 @@ use smithay::{
         keyboard_shortcuts_inhibit::{
             KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
         },
+        pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState},
+        relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
         session_lock::SessionLockManagerState,
         input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as ImePopupSurface},
@@ -57,6 +61,8 @@ pub struct Protocols {
     pub session_lock: SessionLockManagerState,
     _idle_inhibit: IdleInhibitManagerState,
     shortcuts_inhibit: KeyboardShortcutsInhibitState,
+    _pointer_constraints: PointerConstraintsState,
+    _relative_pointer: RelativePointerManagerState,
 }
 
 impl Protocols {
@@ -81,20 +87,22 @@ impl Protocols {
             session_lock: SessionLockManagerState::new::<Nekoland, _>(dh, unsandboxed),
             _idle_inhibit: IdleInhibitManagerState::new::<Nekoland>(dh),
             shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<Nekoland>(dh),
+            _pointer_constraints: PointerConstraintsState::new::<Nekoland>(dh),
+            _relative_pointer: RelativePointerManagerState::new::<Nekoland>(dh),
         }
     }
 }
 
 impl PrimarySelectionHandler for Nekoland {
-    fn primary_selection_state(&self) -> &PrimarySelectionState {
-        &self.protocols.primary_selection
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        &mut self.protocols.primary_selection
     }
 }
 delegate_primary_selection!(Nekoland);
 
 impl DataControlHandler for Nekoland {
-    fn data_control_state(&self) -> &DataControlState {
-        &self.protocols.data_control
+    fn data_control_state(&mut self) -> &mut DataControlState {
+        &mut self.protocols.data_control
     }
 }
 delegate_data_control!(Nekoland);
@@ -169,6 +177,7 @@ impl Nekoland {
                 layer.with_surfaces(tell);
             }
         }
+        self.scale_x11();
     }
 }
 delegate_fractional_scale!(Nekoland);
@@ -210,6 +219,37 @@ impl KeyboardShortcutsInhibitHandler for Nekoland {
     }
 }
 delegate_keyboard_shortcuts_inhibit!(Nekoland);
+
+// Games lock the pointer in place to look around with the mouse, or keep it in their window;
+// Xwayland does both for X11 games that grab and warp the pointer.
+impl PointerConstraintsHandler for Nekoland {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        if pointer.current_focus().as_ref() == Some(surface) {
+            let under = self.surface_under(pointer.current_location());
+            self.hold_pointer(pointer, under.as_ref());
+        }
+    }
+
+    // Where a game says the pointer is, which is where it shows again once it is let go.
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        let active = with_pointer_constraint(surface, pointer, |constraint| {
+            constraint.is_some_and(|constraint| constraint.is_active())
+        });
+        if let Some((_, origin)) = self
+            .surface_under(pointer.current_location())
+            .filter(|(under, _)| active && under == surface)
+        {
+            pointer.set_location(origin + location);
+        }
+    }
+}
+delegate_pointer_constraints!(Nekoland);
+delegate_relative_pointer!(Nekoland);
 
 delegate_viewporter!(Nekoland);
 delegate_single_pixel_buffer!(Nekoland);

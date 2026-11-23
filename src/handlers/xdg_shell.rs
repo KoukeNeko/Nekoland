@@ -10,20 +10,21 @@ use smithay::{
         PopupPointerGrab, PopupUngrabStrategy, Space, Window,
     },
     input::{
+        dnd::DnDGrab,
         pointer::{Focus, GrabStartData as PointerGrabStartData},
         Seat,
     },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
-            protocol::{wl_output, wl_seat, wl_surface::WlSurface},
+            protocol::{wl_data_source::WlDataSource, wl_output, wl_seat, wl_surface::WlSurface},
             Resource,
         },
     },
     utils::{Rectangle, Serial, SERIAL_COUNTER},
     wayland::{
         compositor::{add_destruction_hook, with_states},
-        selection::data_device::DnDGrab,
+
         shell::xdg::{
             PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
@@ -302,7 +303,12 @@ delegate_xdg_shell!(Nekoland);
 /// handle under what was dragged; doing so would drop what is being dragged.
 fn dragging_data(seat: &Seat<Nekoland>) -> bool {
     seat.get_pointer()
-        .and_then(|pointer| pointer.with_grab(|_, grab| grab.is::<DnDGrab<Nekoland>>()))
+        .and_then(|pointer| {
+            pointer.with_grab(|_, grab| {
+                grab.is::<DnDGrab<Nekoland, WlDataSource, WlSurface>>()
+                    || grab.is::<DnDGrab<Nekoland, WlSurface, WlSurface>>()
+            })
+        })
         .unwrap_or(false)
 }
 

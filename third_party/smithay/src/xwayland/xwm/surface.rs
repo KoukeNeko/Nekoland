@@ -11,16 +11,30 @@ use crate::{
         Seat, SeatHandler,
     },
     utils::{user_data::UserDataMap, Client, IsAlive, Logical, Rectangle, Serial, Size},
-    wayland::compositor,
+    wayland::{
+        compositor,
+        seat::{keyboard::enter_internal, WaylandFocus},
+    },
 };
+#[cfg(feature = "desktop")]
+use crate::{
+    desktop::{utils::under_from_surface_tree, WindowSurfaceType},
+    utils::Point,
+};
+
 use atomic_float::AtomicF64;
 use encoding_rs::WINDOWS_1252;
 use std::{
+    borrow::Cow,
     collections::HashSet,
-    sync::{atomic::Ordering, Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 use tracing::warn;
 use wayland_server::protocol::wl_surface::WlSurface;
+use xkbcommon::xkb::Keycode;
 
 use x11rb::{
     connection::Connection as _,
@@ -44,9 +58,11 @@ pub struct X11Surface {
     xwm: Option<XwmId>,
     client_scale: Option<Arc<AtomicF64>>,
     window: X11Window,
-    conn: Weak<RustConnection>,
-    atoms: super::Atoms,
+    pub(super) conn: Weak<RustConnection>,
+    pub(super) atoms: super::Atoms,
     pub(crate) state: Arc<Mutex<SharedSurfaceState>>,
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(super) xdnd_active: Arc<AtomicBool>,
     user_data: Arc<UserDataMap>,
 }
 
@@ -64,7 +80,7 @@ pub(crate) struct SharedSurfaceState {
     pub(super) override_redirect: bool,
 
     // The associated wl_surface.
-    pub(crate) wl_surface: Option<WlSurface>,
+    wl_surface: Option<WlSurface>,
 
     title: String,
     class: String,
@@ -78,6 +94,13 @@ pub(crate) struct SharedSurfaceState {
     net_state: HashSet<Atom>,
     motif_hints: Vec<u32>,
     window_type: Vec<Atom>,
+    pub(crate) opacity: Option<u32>,
+    pending_enter: Option<(
+        Box<dyn std::any::Any + Send + 'static>,
+        Vec<Keycode>,
+        Option<ModifiersState>,
+        Serial,
+    )>,
 }
 
 pub(super) type Protocols = Vec<WMProtocol>;
@@ -86,15 +109,6 @@ pub(super) type Protocols = Vec<WMProtocol>;
 pub(super) enum WMProtocol {
     TakeFocus,
     DeleteWindow,
-}
-
-/// https://x.org/releases/X11R7.6/doc/xorg-docs/specs/ICCCM/icccm.html#input_focus
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum InputMode {
-    None,
-    Passive,
-    LocallyActive,
-    GloballyActive,
 }
 
 impl PartialEq for X11Surface {
@@ -147,6 +161,23 @@ pub enum WmWindowProperty {
     MotifHints,
     StartupId,
     Pid,
+    Opacity,
+}
+
+/// https://x.org/releases/X11R7.6/doc/xorg-docs/specs/ICCCM/icccm.html#input_focus
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WmInputModel {
+    /// The client never expects keyboard input.
+    None,
+    /// The client expects keyboard input but never explicitly sets the input focus.
+    #[default]
+    Passive,
+    /// The client expects keyboard input and explicitly sets the input focus,
+    /// but it only does so when one of its windows already has the focus.
+    LocallyActive,
+    /// The client expects keyboard input and explicitly sets the input focus,
+    /// even when it is in windows the client does not own.
+    GloballyActive,
 }
 
 impl X11Surface {
@@ -166,6 +197,7 @@ impl X11Surface {
         conn: Weak<RustConnection>,
         atoms: super::Atoms,
         geometry: Rectangle<i32, Logical>,
+        xdnd_active: Arc<AtomicBool>,
     ) -> X11Surface {
         X11Surface {
             xwm: xwm.map(|wm| wm.id),
@@ -193,7 +225,10 @@ impl X11Surface {
                 net_state: HashSet::new(),
                 motif_hints: vec![0; 5],
                 window_type: Vec::new(),
+                opacity: None,
+                pending_enter: None,
             })),
+            xdnd_active,
             user_data: Arc::new(UserDataMap::new()),
         }
     }
@@ -343,6 +378,21 @@ impl X11Surface {
         self.state.lock().unwrap().wl_surface_serial
     }
 
+    pub(crate) fn set_wl_surface<D: SeatHandler + 'static>(&self, data: &mut D, surface: Option<WlSurface>) {
+        let mut state = self.state.lock().unwrap();
+        if let (Some(surface), None) = (surface.as_ref(), state.wl_surface.as_ref()) {
+            if let Some((seat, keys, mods, serial)) = state.pending_enter.take() {
+                if let Ok(seat) = seat.downcast::<Seat<D>>() {
+                    enter_internal(surface, &seat, data, keys.into_iter(), serial);
+                    if let Some(modifiers) = mods {
+                        KeyboardTarget::modifiers(surface, &seat, data, modifiers, serial);
+                    }
+                }
+            }
+        }
+        state.wl_surface = surface;
+    }
+
     /// Returns the current geometry of the underlying X11 window
     pub fn geometry(&self) -> Rectangle<i32, Logical> {
         self.state.lock().unwrap().geometry
@@ -371,6 +421,11 @@ impl X11Surface {
     /// Returns the PID of the underlying X11 window
     pub fn pid(&self) -> Option<u32> {
         self.state.lock().unwrap().pid
+    }
+
+    /// Returns the opacity of the underlying X11 window
+    pub fn opacity(&self) -> Option<u32> {
+        self.state.lock().unwrap().opacity
     }
 
     /// Returns if the window is considered to be a popup.
@@ -464,8 +519,8 @@ impl X11Surface {
             .contains(&self.atoms._NET_WM_STATE_FULLSCREEN)
     }
 
-    /// Returns if the window is in the minimized state
-    pub fn is_minimized(&self) -> bool {
+    /// Returns if the window is in the hidden state
+    pub fn is_hidden(&self) -> bool {
         self.state
             .lock()
             .unwrap()
@@ -527,10 +582,10 @@ impl X11Surface {
         Ok(())
     }
 
-    /// Sets the window as suspended/hidden or not.
+    /// Sets the window as hidden or not.
     ///
     /// Allows the client to e.g. stop rendering.
-    pub fn set_suspended(&self, suspended: bool) -> Result<(), ConnectionError> {
+    pub fn set_hidden(&self, suspended: bool) -> Result<(), ConnectionError> {
         if suspended {
             self.change_net_state(&[self.atoms._NET_WM_STATE_HIDDEN], &[])?;
         } else {
@@ -609,16 +664,19 @@ impl X11Surface {
         Ok(())
     }
 
-    fn input_mode(&self) -> InputMode {
+    /// Input handling model requested by the underlying X11 window.
+    ///
+    /// See ICCCM §4.1.7 for details.
+    pub fn input_model(&self) -> WmInputModel {
         let state = self.state.lock().unwrap();
         match (
             state.hints.as_ref().and_then(|hints| hints.input).unwrap_or(true),
             state.protocols.contains(&WMProtocol::TakeFocus),
         ) {
-            (false, false) => InputMode::None,
-            (true, false) => InputMode::Passive, // the default
-            (true, true) => InputMode::LocallyActive,
-            (false, true) => InputMode::GloballyActive,
+            (false, false) => WmInputModel::None,
+            (true, false) => WmInputModel::Passive, // the default
+            (true, true) => WmInputModel::LocallyActive,
+            (false, true) => WmInputModel::GloballyActive,
         }
     }
 
@@ -634,6 +692,7 @@ impl X11Surface {
         self.update_motif_hints()?;
         self.update_startup_id()?;
         self.update_pid()?;
+        self.update_opacity()?;
         Ok(())
     }
 
@@ -678,6 +737,10 @@ impl X11Surface {
             atom if atom == self.atoms._NET_WM_PID => {
                 self.update_pid()?;
                 Ok(Some(WmWindowProperty::Pid))
+            }
+            atom if atom == self.atoms._NET_WM_WINDOW_OPACITY => {
+                self.update_opacity()?;
+                Ok(Some(WmWindowProperty::Opacity))
             }
 
             _ => Ok(None), // unknown
@@ -765,6 +828,14 @@ impl X11Surface {
         if let Some(pid) = self.read_window_property_u32(self.atoms._NET_WM_PID)? {
             let mut state = self.state.lock().unwrap();
             state.pid = Some(pid);
+        }
+        Ok(())
+    }
+
+    fn update_opacity(&self) -> Result<(), ConnectionError> {
+        if let Some(opacity) = self.read_window_property_u32(self.atoms._NET_WM_WINDOW_OPACITY)? {
+            let mut state = self.state.lock().unwrap();
+            state.opacity = Some(opacity);
         }
         Ok(())
     }
@@ -964,6 +1035,33 @@ impl X11Surface {
         }
         Ok(0)
     }
+
+    /// Returns the topmost (sub-)surface under a given position of the surface.
+    ///
+    /// In case the window is not mapped or is unmanaged while an XDND operation is ongoing [`None`] is returned.
+    ///
+    /// - `point` has to be the position to query, relative to (0, 0) of the given surface + `location`.
+    /// - `location` can be used to offset the returned point.
+    /// - `surface_type` can be used to filter the underlying surface tree
+    #[cfg(feature = "desktop")]
+    pub fn surface_under(
+        &self,
+        point: Point<f64, Logical>,
+        location: impl Into<Point<i32, Logical>>,
+        surface_type: WindowSurfaceType,
+    ) -> Option<(WlSurface, Point<i32, Logical>)> {
+        if !surface_type.contains(WindowSurfaceType::TOPLEVEL) {
+            return None;
+        }
+        if self.xdnd_active.load(Ordering::Acquire) && self.is_override_redirect() {
+            return None;
+        }
+        if let Some(surface) = X11Surface::wl_surface(self).as_ref() {
+            return under_from_surface_tree(surface, point, location, surface_type);
+        }
+
+        None
+    }
 }
 
 /// Trait for objects, that represent an x11 window in some shape or form
@@ -1002,11 +1100,11 @@ impl IsAlive for X11Surface {
 
 impl<D: SeatHandler + 'static> KeyboardTarget<D> for X11Surface {
     fn enter(&self, seat: &Seat<D>, data: &mut D, keys: Vec<KeysymHandle<'_>>, serial: Serial) {
-        let (set_input_focus, send_take_focus) = match self.input_mode() {
-            InputMode::None => return,
-            InputMode::Passive => (true, false),
-            InputMode::LocallyActive => (true, true),
-            InputMode::GloballyActive => (false, true),
+        let (set_input_focus, send_take_focus) = match self.input_model() {
+            WmInputModel::None => return,
+            WmInputModel::Passive => (true, false),
+            WmInputModel::LocallyActive => (true, true),
+            WmInputModel::GloballyActive => (false, true),
         };
 
         if let Some(conn) = self.conn.upgrade() {
@@ -1035,13 +1133,21 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for X11Surface {
             let _ = conn.flush();
         }
 
-        if let Some(surface) = self.state.lock().unwrap().wl_surface.as_ref() {
+        let mut state = self.state.lock().unwrap();
+        if let Some(surface) = state.wl_surface.as_ref() {
             KeyboardTarget::enter(surface, seat, data, keys, serial);
+        } else {
+            state.pending_enter = Some((
+                Box::new(seat.clone()) as Box<dyn std::any::Any + Send>,
+                keys.iter().map(|x| x.raw_code()).collect(),
+                None,
+                serial,
+            ));
         }
     }
 
     fn leave(&self, seat: &Seat<D>, data: &mut D, serial: Serial) {
-        if self.input_mode() == InputMode::None {
+        if self.input_model() == WmInputModel::None {
             return;
         } else if let Some(conn) = self.conn.upgrade() {
             if let Err(err) = conn.set_input_focus(InputFocus::NONE, x11rb::NONE, x11rb::CURRENT_TIME) {
@@ -1050,7 +1156,9 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for X11Surface {
             let _ = conn.flush();
         }
 
-        if let Some(surface) = self.state.lock().unwrap().wl_surface.as_ref() {
+        let mut state = self.state.lock().unwrap();
+        let _ = state.pending_enter.take();
+        if let Some(surface) = state.wl_surface.as_ref() {
             KeyboardTarget::leave(surface, seat, data, serial);
         }
     }
@@ -1064,22 +1172,35 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for X11Surface {
         serial: Serial,
         time: u32,
     ) {
-        if self.input_mode() == InputMode::None {
+        if self.input_model() == WmInputModel::None {
             return;
         }
 
-        if let Some(surface) = self.state.lock().unwrap().wl_surface.as_ref() {
+        let mut xstate = self.state.lock().unwrap();
+        if let Some(surface) = xstate.wl_surface.as_ref() {
             KeyboardTarget::key(surface, seat, data, key, state, serial, time)
+        } else if let Some((_, keys, _, pending_serial)) = xstate.pending_enter.as_mut() {
+            let raw = key.raw_code();
+            if state == KeyState::Released {
+                keys.retain(|c| *c != raw);
+            } else {
+                keys.push(raw);
+            }
+            *pending_serial = serial
         }
     }
 
     fn modifiers(&self, seat: &Seat<D>, data: &mut D, modifiers: ModifiersState, serial: Serial) {
-        if self.input_mode() == InputMode::None {
+        if self.input_model() == WmInputModel::None {
             return;
         }
 
-        if let Some(surface) = self.state.lock().unwrap().wl_surface.as_ref() {
+        let mut state = self.state.lock().unwrap();
+        if let Some(surface) = state.wl_surface.as_ref() {
             KeyboardTarget::modifiers(surface, seat, data, modifiers, serial);
+        } else if let Some((_, _, pending_modifiers, pending_serial)) = state.pending_enter.as_mut() {
+            *pending_modifiers = Some(modifiers);
+            *pending_serial = serial;
         }
     }
 }
@@ -1223,5 +1344,11 @@ impl<D: SeatHandler + 'static> TouchTarget<D> for X11Surface {
         if let Some(surface) = self.state.lock().unwrap().wl_surface.as_ref() {
             TouchTarget::orientation(surface, seat, data, event, seq)
         }
+    }
+}
+
+impl WaylandFocus for X11Surface {
+    fn wl_surface(&self) -> Option<Cow<'_, WlSurface>> {
+        X11Surface::wl_surface(self).map(Cow::Owned)
     }
 }

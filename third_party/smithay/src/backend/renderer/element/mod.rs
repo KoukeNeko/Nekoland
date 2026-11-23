@@ -19,7 +19,10 @@
 //! See the [`damage`](crate::backend::renderer::damage) module for more information on
 //! damage tracking.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
 
 #[cfg(feature = "wayland_frontend")]
 use wayland_server::{backend::ObjectId, Resource};
@@ -45,18 +48,29 @@ pub mod utils;
 
 crate::utils::ids::id_gen!(external_id);
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone)]
 /// A unique id for a [`RenderElement`]
 pub struct Id(InnerId);
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone)]
 enum InnerId {
     #[cfg(feature = "wayland_frontend")]
     WaylandResource(ObjectId),
     External(Arc<ExternalId>),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone)]
+/// A weak reference to a unique id for a [`RenderElement`]
+pub struct WeakId(InnerWeakId);
+
+#[derive(Debug, Clone)]
+enum InnerWeakId {
+    #[cfg(feature = "wayland_frontend")]
+    WaylandResource(ObjectId),
+    External(Weak<ExternalId>),
+}
+
+#[derive(Debug, Clone)]
 struct ExternalId(usize);
 
 impl ExternalId {
@@ -68,6 +82,71 @@ impl ExternalId {
 impl Drop for ExternalId {
     fn drop(&mut self) {
         external_id::remove(self.0);
+    }
+}
+
+impl PartialEq for Id {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            #[cfg(feature = "wayland_frontend")]
+            (InnerId::WaylandResource(this_obj), InnerId::WaylandResource(other_obj)) => {
+                this_obj == other_obj
+            }
+            (InnerId::External(this_id), InnerId::External(other_id)) => Arc::ptr_eq(this_id, other_id),
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+}
+impl Eq for Id {}
+
+impl PartialEq for WeakId {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            #[cfg(feature = "wayland_frontend")]
+            (InnerWeakId::WaylandResource(this_obj), InnerWeakId::WaylandResource(other_obj)) => {
+                this_obj == other_obj
+            }
+            (InnerWeakId::External(this_id), InnerWeakId::External(other_id)) => {
+                Weak::ptr_eq(this_id, other_id)
+            }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+}
+impl Eq for WeakId {}
+
+impl PartialEq<WeakId> for Id {
+    fn eq(&self, other: &WeakId) -> bool {
+        let this = self.downgrade();
+        &this == other
+    }
+}
+
+impl std::hash::Hash for Id {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        match &self.0 {
+            #[cfg(feature = "wayland_frontend")]
+            InnerId::WaylandResource(obj) => obj.hash(state),
+            InnerId::External(arc) => (Arc::as_ptr(arc) as usize).hash(state),
+        }
+    }
+}
+
+impl std::hash::Hash for WeakId {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        match &self.0 {
+            #[cfg(feature = "wayland_frontend")]
+            InnerWeakId::WaylandResource(obj) => obj.hash(state),
+            InnerWeakId::External(arc) => (Weak::as_ptr(arc) as usize).hash(state),
+        }
     }
 }
 
@@ -85,8 +164,29 @@ impl Id {
     ///
     /// Note: The id will be re-used once all instances of this [`Id`]
     /// are dropped.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Id(InnerId::External(Arc::new(ExternalId::new())))
+    }
+
+    /// Create a weak reference to this Id, which won't keep it from being re-used internally.
+    pub fn downgrade(&self) -> WeakId {
+        WeakId(match &self.0 {
+            #[cfg(feature = "wayland_frontend")]
+            InnerId::WaylandResource(id) => InnerWeakId::WaylandResource(id.clone()),
+            InnerId::External(arc) => InnerWeakId::External(Arc::downgrade(arc)),
+        })
+    }
+}
+
+impl WeakId {
+    /// Create `Id` from this weak handle, if it still exist
+    pub fn upgrade(&self) -> Option<Id> {
+        Some(Id(match &self.0 {
+            #[cfg(feature = "wayland_frontend")]
+            InnerWeakId::WaylandResource(obj) => InnerId::WaylandResource(obj.clone()),
+            InnerWeakId::External(weak) => InnerId::External(weak.upgrade()?),
+        }))
     }
 }
 
@@ -334,6 +434,23 @@ pub enum Kind {
     /// Not marking a cursor element as `Cursor` may result in lower performance and increased power usage.
     /// In contrast, marking elements that change frequently as `Cursor` can degrade performance significantly.
     Cursor,
+    /// The element is a good candidate for scanout
+    ///
+    /// An element marked as a scanout candidate is expected to refresh frequently or with a constant rate.
+    /// As such it makes a good candidate to save resources by placing it on an overlay plane, when using the drm backend
+    /// (see [`DrmCompositor`](crate::backend::drm::compositor::DrmCompositor)).
+    ///
+    /// Examples of applications like this include video players or games. To detect good candidates compositor should
+    /// employ heuristics. For example, it might keep track of the surface commit rate and mark surfaces hitting thresholds
+    /// as scanout candidates.
+    ///
+    /// Note: You can select a different `Kind` every time you create the render element from e.g. a wayland surface.
+    /// This means it is expected that compositors dynamically choose the appropriate `Kind` at runtime instead
+    /// of relying on static configuration. E.g. it can make sense to switch back to `Unspecified` during very dynamic
+    /// scenes like animations, as moving planes can be slow on certain hardware.
+    ///
+    /// Elements not marked as scanout candidates will never be considered, when selecting potential buffers for overlay planes.
+    ScanoutCandidate,
     /// The element kind is unspecified
     #[default]
     Unspecified,

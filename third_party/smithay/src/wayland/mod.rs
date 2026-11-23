@@ -1,3 +1,5 @@
+// Allow in this module because of existing usage
+#![allow(clippy::uninlined_format_args)]
 //! Protocol-related utilities
 //!
 //! This module contains several handlers to manage the Wayland protocol
@@ -66,6 +68,7 @@ pub mod keyboard_shortcuts_inhibit;
 pub mod output;
 pub mod pointer_constraints;
 pub mod pointer_gestures;
+pub mod pointer_warp;
 pub mod presentation;
 pub mod relative_pointer;
 pub mod seat;

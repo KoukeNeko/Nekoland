@@ -12,15 +12,16 @@ use crate::{focus::KeyFocus, Nekoland};
 //
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::input::dnd::{DnDGrab, DndGrabHandler, DndTarget, GrabType, Source};
+use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
-    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+    set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::tablet_manager::TabletSeatHandler;
@@ -79,7 +80,7 @@ impl SelectionHandler for Nekoland {
         if let Some(paths) = copied {
             crate::desktop::send_copied(&mime_type, paths, fd);
         } else if let Some(xwm) = self.xwm.as_mut() {
-            if let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone()) {
+            if let Err(err) = xwm.send_selection(ty, mime_type, fd) {
                 tracing::warn!("reading the {ty:?} selection from an X11 program: {err}");
             }
         }
@@ -87,34 +88,57 @@ impl SelectionHandler for Nekoland {
 }
 
 impl DataDeviceHandler for Nekoland {
-    fn data_device_state(&self) -> &DataDeviceState {
-        &self.data_device_state
+    fn data_device_state(&mut self) -> &mut DataDeviceState {
+        &mut self.data_device_state
     }
 }
 
-impl ClientDndGrabHandler for Nekoland {
-    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+impl WaylandDndGrabHandler for Nekoland {
+    fn dnd_requested<S: Source>(
+        &mut self,
+        source: S,
+        icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: smithay::utils::Serial,
+        type_: GrabType,
+    ) {
         self.dnd_icon = icon.map(|icon| (icon, Default::default()));
-        self.dock_drag_started(source.as_ref());
-    }
-
-    fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
-        self.dnd_icon = None;
-        self.dock_dropped(validated);
+        self.dock_drag_started(&source);
+        let display = self.display_handle.clone();
+        match type_ {
+            GrabType::Pointer => {
+                let Some(pointer) = seat.get_pointer() else { return };
+                let Some(start) = pointer.grab_start_data() else { return };
+                let grab = DnDGrab::new_pointer(&display, start, source, seat);
+                pointer.set_grab(self, grab, serial, Focus::Keep);
+            }
+            GrabType::Touch => {
+                let Some(touch) = seat.get_touch() else { return };
+                let Some(start) = touch.grab_start_data() else { return };
+                touch.set_grab(self, DnDGrab::new_touch(&display, start, source, seat), serial);
+            }
+        }
     }
 }
-/// Files dragged off the desktop: Nekoland is where they come from.
-impl ServerDndGrabHandler for Nekoland {
-    fn send(&mut self, _mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
-        self.desktop_drag_send(fd);
-    }
 
-    fn dropped(&mut self, _seat: Seat<Self>) {
-        self.desktop_drag_ended();
-    }
-
-    fn cancelled(&mut self, _seat: Seat<Self>) {
-        self.desktop_dropped_here();
+impl DndGrabHandler for Nekoland {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        validated: bool,
+        _seat: Seat<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        self.dnd_icon = None;
+        // Files dragged off the desktop: no window took them, so Nekoland puts them.
+        if self.desktop_dragging() {
+            if !validated {
+                self.desktop_dropped_here();
+            }
+            self.desktop_drag_ended();
+        } else {
+            self.dock_dropped(validated);
+        }
     }
 }
 

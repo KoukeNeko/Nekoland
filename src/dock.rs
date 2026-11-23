@@ -17,7 +17,7 @@
 use std::{
     collections::HashMap,
     io::Read,
-    os::fd::{AsFd, FromRawFd, OwnedFd},
+    os::fd::{FromRawFd, OwnedFd},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -32,9 +32,8 @@ use smithay::{
         keyboard::Keysym,
         pointer::{CursorIcon, CursorImageStatus},
     },
-    reexports::wayland_server::protocol::wl_data_source::WlDataSource,
     utils::{IsAlive, Logical, Point, Rectangle, Size},
-    wayland::selection::data_device::with_source_metadata,
+    input::dnd::Source,
 };
 
 use crate::{
@@ -3559,15 +3558,11 @@ impl Nekoland {
 
     /// A file manager started dragging: what it drags is asked for at once, as a list of
     /// files, so that the Dock knows it if it is dropped there.
-    pub fn dock_drag_started(&mut self, source: Option<&WlDataSource>) {
+    pub fn dock_drag_started(&mut self, source: &impl Source) {
         self.dock.dnd = None;
-        let Some(source) = source else {
-            return;
-        };
-        let offers = with_source_metadata(source, |meta| {
-            meta.mime_types.iter().any(|mime| mime == "text/uri-list")
-        })
-        .unwrap_or(false);
+        let offers = source
+            .metadata()
+            .is_some_and(|meta| meta.mime_types.iter().any(|mime| mime == "text/uri-list"));
         if !offers {
             return;
         }
@@ -3578,8 +3573,7 @@ impl Nekoland {
         }
         // SAFETY: pipe2 just made these two descriptors, which nothing else owns.
         let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        source.send("text/uri-list".into(), write.as_fd());
-        drop(write);
+        source.send("text/uri-list", write);
         let found = Arc::new(Mutex::new(None));
         let into = found.clone();
         // The program writes it when it reads its socket, after this frame's events go out.

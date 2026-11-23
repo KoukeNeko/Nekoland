@@ -59,6 +59,7 @@ pub mod element;
 pub mod damage;
 
 pub mod sync;
+use sync::SyncPoint;
 
 // Note: This doesn't fully work yet due to <https://github.com/rust-lang/rust/issues/67295>.
 // Use `--features renderer_test` when running doc tests manually.
@@ -94,11 +95,11 @@ impl<T: Texture> ContextId<T> {
     /// Returns an [`ErasedContextId`] representing this context without the texture type.
     ///
     /// This is useful when storing or comparing contexts across different texture types.
-    pub fn erased(self) -> ErasedContextId
+    pub fn erased(&self) -> ErasedContextId
     where
         T: 'static,
     {
-        ErasedContextId(self.0, TypeId::of::<T>())
+        ErasedContextId(self.0.clone(), TypeId::of::<T>())
     }
 }
 
@@ -342,7 +343,7 @@ pub trait Frame {
     /// Output transformation that is applied to this frame
     fn transformation(&self) -> Transform;
 
-    /// Wait for a [`SyncPoint`](sync::SyncPoint) to be signaled
+    /// Wait for a [`SyncPoint`] to be signaled
     fn wait(&mut self, sync: &sync::SyncPoint) -> Result<(), Self::Error>;
 
     /// Finish this [`Frame`] returning any error that may happen during any cleanup.
@@ -419,7 +420,7 @@ pub trait Renderer: RendererSuper {
     where
         'buffer: 'frame;
 
-    /// Wait for a [`SyncPoint`](sync::SyncPoint) to be signaled
+    /// Wait for a [`SyncPoint`] to be signaled
     fn wait(&mut self, sync: &sync::SyncPoint) -> Result<(), Self::Error>;
 
     /// Forcibly clean up the renderer internal texture cache
@@ -802,7 +803,7 @@ where
         src: Rectangle<i32, Physical>,
         dst: Rectangle<i32, Physical>,
         filter: TextureFilter,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<SyncPoint, Self::Error>;
 }
 
 /// Trait for frames supporting blitting contents from/to the current framebuffer to/from another.

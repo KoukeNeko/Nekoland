@@ -26,7 +26,7 @@ use smithay::{
     },
     xwayland::{
         xwm::{Reorder, ResizeEdge, XwmId},
-        X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
+        X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
     },
 };
 
@@ -34,15 +34,15 @@ use crate::{
     focus::KeyFocus,
     frame,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
-    CalloopData, Nekoland,
+    Nekoland,
 };
 
 /// Starts XWayland, and calls `then` once programs can be told where it is, or once
 /// it is clear that it will not come up.
 pub fn start(
-    handle: &LoopHandle<'static, CalloopData>,
-    data: &mut CalloopData,
-    then: impl FnOnce(&mut CalloopData) + 'static,
+    handle: &LoopHandle<'static, Nekoland>,
+    data: &mut Nekoland,
+    then: impl FnOnce(&mut Nekoland) + 'static,
 ) {
     let spawned = XWayland::spawn(
         &data.display_handle,
@@ -61,6 +61,7 @@ pub fn start(
         }
     };
 
+    data.xwayland_client = Some(client.clone());
     let mut then = Some(then);
     let wm_handle = handle.clone();
     let inserted = handle.insert_source(xwayland, move |event, _, data| {
@@ -68,9 +69,10 @@ pub fn start(
             XWaylandEvent::Ready {
                 x11_socket,
                 display_number,
-            } => match X11Wm::start_wm(wm_handle.clone(), x11_socket, client.clone()) {
+            } => match X11Wm::start_wm(wm_handle.clone(), &data.display_handle.clone(), x11_socket, client.clone()) {
                 Ok(wm) => {
-                    data.state.xwm = Some(wm);
+                    data.xwm = Some(wm);
+                    data.scale_x11();
                     std::env::set_var("DISPLAY", format!(":{display_number}"));
                     crate::xsettings::start();
                 }
@@ -88,6 +90,36 @@ pub fn start(
 }
 
 impl Nekoland {
+    /// Has X11 programs draw at the display's density, as Wayland's do, rather than at a dot
+    /// a point and be enlarged and blurred: XWayland is told the display's size in dots and
+    /// its programs the density to draw at, and its windows keep their size on screen.
+    pub fn scale_x11(&self) {
+        let Some(data) = self
+            .xwayland_client
+            .as_ref()
+            .and_then(|client| client.get_data::<XWaylandClientData>())
+        else {
+            return;
+        };
+        let scale = self.display_scale();
+        if data.compositor_state.client_scale() == scale {
+            return;
+        }
+        data.compositor_state.set_client_scale(scale);
+        for output in self.space.outputs() {
+            output.change_current_state(None, None, None, None);
+        }
+        for window in self.all_windows() {
+            if let Some(surface) = window
+                .x11_surface()
+                .filter(|surface| !surface.is_override_redirect())
+            {
+                let _ = surface.configure(None);
+            }
+        }
+        crate::xsettings::set_scale(scale);
+    }
+
     /// The grab a button held down on this program's own window began, which its request to
     /// move or resize it needs: without one, a program could take the pointer whenever it
     /// liked.
@@ -115,11 +147,6 @@ impl XWaylandShellHandler for Nekoland {
 }
 delegate_xwayland_shell!(Nekoland);
 
-impl XWaylandShellHandler for CalloopData {
-    fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
-        &mut self.state.xwayland_shell_state
-    }
-}
 
 impl XwmHandler for Nekoland {
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
@@ -333,82 +360,3 @@ impl XwmHandler for Nekoland {
     }
 }
 
-// The window manager is driven by the event loop, whose data is what it calls into.
-impl XwmHandler for CalloopData {
-    fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
-        self.state.xwm_state(xwm)
-    }
-    fn new_window(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.new_window(xwm, window)
-    }
-    fn new_override_redirect_window(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.new_override_redirect_window(xwm, window)
-    }
-    fn map_window_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.map_window_request(xwm, window)
-    }
-    fn mapped_override_redirect_window(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.mapped_override_redirect_window(xwm, window)
-    }
-    fn unmapped_window(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.unmapped_window(xwm, window)
-    }
-    fn destroyed_window(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.destroyed_window(xwm, window)
-    }
-    fn configure_request(
-        &mut self,
-        xwm: XwmId,
-        window: X11Surface,
-        x: Option<i32>,
-        y: Option<i32>,
-        width: Option<u32>,
-        height: Option<u32>,
-        reorder: Option<Reorder>,
-    ) {
-        self.state
-            .configure_request(xwm, window, x, y, width, height, reorder)
-    }
-    fn configure_notify(
-        &mut self,
-        xwm: XwmId,
-        window: X11Surface,
-        geometry: Rectangle<i32, Logical>,
-        above: Option<u32>,
-    ) {
-        self.state.configure_notify(xwm, window, geometry, above)
-    }
-    fn maximize_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.maximize_request(xwm, window)
-    }
-    fn unmaximize_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.unmaximize_request(xwm, window)
-    }
-    fn fullscreen_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.fullscreen_request(xwm, window)
-    }
-    fn unfullscreen_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.unfullscreen_request(xwm, window)
-    }
-    fn minimize_request(&mut self, xwm: XwmId, window: X11Surface) {
-        self.state.minimize_request(xwm, window)
-    }
-    fn resize_request(&mut self, xwm: XwmId, window: X11Surface, button: u32, edge: ResizeEdge) {
-        self.state.resize_request(xwm, window, button, edge)
-    }
-    fn move_request(&mut self, xwm: XwmId, window: X11Surface, button: u32) {
-        self.state.move_request(xwm, window, button)
-    }
-    fn allow_selection_access(&mut self, xwm: XwmId, selection: SelectionTarget) -> bool {
-        self.state.allow_selection_access(xwm, selection)
-    }
-    fn send_selection(&mut self, xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
-        self.state.send_selection(xwm, selection, mime_type, fd)
-    }
-    fn new_selection(&mut self, xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
-        XwmHandler::new_selection(&mut self.state, xwm, selection, mime_types)
-    }
-    fn cleared_selection(&mut self, xwm: XwmId, selection: SelectionTarget) {
-        self.state.cleared_selection(xwm, selection)
-    }
-}

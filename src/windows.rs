@@ -15,7 +15,7 @@ use smithay::{
     wayland::{
         compositor::{get_parent, with_states},
         seat::WaylandFocus,
-        shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData},
+        shell::xdg::{SurfaceCachedState, ToplevelStateSet, ToplevelSurface, XdgToplevelSurfaceData},
     },
 };
 
@@ -63,10 +63,15 @@ pub const PIN_APP_ID: &str = "io.github.koukeneko.Nekoland.ShotPin";
 
 /// Whether a window is drawn with square corners: one maximized, fullscreen or tiled, as
 /// GTK draws them, or an X11 window, which draws none.
+/// The states a window last agreed to, as what it now draws shows them.
+pub fn committed_states(toplevel: &ToplevelSurface) -> ToplevelStateSet {
+    toplevel.with_committed_state(|state| state.map(|state| state.states.clone()).unwrap_or_default())
+}
+
 pub fn has_square_corners(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {
-            let states = toplevel.current_state().states;
+            let states = committed_states(toplevel);
             PLACEMENT_STATES.iter().any(|state| states.contains(*state))
         }
         WindowSurface::X11(_) => true,
@@ -179,7 +184,7 @@ enum Placement {
 fn placement_of(window: &Window) -> Placement {
     let (fullscreen, maximized) = match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {
-            let states = toplevel.current_state().states;
+            let states = committed_states(toplevel);
             (states.contains(ToplevelState::Fullscreen), states.contains(ToplevelState::Maximized))
         }
         WindowSurface::X11(surface) => (surface.is_fullscreen(), surface.is_maximized()),
@@ -676,10 +681,7 @@ impl Nekoland {
 
     pub fn is_fullscreen(&self, window: &Window) -> bool {
         match window.underlying_surface() {
-            WindowSurface::Wayland(toplevel) => toplevel
-                .current_state()
-                .states
-                .contains(ToplevelState::Fullscreen),
+            WindowSurface::Wayland(toplevel) => committed_states(toplevel).contains(ToplevelState::Fullscreen),
             WindowSurface::X11(surface) => surface.is_fullscreen(),
         }
     }

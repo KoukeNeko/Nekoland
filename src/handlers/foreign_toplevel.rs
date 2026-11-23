@@ -155,14 +155,14 @@ impl Nekoland {
         match window.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 let (title, app_id) = window_names(window);
-                let state = toplevel.current_state();
+                let states = crate::windows::committed_states(toplevel);
                 Description {
                     title,
                     app_id,
-                    maximized: state.states.contains(ToplevelState::Maximized),
+                    maximized: states.contains(ToplevelState::Maximized),
                     minimized,
-                    activated: state.states.contains(ToplevelState::Activated),
-                    fullscreen: state.states.contains(ToplevelState::Fullscreen),
+                    activated: states.contains(ToplevelState::Activated),
+                    fullscreen: states.contains(ToplevelState::Fullscreen),
                 }
             }
             WindowSurface::X11(surface) => Description {

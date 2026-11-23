@@ -70,11 +70,13 @@ pub fn needs_title(surface: &X11Surface) -> bool {
 }
 
 /// What a window of Windows' is named after: how much of its top is a title bar of
-/// Windows', and how large Windows has it.
+/// Windows', and how large Windows has it, in points: Windows says it in dots, as many a
+/// point as X11 programs draw.
 fn foreign(name: &str) -> Option<(i32, Size<i32, Logical>)> {
     let mut parts = name.strip_prefix(FOREIGN)?.split('-').map(str::parse::<i32>);
     let (title, width, height) = (parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?);
-    Some((title, (width, height).into()))
+    let points = |dots: i32| (f64::from(dots) / crate::xsettings::scale()).round() as i32;
+    Some((points(title), (points(width), points(height)).into()))
 }
 
 /// How much of a window's top is a title bar its program draws, which the bar goes over.

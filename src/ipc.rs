@@ -16,7 +16,7 @@ use smithay::reexports::calloop::{
 
 use crate::{
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
-    CalloopData,
+    Nekoland,
 };
 
 const SOCKET_ENV: &str = "NEKOLAND_SOCKET";
@@ -33,7 +33,7 @@ fn socket_path(display: &std::ffi::OsStr) -> Option<PathBuf> {
 }
 
 /// Starts listening, and tells the programs started from here where.
-pub fn listen(handle: &LoopHandle<'static, CalloopData>, display: &std::ffi::OsStr) -> std::io::Result<()> {
+pub fn listen(handle: &LoopHandle<'static, Nekoland>, display: &std::ffi::OsStr) -> std::io::Result<()> {
     let path = socket_path(display).ok_or(std::io::ErrorKind::NotFound)?;
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
@@ -59,7 +59,7 @@ pub fn listen(handle: &LoopHandle<'static, CalloopData>, display: &std::ffi::OsS
 
 /// Reads a client's message as it arrives, so one that is slow holds up nothing else, and
 /// does what it asks once the client has sent it all.
-fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) -> std::io::Result<()> {
+fn read_client(handle: &LoopHandle<'static, Nekoland>, stream: UnixStream) -> std::io::Result<()> {
     stream.set_nonblocking(true)?;
     let mut message = Vec::new();
     let later = handle.clone();
@@ -80,10 +80,10 @@ fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) ->
             }
             let message = String::from_utf8_lossy(&message);
             if let Some(command) = message.trim().strip_prefix("after-launcher ") {
-                after_launcher(&later, &mut data.state, command.to_string());
+                after_launcher(&later, &mut *data, command.to_string());
                 return Ok(PostAction::Remove);
             }
-            if let Some(reply) = run(&mut data.state, message.trim()) {
+            if let Some(reply) = run(&mut *data, message.trim()) {
                 // A blocking write: replies are far smaller than the socket's buffer.
                 let _ = stream.set_nonblocking(false);
                 if let Err(err) = (&**stream).write_all(reply.as_bytes()) {
@@ -98,10 +98,10 @@ fn read_client(handle: &LoopHandle<'static, CalloopData>, stream: UnixStream) ->
 
 /// `after-launcher COMMAND`: what the launcher asks of the window it was opened over, done
 /// once the launcher has closed and that window has the keyboard back.
-fn after_launcher(handle: &LoopHandle<'static, CalloopData>, state: &mut crate::Nekoland, command: String) {
+fn after_launcher(handle: &LoopHandle<'static, Nekoland>, state: &mut crate::Nekoland, command: String) {
     state.close_launcher_unless(None);
     let inserted = handle.insert_source(Timer::from_duration(AFTER_LAUNCHER), move |_, _, data| {
-        let state = &mut data.state;
+        let state = &mut *data;
         match command.split_once(' ').unwrap_or((&command, "")) {
             ("paste", _) => state.paste_into_active(),
             ("menu-search", query) => state.search_menus(query),

@@ -41,7 +41,6 @@ use crate::{
     overview::Overview,
     text::Apps,
     workspaces::Workspaces,
-    CalloopData,
 };
 
 /// Takes a client's GPU buffer; returns whether the renderer can use it.
@@ -64,7 +63,7 @@ pub struct Nekoland {
     pub ime: Option<crate::ime::Ime>,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
-    pub loop_handle: LoopHandle<'static, CalloopData>,
+    pub loop_handle: LoopHandle<'static, Nekoland>,
     /// Set from when a locker locks the screen until it unlocks it.
     pub lock: Option<crate::lock::Lock>,
     pub locker_started: Option<std::time::Instant>,
@@ -167,6 +166,8 @@ pub struct Nekoland {
     pub xwayland_shell_state: XWaylandShellState,
     /// The X11 window manager, once XWayland is up.
     pub xwm: Option<X11Wm>,
+    /// XWayland's connection, which is given the display's scale.
+    pub xwayland_client: Option<smithay::reexports::wayland_server::Client>,
     /// The cursor the client under the pointer asked for.
     pub cursor_status: CursorImageStatus,
     /// What a client drags, drawn under the pointer, and where from the pointer it is.
@@ -176,7 +177,7 @@ pub struct Nekoland {
 }
 
 impl Nekoland {
-    pub fn new(event_loop: &mut EventLoop<'static, CalloopData>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<'static, Nekoland>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -306,6 +307,7 @@ impl Nekoland {
             switch_vt: None,
             xwayland_shell_state,
             xwm: None,
+            xwayland_client: None,
             cursor_status: CursorImageStatus::default_named(),
             dnd_icon: None,
             seat,
@@ -314,7 +316,7 @@ impl Nekoland {
 
     fn init_wayland_listener(
         display: Display<Nekoland>,
-        event_loop: &mut EventLoop<CalloopData>,
+        event_loop: &mut EventLoop<Nekoland>,
     ) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
         let listening_socket = ListeningSocketSource::new_auto().unwrap();
@@ -344,7 +346,7 @@ impl Nekoland {
                 |_, display, state| {
                     // Safety: we don't drop the display
                     unsafe {
-                        display.get_mut().dispatch_clients(&mut state.state).unwrap();
+                        display.get_mut().dispatch_clients(state).unwrap();
                     }
                     Ok(PostAction::Continue)
                 },
@@ -478,7 +480,7 @@ impl SecurityContextHandler for Nekoland {
     fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
         let inserted = self.loop_handle.insert_source(source, move |stream, _, data| {
             let client = ClientState { security_context: Some(context.clone()), ..Default::default() };
-            if let Err(err) = data.state.display_handle.insert_client(stream, Arc::new(client)) {
+            if let Err(err) = data.display_handle.insert_client(stream, Arc::new(client)) {
                 tracing::warn!("sandboxed client: {err}");
             }
         });

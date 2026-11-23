@@ -18,7 +18,7 @@ use smithay::{
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
-        shell::{wlr_layer::Layer, xdg::XdgPopupSurfaceData},
+        shell::wlr_layer::Layer,
     },
 };
 
@@ -1180,12 +1180,7 @@ fn popup_placement(popup: &PopupKind) -> Option<(Rectangle<i32, Logical>, Rectan
     let PopupKind::Xdg(xdg) = popup else {
         return None;
     };
-    with_states(xdg.wl_surface(), |states| {
-        states.data_map.get::<XdgPopupSurfaceData>().map(|data| {
-            let current = data.lock().unwrap().current;
-            (current.geometry, current.positioner.anchor_rect)
-        })
-    })
+    xdg.with_committed_state(|state| state.map(|state| (state.geometry, state.positioner.anchor_rect)))
 }
 
 /// The point of a menu, drawn over `rect`, nearest the middle of what it was opened from:

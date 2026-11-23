@@ -6,7 +6,8 @@ use std::{
 
 use smithay::{
     backend::{
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        egl::EGLDevice,
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     input::pointer::{CursorIcon, CursorImageStatus},
@@ -23,23 +24,24 @@ use smithay::{
         },
     },
     utils::Transform,
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 
 use crate::{
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, CLEAR_COLOR},
-    CalloopData, Nekoland,
+    Nekoland,
 };
 
 /// How often an xrdp session's window looks whether the screen it covers changed size.
 const SCREEN_CHECK: Duration = Duration::from_secs(1);
 
 pub fn init_winit(
-    event_loop: &mut EventLoop<CalloopData>,
-    data: &mut CalloopData,
+    event_loop: &mut EventLoop<Nekoland>,
+    data: &mut Nekoland,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let display_handle = &mut data.display_handle;
-    let state = &mut data.state;
+    let display_handle = &mut data.display_handle.clone();
+    let state = &mut *data;
 
     let attributes = Window::default_attributes()
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
@@ -67,6 +69,7 @@ pub fn init_winit(
             subpixel: Subpixel::Unknown,
             make: "Smithay".into(),
             model: "Winit".into(),
+            serial_number: "Unknown".into(),
         },
     );
     let _global = output.create_global::<Nekoland>(display_handle);
@@ -94,6 +97,29 @@ pub fn init_winit(
         .ok();
     let mut shown_cursor = Some(CursorIcon::Default);
     let mut knows_age = true;
+
+    // Clients that draw with the GPU hand their buffers over as dmabufs; without a device to
+    // name, Xwayland has no DRI3 and its programs (Wine's Vulkan among them) cannot show.
+    {
+        let importer = backend.clone();
+        let mut backend = backend.borrow_mut();
+        let node = EGLDevice::device_for_display(backend.renderer().egl_context().display())
+            .and_then(|device| device.try_get_render_node());
+        match node {
+            Ok(Some(node)) => {
+                let formats = backend.renderer().dmabuf_formats();
+                let feedback = DmabufFeedbackBuilder::new(node.dev_id(), formats).build()?;
+                // The global lives as long as the compositor does.
+                let _global = state
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<Nekoland>(display_handle, &feedback);
+                state.dmabuf_import = Some(Box::new(move |dmabuf| {
+                    importer.borrow_mut().renderer().import_dmabuf(dmabuf, None).is_ok()
+                }));
+            }
+            other => tracing::warn!("no dmabuf for clients: no render node ({other:?})"),
+        }
+    }
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
 
@@ -137,8 +163,8 @@ pub fn init_winit(
     }
 
     event_loop.handle().insert_source(winit, move |event, _, data| {
-        let display = &mut data.display_handle;
-        let state = &mut data.state;
+        let display = &mut data.display_handle.clone();
+        let state = &mut *data;
         let mut backend = backend.borrow_mut();
 
         match event {

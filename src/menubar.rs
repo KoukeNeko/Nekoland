@@ -2802,7 +2802,7 @@ impl Nekoland {
 pub(crate) fn is_maximized(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(toplevel) => {
-            toplevel.current_state().states.contains(ToplevelState::Maximized)
+            crate::windows::committed_states(toplevel).contains(ToplevelState::Maximized)
         }
         WindowSurface::X11(surface) => surface.is_maximized(),
     }

@@ -6,11 +6,17 @@ use smithay::{
     desktop::{LayerSurface, Window, WindowSurface},
     input::{
         keyboard::{xkb, FilterResult, Keycode, Keysym, ModifiersState},
-        pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, RelativeMotionEvent},
+        pointer::{
+            AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, PointerHandle, RelativeMotionEvent,
+        },
     },
-    utils::{Serial, SERIAL_COUNTER},
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Point, Serial, SERIAL_COUNTER},
     wayland::{
-        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat, seat::WaylandFocus,
+        compositor::{get_parent, RegionAttributes},
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
+        pointer_constraints::{with_pointer_constraint, PointerConstraint},
+        seat::WaylandFocus,
         shell::wlr_layer::KeyboardInteractivity,
     },
 };
@@ -199,6 +205,18 @@ impl Nekoland {
                 };
                 let pointer = self.seat.get_pointer().unwrap();
                 let from = pointer.current_location();
+                let relative = RelativeMotionEvent {
+                    delta: event.delta(),
+                    delta_unaccel: event.delta_unaccel(),
+                    utime: event.time(),
+                };
+                let held = self.pointer_held(&pointer, from);
+                // A game looking around with the mouse has only the movement, not the pointer.
+                if let Some((surface, origin, Held::Locked)) = held {
+                    pointer.relative_motion(self, Some((surface, origin)), &relative);
+                    pointer.frame(self);
+                    return;
+                }
                 let geometry = |output| self.space.output_geometry(output).unwrap().to_f64();
                 let mut pos = from + event.delta();
                 // It goes on to the output it moves onto, or stops at the edge of the one it is on,
@@ -212,8 +230,20 @@ impl Nekoland {
                         pos.x = pos.x.clamp(bounds.loc.x, bounds.loc.x + bounds.size.w - 1.0);
                     }
                 }
+                if let Some((surface, origin, Held::Confined(region))) = &held {
+                    let inside = self
+                        .surface_under(pos)
+                        .is_some_and(|(under, _)| under == *surface)
+                        && region
+                            .as_ref()
+                            .is_none_or(|region| region.contains((pos - *origin).to_i32_round()));
+                    if !inside {
+                        pos = from;
+                    }
+                }
 
-                if !locked {
+                // A window holding the pointer keeps it from the menu bar, the Dock and the corners.
+                if !locked && held.is_none() {
                     self.menu_bar_motion(pos);
                     self.dock_motion(pos);
                     self.desktop_motion(pos);
@@ -234,16 +264,9 @@ impl Nekoland {
                         time: event.time_msec(),
                     },
                 );
-                pointer.relative_motion(
-                    self,
-                    under,
-                    &RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
-                    },
-                );
+                pointer.relative_motion(self, under.clone(), &relative);
                 pointer.frame(self);
+                self.hold_pointer(&pointer, under.as_ref());
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let Some(output) = self.space.outputs().next() else {
@@ -388,7 +411,68 @@ const AIRPLANE_MODE: &str = "if [ \"$(nmcli radio wifi)\" = enabled ]; then nmcl
 const BUTTON_LEFT: u32 = 0x110;
 const BUTTON_RIGHT: u32 = 0x111;
 
+/// How a window holds the pointer: in place, for a game's mouse-look, or inside an area of
+/// itself, in the surface's coordinates, or all of it without one.
+pub enum Held {
+    Locked,
+    Confined(Option<RegionAttributes>),
+}
+
 impl Nekoland {
+    /// Whether the window a surface is of has the keyboard: only then may it hold the
+    /// pointer, so that switching away from it with the keyboard lets the pointer go.
+    fn has_keyboard(&self, surface: &WlSurface) -> bool {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        self.window_for_surface(&root)
+            .is_some_and(|window| self.focused_window() == Some(window))
+    }
+
+    /// The surface holding the pointer at `at`, where it is, and how; one that no longer has
+    /// the keyboard lets it go.
+    fn pointer_held(
+        &self,
+        pointer: &PointerHandle<Self>,
+        at: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>, Held)> {
+        let (surface, origin) = self.surface_under(at)?;
+        let may = self.has_keyboard(&surface);
+        let held = with_pointer_constraint(&surface, pointer, |constraint| {
+            let constraint = constraint.filter(|constraint| constraint.is_active())?;
+            if !may {
+                constraint.deactivate();
+                return None;
+            }
+            Some(match &*constraint {
+                PointerConstraint::Locked(_) => Held::Locked,
+                PointerConstraint::Confined(confined) => Held::Confined(confined.region().cloned()),
+            })
+        })?;
+        Some((surface, origin, held))
+    }
+
+    /// Has the surface the pointer is in hold it, when it asked to, has the keyboard, and the
+    /// pointer is in the area it asked for.
+    pub fn hold_pointer(
+        &self,
+        pointer: &PointerHandle<Self>,
+        under: Option<&(WlSurface, Point<f64, Logical>)>,
+    ) {
+        let Some((surface, origin)) = under.filter(|(surface, _)| self.has_keyboard(surface)) else {
+            return;
+        };
+        let at = (pointer.current_location() - *origin).to_i32_round();
+        with_pointer_constraint(surface, pointer, |constraint| {
+            if let Some(constraint) =
+                constraint.filter(|constraint| constraint.region().is_none_or(|region| region.contains(at)))
+            {
+                constraint.activate();
+            }
+        });
+    }
+
     /// Gives the keyboard to what was clicked, and starts moving a window dragged with Super held.
     fn pointer_pressed(&mut self, button: u32, serial: Serial) {
         let pointer = self.seat.get_pointer().unwrap();

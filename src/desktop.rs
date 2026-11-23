@@ -19,13 +19,17 @@ use smithay::{
         element::{memory::MemoryRenderBufferRenderElement, Kind},
         gles::GlesRenderer,
     },
-    input::{keyboard::Keysym, keyboard::ModifiersState, pointer::GrabStartData},
-    reexports::wayland_server::protocol::wl_data_device_manager::DndAction,
-    utils::{Logical, Point, Rectangle, Serial, Size},
+    input::{
+        dnd::{DnDGrab, DndAction, Source, SourceMetadata},
+        keyboard::Keysym,
+        keyboard::ModifiersState,
+        pointer::{Focus, GrabStartData},
+    },
+    utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
     wayland::selection::{
         data_device::{
             current_data_device_selection_userdata, request_data_device_client_selection,
-            set_data_device_selection, start_dnd, SelectionRequestError, SourceMetadata,
+            set_data_device_selection, SelectionRequestError,
         },
         SelectionTarget,
     },
@@ -116,6 +120,8 @@ pub struct Desktop {
     band: Option<(Rectangle<i32, Logical>, Picture)>,
     /// What was last dragged off the desktop, for whoever it is dropped on to ask for.
     dragged: Vec<PathBuf>,
+    /// Whether what is dragged now is from the desktop.
+    dragging: bool,
     /// The icon following the pointer while dragging, and where it is from the pointer.
     drag_picture: Option<(Picture, Point<i32, Logical>)>,
     /// The folder on the desktop what is dragged would go into, marked as chosen.
@@ -649,21 +655,22 @@ impl Nekoland {
             button: BUTTON_LEFT,
             location: press.from,
         };
-        let metadata = SourceMetadata {
-            mime_types: vec![URI_LIST.to_string()],
-            dnd_action: DndAction::Copy | DndAction::Move,
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
         };
-        let (display, seat) = (self.display_handle.clone(), self.seat.clone());
-        start_dnd(&display, &seat, self, press.serial, Some(start), None, metadata);
+        let source = DesktopDrag(self.desktop.dragged.clone());
+        let grab = DnDGrab::new_pointer(&self.display_handle, start, source, self.seat.clone());
+        self.desktop.dragging = true;
+        pointer.set_grab(self, grab, press.serial, Focus::Clear);
     }
 
-    /// A window asked for what is dragged off the desktop.
-    pub fn desktop_drag_send(&mut self, fd: OwnedFd) {
-        send_copied(URI_LIST, &self.desktop.dragged, fd);
+    pub fn desktop_dragging(&self) -> bool {
+        self.desktop.dragging
     }
 
     /// The drag off the desktop ended, taken by a window or not.
     pub fn desktop_drag_ended(&mut self) {
+        self.desktop.dragging = false;
         self.desktop.drag_picture = None;
         self.desktop.drop_target = None;
     }
@@ -1351,6 +1358,36 @@ fn draw_quick_look(
 
 /// Writes files copied or dragged off the desktop in the form `mime_type` asks for, on a
 /// thread: the program reads it when it gets to its socket.
+/// Files dragged off the desktop, as a window that they are dropped on asks for them.
+struct DesktopDrag(Vec<PathBuf>);
+
+impl IsAlive for DesktopDrag {
+    fn alive(&self) -> bool {
+        true
+    }
+}
+
+impl Source for DesktopDrag {
+    fn metadata(&self) -> Option<SourceMetadata> {
+        Some(SourceMetadata {
+            mime_types: vec![URI_LIST.to_string()],
+            dnd_actions: [DndAction::Copy, DndAction::Move].into_iter().collect(),
+        })
+    }
+
+    fn choose_action(&self, _action: DndAction) {}
+
+    fn send(&self, mime_type: &str, fd: OwnedFd) {
+        send_copied(mime_type, &self.0, fd);
+    }
+
+    fn drop_performed(&self) {}
+
+    fn cancel(&self) {}
+
+    fn finished(&self) {}
+}
+
 pub fn send_copied(mime_type: &str, paths: &[PathBuf], fd: OwnedFd) {
     let uris: Vec<String> = paths
         .iter()

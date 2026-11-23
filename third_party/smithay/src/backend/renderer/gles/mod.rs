@@ -13,8 +13,8 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicPtr, Ordering},
-        mpsc::{channel, Receiver, Sender},
-        Arc, Mutex, RwLock, RwLockWriteGuard,
+        mpsc::{self, Sender},
+        Arc, Mutex, RwLock, RwLockWriteGuard, TryLockError,
     },
 };
 use tracing::{debug, error, info, info_span, instrument, span, span::EnteredSpan, trace, warn, Level};
@@ -49,7 +49,7 @@ use crate::{
         egl::{
             fence::EGLFence,
             ffi::egl::{self as ffi_egl, types::EGLImage},
-            EGLContext, EGLSurface, MakeCurrentError,
+            EGLContext, EGLDevice, EGLSurface, MakeCurrentError,
         },
     },
     utils::{Buffer as BufferCoord, Physical, Rectangle, Size, Transform},
@@ -82,13 +82,31 @@ enum CleanupResource {
 }
 unsafe impl Send for CleanupResource {}
 
-#[derive(Debug, Clone)]
-struct GlesBuffer {
+#[derive(Debug)]
+struct GlesBufferInner {
     dmabuf: WeakDmabuf,
     image: EGLImage,
     rbo: ffi::types::GLuint,
     fbo: ffi::types::GLuint,
+    destruction_callback_sender: Sender<CleanupResource>,
 }
+
+impl Drop for GlesBufferInner {
+    fn drop(&mut self) {
+        let _ = self
+            .destruction_callback_sender
+            .send(CleanupResource::FramebufferObject(self.fbo));
+        let _ = self
+            .destruction_callback_sender
+            .send(CleanupResource::RenderbufferObject(self.rbo));
+        let _ = self
+            .destruction_callback_sender
+            .send(CleanupResource::EGLImage(self.image));
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GlesBuffer(Rc<GlesBufferInner>);
 
 /// Offscreen render surface
 ///
@@ -222,7 +240,7 @@ impl GlesTargetInternal<'_> {
                 egl.make_current()?;
                 match self {
                     GlesTargetInternal::Image { ref buf, .. } => {
-                        gl.BindFramebuffer(ffi::FRAMEBUFFER, buf.fbo)
+                        gl.BindFramebuffer(ffi::FRAMEBUFFER, buf.0.fbo)
                     }
                     GlesTargetInternal::Texture { ref fbo, .. } => gl.BindFramebuffer(ffi::FRAMEBUFFER, *fbo),
                     GlesTargetInternal::Renderbuffer { ref fbo, .. } => {
@@ -276,6 +294,74 @@ pub enum Capability {
     Debug,
 }
 
+/// GL resources need to be destroyed with a context active on the current thread,
+/// so `Drop` impls don't directly destroy objects, and instead send messages
+/// to free resources on periodic calls to `cleanup`.
+///
+/// Stored as `EGLContext` user data, so shared contexts can share cleanup. And
+/// destroying one renderer will not leak resources, but allow another renderer
+/// with a shared context to clean them up.
+struct GlesCleanup {
+    receiver: Mutex<mpsc::Receiver<CleanupResource>>,
+    sender: mpsc::Sender<CleanupResource>,
+}
+
+impl Default for GlesCleanup {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            receiver: Mutex::new(receiver),
+            sender,
+        }
+    }
+}
+
+impl GlesCleanup {
+    fn cleanup(&self, egl: &EGLContext, gl: &ffi::Gles2) {
+        let receiver = match self.receiver.try_lock() {
+            Ok(receiver) => receiver,
+            Err(TryLockError::Poisoned(err)) => {
+                self.receiver.clear_poison();
+                err.into_inner()
+            }
+            Err(TryLockError::WouldBlock) => {
+                // Another thread is running `cleanup`, so just return
+                return;
+            }
+        };
+        for resource in receiver.try_iter() {
+            match resource {
+                CleanupResource::Texture(texture) => unsafe {
+                    gl.DeleteTextures(1, &texture);
+                },
+                CleanupResource::EGLImage(image) => unsafe {
+                    ffi_egl::DestroyImageKHR(**egl.display().get_display_handle(), image);
+                },
+                CleanupResource::FramebufferObject(fbo) => unsafe {
+                    gl.DeleteFramebuffers(1, &fbo);
+                },
+                CleanupResource::RenderbufferObject(rbo) => unsafe {
+                    gl.DeleteRenderbuffers(1, &rbo);
+                },
+                CleanupResource::Mapping(pbo, mapping) => unsafe {
+                    if !mapping.is_null() {
+                        gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, pbo);
+                        gl.UnmapBuffer(ffi::PIXEL_PACK_BUFFER);
+                        gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, 0);
+                    }
+                    gl.DeleteBuffers(1, &pbo);
+                },
+                CleanupResource::Program(program) => unsafe {
+                    gl.DeleteProgram(program);
+                },
+                CleanupResource::Sync(sync) => unsafe {
+                    gl.DeleteSync(sync);
+                },
+            }
+        }
+    }
+}
+
 /// A renderer utilizing OpenGL ES
 pub struct GlesRenderer {
     // state
@@ -292,6 +378,7 @@ pub struct GlesRenderer {
     // optionals
     gl_version: GlVersion,
     pub(crate) extensions: Vec<String>,
+    is_software: bool,
     capabilities: Vec<Capability>,
 
     // shaders
@@ -305,10 +392,6 @@ pub struct GlesRenderer {
     vertices: Vec<f32>,
     non_opaque_damage: Vec<Rectangle<i32, Physical>>,
     opaque_damage: Vec<Rectangle<i32, Physical>>,
-
-    // cleanup
-    destruction_callback: Receiver<CleanupResource>,
-    destruction_callback_sender: Sender<CleanupResource>,
 
     // markers
     _not_send: PhantomData<*mut ()>,
@@ -497,6 +580,11 @@ impl GlesRenderer {
 
         context.make_current()?;
 
+        // TODO: check for angle as well?
+        let is_software = EGLDevice::device_for_display(context.display())
+            .map(|dev| dev.is_software())
+            .unwrap_or(false);
+
         let supported_capabilities = Self::supported_capabilities(&context)?;
         let requested_capabilities = capabilities.into_iter().collect::<Vec<_>>();
 
@@ -579,8 +667,9 @@ impl GlesRenderer {
             (gl, gl_version, exts, requested_capabilities, gl_debug_span)
         };
 
-        let (tx, rx) = channel();
-        let tex_program = texture_program(&gl, shaders::FRAGMENT_SHADER, &[], tx.clone())?;
+        let gles_cleanup = context.user_data().get_or_insert_threadsafe(GlesCleanup::default);
+
+        let tex_program = texture_program(&gl, shaders::FRAGMENT_SHADER, &[], gles_cleanup.sender.clone())?;
         let solid_program = solid_program(&gl)?;
 
         // Initialize vertices based on drawing methodology.
@@ -621,6 +710,7 @@ impl GlesRenderer {
             egl_reader: None,
 
             extensions: exts,
+            is_software,
             gl_version,
             capabilities,
 
@@ -635,9 +725,6 @@ impl GlesRenderer {
             vertices: Vec::with_capacity(6 * 16),
             non_opaque_damage: Vec::with_capacity(16),
             opaque_damage: Vec::with_capacity(16),
-
-            destruction_callback: rx,
-            destruction_callback_sender: tx,
 
             debug_flags: DebugFlags::empty(),
             _not_send: PhantomData,
@@ -679,7 +766,7 @@ impl GlesRenderer {
             Ok(GlesTarget(GlesTargetInternal::Texture {
                 texture: texture.clone(),
                 sync_lock,
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
                 fbo,
             }))
         };
@@ -702,59 +789,37 @@ impl GlesRenderer {
         Ok(())
     }
 
+    fn gles_cleanup(&self) -> &GlesCleanup {
+        self.egl_context().user_data().get().unwrap()
+    }
+
     #[profiling::function]
     fn cleanup(&mut self) {
         self.dmabuf_cache.retain(|entry, _tex| !entry.is_gone());
-        // Free outdated buffer resources
-        // TODO: Replace with `drain_filter` once it lands
-        let mut i = 0;
-        while i != self.buffers.len() {
-            if self.buffers[i].dmabuf.is_gone() {
-                let old = self.buffers.remove(i);
-                unsafe {
-                    self.gl.DeleteFramebuffers(1, &old.fbo as *const _);
-                    self.gl.DeleteRenderbuffers(1, &old.rbo as *const _);
-                    ffi_egl::DestroyImageKHR(**self.egl.display().get_display_handle(), old.image);
-                }
-            } else {
-                i += 1;
-            }
-        }
-        for resource in self.destruction_callback.try_iter() {
-            match resource {
-                CleanupResource::Texture(texture) => unsafe {
-                    self.gl.DeleteTextures(1, &texture);
-                },
-                CleanupResource::EGLImage(image) => unsafe {
-                    ffi_egl::DestroyImageKHR(**self.egl.display().get_display_handle(), image);
-                },
-                CleanupResource::FramebufferObject(fbo) => unsafe {
-                    self.gl.DeleteFramebuffers(1, &fbo);
-                },
-                CleanupResource::RenderbufferObject(rbo) => unsafe {
-                    self.gl.DeleteRenderbuffers(1, &rbo);
-                },
-                CleanupResource::Mapping(pbo, mapping) => unsafe {
-                    if !mapping.is_null() {
-                        self.gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, pbo);
-                        self.gl.UnmapBuffer(ffi::PIXEL_PACK_BUFFER);
-                        self.gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, 0);
-                    }
-                    self.gl.DeleteBuffers(1, &pbo);
-                },
-                CleanupResource::Program(program) => unsafe {
-                    self.gl.DeleteProgram(program);
-                },
-                CleanupResource::Sync(sync) => unsafe {
-                    self.gl.DeleteSync(sync);
-                },
-            }
-        }
+        self.buffers.retain(|buffer| !buffer.0.dmabuf.is_gone());
+        self.gles_cleanup().cleanup(&self.egl, &self.gl);
     }
 
     /// Returns the supported [`Capabilities`](Capability) of this renderer.
     pub fn capabilities(&self) -> &[Capability] {
         &self.capabilities
+    }
+
+    /// Returns whether the underlying EGLContext is known to be a software renderer.
+    pub fn is_software(&self) -> bool {
+        self.is_software
+    }
+
+    fn export_sync_point(&self) -> Option<SyncPoint> {
+        if self.capabilities.contains(&Capability::ExportFence) {
+            if let Ok(fence) = EGLFence::create(self.egl.display()) {
+                unsafe {
+                    self.gl.Flush();
+                }
+                return Some(SyncPoint::from(fence));
+            }
+        }
+        None
     }
 }
 
@@ -842,7 +907,7 @@ impl ImportMemWl for GlesRenderer {
                             y_inverted: false,
                             size: (width, height).into(),
                             egl_images: None,
-                            destruction_callback_sender: self.destruction_callback_sender.clone(),
+                            destruction_callback_sender: self.gles_cleanup().sender.clone(),
                         });
                         if let Some(cache) = surface_lock.as_mut() {
                             cache.insert(id, new.clone());
@@ -1011,7 +1076,7 @@ impl ImportMem for GlesRenderer {
                 y_inverted: flipped,
                 size,
                 egl_images: None,
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
             }
         }));
 
@@ -1156,7 +1221,7 @@ impl ImportEgl for GlesRenderer {
             y_inverted: egl.y_inverted,
             size: egl.size,
             egl_images: Some(egl.into_images()),
-            destruction_callback_sender: self.destruction_callback_sender.clone(),
+            destruction_callback_sender: self.gles_cleanup().sender.clone(),
         }));
 
         Ok(texture)
@@ -1198,7 +1263,7 @@ impl ImportDma for GlesRenderer {
                 y_inverted: buffer.y_inverted(),
                 size: buffer.size(),
                 egl_images: Some(vec![image]),
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
             }));
             self.dmabuf_cache.insert(buffer.weak(), texture.clone());
             Ok(texture)
@@ -1318,7 +1383,7 @@ impl ExportMem for GlesRenderer {
                 has_alpha,
                 size: region.size,
                 mapping: AtomicPtr::new(ptr::null_mut()),
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
             }),
             ffi::INVALID_ENUM | ffi::INVALID_OPERATION => Err(GlesError::UnsupportedPixelFormat(fourcc)),
             _ => Err(GlesError::UnknownPixelFormat),
@@ -1378,7 +1443,7 @@ impl ExportMem for GlesRenderer {
                 has_alpha: texture.0.has_alpha,
                 size: region.size,
                 mapping: AtomicPtr::new(ptr::null_mut()),
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
             }),
             ffi::INVALID_ENUM | ffi::INVALID_OPERATION => Err(GlesError::UnsupportedPixelFormat(fourcc)),
             _ => Err(GlesError::UnknownPixelFormat),
@@ -1435,7 +1500,7 @@ impl Bind<Dmabuf> for GlesRenderer {
                 .buffers
                 .iter_mut()
                 .find(|buffer| {
-                    if let Some(dma) = buffer.dmabuf.upgrade() {
+                    if let Some(dma) = buffer.0.dmabuf.upgrade() {
                         dma == *dmabuf
                     } else {
                         false
@@ -1480,12 +1545,13 @@ impl Bind<Dmabuf> for GlesRenderer {
                             ffi_egl::DestroyImageKHR(**self.egl.display().get_display_handle(), image);
                             return Err(GlesError::FramebufferBindingError);
                         }
-                        let buf = GlesBuffer {
+                        let buf = GlesBuffer(Rc::new(GlesBufferInner {
                             dmabuf: dmabuf.weak(),
                             image,
                             rbo,
                             fbo,
-                        };
+                            destruction_callback_sender: self.gles_cleanup().sender.clone(),
+                        }));
 
                         self.buffers.push(buf.clone());
 
@@ -1630,7 +1696,7 @@ impl Offscreen<GlesRenderbuffer> for GlesRenderer {
                 format: internal,
                 has_alpha,
                 size,
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
             })))
         }
     }
@@ -1648,7 +1714,7 @@ impl<'buffer> BlitFrame<GlesTarget<'buffer>> for GlesFrame<'_, 'buffer> {
         self.target
             .0
             .make_current(&self.renderer.gl, &self.renderer.egl)?;
-        res
+        res.map(|_| ())
     }
 
     fn blit_from(
@@ -1662,7 +1728,7 @@ impl<'buffer> BlitFrame<GlesTarget<'buffer>> for GlesFrame<'_, 'buffer> {
         self.target
             .0
             .make_current(&self.renderer.gl, &self.renderer.egl)?;
-        res
+        res.map(|_| ())
     }
 }
 
@@ -1676,7 +1742,7 @@ impl Blit for GlesRenderer {
         src: Rectangle<i32, Physical>,
         dst: Rectangle<i32, Physical>,
         filter: TextureFilter,
-    ) -> Result<(), GlesError> {
+    ) -> Result<SyncPoint, GlesError> {
         // glBlitFramebuffer is sadly only available for GLES 3.0 and higher
         if self.gl_version < version::GLES_3_0 {
             return Err(GlesError::GLVersionNotSupported(version::GLES_3_0));
@@ -1702,7 +1768,7 @@ impl Blit for GlesRenderer {
 
         match &src_target.0 {
             GlesTargetInternal::Image { ref buf, .. } => unsafe {
-                self.gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, buf.fbo)
+                self.gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, buf.0.fbo)
             },
             GlesTargetInternal::Texture { ref fbo, .. } => unsafe {
                 self.gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, *fbo)
@@ -1714,7 +1780,7 @@ impl Blit for GlesRenderer {
         }
         match &dst_target.0 {
             GlesTargetInternal::Image { ref buf, .. } => unsafe {
-                self.gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, buf.fbo)
+                self.gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, buf.0.fbo)
             },
             GlesTargetInternal::Texture { ref fbo, .. } => unsafe {
                 self.gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, *fbo)
@@ -1754,7 +1820,14 @@ impl Blit for GlesRenderer {
         if errno == ffi::INVALID_OPERATION {
             Err(GlesError::BlitError)
         } else {
-            Ok(())
+            if let Some(sync_point) = self.export_sync_point() {
+                return Ok(sync_point);
+            }
+
+            unsafe {
+                self.gl.Finish();
+            }
+            Ok(SyncPoint::signaled())
         }
     }
 }
@@ -1937,7 +2010,7 @@ impl GlesRenderer {
                         })
                         .collect(),
                 },
-                destruction_callback_sender: self.destruction_callback_sender.clone(),
+                destruction_callback_sender: self.gles_cleanup().sender.clone(),
                 uniform_tint: self
                     .gl
                     .GetUniformLocation(debug_program, tint.as_ptr() as *const ffi::types::GLchar),
@@ -1980,7 +2053,7 @@ impl GlesRenderer {
                 &self.gl,
                 shader.as_ref(),
                 additional_uniforms,
-                self.destruction_callback_sender.clone(),
+                self.gles_cleanup().sender.clone(),
             )
         }
     }
@@ -2326,13 +2399,8 @@ impl GlesFrame<'_, '_> {
         self.renderer.cleanup();
 
         // if we support egl fences we should use it
-        if self.renderer.capabilities.contains(&Capability::ExportFence) {
-            if let Ok(fence) = EGLFence::create(self.renderer.egl.display()) {
-                unsafe {
-                    self.renderer.gl.Flush();
-                }
-                return Ok(SyncPoint::from(fence));
-            }
+        if let Some(sync_point) = self.renderer.export_sync_point() {
+            return Ok(sync_point);
         }
 
         // as a last option we force finish, this is unlikely to happen
@@ -2466,7 +2534,23 @@ impl GlesFrame<'_, '_> {
 
                 gl.DrawArraysInstanced(ffi::TRIANGLE_STRIP, 0, 4, damage_len);
             } else {
-                let count = damage_len * 6;
+                // When we have more than 10 rectangles, draw them in batches of 10.
+                for i in 0..(damage_len - 1) / 10 {
+                    gl.DrawArrays(ffi::TRIANGLES, 0, 60);
+
+                    // Set damage pointer to the next 10 rectangles.
+                    gl.VertexAttribPointer(
+                        self.renderer.solid_program.attrib_position as u32,
+                        4,
+                        ffi::FLOAT,
+                        ffi::FALSE,
+                        0,
+                        self.renderer.vertices.as_ptr().add((i + 1) as usize * 60 * 4) as *const _,
+                    );
+                }
+
+                // Draw the up to 10 remaining rectangles.
+                let count = ((damage_len - 1) % 10 + 1) * 6;
                 gl.DrawArrays(ffi::TRIANGLES, 0, count);
             }
 
@@ -2773,7 +2857,23 @@ impl GlesFrame<'_, '_> {
 
                 gl.DrawArraysInstanced(ffi::TRIANGLE_STRIP, 0, 4, damage_len as i32);
             } else {
-                let count = damage_len * 6;
+                // When we have more than 10 rectangles, draw them in batches of 10.
+                for i in 0..(damage_len - 1) / 10 {
+                    gl.DrawArrays(ffi::TRIANGLES, 0, 60);
+
+                    // Set damage pointer to the next 10 rectangles.
+                    gl.VertexAttribPointer(
+                        self.renderer.solid_program.attrib_position as u32,
+                        4,
+                        ffi::FLOAT,
+                        ffi::FALSE,
+                        0,
+                        self.renderer.vertices.as_ptr().add((i + 1) * 60 * 4) as *const _,
+                    );
+                }
+
+                // Draw the up to 10 remaining rectangles.
+                let count = ((damage_len - 1) % 10 + 1) * 6;
                 gl.DrawArrays(ffi::TRIANGLES, 0, count as i32);
             }
 

@@ -36,7 +36,7 @@ use crate::{
     glass::Glass,
     render::{dnd_icon_elements, scene_elements, zoomed, OutputElement},
     udev::cursor_elements,
-    CalloopData, Nekoland,
+    Nekoland,
 };
 
 pub const OUTPUT_NAME: &str = "HEADLESS-1";
@@ -112,10 +112,9 @@ fn renderer() -> Result<GlesRenderer, Box<dyn std::error::Error>> {
 }
 
 pub fn init_headless(
-    event_loop: &mut EventLoop<CalloopData>,
-    data: &mut CalloopData,
+    event_loop: &mut EventLoop<Nekoland>,
+    state: &mut Nekoland,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = &mut data.state;
     let renderer = Rc::new(RefCell::new(renderer()?));
     state.shm_state.update_formats(renderer.borrow().shm_formats());
 
@@ -136,6 +135,7 @@ pub fn init_headless(
             subpixel: Subpixel::Unknown,
             make: "Nekoland".into(),
             model: "Remote".into(),
+            serial_number: "Unknown".into(),
         },
     );
     let _global = output.create_global::<Nekoland>(&state.display_handle);
@@ -175,9 +175,9 @@ pub fn init_headless(
         .handle()
         .insert_source(LibinputInputBackend::new(libinput), |event, _, data| {
             if let InputEvent::DeviceAdded { device } = &event {
-                data.state.add_pointer_device(device.clone());
+                data.add_pointer_device(device.clone());
             }
-            data.state.process_input_event(event)
+            data.process_input_event(event)
         })
         .map_err(|err| err.error)?;
 
@@ -231,7 +231,7 @@ pub fn init_headless(
     event_loop
         .handle()
         .insert_source(Timer::from_duration(frame), move |_, _, data| {
-            draw(&mut data.state);
+            draw(data);
             TimeoutAction::ToDuration(frame)
         })
         .map_err(|err| err.error)?;

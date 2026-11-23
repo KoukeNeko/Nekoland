@@ -78,6 +78,7 @@
 //!         make: "N/A".into(),
 //!         model: "N/A".into(),
 //!         subpixel: Subpixel::Unknown,
+//!         serial_number: "N/A".into(),
 //!     },
 //! );
 //!
@@ -176,7 +177,7 @@ use crate::{
 
 use super::{
     error::AccessError,
-    exporter::{gbm::GbmFramebufferExporter, ExportBuffer, ExportFramebuffer},
+    exporter::{gbm::GbmFramebufferExporter, gbm::NodeFilter, ExportBuffer, ExportFramebuffer},
     surface::VrrSupport,
     DrmSurface, Framebuffer, PlaneClaim, PlaneInfo, Planes,
 };
@@ -1047,7 +1048,7 @@ pub struct DrmCompositor<A, F, U, G>
 where
     A: Allocator,
     F: ExportFramebuffer<A::Buffer>,
-    <F as ExportFramebuffer<A::Buffer>>::Framebuffer: std::fmt::Debug + 'static,
+    <F as ExportFramebuffer<A::Buffer>>::Framebuffer: std::fmt::Debug + Send + Sync + 'static,
     G: AsFd + 'static,
 {
     output_mode_source: OutputModeSource,
@@ -1090,7 +1091,7 @@ where
     <A as Allocator>::Buffer: AsDmabuf,
     <A::Buffer as AsDmabuf>::Error: std::error::Error + Send + Sync + std::fmt::Debug,
     F: ExportFramebuffer<A::Buffer>,
-    <F as ExportFramebuffer<A::Buffer>>::Framebuffer: std::fmt::Debug + 'static,
+    <F as ExportFramebuffer<A::Buffer>>::Framebuffer: std::fmt::Debug + Send + Sync + 'static,
     <F as ExportFramebuffer<A::Buffer>>::Error: std::error::Error + Send + Sync,
     G: AsFd + Clone,
 {
@@ -1227,7 +1228,7 @@ where
 
                         let cursor_allocator =
                             GbmAllocator::new(gbm.clone(), GbmBufferFlags::CURSOR | GbmBufferFlags::WRITE);
-                        let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone(), None);
+                        let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone(), NodeFilter::None);
                         CursorState {
                             allocator: cursor_allocator,
                             framebuffer_exporter,
@@ -1409,7 +1410,7 @@ where
 
             let cursor_allocator =
                 GbmAllocator::new(gbm.clone(), GbmBufferFlags::CURSOR | GbmBufferFlags::WRITE);
-            let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone(), None);
+            let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone(), NodeFilter::None);
             CursorState {
                 allocator: cursor_allocator,
                 framebuffer_exporter,
@@ -1528,7 +1529,7 @@ where
         };
         buffer
             .userdata()
-            .insert_if_missing(|| CachedDrmFramebuffer::new(DrmFramebuffer::Exporter(fb_buffer)));
+            .insert_if_missing_threadsafe(|| CachedDrmFramebuffer::new(DrmFramebuffer::Exporter(fb_buffer)));
 
         let mode = drm.pending_mode();
         let handle = buffer
@@ -1753,9 +1754,9 @@ where
                 )
                 .map_err(FrameError::FramebufferExport)?
                 .ok_or(FrameError::NoFramebuffer)?;
-            primary_plane_buffer
-                .userdata()
-                .insert_if_missing(|| CachedDrmFramebuffer::new(DrmFramebuffer::Exporter(fb_buffer)));
+            primary_plane_buffer.userdata().insert_if_missing_threadsafe(|| {
+                CachedDrmFramebuffer::new(DrmFramebuffer::Exporter(fb_buffer))
+            });
         }
 
         // This unwrap is safe as we error out above if we were unable to export a framebuffer
@@ -3032,7 +3033,7 @@ where
             return None;
         };
 
-        // only try to assgin elements on a cursor plane that indicate so
+        // only try to assign elements on a cursor plane that indicate so
         if element.kind() != Kind::Cursor {
             trace!(
                 "skipping element {:?} on cursor plane(s), element kind not cursor",
@@ -3717,6 +3718,15 @@ where
         E: RenderElement<R>,
     {
         if !frame_flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT) {
+            return Err(None);
+        }
+
+        // only try to assign elements on an overlay plane that indicate so
+        if element.kind() != Kind::ScanoutCandidate && element.kind() != Kind::Cursor {
+            trace!(
+                "skipping element {:?} on overlay plane(s), element kind not scanout-candidate/cursor",
+                element.id(),
+            );
             return Err(None);
         }
 

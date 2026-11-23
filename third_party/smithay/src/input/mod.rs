@@ -137,6 +137,7 @@ use self::{
 };
 use crate::utils::{user_data::UserDataMap, Serial};
 
+pub mod dnd;
 pub mod keyboard;
 pub mod pointer;
 pub mod touch;
@@ -144,11 +145,11 @@ pub mod touch;
 /// Handler trait for Seats
 pub trait SeatHandler: Sized {
     /// Type used to represent the target currently holding the keyboard focus
-    type KeyboardFocus: KeyboardTarget<Self> + 'static;
+    type KeyboardFocus: KeyboardTarget<Self> + PartialEq + Clone + 'static;
     /// Type used to represent the target currently holding the pointer focus
-    type PointerFocus: PointerTarget<Self> + 'static;
+    type PointerFocus: PointerTarget<Self> + PartialEq + Clone + 'static;
     /// Type used to represent the target currently holding the touch focus
-    type TouchFocus: TouchTarget<Self> + 'static;
+    type TouchFocus: TouchTarget<Self> + PartialEq + Clone + 'static;
 
     /// [SeatState] getter
     fn seat_state(&mut self) -> &mut SeatState<Self>;
@@ -191,8 +192,14 @@ pub struct Seat<D: SeatHandler> {
 ///
 /// Does not keep associated user data alive,
 /// and can be used to refer to a potentially already destroyed seat.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WeakSeat<D: SeatHandler>(Weak<SeatRc<D>>);
+
+impl<D: SeatHandler> Clone for WeakSeat<D> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<D: SeatHandler> WeakSeat<D> {
     /// Try to retrieve the original `Seat`, if it still exists

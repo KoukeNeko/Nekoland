@@ -34,7 +34,7 @@ use crate::{
     focus::KeyFocus,
     text::named_icon,
     windows::{key_focus_of, window_names},
-    CalloopData, Nekoland,
+    Nekoland,
 };
 
 /// How often the time without input is looked at.
@@ -347,7 +347,7 @@ impl SessionLockHandler for Nekoland {
         if self.sleep_asked.take().is_some_and(|at| at.elapsed() < SLEEP_LOCK_WAIT) {
             self.unshown_locked = Some(self.space.outputs().map(|output| output.name()).collect());
             let inserted = self.loop_handle.insert_source(Timer::from_duration(LOCKED_FRAME_WAIT), |_, _, data| {
-                data.state.suspend_once_locked();
+                data.suspend_once_locked();
                 TimeoutAction::Drop
             });
             if let Err(err) = inserted {
@@ -413,12 +413,12 @@ delegate_idle_inhibit!(Nekoland);
 
 /// Once there has been no input for as long as the configuration says, locks the screen,
 /// turns the displays off and sleeps, unless a program keeps the screen awake.
-pub fn watch_idle(handle: &LoopHandle<'static, CalloopData>) {
+pub fn watch_idle(handle: &LoopHandle<'static, Nekoland>) {
     // The input each was last done after: each is done once until there is more, so that a
     // locker that does not start is not started every few seconds.
     let (mut locked_after, mut slept_after) = (None, None);
     let inserted = handle.insert_source(Timer::from_duration(IDLE_CHECK), move |_, _, data| {
-        let state = &mut data.state;
+        let state = &mut *data;
         state.idle_inhibitors.retain(Resource::is_alive);
         // shortcut: a program keeps the screen awake while it lives, seen or not.
         if !state.idle_inhibitors.is_empty() {

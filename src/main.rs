@@ -59,7 +59,7 @@ mod xsettings;
 
 use smithay::reexports::{
     calloop::EventLoop,
-    wayland_server::{Display, DisplayHandle},
+    wayland_server::Display,
 };
 pub use state::Nekoland;
 
@@ -116,11 +116,6 @@ fn has_render_node() -> bool {
     })
 }
 
-pub struct CalloopData {
-    state: Nekoland,
-    display_handle: DisplayHandle,
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `nekoland msg WORD` talks to the compositor that is already running.
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -157,18 +152,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     draw_gtk_without_gl_when_gpuless();
     find_flatpak_and_snap_apps();
 
-    let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, Nekoland> = EventLoop::try_new()?;
 
     let display: Display<Nekoland> = Display::new()?;
-    let display_handle = display.handle();
     let mut state = Nekoland::new(&mut event_loop, display);
     // For the lock's preview in Settings as much as for the lock.
     state.draw_lock_shortcuts();
 
-    let mut data = CalloopData {
-        state,
-        display_handle,
-    };
+    let mut data = state;
 
     // The menu bar's application menus and status items come over D-Bus, on a thread.
     let (dbus_events, dbus_channel) = smithay::reexports::calloop::channel::channel();
@@ -176,10 +167,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .handle()
         .insert_source(dbus_channel, |event, _, data| {
             if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
-                data.state.notice_event(&event);
-                data.state.menu_bar_event(event);
+                data.notice_event(&event);
+                data.menu_bar_event(event);
                 // What it changed is drawn at once, rather than at the next look.
-                if let Some(redraw) = &data.state.redraw {
+                if let Some(redraw) = &data.redraw {
                     redraw.ping();
                 }
             }
@@ -189,8 +180,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     system::watch_orientation(dbus_events.clone());
     vpn::watch(dbus_events.clone());
     privacy::watch_devices(dbus_events.clone());
-    data.state.events = Some(dbus_events.clone());
-    data.state.menu_bar.bus = dbus::start(dbus_events)
+    data.events = Some(dbus_events.clone());
+    data.menu_bar.bus = dbus::start(dbus_events)
         .inspect_err(|err| tracing::warn!("the menu bar has no D-Bus: {err}"))
         .ok();
 
@@ -202,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nested = !headless && (std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some());
     // An xrdp session is Nekoland's own, though it is drawn in the X server xrdp started; a
     // headless one leaves the D-Bus services to the session at the computer.
-    let owns_session = !headless && (!nested || data.state.remote);
+    let owns_session = !headless && (!nested || data.remote);
     if owns_session {
         // Portals pick their backends by the desktop's name.
         std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
@@ -228,7 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
 
-    if let Err(err) = ipc::listen(&event_loop.handle(), &data.state.socket_name) {
+    if let Err(err) = ipc::listen(&event_loop.handle(), &data.socket_name) {
         tracing::warn!("no control socket: {err}");
     }
     lock::watch_idle(&event_loop.handle());
@@ -285,11 +276,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config::spawn("systemctl --user try-restart xdg-desktop-portal.service");
             // Sunshine, when Settings set it to stream this desktop, started with the user's
             // services, before there was a display to find; an xrdp session is not streamed.
-            if !data.state.remote {
+            if !data.remote {
                 config::spawn(&format!("systemctl --user try-restart {}", headless::DESKTOP_UNIT));
             }
         }
-        if data.state.remote {
+        if data.remote {
             // shortcut: text only, and xrdp's side is looked at twice a second; bridge the
             // selections in the compositor once other kinds of content are wanted across.
             config::spawn(include_str!("../shell/xrdp-clipboard.sh"));
@@ -308,12 +299,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A remote session is open to whoever can connect to Sunshine: it starts locked, for
         // the account's password.
         if headless {
-            data.state.lock_screen();
+            data.lock_screen();
         }
-        let config = &data.state.config;
+        let config = &data.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         let wallpaper = config::start_wallpaper(
-            data.state.desktop_wallpaper(data.state.workspaces.active).as_deref(),
+            data.desktop_wallpaper(data.workspaces.active).as_deref(),
             config.wallpaper_mode,
         );
         match &command {
@@ -322,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None if config.autostart.is_empty() => config::spawn(&config.terminal),
             None => {}
         }
-        data.state.wallpaper = wallpaper;
+        data.wallpaper = wallpaper;
     });
 
     event_loop.run(None, &mut data, move |_| {

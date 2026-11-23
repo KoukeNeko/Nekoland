@@ -600,10 +600,14 @@ GTK 3 programs get the same look as a theme, `Nekoland`, which install.sh puts i
 Adwaita's, with the colours of `shell/gtk/nekoland.css`. Turning the look on in Settings
 makes it GNOME's `gtk-theme`, which GTK 3 programs on Wayland read, and turning it off puts
 the default back. X11 programs are given that setting, the icon and cursor themes, the
-font, the buttons of the title bar and whether to be dark by `xsettingsd`, which the
+font, the buttons of the title bar, whether to be dark, and the DPI, GDK scale and cursor
+size of the display's scale by `xsettingsd`, which the
 compositor starts with XWayland and writes the file of, in `$XDG_RUNTIME_DIR`, again as
 Settings or the dark switches change them. Qt, Wine and programs that draw their own
-controls keep their own look.
+controls keep their own look. On a scaled display XWayland draws at the display's pixels,
+not enlarged, so X11 programs that follow that DPI are sharp. Files dragged from a Wayland
+window or the desktop drop into X11 programs, a Windows program in Wine among them, and
+what X11 programs drag drops into Wayland's, through XDND.
 
 X11 programs that do not draw their own title bar get one from Nekoland: the window's title,
 and minimize, maximize and close at its right, above the window. Its edges and the bar's top
@@ -819,8 +823,8 @@ it in effect, or says why not; `'unset KEY'` puts one back at its default.
   in Settings until the session ends.
 - One GPU. A second display takes the pointer and windows, but the menu bar, Dock and
   overview stay on the first, and displays are not hot-plugged.
-- X11 programs are drawn at one pixel a point and enlarged on a scaled display, so
-  they look soft there.
+- X11 programs that ignore the DPI and GDK scale they are given, as xclock does, are
+  drawn at half their size on a scaled display.
 - Screen capture copies through the CPU, not dmabufs, and the screen does not turn off
   when idle.
 - X11 windows have no title bars.
@@ -831,3 +835,6 @@ it in effect, or says why not; `'unset KEY'` puts one back at its default.
 
 The starting point was `smallvil`, the minimal example compositor of Smithay
 0.7.0, used under its MIT license (`licenses/SMITHAY-MIT.txt`).
+`third_party/smithay` is Smithay as of its November 2025 drag and drop between Wayland
+and X11 (commit 0d3d212), with Nekoland's fixes to it, among them handing a drag over
+an X11 window's surface to XDND.

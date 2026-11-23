@@ -122,9 +122,8 @@ where
     };
     let inserted = state.loop_handle.insert_source(source, move |_, _, data| {
         let dh = data.display_handle.clone();
-        data.state
-            .client_compositor_state(&client)
-            .blocker_cleared(&mut data.state, &dh);
+        data.client_compositor_state(&client)
+            .blocker_cleared(&mut *data, &dh);
         Ok(())
     });
     if inserted.is_err() {

@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering},
         Mutex,
     },
 };
@@ -18,6 +18,13 @@ const PREFER_DARK: &str = "prefer-dark";
 const BASE_DPI: f64 = 96.0;
 /// Xft/DPI is in 1024ths of a dot per inch.
 const DPI_UNIT: f64 = 1024.0;
+
+/// How many dots X11 programs draw a point with, as the bits of an f64: the display's scale,
+/// which XWayland is told, so that they draw sharp rather than being enlarged.
+static SCALE: AtomicU64 = AtomicU64::new(0x3ff0_0000_0000_0000);
+
+/// The DPI last written, to tell Windows' programs when it changed.
+static LAST_DPI: AtomicI64 = AtomicI64::new(0);
 
 /// xsettingsd's process, once it runs, to tell it that its file changed.
 static DAEMON: AtomicI32 = AtomicI32::new(0);
@@ -44,6 +51,8 @@ struct Values {
     buttons: String,
     dark: bool,
     text_scale: f64,
+    /// The display's scale, which X11 programs draw at; 0 is taken for 1.
+    scale: f64,
 }
 
 fn gsetting(schema: &str, key: &str) -> String {
@@ -66,6 +75,7 @@ fn read() -> Values {
         buttons: gsetting(WM_PREFERENCES, "button-layout"),
         dark: gsetting(INTERFACE, "color-scheme") == PREFER_DARK,
         text_scale: gsetting(INTERFACE, "text-scaling-factor").parse().unwrap_or(1.0),
+        scale: f64::from_bits(SCALE.load(Ordering::Relaxed)),
     }
 }
 
@@ -83,15 +93,21 @@ fn render(values: &Values) -> String {
             lines.push(format!("{name} \"{}\"", value.replace(['"', '\\'], "")));
         }
     }
+    let scale = values.scale.max(1.0);
     if values.cursor_size > 0 {
-        lines.push(format!("Gtk/CursorThemeSize {}", values.cursor_size));
+        lines.push(format!("Gtk/CursorThemeSize {}", (values.cursor_size as f64 * scale).round() as i64));
     }
     lines.push(format!("Gtk/ApplicationPreferDarkTheme {}", i32::from(values.dark)));
     lines.push("Xft/Antialias 1".into());
     lines.push("Xft/Hinting 1".into());
     lines.push("Xft/HintStyle \"hintslight\"".into());
     lines.push("Xft/RGBA \"none\"".into());
-    lines.push(format!("Xft/DPI {}", (BASE_DPI * DPI_UNIT * values.text_scale).round() as i64));
+    let dpi = BASE_DPI * DPI_UNIT * values.text_scale * scale;
+    lines.push(format!("Xft/DPI {}", dpi.round() as i64));
+    // GTK 3 enlarges its widgets by whole times only, and its text by the rest.
+    let times = scale.floor();
+    lines.push(format!("Gdk/WindowScalingFactor {times}"));
+    lines.push(format!("Gdk/UnscaledDPI {}", (dpi / times).round() as i64));
     lines.join("\n") + "\n"
 }
 
@@ -105,9 +121,17 @@ fn write() -> Option<PathBuf> {
     let path = path()?;
     let values = read();
     NEKOLAND_LOOK.store(values.theme == NEKOLAND_THEME, Ordering::Relaxed);
-    if let Err(err) = std::fs::write(&path, render(&values)) {
+    let text = render(&values);
+    if let Err(err) = std::fs::write(&path, &text) {
         tracing::warn!("{}: {err}", path.display());
         return None;
+    }
+    // Wine's programs keep their DPI in each bottle's registry, which Settings sets from
+    // this file.
+    let dpi = text.lines().find_map(|line| line.strip_prefix("Xft/DPI ")).and_then(|dpi| dpi.parse().ok());
+    if let Some(dpi) = dpi.filter(|dpi| LAST_DPI.swap(*dpi, Ordering::Relaxed) != *dpi) {
+        tracing::info!("X11 programs draw at {} DPI", dpi / DPI_UNIT as i64);
+        crate::config::spawn("nekoland-settings --wine-dpi");
     }
     Some(path)
 }
@@ -132,6 +156,17 @@ pub fn start() {
             Err(err) => tracing::warn!("xsettingsd: X11 programs keep their own settings: {err}"),
         }
     });
+}
+
+/// How many dots X11 programs draw a point with.
+pub fn scale() -> f64 {
+    f64::from_bits(SCALE.load(Ordering::Relaxed)).max(1.0)
+}
+
+/// Has X11 programs draw at `scale`, the display's, which XWayland was told.
+pub fn set_scale(scale: f64) {
+    SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    sync();
 }
 
 /// Writes the settings again and tells xsettingsd, which publishes what changed.
@@ -173,6 +208,16 @@ mod tests {
         assert!(text.contains("Gtk/ApplicationPreferDarkTheme 1\n"));
         assert!(text.contains(&format!("Xft/DPI {}\n", 120 * 1024)));
         assert!(!text.contains("Net/IconThemeName") && !text.contains("Gtk/CursorThemeName"));
+    }
+
+    #[test]
+    fn at_twice_the_density_x11_programs_draw_twice_as_large() {
+        let values = Values { cursor_size: 24, text_scale: 1.25, scale: 2.0, ..Default::default() };
+        let text = render(&values);
+        assert!(text.contains("Gtk/CursorThemeSize 48\n"));
+        assert!(text.contains(&format!("Xft/DPI {}\n", 240 * 1024)));
+        assert!(text.contains("Gdk/WindowScalingFactor 2\n"));
+        assert!(text.contains(&format!("Gdk/UnscaledDPI {}\n", 120 * 1024)));
     }
 
     #[test]
