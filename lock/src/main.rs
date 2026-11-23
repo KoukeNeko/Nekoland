@@ -76,6 +76,10 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
+use calendar_data::{
+    calendars::{self, parse_hex, CalendarInfo},
+    event, Date, Event, Kind,
+};
 use draw::{Align, Button, Effect, Facts, Hit, Look, Moment, Notices, Playing, Style};
 
 /// Room kept for the password as it is typed, so that it is not moved, leaving copies
@@ -98,6 +102,10 @@ struct Screen {
     /// locked, the sharp one for lifting the ink off.
     locked: Option<ImageSurface>,
     sharp: Option<ImageSurface>,
+    /// The subject laid over the time, made with `locked`.
+    subject: Option<ImageSurface>,
+    /// The ink and the words as one sheet, lifted off whole: made on the first frame of it.
+    sheet: Option<ImageSurface>,
     /// Where the player's buttons were last drawn.
     media: Vec<Hit>,
 }
@@ -111,7 +119,8 @@ struct Locker {
     seats: SeatState,
     shm: Shm,
     pool: SlotPool,
-    lock_state: SessionLockState,
+    /// Kept for as long as the lock, which it made.
+    _lock_state: SessionLockState,
     lock: Option<SessionLock>,
     screens: Vec<Screen>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -121,6 +130,9 @@ struct Locker {
     look: Look,
     /// What the widgets and the notices show, read again every second.
     facts: Facts,
+    /// The next event, and the minute it was read in.
+    event: Option<String>,
+    event_minute: Option<(i32, i32, i32)>,
     /// What a player plays, as a thread of its own last heard: a player that does not answer
     /// must not keep the password from being typed.
     playing: Arc<Mutex<Option<Playing>>>,
@@ -162,7 +174,8 @@ fn preview(file: &str, width: &str, height: &str, style: Option<&str>) -> ! {
         fetch_weather(at);
     }
     let facts = Facts {
-        playing: look.playing.then(read_playing).flatten(),
+        playing: look.playing.then(player_bus).flatten().and_then(|bus| read_playing(&bus).ok().flatten()),
+        event: look.calendar.then(read_event).flatten(),
         ..read_facts(&look)
     };
     let tm = now();
@@ -187,7 +200,8 @@ fn preview(file: &str, width: &str, height: &str, style: Option<&str>) -> ! {
     };
     let written = Context::new(&surface).map_err(|err| err.to_string()).and_then(|cr| {
         draw::veil(&cr, &look, f64::from(width), f64::from(height));
-        draw::words(&cr, &look, &moment, f64::from(width), f64::from(height));
+        let subject = draw::subject(&look, f64::from(width), f64::from(height), 1);
+        draw::words(&cr, &look, &moment, f64::from(width), f64::from(height), subject.as_ref());
         drop(cr);
         let mut out = std::fs::File::create(file).map_err(|err| err.to_string())?;
         surface.write_to_png(&mut out).map_err(|err| err.to_string())
@@ -238,6 +252,16 @@ fn main() {
     let mut event_loop: EventLoop<Locker> = EventLoop::try_new().unwrap_or_else(|err| fail(&err.to_string()));
     let shm = Shm::bind(&globals, &qh).unwrap_or_else(|err| fail(&err.to_string()));
     let pool = SlotPool::new(4 * 1920 * 1080, &shm).unwrap_or_else(|err| fail(&err.to_string()));
+    // Locked before the pictures are read, which can take a while, so that nothing is left
+    // on the screens or reaches the programs meanwhile; what the compositor answers waits
+    // in the queue until the loop runs, with the look read.
+    let lock_state = SessionLockState::new(&globals, &qh);
+    let lock = lock_state
+        .lock(&qh)
+        .unwrap_or_else(|_| fail("the compositor cannot lock the screen (no ext-session-lock)"));
+    if let Err(err) = conn.flush() {
+        fail(&err.to_string());
+    }
     let (user, look) = read_look(None, true);
     let mut locker = Locker {
         conn: conn.clone(),
@@ -248,13 +272,15 @@ fn main() {
         seats: SeatState::new(&globals, &qh),
         shm,
         pool,
-        lock_state: SessionLockState::new(&globals, &qh),
-        lock: None,
+        _lock_state: lock_state,
+        lock: Some(lock),
         screens: Vec::new(),
         keyboard: None,
         pointer: None,
         chosen: None,
         facts: Facts::default(),
+        event: None,
+        event_minute: None,
         playing: Arc::default(),
         look,
         user,
@@ -271,21 +297,30 @@ fn main() {
         finger_seen: None,
         exit: false,
     };
-    locker.lock = Some(
-        locker
-            .lock_state
-            .lock(&qh)
-            .unwrap_or_else(|_| fail("the compositor cannot lock the screen (no ext-session-lock)")),
-    );
     WaylandSource::new(conn, queue)
         .insert(event_loop.handle())
         .unwrap_or_else(|err| fail(&err.to_string()));
     if locker.look.playing {
         let playing = locker.playing.clone();
-        std::thread::spawn(move || loop {
-            let now = read_playing();
-            *playing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = now;
-            std::thread::sleep(Duration::from_secs(5));
+        // One connection for every poll, made again only once the bus fails it.
+        std::thread::spawn(move || {
+            let mut bus: Option<zbus::blocking::Connection> = None;
+            loop {
+                if bus.is_none() {
+                    bus = player_bus();
+                }
+                let now = match bus.as_ref().map(read_playing) {
+                    Some(Ok(now)) => now,
+                    Some(Err(err)) => {
+                        eprintln!("nekoland-lock: players: {err}");
+                        bus = None;
+                        None
+                    }
+                    None => None,
+                };
+                *playing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = now;
+                std::thread::sleep(Duration::from_secs(5));
+            }
         });
     }
     if let Some(at) = locker.look.weather {
@@ -464,7 +499,7 @@ fn read_look(picked: Option<&str>, locking: bool) -> (String, Look) {
         accent,
         wallpaper,
         style,
-        clock_colour: hex(word("lock_clock_color")),
+        clock_colour: parse_hex(word("lock_clock_color")),
         clock_rainbow: word("lock_clock_color") == "rainbow",
         clock_label: word("lock_clock_text").to_string(),
         clock_badge: Some(word("lock_clock_image")).filter(|path| !path.is_empty()).and_then(|path| load(path, 28.0)),
@@ -543,10 +578,10 @@ fn read_look(picked: Option<&str>, locking: bool) -> (String, Look) {
             "" if config.get("lock_show_lock_icon").and_then(toml::Value::as_bool).unwrap_or(false) => Some(draw::Icon::Padlock),
             _ => None,
         },
-        lock_icon_colour: hex(word("lock_lock_icon_color")),
+        lock_icon_colour: parse_hex(word("lock_lock_icon_color")),
         unlock: draw::Unlock {
             effect,
-            colour: hex(word("lock_unlock_color")),
+            colour: parse_hex(word("lock_unlock_color")),
             direction: match word("lock_unlock_direction") {
                 "left" => draw::Direction::Left,
                 "right" => draw::Direction::Right,
@@ -582,7 +617,7 @@ fn read_look(picked: Option<&str>, locking: bool) -> (String, Look) {
         },
         message: word("lock_message").to_string(),
         message_size: number("lock_message_size", 13.0).clamp(10.0, 40.0),
-        message_colour: hex(word("lock_message_color")),
+        message_colour: parse_hex(word("lock_message_color")),
         message_opacity: number("lock_message_opacity", 100.0).clamp(10.0, 100.0) / 100.0,
         show_name: flag("lock_show_name"),
         power_buttons: flag("lock_power_buttons"),
@@ -599,8 +634,18 @@ fn read_look(picked: Option<&str>, locking: bool) -> (String, Look) {
                     .collect()
             })
             .unwrap_or_default(),
-        // The account picture Settings keeps, as GNOME does.
-        picture: gdk_pixbuf::Pixbuf::from_file(PathBuf::from(&home).join(".face")).ok(),
+        // The account picture Settings keeps, as GNOME does, made once covering the largest
+        // circle it is shown in at two pixels to a point, and no larger.
+        picture: gdk_pixbuf::Pixbuf::from_file(PathBuf::from(&home).join(".face")).ok().and_then(|picture| {
+            let (w, h) = (f64::from(picture.width()), f64::from(picture.height()));
+            let shrink = (2.0 * draw::PICTURE_LARGEST / w.min(h)).min(1.0);
+            let picture = picture.scale_simple(
+                ((w * shrink).ceil() as i32).max(1),
+                ((h * shrink).ceil() as i32).max(1),
+                gdk_pixbuf::InterpType::Hyper,
+            )?;
+            draw::pixbuf_surface(&picture)
+        }),
         font: config
             .get("font")
             .and_then(toml::Value::as_str)
@@ -677,14 +722,6 @@ fn start(program: &str, args: &[&str]) {
     }
 }
 
-/// `#rrggbb` as a colour.
-fn hex(words: &str) -> Option<draw::Rgb> {
-    let digits = words.strip_prefix('#').filter(|digits| digits.len() == 6)?;
-    let value = u32::from_str_radix(digits, 16).ok()?;
-    let channel = |shift: u32| f64::from((value >> shift) & 0xff) / 255.0;
-    Some((channel(16), channel(8), channel(0)))
-}
-
 /// The first battery's charge, and whether it is charging.
 fn read_battery() -> Option<(u8, bool)> {
     let supplies = std::fs::read_dir("/sys/class/power_supply").ok()?;
@@ -706,24 +743,27 @@ fn player_bus() -> Option<zbus::blocking::Connection> {
 }
 
 /// Has the player `bus` go back, play or pause, or go on, as `method` says.
-fn command_player(bus: &str, method: &str) {
-    let Some(connection) = player_bus() else { return };
+fn command_player(connection: &zbus::blocking::Connection, bus: &str, method: &str) {
     let sent = connection.call_method(Some(bus), "/org/mpris/MediaPlayer2", Some(format!("{MPRIS}.Player").as_str()), method, &());
     if let Err(err) = sent {
         eprintln!("nekoland-lock: {bus} {method}: {err}");
     }
 }
 
-/// What an MPRIS player plays, one that plays before one paused; only a line of words.
-fn read_playing() -> Option<Playing> {
+/// What an MPRIS player plays, one that plays before one paused; only a line of words. An
+/// error is the bus's own, not a player's.
+fn read_playing(connection: &zbus::blocking::Connection) -> zbus::Result<Option<Playing>> {
     use std::collections::HashMap;
     use zbus::zvariant::OwnedValue;
-    let connection = player_bus()?;
     let line = |words: String| words.chars().take(80).collect::<String>();
-    let reply = connection
-        .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "ListNames", &())
-        .ok()?;
-    let (names,) = reply.body().deserialize::<(Vec<String>,)>().ok()?;
+    let reply = connection.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+        "ListNames",
+        &(),
+    )?;
+    let (names,) = reply.body().deserialize::<(Vec<String>,)>()?;
     let mut found: Vec<Playing> = names
         .iter()
         .filter(|name| name.starts_with(&format!("{MPRIS}.")))
@@ -752,7 +792,7 @@ fn read_playing() -> Option<Playing> {
         })
         .collect();
     found.sort_by_key(|playing| playing.paused);
-    found.into_iter().next()
+    Ok(found.into_iter().next())
 }
 
 /// Where the wrong PINs of this lock are counted, so that a locker started again while the
@@ -834,33 +874,30 @@ fn clock(look: &Look) -> String {
     }
 }
 
-/// Today's next event in the Calendar's file, `10:00 Title`, one lasting all day if there is
-/// no other; lines are `YYYY-MM-DD<TAB>HH:MM or -<TAB>calendar<TAB>title`.
+/// Today's next event in Calendar's file, `10:00 Title`, one lasting all day if there is
+/// no other.
 fn read_event() -> Option<String> {
-    let data = std::env::var_os("XDG_DATA_HOME").map_or_else(
-        || PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"),
-        PathBuf::from,
-    );
-    let events = std::fs::read_to_string(data.join("nekoland/calendar.tsv")).ok()?;
-    next_event(&events, now())
+    next_event(&event::load(), &calendars::load(), now())
 }
 
-fn next_event(events: &str, tm: libc::tm) -> Option<String> {
-    let day = format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-    let now = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
-    let mut today: Vec<(&str, &str)> = events
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(4, '\t');
-            let (date, time, _, title) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
-            (date == day && (time == "-" || time >= now.as_str())).then_some((time, title))
-        })
+/// Of the events on the day of `tm` in a calendar that is shown, the soonest not yet begun,
+/// or one lasting all day; reminders and what is done are not events to go to.
+fn next_event(events: &[Event], shown: &[CalendarInfo], tm: libc::tm) -> Option<String> {
+    let day = Date::new(tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32)?;
+    let now = (tm.tm_hour as u32, tm.tm_min as u32);
+    let today: Vec<&Event> = event::on_day(events, day)
+        .into_iter()
+        .map(|found| found.event)
+        .filter(|event| event.kind == Kind::Event && !event.done)
+        .filter(|event| shown.get(event.calendar).is_none_or(|info| info.shown))
         .collect();
-    // Timed ones first, the soonest first; "-" sorts after every time.
-    today.sort_by_key(|(time, _)| if *time == "-" { "99" } else { *time });
-    let (time, title) = today.first()?;
-    let title: String = title.chars().take(60).collect();
-    Some(if *time == "-" { format!("整天 {title}") } else { format!("{time} {title}") })
+    let timed = today.iter().filter_map(|event| Some((event.start?, event))).filter(|(start, _)| *start >= now).min_by_key(|(start, _)| *start);
+    let (time, event) = match timed {
+        Some(((hour, minute), event)) => (format!("{hour:02}:{minute:02}"), *event),
+        None => ("整天".to_string(), *today.iter().find(|event| event.all_day())?),
+    };
+    let title: String = event.title.chars().take(60).collect();
+    Some(format!("{time} {title}"))
 }
 
 /// The second clock's city, from its zone's name, and its time there.
@@ -875,13 +912,14 @@ fn world_time(zone: &str, look: &Look) -> Option<(String, String)> {
     Some((city, time.to_string()))
 }
 
-/// What the widgets and the notices show now, but what plays, which a thread reads.
+/// What the widgets and the notices show now, but what plays, which a thread reads, and the
+/// next event, which changes only with the minute.
 fn read_facts(look: &Look) -> Facts {
     Facts {
         battery: look.battery.then(read_battery).flatten(),
         playing: None,
         notices: if look.notices == Notices::Hidden { Vec::new() } else { read_notices() },
-        event: look.calendar.then(read_event).flatten(),
+        event: None,
         world: look.world_clock.as_deref().and_then(|zone| world_time(zone, look)),
         weather: read_weather(look),
     }
@@ -994,16 +1032,29 @@ fn date() -> String {
 }
 
 impl Locker {
-    /// What the widgets and the notices show now; what plays as its thread last heard.
-    fn read_facts(&self) -> Facts {
+    /// What the widgets and the notices show now; what plays as its thread last heard, and
+    /// the next event as read when the minute last changed.
+    fn read_facts(&mut self) -> Facts {
+        let tm = now();
+        let minute = (tm.tm_yday, tm.tm_hour, tm.tm_min);
+        if self.event_minute != Some(minute) {
+            self.event_minute = Some(minute);
+            self.event = self.look.calendar.then(read_event).flatten();
+        }
         Facts {
             playing: self.playing.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            event: self.event.clone(),
             ..read_facts(&self.look)
         }
     }
 
     fn cover(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let Some(lock) = &self.lock else { return };
+        // Locked before the outputs are bound, a screen is both among them when the lock
+        // takes hold and announced again once bound: a second surface for it is an error.
+        if self.screens.iter().any(|screen| screen.output == output) {
+            return;
+        }
         let surface = lock.create_lock_surface(self.compositor.create_surface(qh), &output, qh);
         let scale = self
             .outputs
@@ -1017,6 +1068,8 @@ impl Locker {
             scale,
             locked: None,
             sharp: None,
+            subject: None,
+            sheet: None,
             media: Vec::new(),
         });
     }
@@ -1067,8 +1120,10 @@ impl Locker {
                     draw::veil(&cr, &self.look, f64::from(width), f64::from(height));
                 }
             });
+            screen.subject = draw::subject(&self.look, f64::from(width), f64::from(height), scale);
         }
-        if lifted.is_some() && screen.sharp.is_none() {
+        // Made while the password is checked, so the first frame of lifting has it at hand.
+        if (lifted.is_some() || self.checking.is_some()) && screen.sharp.is_none() {
             screen.sharp = draw::backdrop(&self.look, pw, ph, false, false);
         }
         let stride = Format::ARgb32.stride_for_width(pw as u32).unwrap_or(pw * 4);
@@ -1089,23 +1144,29 @@ impl Locker {
             draw::doze(&cr, &self.look, &moment, f64::from(width), f64::from(height));
             screen.media.clear();
         } else if let (Ok(cr), Some(locked)) = (Context::new(&target), &screen.locked) {
+            let subject = screen.subject.as_ref();
             let words = |cr: &Context| {
                 cr.save().ok();
                 cr.scale(f64::from(scale), f64::from(scale));
-                let media = draw::words(cr, &self.look, &moment, f64::from(width), f64::from(height));
+                let media = draw::words(cr, &self.look, &moment, f64::from(width), f64::from(height), subject);
                 cr.restore().ok();
                 media
             };
             match (lifted, &screen.sharp) {
                 (Some(lifted), Some(sharp)) => {
-                    // The ink and the words go together, as one sheet.
-                    if let Ok(layer) = ImageSurface::create(Format::ARgb32, pw, ph) {
-                        if let Ok(lc) = Context::new(&layer) {
-                            let _ = lc.set_source_surface(locked, 0.0, 0.0);
-                            let _ = lc.paint();
-                            words(&lc);
-                        }
-                        draw::reveal(&cr, &self.look.unlock, self.look.accent, sharp, &layer, lifted, f64::from(scale));
+                    // The ink and the words go together, as one sheet, the words as they
+                    // were when it began to lift.
+                    if screen.sheet.is_none() {
+                        screen.sheet = ImageSurface::create(Format::ARgb32, pw, ph).ok().inspect(|layer| {
+                            if let Ok(lc) = Context::new(layer) {
+                                let _ = lc.set_source_surface(locked, 0.0, 0.0);
+                                let _ = lc.paint();
+                                words(&lc);
+                            }
+                        });
+                    }
+                    if let Some(layer) = &screen.sheet {
+                        draw::reveal(&cr, &self.look.unlock, self.look.accent, sharp, layer, lifted, f64::from(scale));
                     }
                 }
                 _ => {
@@ -1231,8 +1292,10 @@ impl Locker {
                 // is read again at once, for the button to show it.
                 let playing = self.playing.clone();
                 std::thread::spawn(move || {
-                    command_player(&bus, method);
-                    *playing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = read_playing();
+                    let Some(connection) = player_bus() else { return };
+                    command_player(&connection, &bus, method);
+                    *playing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        read_playing(&connection).ok().flatten();
                 });
             }
             Button::Sleep => start("nekoland", &["msg", "sleep"]),
@@ -1334,6 +1397,8 @@ impl SessionLockHandler for Locker {
             screen.size = Some(configure.new_size);
             screen.locked = None;
             screen.sharp = None;
+            screen.subject = None;
+            screen.sheet = None;
         }
         self.draw(i);
     }
@@ -1528,6 +1593,8 @@ impl CompositorHandler for Locker {
             screen.surface.wl_surface().set_buffer_scale(screen.scale);
             screen.locked = None;
             screen.sharp = None;
+            screen.subject = None;
+            screen.sheet = None;
             self.draw(i);
         }
     }
@@ -1586,7 +1653,7 @@ delegate_registry!(Locker);
 
 #[cfg(test)]
 mod tests {
-    use super::{next_event, parse_weather};
+    use super::{next_event, parse_weather, Event};
 
     #[test]
     fn the_weather_is_the_first_hours_not_the_units() {
@@ -1601,12 +1668,27 @@ mod tests {
         // SAFETY: an all-zero tm is a valid value to fill in.
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
         (tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min) = (126, 10, 18, 12, 0);
-        let events = "2026-11-18\t09:00\tw\t早會\n2026-11-18\t-\tp\t生日\n2026-11-18\t18:30\tp\t晚餐\n2026-11-18\t13:00\tw\t開會\n2026-11-19\t08:00\tw\t明天\n";
-        assert_eq!(next_event(events, tm).as_deref(), Some("13:00 開會"));
+        let events: Vec<Event> = [
+            "2026-11-18\t09:00\t1\t早會\tid=a",
+            "2026-11-18\t-\t0\t生日\tid=b",
+            "2026-11-18\t18:30\t0\t晚餐\tid=c",
+            "2026-11-11\t13:00\t1\t開會\tid=d\trepeat=weekly",
+            "2026-11-18\t12:30\t0\t繳費\tid=e\tkind=reminder",
+            "2026-11-18\t12:40\t0\t已辦\tid=f\tdone=1",
+            "2026-11-17\t12:50\t0\t跳過\tid=g\trepeat=daily\tskip=2026-11-18",
+            "2026-11-18\t12:55\t2\t藏起\tid=h",
+            "2026-11-19\t08:00\t1\t明天\tid=i",
+        ]
+        .into_iter()
+        .filter_map(Event::parse)
+        .collect();
+        let mut shown = calendar_data::calendars::defaults();
+        shown[2].shown = false;
+        assert_eq!(next_event(&events, &shown, tm).as_deref(), Some("13:00 開會"));
         tm.tm_hour = 20;
-        assert_eq!(next_event(events, tm).as_deref(), Some("整天 生日"));
+        assert_eq!(next_event(&events, &shown, tm).as_deref(), Some("整天 生日"));
         tm.tm_mday = 20;
-        assert_eq!(next_event(events, tm), None);
+        assert_eq!(next_event(&events, &shown, tm), None);
     }
 }
 

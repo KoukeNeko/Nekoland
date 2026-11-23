@@ -10,6 +10,7 @@ gdk-pixbuf = "0.20"
 # For time zones by name, as the second clock has.
 glib = { version = "0.20", features = ["v2_68"] }
 libc = "0.2"
+nekoland-calendar-data = { path = "../calendar-data" }
 pango = "0.20"
 pangocairo = "0.20"
 smithay-client-toolkit = "0.19"

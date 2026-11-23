@@ -103,6 +103,8 @@ pub fn account(user: &str) -> Result<(), Failure> {
 /// core dump is, does not have it.
 pub fn wipe(bytes: impl Into<Vec<u8>>) {
     let mut bytes = bytes.into();
+    // Out to the capacity: past the length may be what was typed before it was shortened.
+    bytes.resize(bytes.capacity(), 0);
     for byte in bytes.iter_mut() {
         // SAFETY: a byte of the vector, written in place; volatile, so it is not left out.
         unsafe { ptr::write_volatile(byte, 0) };

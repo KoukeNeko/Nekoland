@@ -31,27 +31,30 @@ pub fn is_valid(pin: &str) -> bool {
 /// development package that is not always installed.
 fn crypt(key: &str, setting: &str) -> Option<String> {
     type Crypt = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_char;
-    let (key, setting) = (CString::new(key).ok()?, CString::new(setting).ok()?);
+    let (setting, key) = (CString::new(setting).ok()?, CString::new(key).ok()?);
+    // Left by `break`, not `return`, so that the key's copy is wiped whatever happens.
     // SAFETY: the symbol is crypt(3), whose signature `Crypt` is, called with C strings that
     // live through the call; its answer is read before anything else is called.
-    unsafe {
+    let hashed = unsafe { 'call: {
         let library = libc::dlopen(c"libcrypt.so.1".as_ptr(), libc::RTLD_NOW);
         if library.is_null() {
-            return None;
+            break 'call None;
         }
         let symbol = libc::dlsym(library, c"crypt".as_ptr());
         if symbol.is_null() {
-            return None;
+            break 'call None;
         }
         let crypt: Crypt = std::mem::transmute(symbol);
         let hashed = crypt(key.as_ptr(), setting.as_ptr());
         if hashed.is_null() {
-            return None;
+            break 'call None;
         }
         // A failure is a string that begins with `*`.
         let hashed = CStr::from_ptr(hashed).to_string_lossy().into_owned();
         (!hashed.starts_with('*')).then_some(hashed)
-    }
+    } };
+    crate::pam::wipe(key);
+    hashed
 }
 
 fn hash(pin: &str) -> Result<String, String> {

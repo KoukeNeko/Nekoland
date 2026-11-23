@@ -229,7 +229,8 @@ pub struct Look {
     pub message_colour: Option<Rgb>,
     pub message_opacity: f64,
     pub show_name: bool,
-    pub picture: Option<Pixbuf>,
+    /// Made once, covering the largest circle it is shown in.
+    pub picture: Option<ImageSurface>,
     /// The apps at the foot, left then right or in a row, with the icons the compositor drew.
     pub shortcuts: Vec<(String, Option<ImageSurface>)>,
     /// Whether they open over the lock at once, rather than once the password is given.
@@ -641,6 +642,9 @@ fn glass(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64, alpha: f64) {
     let _ = cr.stroke();
 }
 
+/// The largest circle the person's picture is shown in, in points.
+pub const PICTURE_LARGEST: f64 = 56.0;
+
 /// The person's picture in a circle `size` across, or their initial on the accent.
 fn picture(cr: &Context, look: &Look, x: f64, y: f64, size: f64) {
     cr.save().ok();
@@ -649,13 +653,10 @@ fn picture(cr: &Context, look: &Look, x: f64, y: f64, size: f64) {
     let shown = look.picture.as_ref().and_then(|picture| {
         let (w, h) = (f64::from(picture.width()), f64::from(picture.height()));
         let cover = (size / w).max(size / h);
-        // At twice the size, for screens with two pixels to a point; centred on the circle.
-        let scaled = picture.scale_simple((w * cover * 2.0).ceil() as i32, (h * cover * 2.0).ceil() as i32, InterpType::Hyper)?;
-        let surface = pixbuf_surface(&scaled)?;
-        let over = |side: i32| (f64::from(side) / 2.0 - size) / 2.0;
-        cr.translate(x - over(scaled.width()), y - over(scaled.height()));
-        cr.scale(0.5, 0.5);
-        cr.set_source_surface(&surface, 0.0, 0.0).ok()?;
+        // Centred on the circle.
+        cr.translate(x + (size - w * cover) / 2.0, y + (size - h * cover) / 2.0);
+        cr.scale(cover, cover);
+        cr.set_source_surface(picture, 0.0, 0.0).ok()?;
         cr.paint().ok()
     });
     if shown.is_none() {
@@ -1116,9 +1117,10 @@ fn notice_lines(look: &Look, facts: &Facts) -> Vec<(String, String)> {
     }
 }
 
-/// The words, the widgets and the field, in points, on a surface `width` by `height` points;
-/// where the player's buttons are, which only the styles know.
-pub fn words(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) -> Vec<Hit> {
+/// The words, the widgets and the field, in points, on a surface `width` by `height` points,
+/// with the subject as `subject` made it for the surface; where the player's buttons are,
+/// which only the styles know.
+pub fn words(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64, subject: Option<&ImageSurface>) -> Vec<Hit> {
     stickers(cr, look, width, height, 1.0);
     if let Some(icon) = &look.lock_icon {
         lock_icon(cr, look, icon, width / 2.0, EDGE - 8.0);
@@ -1140,15 +1142,28 @@ pub fn words(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64
         let top = (y * height - tall / 2.0).max(EDGE);
         cards(cr, look, &lines, (x * width).clamp(EDGE + CARD_W / 2.0, width - EDGE - CARD_W / 2.0), top, height - EDGE);
     }
-    subject(cr, look, width, height);
+    if let Some(layer) = subject {
+        cr.save().ok();
+        // The layer is in pixels, the surface scaled to points.
+        let pixel = width / f64::from(layer.width().max(1));
+        cr.scale(pixel, pixel);
+        let _ = cr.set_source_surface(layer, 0.0, 0.0);
+        let _ = cr.paint();
+        cr.restore().ok();
+    }
     draw_buttons(cr, look, moment, width, height);
     hits
 }
 
 /// The cut-out subject over the time, where the wallpaper has it: covering the screen as
-/// the locked backdrop does, and fading out above the field, which stays in reach.
-fn subject(cr: &Context, look: &Look, width: f64, height: f64) {
-    let Some(picture) = &look.subject else { return };
+/// the locked backdrop does, and fading out above the field, which stays in reach. Made once
+/// for a screen `width` by `height` points at `scale` pixels to a point, as scaling it down
+/// from its full size takes too long for every frame.
+pub fn subject(look: &Look, width: f64, height: f64, scale: i32) -> Option<ImageSurface> {
+    let picture = look.subject.as_ref()?;
+    let layer = ImageSurface::create(Format::ARgb32, (width as i32) * scale, (height as i32) * scale).ok()?;
+    let cr = Context::new(&layer).ok()?;
+    cr.scale(f64::from(scale), f64::from(scale));
     let (w, h) = (f64::from(picture.width()), f64::from(picture.height()));
     let cover = (width / w).max(height / h) * NEARER;
     let fade = LinearGradient::new(0.0, height * 0.5, 0.0, height * 0.64);
@@ -1162,6 +1177,9 @@ fn subject(cr: &Context, look: &Look, width: f64, height: f64) {
     cr.set_source(&pattern).ok();
     let _ = cr.mask(&fade);
     cr.restore().ok();
+    drop(cr);
+    layer.flush();
+    Some(layer)
 }
 
 const CARD_W: f64 = 380.0;
@@ -1262,7 +1280,7 @@ fn quiet(cr: &Context, look: &Look, moment: &Moment, width: f64, height: f64) ->
         let name_height = f64::from(name.pixel_extents().1.height());
         let name_top = field_top - 12.0 - name_height;
         centred(cr, &name, cx, name_top);
-        picture(cr, look, cx - 28.0, name_top - 10.0 - 56.0, 56.0);
+        picture(cr, look, cx - PICTURE_LARGEST / 2.0, name_top - 10.0 - PICTURE_LARGEST, PICTURE_LARGEST);
     }
     field(cr, look, moment, cx - FIELD_WIDTH / 2.0, field_top, FIELD_WIDTH, false);
 
