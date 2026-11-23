@@ -66,6 +66,9 @@ fn preferences(app: &adw::Application) {
     });
     zoom.add(&image_size);
     images.add(&zoom);
+    let editing = adw::PreferencesGroup::new();
+    editing.add(&switch("拷貝主體", prefs.copy_subject, |prefs, on| prefs.copy_subject = on));
+    images.add(&editing);
 
     let pdf = adw::PreferencesPage::builder().title("PDF").icon_name("x-office-document-symbolic").build();
     let opening = adw::PreferencesGroup::new();

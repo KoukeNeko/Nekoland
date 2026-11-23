@@ -40,7 +40,7 @@ impl Rgba {
         )
     }
 
-    fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
+    pub fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
         let at = (y * self.width + x) * 4;
         [self.bytes[at], self.bytes[at + 1], self.bytes[at + 2], self.bytes[at + 3]]
     }

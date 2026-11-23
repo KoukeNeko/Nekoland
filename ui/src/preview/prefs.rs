@@ -42,6 +42,8 @@ pub struct Prefs {
     pub bookmarks: HashMap<PathBuf, Vec<(usize, String)>>,
     /// The signatures made, each a picture in `signatures_dir` and what it is called.
     pub signatures: Vec<(String, String)>,
+    /// Whether 拷貝主體 is offered, which downloads a model the first time.
+    pub copy_subject: bool,
 }
 
 impl Default for Prefs {
@@ -59,6 +61,7 @@ impl Default for Prefs {
             last_page: HashMap::new(),
             bookmarks: HashMap::new(),
             signatures: Vec::new(),
+            copy_subject: true,
         }
     }
 }

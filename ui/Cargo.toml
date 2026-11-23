@@ -103,6 +103,7 @@ libc = "0.2"
 nekoland-calendar-data = { path = "../calendar-data" }
 nekoland-shortcuts = { path = "../shortcuts" }
 num-bigint = "0.4"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic"] }
 pangocairo = "0.20"
 poppler-rs = "0.24"
 png = "0.18"

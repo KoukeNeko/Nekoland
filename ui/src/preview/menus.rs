@@ -63,6 +63,7 @@ pub const MENUS: &[(&str, &[&[Entry]])] = &[
             &[
                 entry("剪下", "win.cut", &["<Control>x"]),
                 entry("拷貝", "win.copy", &["<Control>c"]),
+                entry("拷貝主體", "win.copy-subject", &[]),
                 entry("貼上", "win.paste", &["<Control>v"]),
                 entry("刪除", "win.delete", &["Delete", "BackSpace"]),
                 entry("全選", "win.select-all", &["<Control>a"]),

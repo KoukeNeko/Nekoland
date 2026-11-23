@@ -38,6 +38,8 @@ mod menus;
 mod pdfdoc;
 #[path = "preview/prefs.rs"]
 mod prefs;
+#[path = "preview/subject.rs"]
+mod subject;
 #[path = "preview/printing.rs"]
 mod printing;
 #[path = "preview/settings.rs"]
@@ -1108,6 +1110,7 @@ impl Win {
             ("redo", |win| win.redo()),
             ("cut", |win| win.cut()),
             ("copy", |win| win.copy()),
+            ("copy-subject", |win| win.copy_subject()),
             ("paste", |win| win.paste()),
             ("delete", |win| win.delete()),
             ("select-all", |win| win.select_all()),
@@ -2325,6 +2328,7 @@ impl Win {
             ("flip-vertical", is_picture),
             ("crop", is_picture && has_mask || is_page && is_pdf_file && has_area),
             ("remove-background", is_picture),
+            ("copy-subject", !typing && is_picture && PREFS.with(|prefs| prefs.borrow().copy_subject)),
             ("highlight", is_page),
             ("mark", is_page),
             ("mark-colour", is_page),

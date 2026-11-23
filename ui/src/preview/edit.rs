@@ -98,6 +98,77 @@ impl Win {
         self.edit(|_| Some(imaging::clear(&picture, &mask).to_pixbuf()));
     }
 
+    /// 拷貝主體: the picture's subject, its background taken out, put on the clipboard; the
+    /// model that finds it is downloaded first, once the person agrees.
+    pub fn copy_subject(self: &Rc<Self>) {
+        let Some(pixbuf) = self.shown.borrow().clone() else { return };
+        if !subject::model_path().exists() {
+            return self.download_subject_model();
+        }
+        let picture = imaging::Rgba::from_pixbuf(&pixbuf);
+        let win = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let found = gio::spawn_blocking(move || subject::subject(&picture)).await;
+            let Some(win) = win.upgrade() else { return };
+            let failure = match found {
+                Ok(Ok(Some(subject))) => {
+                    return win.window.clipboard().set_texture(&gdk::Texture::for_pixbuf(&subject.to_pixbuf()));
+                }
+                Ok(Ok(None)) => "找不到主體。".to_string(),
+                Ok(Err(err)) => err,
+                Err(_) => "分析影像時發生錯誤。".to_string(),
+            };
+            alert::notice(&win.window, "無法拷貝主體", Some(&failure));
+        });
+    }
+
+    /// Asks to download the model 拷貝主體 needs, then copies the subject with it.
+    fn download_subject_model(self: &Rc<Self>) {
+        let alert = adw::AlertDialog::new(
+            Some("要下載拷貝主體的模型嗎？"),
+            Some(&format!("模型大小為 {}，只需下載一次。可在「設定」關閉拷貝主體。", subject::MODEL_SIZE)),
+        );
+        alert.add_responses(&[("cancel", "取消"), ("download", "下載")]);
+        alert.set_response_appearance("download", adw::ResponseAppearance::Suggested);
+        alert.set_default_response(Some("download"));
+        alert.set_close_response("cancel");
+        let win = Rc::downgrade(self);
+        alert.choose(&self.window, gio::Cancellable::NONE, move |response| {
+            if response != "download" {
+                return;
+            }
+            let path = subject::model_path();
+            let partial = path.with_extension("part");
+            // Written beside it and moved in whole, so a download cut off is not taken for the model.
+            let command = "curl -fsSL --create-dirs -o \"$1\" \"$3\" && mv \"$1\" \"$2\"";
+            let started = gio::Subprocess::newv(
+                &["sh".as_ref(), "-c".as_ref(), command.as_ref(), "sh".as_ref(), partial.as_os_str(), path.as_os_str(), subject::MODEL_URL.as_ref()],
+                gio::SubprocessFlags::STDERR_PIPE,
+            );
+            let process = match started {
+                Ok(process) => process,
+                Err(err) => {
+                    if let Some(win) = win.upgrade() {
+                        alert::notice(&win.window, "無法下載模型", Some(err.message()));
+                    }
+                    return;
+                }
+            };
+            glib::spawn_future_local(async move {
+                let result = process.communicate_utf8_future(None).await;
+                let Some(win) = win.upgrade() else { return };
+                match result {
+                    Ok(_) if process.is_successful() => win.copy_subject(),
+                    Ok((_, error)) => {
+                        let error = error.map(|error| error.trim().to_string()).filter(|error| !error.is_empty());
+                        alert::notice(&win.window, "無法下載模型", Some(error.as_deref().unwrap_or("請檢查網路連線後再試一次。")));
+                    }
+                    Err(err) => alert::notice(&win.window, "無法下載模型", Some(err.message())),
+                }
+            });
+        });
+    }
+
     /// 調整顏色: the picture's exposure, contrast, colour and levels, shown as they are moved
     /// and kept when the panel closes.
     pub fn adjust_color(self: &Rc<Self>) {
