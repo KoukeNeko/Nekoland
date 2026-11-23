@@ -87,7 +87,7 @@ impl Sidebar {
         monitor.connect_mount_changed(on!(&sidebar, |s, _m, _x| s.fill()));
         monitor.connect_volume_added(on!(&sidebar, |s, _m, _x| s.fill()));
         monitor.connect_volume_removed(on!(&sidebar, |s, _m, _x| s.fill()));
-        // The bookmarks file, Hamasen's servers and the trash change from elsewhere too.
+        // The bookmarks file, the servers and the trash change from elsewhere too.
         let watched = [
             gio::File::for_path(crate::browse::bookmarks_path())
                 .monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE),

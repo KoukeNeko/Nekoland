@@ -124,7 +124,7 @@ pub fn protocol(scheme: &str) -> Option<&'static Protocol> {
     PROTOCOLS.iter().find(|p| p.scheme == scheme)
 }
 
-/// A server set up in Hamasen's list, which Hamasen and Files both read and write.
+/// A server set up in the list Files carries on from Hamasen.
 #[derive(Clone)]
 pub struct Server {
     pub id: String,
@@ -162,17 +162,22 @@ impl Server {
     }
 }
 
+/// Files keeps the list itself: in Hamasen's folder it went to the trash with Hamasen.
 pub fn hamasen_servers_path() -> PathBuf {
-    glib::user_config_dir().join("hamasen/servers.json")
+    glib::user_config_dir().join("nekoland/servers.json")
 }
 
-/// Hamasen's list as it is kept; empty when there is none yet.
+/// The list as it is kept, Hamasen's own until Files first saves one; empty when there is
+/// none yet.
 pub fn hamasen_records() -> Vec<serde_json::Map<String, serde_json::Value>> {
-    let Ok(text) = std::fs::read_to_string(hamasen_servers_path()) else {
+    let path = Some(hamasen_servers_path())
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| glib::user_config_dir().join("hamasen/servers.json"));
+    let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
     serde_json::from_str(&text).unwrap_or_else(|err| {
-        eprintln!("nekoland: cannot read {}: {err}", hamasen_servers_path().display());
+        eprintln!("nekoland: cannot read {}: {err}", path.display());
         Vec::new()
     })
 }

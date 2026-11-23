@@ -1,7 +1,6 @@
 //! Hamasen's servers, set up and mounted by Files itself: SFTP, FTP, SMB, WebDAV and NFS
-//! through GVfs, cloud drives and S3 through rclone on a folder of their own. The list is
-//! Hamasen's servers.json and the passwords its keyring items, so either program carries
-//! on from the other.
+//! through GVfs, cloud drives and S3 through rclone on a folder of their own. The list
+//! carries on from Hamasen's servers.json and the passwords are its keyring items.
 
 use std::{
     cell::RefCell,
