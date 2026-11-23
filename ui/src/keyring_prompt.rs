@@ -15,6 +15,7 @@ mod alert;
 #[allow(dead_code)]
 #[path = "launcher/apps.rs"]
 mod apps;
+mod asker;
 mod ipc;
 #[allow(dead_code)]
 #[path = "tasks/proc.rs"]
@@ -36,18 +37,6 @@ const INTERFACE: &str = r#"<node><interface name="org.gnome.keyring.internal.Pro
   </method>
   <method name="StopPrompting"><arg name="callback" type="o" direction="in"/></method>
 </interface></node>"#;
-const SHAKE: &str = ".shake { animation: shake 360ms cubic-bezier(.2, .8, .2, 1); }
-@keyframes shake {
-  20% { transform: translateX(-8px); } 40% { transform: translateX(7px); }
-  60% { transform: translateX(-4px); } 80% { transform: translateX(2px); }
-}
-/* Clear of the lock's overhang, 12px from the question below. */
-.asker { margin-top: 3px; margin-bottom: 12px; }
-.asker-badge {
-  min-width: 24px; min-height: 24px; border-radius: 12px; margin: 0 -6px -6px 0;
-  background-color: var(--dialog-fg-color); color: var(--dialog-bg-color);
-  box-shadow: 0 0 0 3px var(--dialog-bg-color);
-}";
 
 /// Who asks: a prompt object of gnome-keyring's on the bus.
 #[derive(Clone, PartialEq, Eq)]
@@ -97,11 +86,7 @@ fn main() -> glib::ExitCode {
 }
 
 fn serve(app: &adw::Application) -> Result<(), glib::Error> {
-    let css = gtk::CssProvider::new();
-    css.load_from_string(SHAKE);
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-    }
+    asker::load_css();
     let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
     let shared: Shared = Rc::new(RefCell::new(Prompter {
         bus: bus.clone(),
@@ -451,7 +436,7 @@ impl Prompt {
         alert.set_body_use_markup(true);
         let asker = asker();
         match &asker {
-            Some((_, icon)) => alert::set_picture(&alert, &asker_picture(icon)),
+            Some((_, icon)) => alert::set_picture(&alert, &asker::picture(icon)),
             None => alert::set_icon(&alert, "system-lock-screen-symbolic"),
         }
         alert.set_extra_child(Some(&fields));
@@ -546,10 +531,7 @@ impl Prompt {
             self.warning.set_label(&warning);
             self.password.add_css_class("error");
             self.password.select_region(0, -1);
-            // The class is taken off first so the shake plays again on another wrong password.
-            self.fields.remove_css_class("shake");
-            let fields = self.fields.clone();
-            glib::idle_add_local_once(move || fields.add_css_class("shake"));
+            asker::shake(&self.fields);
         }
     }
 
@@ -560,55 +542,9 @@ impl Prompt {
     }
 }
 
-/// Who the prompt is for: the application, by the name and icon of its .desktop file, or
-/// else the command, by its name. None when the compositor saw no one ask.
+/// Who the prompt is for, when the compositor saw who asked.
 fn asker() -> Option<(String, gio::Icon)> {
-    let pid: i32 = ipc::msg("keyring-caller")?.trim().parse().ok()?;
-    // Each process belongs to the application whose window it, or a process it was started
-    // from, has, as the task manager counts them.
-    let windows: HashMap<i32, String> = ipc::msg("tasks")?
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            Some((fields.next()?.parse().ok()?, fields.next()?.to_owned()))
-        })
-        .collect();
-    let procs = proc::read_procs();
-    let app = proc::owners(&procs, &windows)
-        .get(&pid)
-        .and_then(|app| gio::DesktopAppInfo::new(&format!("{app}.desktop")));
-    // The icon the Dock shows: from the icon theme chosen in Appearance, else Nekoland's.
-    let look = apps::Look::load();
-    let (dirs, themes) = (apps::data_dirs(), look.icon_themes());
-    let icon = |name: &str| {
-        let path = apps::find_icon(&dirs, &themes, name)
-            .or_else(|| apps::find_icon(&dirs, &themes, apps::NO_ICON))?;
-        Some(gio::FileIcon::new(&gio::File::for_path(path)).upcast::<gio::Icon>())
-    };
-    if let Some(app) = app {
-        let name = app.string("Icon").unwrap_or_default();
-        return Some((app.name().to_string(), icon(&name)?));
-    }
-    let command = procs.iter().find(|proc| proc.pid == pid)?.name.clone();
-    Some((command, icon("utilities-terminal")?))
-}
-
-/// The asking program's icon, with a lock at its corner for what it asks.
-fn asker_picture(icon: &gio::Icon) -> gtk::Overlay {
-    let picture = gtk::Overlay::builder()
-        .halign(gtk::Align::Center)
-        .css_classes(["asker"])
-        .child(&gtk::Image::builder().gicon(icon).pixel_size(56).build())
-        .build();
-    let badge = gtk::Image::builder()
-        .icon_name("system-lock-screen-symbolic")
-        .pixel_size(13)
-        .halign(gtk::Align::End)
-        .valign(gtk::Align::End)
-        .css_classes(["asker-badge"])
-        .build();
-    picture.add_overlay(&badge);
-    picture
+    asker::of(ipc::msg("keyring-caller")?.trim().parse().ok()?)
 }
 
 /// A new password needs typing twice the same; any password, blank too, unlocks.

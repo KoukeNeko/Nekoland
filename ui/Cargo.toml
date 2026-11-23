@@ -37,6 +37,10 @@ name = "nekoland-keyring-prompt"
 path = "src/keyring_prompt.rs"
 
 [[bin]]
+name = "nekoland-polkit-agent"
+path = "src/polkit_agent.rs"
+
+[[bin]]
 name = "nekoland-filechooser"
 path = "src/filechooser.rs"
 
