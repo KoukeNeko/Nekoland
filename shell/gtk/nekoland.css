@@ -485,6 +485,22 @@ popover > arrow {
   background-color: color-mix(in srgb, var(--popover-bg-color) var(--nekoland-glass-opacity), transparent);
 }
 
+/* A window's corners turn square, as it is tiled or reaches a side of the display, and
+ * round again, as the compositor turns those it draws for other programs. The radius
+ * above is set here, over libadwaita, so its square corners for those are set again. */
+window.csd {
+  transition: border-radius 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+window.csd.tiled,
+window.csd.tiled-top,
+window.csd.tiled-left,
+window.csd.tiled-right,
+window.csd.tiled-bottom,
+window.maximized,
+window.fullscreen {
+  --window-radius: 0px;
+}
+
 /* Dialogs take the corners windows do. */
 floating-sheet > sheet,
 dialog-host > dialog.alert sheet,

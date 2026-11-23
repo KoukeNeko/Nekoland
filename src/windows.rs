@@ -1,6 +1,9 @@
 //! Where windows go and which one has the keyboard.
 
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    time::Instant,
+};
 
 use smithay::{
     backend::renderer::element::Id,
@@ -86,14 +89,52 @@ pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
     matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_decorated())
 }
 
-/// Whether the compositor rounds the corners of a window: an X11 program's own, with a
-/// frame of its own, which it draws square, left where it was put. Maximized, fullscreen
-/// and arranged ones are square, as GTK's are.
-pub fn rounds_x11_corners(window: &Window) -> bool {
-    matches!(window.underlying_surface(), WindowSurface::X11(surface)
-        if surface.is_decorated() && crate::frame::is_own_window(surface))
+/// Whether the compositor rounds the corners of a window: an X11 program's own, which it
+/// draws square, framed by itself or by the compositor's bar, left where it was put.
+/// Maximized, fullscreen and arranged ones are square, as GTK's are.
+fn rounds_x11_corners(window: &Window) -> bool {
+    matches!(window.underlying_surface(), WindowSurface::X11(surface) if crate::frame::is_own_window(surface))
         && matches!(placement_of(window), Placement::Free)
 }
+
+/// How far past its body a window's own shadow reaches at least: libadwaita's reaches 15
+/// without the focus.
+const OWN_SHADOW_MIN: i32 = 10;
+
+/// The corners of the shadow the compositor draws around a window, as libadwaita draws
+/// GTK's, for one left where it was put that has none of its own: an X11 program's, framed
+/// by it or by the compositor's bar, Nekoland's alerts that leave theirs to it, and a
+/// Wayland program's with no shadow outside its body.
+pub fn shadow_radius(window: &Window, radius: i32) -> Option<i32> {
+    if !matches!(placement_of(window), Placement::Free) {
+        return None;
+    }
+    match window.underlying_surface() {
+        WindowSurface::X11(surface) => crate::frame::is_own_window(surface).then_some(radius),
+        WindowSurface::Wayland(_) => {
+            let id = app_id(window);
+            if [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&id.as_str()) {
+                return Some(radius);
+            }
+            let (bbox, geometry) = (window.bbox(), window.geometry());
+            let margin = [
+                geometry.loc.x - bbox.loc.x,
+                geometry.loc.y - bbox.loc.y,
+                bbox.loc.x + bbox.size.w - geometry.loc.x - geometry.size.w,
+                bbox.loc.y + bbox.size.h - geometry.loc.y - geometry.size.h,
+            ];
+            // Less than a shadow: only the clear edges foot and its like are resized by.
+            let edge_to_edge = margin.into_iter().max().unwrap_or(0) < OWN_SHADOW_MIN;
+            // Their corners are not known: square ones are covered whole.
+            (edge_to_edge && id != KEYBOARD_APP_ID && window_names(window).0 != SHOT_OVERLAY_TITLE)
+                .then_some(0)
+        }
+    }
+}
+
+/// The tiled states a window left where it was put is given for the sides of the display it
+/// reaches, which GTK draws square, as it does a tiled window.
+const SIDE_STATES: [ToplevelState; 2] = [ToplevelState::TiledLeft, ToplevelState::TiledRight];
 
 /// The smallest and largest size a window says it can be; 0 is no limit.
 pub fn size_limits(window: &Window) -> (Size<i32, Logical>, Size<i32, Logical>) {
@@ -139,6 +180,31 @@ struct WindowData {
     /// Whether the window fills a part of the display, as a half or maximized, so that
     /// dragging it out brings back its earlier size.
     snapped: Cell<bool>,
+    /// How round the corners the compositor draws for it are, on their way to round or square.
+    corners: Cell<Option<Corners>>,
+}
+
+#[derive(Clone, Copy)]
+struct Corners {
+    /// From 0, square, to 1, round.
+    round: f64,
+    speed: f64,
+    goal: f64,
+    ticked: Instant,
+}
+
+/// How quickly corners turn square or round, in radians a second of a spring that does not
+/// swing past: there in about a quarter of a second.
+const CORNER_RATE: f64 = std::f64::consts::TAU / 0.3;
+const CORNER_SETTLED: f64 = 1e-3;
+
+/// How round a window's corners are drawn now, from 0, square, to 1, and whether they are
+/// still turning.
+pub fn roundness(window: &Window) -> (f64, bool) {
+    data(window)
+        .corners
+        .get()
+        .map_or((1.0, false), |corners| (corners.round, corners.round != corners.goal))
 }
 
 struct Arranged {
@@ -521,6 +587,68 @@ impl Nekoland {
             if let Some(location) = self.space.element_location(window) {
                 *restore = Some(self.with_title(window, Rectangle::new(location, window.geometry().size)));
             }
+        }
+    }
+
+    /// Whether a window left where it was put reaches the left or right of the part of its
+    /// display that windows go in, where its corners are square to lie against the edge.
+    pub fn is_against_side(&self, window: &Window) -> bool {
+        if !matches!(placement_of(window), Placement::Free) {
+            return false;
+        }
+        let area = self.output_of(window).and_then(|output| self.usable_area_on(&output));
+        let (Some(frame), Some(area)) = (self.frame(window), area) else {
+            return false;
+        };
+        frame.loc.x <= area.loc.x || frame.loc.x + frame.size.w >= area.loc.x + area.size.w
+    }
+
+    /// Before each frame: tells the programs of windows left where they were put which
+    /// sides of the display they reach, and turns the corners the compositor draws toward
+    /// square or round.
+    pub fn refresh_corners(&mut self) {
+        let now = Instant::now();
+        let windows: Vec<Window> = self.space.elements().cloned().collect();
+        for window in windows {
+            let against = self.is_against_side(&window);
+            let goal = match window.underlying_surface() {
+                WindowSurface::Wayland(toplevel) => {
+                    if matches!(placement_of(&window), Placement::Free) {
+                        let changed = toplevel.with_pending_state(|pending| {
+                            let had = SIDE_STATES.map(|state| pending.states.contains(state));
+                            SIDE_STATES.iter().for_each(|state| {
+                                pending.states.unset(*state);
+                            });
+                            if against {
+                                SIDE_STATES.iter().for_each(|state| {
+                                    pending.states.set(*state);
+                                });
+                            }
+                            had != [against; 2]
+                        });
+                        if changed && toplevel.is_initial_configure_sent() {
+                            toplevel.send_pending_configure();
+                        }
+                    }
+                    !has_square_corners(&window)
+                }
+                WindowSurface::X11(_) => rounds_x11_corners(&window) && !against,
+            };
+            let goal = f64::from(u8::from(goal));
+            let corners = &data(&window).corners;
+            let mut next = corners.get().unwrap_or(Corners { round: goal, speed: 0.0, goal, ticked: now });
+            next.goal = goal;
+            if self.config.animations {
+                let seconds = (now - next.ticked).as_secs_f64();
+                crate::motion::settle(&mut next.round, &mut next.speed, goal, CORNER_RATE, seconds);
+            }
+            let settled = (next.round - goal).abs() < CORNER_SETTLED
+                && next.speed.abs() < CORNER_SETTLED * CORNER_RATE;
+            if !self.config.animations || settled {
+                (next.round, next.speed) = (goal, 0.0);
+            }
+            next.ticked = now;
+            corners.set(Some(next));
         }
     }
 

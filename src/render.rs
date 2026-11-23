@@ -34,8 +34,8 @@ use crate::{
     state::{ABOVE_WINDOWS, BELOW_WINDOWS},
     text::Picture,
     windows::{
-        app_id, has_square_corners, is_managed, is_x11_drawing_own_frame, rounds_x11_corners, ALERT_APP_IDS,
-        CONFIRM_APP_ID, LAUNCHER_APP_ID,
+        app_id, is_managed, is_x11_drawing_own_frame, ALERT_APP_IDS, CONFIRM_APP_ID,
+        LAUNCHER_APP_ID,
     },
     Nekoland,
 };
@@ -56,6 +56,7 @@ render_elements! {
     Shadow=PixelShaderElement,
     Glass=Pane,
     Thumbnail=RelocateRenderElement<RescaleRenderElement<SurfaceElement>>,
+    RoundedThumbnail=RelocateRenderElement<RescaleRenderElement<crate::rounded::RoundedSurface>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     Solid=SolidColorRenderElement,
     Ghost=GhostElement,
@@ -1075,7 +1076,7 @@ fn window_elements(
 ) -> Vec<SceneElement> {
     state
         .window_pose(window)
-        .map(|pose| posed_elements(renderer, window, pose, output_loc, scale, true))
+        .map(|pose| posed_elements(renderer, window, pose, output_loc, scale, true, None))
         .unwrap_or_default()
 }
 
@@ -1089,6 +1090,7 @@ fn posed_elements(
     output_loc: Point<i32, Logical>,
     scale: f64,
     with_popups: bool,
+    rounding: Option<&crate::rounded::Rounding>,
 ) -> Vec<SceneElement> {
     let natural: Point<i32, Physical> =
         (pose.actual.loc - window.geometry().loc - output_loc).to_physical_precise_round(scale);
@@ -1111,7 +1113,13 @@ fn posed_elements(
     };
     let (actual, shown) = (pose.actual, pose.shown);
     if shown == actual || actual.size.w <= 0 || actual.size.h <= 0 {
-        return surfaces.into_iter().map(SceneElement::Surface).collect();
+        return surfaces
+            .into_iter()
+            .map(|surface| match rounding {
+                Some(rounding) => SceneElement::Rounded(rounding.apply(surface)),
+                None => SceneElement::Surface(surface),
+            })
+            .collect();
     }
     let origin: Point<i32, Physical> = (actual.loc - output_loc).to_physical_precise_round(scale);
     let offset: Point<i32, Physical> = (shown.loc - actual.loc).to_physical_precise_round(scale);
@@ -1121,9 +1129,18 @@ fn posed_elements(
     ));
     surfaces
         .into_iter()
-        .map(|surface| {
-            let scaled = RescaleRenderElement::from_element(surface, origin, factor);
-            SceneElement::Thumbnail(RelocateRenderElement::from_element(scaled, offset, Relocate::Relative))
+        .map(|surface| match rounding {
+            // Round as it is drawn, so its corners are as round however far it is stretched.
+            Some(rounding) => {
+                let scaled = RescaleRenderElement::from_element(rounding.apply(surface), origin, factor);
+                let relocated = RelocateRenderElement::from_element(scaled, offset, Relocate::Relative);
+                SceneElement::RoundedThumbnail(relocated)
+            }
+            None => {
+                let scaled = RescaleRenderElement::from_element(surface, origin, factor);
+                let relocated = RelocateRenderElement::from_element(scaled, offset, Relocate::Relative);
+                SceneElement::Thumbnail(relocated)
+            }
         })
         .collect()
 }
@@ -1208,6 +1225,8 @@ fn popup_pivot(popup: &PopupKind, rect: Rectangle<i32, Logical>) -> Point<i32, L
 
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
 const WINDOW_RADIUS: i32 = 14;
+/// How far past a window not GTK's its glass shows, as GTK's shows at its edge.
+const RIM: i32 = 1;
 
 /// `windows`, front to back, each where it is drawn, over `backdrop` and on glass of what is
 /// under it.
@@ -1241,26 +1260,56 @@ fn windows_on_glass(
                     .rev(),
             );
         }
-        let mut elements = posed_elements(renderer, window, *pose, output_loc, scale, false);
-        if rounds_x11_corners(window) {
-            let radius = (f64::from(WINDOW_RADIUS) * scale).round() as i32;
-            let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
-            elements = crate::rounded::round(renderer, elements, radius, (trim.w, trim.h));
-        }
+        let (round, turning) = crate::windows::roundness(window);
+        let corner = (f64::from(WINDOW_RADIUS) * round).round() as i32;
+        // X11 gives a window no way to know it is composited, so its corners are cut here:
+        // still while they turn square, for a window maximized as it grows.
+        let rounding = (corner > 0 && window.x11_surface().is_some_and(crate::frame::is_own_window))
+            .then(|| {
+                let radius = (f64::from(corner) * scale).round() as i32;
+                let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
+                // Under the compositor's bar the corners are the bar's, so only the bottom ones.
+                let room = window.x11_surface().map_or(0, crate::frame::title_room);
+                let top = (f64::from(room) * scale).round() as i32;
+                crate::rounded::Rounding::new(renderer, radius, (trim.w, trim.h), top, turning)
+            })
+            .flatten();
+        let mut elements =
+            posed_elements(renderer, window, *pose, output_loc, scale, false, rounding.as_ref());
         // In front of the window, which a bar over a title bar of the program's own covers.
         elements.splice(0..0, crate::frame::title_element(state, renderer, window, *pose, output_loc, scale));
-        let area = Some(pose_area(*pose, output_loc, scale)).filter(|area| !area.is_empty());
-        // An X11 program's menus and tooltips are mostly transparent shadow margin, which glass
-        // would blur: X11 gives no way to tell their shadow from their body, and they draw
-        // their own background anyway.
-        let area = area.filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
-        let radius = if has_square_corners(window) {
-            0
-        } else {
-            WINDOW_RADIUS
+        // Where the compositor draws the window's frame: around the window and the bar over it.
+        let framed = crate::windows::shadow_radius(window, corner).map(|radius| {
+            let body = Rectangle::new(
+                pose.shown.loc - output_loc,
+                pose.shown.size - crate::frame::trim(window),
+            );
+            (state.with_title(window, body), radius)
+        });
+        // A program not GTK's has glass only at its edge, a line past it as wide as GTK
+        // leaves of its own, through which what is around the window shows as it does
+        // through GTK's.
+        let rim = framed.filter(|_| ![CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()));
+        let (area, radius) = match rim {
+            Some((body, radius)) => {
+                let outer = Rectangle::new(
+                    body.loc - Point::from((RIM, RIM)),
+                    body.size + Size::from((2 * RIM, 2 * RIM)),
+                );
+                (Some(outer.to_physical_precise_round(scale)), radius + RIM)
+            }
+            None => {
+                // An X11 program's menus and tooltips are mostly transparent shadow margin,
+                // which glass would blur: X11 gives no way to tell their shadow from their
+                // body, and they draw their own background anyway.
+                let area = Some(pose_area(*pose, output_loc, scale))
+                    .filter(|_| is_managed(window) && !is_x11_drawing_own_frame(window));
+                let radius = framed.map_or(corner, |(_, radius)| radius);
+                // Nor behind one that covers all of it, which would never show.
+                (area.filter(|_| !hides_glass(window, *pose, radius)), radius)
+            }
         };
-        // Nor behind one that covers all of it, which would never show.
-        let area = area.filter(|_| !hides_glass(window, *pose, radius));
+        let area = area.filter(|area| !area.is_empty());
         if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
             let id = window_glass_id(window);
             if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
@@ -1270,21 +1319,18 @@ fn windows_on_glass(
             elements.extend(
                 glass
                     .window_pane(id.clone(), area, radius)
-                    .map(|pane| SceneElement::Glass(pane.faded(pose.alpha))),
+                    .map(|pane| SceneElement::Glass(pane.faded(pose.alpha).reshaped(turning))),
             );
             kept.push(id);
         }
-        // The confirmation and the launcher are their card alone, with no room for a shadow of
-        // their own.
-        if rounds_x11_corners(window) || [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()) {
-            let body = Rectangle::new(pose.shown.loc - output_loc, pose.shown.size - crate::frame::trim(window));
+        if let Some((body, radius)) = framed {
             let focused = state.focused_window().as_ref() == Some(window);
             elements.extend(crate::rounded::shadow(
                 renderer,
                 window,
                 output_loc,
                 body,
-                WINDOW_RADIUS,
+                radius,
                 pose.alpha,
                 focused,
             ));

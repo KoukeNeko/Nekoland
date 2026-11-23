@@ -457,6 +457,7 @@ impl Nekoland {
     pub fn prepare_frame(&mut self) {
         self.tick_overview();
         self.tick_motion();
+        self.refresh_corners();
         self.refresh_menu_bar();
         self.dock_ids();
         self.refresh_dock();

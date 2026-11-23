@@ -30,7 +30,7 @@ use smithay::{
                 ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
             },
-            utils::CommitCounter,
+            utils::{CommitCounter, DamageSet},
             Bind, Color32F, Frame, Offscreen, Renderer, Texture,
         },
     },
@@ -505,6 +505,7 @@ impl Blur {
             dst: rect,
             radius: radius.min(rect.size.w / 2).min(rect.size.h / 2),
             alpha: 1.0,
+            reshaped: false,
         })
     }
 }
@@ -580,12 +581,19 @@ pub struct Pane {
     dst: Rectangle<i32, Physical>,
     radius: i32,
     alpha: f32,
+    /// Drawn again whole, as while its corners turn.
+    reshaped: bool,
 }
 
 impl Pane {
     /// The same glass, only partly there, as while it fades in.
     pub fn faded(self, alpha: f32) -> Self {
         Self { alpha, ..self }
+    }
+
+    /// The same glass, drawn again whole each frame while `reshaped`.
+    pub fn reshaped(self, reshaped: bool) -> Self {
+        Self { reshaped, ..self }
     }
 }
 
@@ -600,6 +608,13 @@ impl Element for Pane {
 
     fn current_commit(&self) -> CommitCounter {
         self.commit
+    }
+
+    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+        if self.reshaped || commit != Some(self.commit) {
+            return DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)]);
+        }
+        DamageSet::default()
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

@@ -131,6 +131,8 @@ struct Drawn {
     focused: bool,
     dark: bool,
     scale: i32,
+    /// How round its top corners are, as the window's.
+    radius: i32,
 }
 
 #[derive(Default)]
@@ -322,6 +324,7 @@ impl Nekoland {
             focused: self.focused_window().as_ref() == Some(window),
             dark: self.menu_bar.dark,
             scale: text::picture_scale(),
+            radius: (CORNER_RADIUS * crate::windows::roundness(window).0).round() as i32,
         };
         let cached = window.user_data().get_or_insert(Cached::default);
         let mut cached = cached.0.borrow_mut();
@@ -399,7 +402,8 @@ fn draw(drawn: &Drawn) -> Option<Picture> {
     let cr = cairo::Context::new(&surface).ok()?;
 
     // Its top corners are rounded; the bottom ones fall below the picture.
-    text::rounded_rectangle(&cr, 0.0, 0.0, width, height + CORNER_RADIUS * 4.0, CORNER_RADIUS);
+    let radius = f64::from(drawn.radius);
+    text::rounded_rectangle(&cr, 0.0, 0.0, width, height + CORNER_RADIUS * 4.0, radius);
     cr.set_source_rgb(paper.0, paper.1, paper.2);
     cr.fill().ok()?;
     cr.set_source_rgba(line.0, line.1, line.2, line.3);
