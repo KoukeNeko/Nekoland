@@ -6,15 +6,13 @@
 
 use super::*;
 
-const PROGRAM: &str = "/usr/bin/sunshine";
+pub(crate) const PROGRAM: &str = "/usr/bin/sunshine";
 const RELEASES: &str = "https://api.github.com/repos/LizardByte/Sunshine/releases/latest";
 /// The user units; the compositor knows them by these names too (src/headless.rs).
 const DESKTOP_UNIT: &str = "nekoland-sunshine.service";
 const SESSION_UNIT: &str = "nekoland-remote-session.service";
 const UDEV_RULE: &str = "/etc/udev/rules.d/61-nekoland-sunshine.rules";
 /// What Sunshine's package copies to /etc as it is set up, which removing it leaves behind.
-/// The comment ufw keeps on the rules that let Sunshine in from the LAN.
-const FIREWALL_RULES: &str = "nekoland-sunshine";
 /// Sunshine's `port`, which its other ports are counted from.
 const DEFAULT_PORT: u32 = 47989;
 const PACKAGE_COPIES: [&str; 2] = ["/etc/udev/rules.d/60-sunshine.rules", "/etc/modules-load.d/60-sunshine.conf"];
@@ -142,15 +140,13 @@ getent group render >/dev/null && usermod -aG render "$1"
 udevadm control --reload-rules
 udevadm trigger --property-match=DEVNAME=/dev/uinput --property-match=DEVNAME=/dev/uhid
 {firewall}"#,
-        firewall = sharing::firewall_allow(FIREWALL_RULES, &firewall_ports(&std::fs::read_to_string(conf_path()).unwrap_or_default()))
+        firewall = sharing::firewall_sync()
     )
 }
 
 /// The ports Sunshine listens on, as its documentation has them: offsets from its `port`
 /// setting, 47989 unless set.
-// shortcut: read as it is installed; a port changed after needs Sunshine installed again
-// to be let through the firewall, since turning it on and off asks no password.
-fn firewall_ports(conf: &str) -> Vec<String> {
+pub(crate) fn firewall_ports(conf: &str) -> Vec<String> {
     let base = conf_entries(conf)
         .into_iter()
         .find_map(|(key, value)| (key == "port").then(|| value.parse::<u32>().ok()).flatten())
@@ -166,7 +162,7 @@ fn remove_script(purge: bool) -> String {
     let apt = apt::APT_GET[..apt::APT_GET.len() - 2].join(" ");
     let verb = if purge { "purge" } else { "remove" };
     let copies = PACKAGE_COPIES.join(" ");
-    let firewall = sharing::firewall_deny(FIREWALL_RULES);
+    let firewall = sharing::firewall_sync();
     format!("set -e\n{apt} {verb} sunshine\nrm -f {UDEV_RULE} {copies}\nudevadm control --reload-rules\n{firewall}")
 }
 

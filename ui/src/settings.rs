@@ -334,6 +334,10 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(backup::BACKUP_FLAG) {
         return backup::back_up_now();
     }
+    // Run as root, by Settings and by systemd, to let what is shared through the firewall.
+    if std::env::args().nth(1).as_deref() == Some(sharing::FIREWALL_FLAG) {
+        return sharing::sync_firewall(std::env::args().nth(2).as_deref());
+    }
     // A launcher of Windows' programs runs this, with no window of its own.
     if std::env::args().nth(1).as_deref() == Some(windows::OPEN_FLAG) {
         let (entry, file) = (std::env::args().nth(2), std::env::args().nth(3));

@@ -13,36 +13,134 @@ pub(crate) const RDP_PORT: u16 = 3389;
 /// LAN uses, never the internet.
 const LAN: [&str; 3] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
 const LAN6: [&str; 2] = ["fe80::/10", "fc00::/7"];
-/// The comments ufw keeps on the rules made for each service, to find them again by.
-pub(crate) const SSH_RULES: &str = "nekoland-ssh";
-const XRDP_RULES: &str = "nekoland-xrdp";
-const SAMBA_RULES: &str = "nekoland-samba";
-const SAMBA_PORTS: [&str; 2] = ["137,138/udp", "139,445/tcp"];
+/// The comment ufw keeps on the rules made here, followed by the service's name.
+const RULES: &str = "nekoland-";
+const SAMBA_PORTS: &str = "137,138/udp 139,445/tcp";
 
-/// Shell that takes the rules made under `tag` out of ufw; nothing without ufw.
-pub(crate) fn firewall_deny(tag: &str) -> String {
-    format!(
-        r#"if command -v ufw >/dev/null; then
-    ufw show added | sed -n "s/^ufw \(.*\) comment '{tag}'$/\1/p" | while read -r rule; do ufw delete $rule >/dev/null; done
-fi
-"#
-    )
+/// `nekoland-settings --firewall-sync USER`, run as root: see `sync_firewall`.
+pub(crate) const FIREWALL_FLAG: &str = "--firewall-sync";
+/// What, changed, brings the rules up to date: the ports' configurations, the firewall
+/// turned on, and services turned on or off, by hand as much as here.
+const FIREWALL_WATCHED: [&str; 6] = [
+    "/etc/ssh/sshd_config",
+    "/etc/ssh/sshd_config.d",
+    XRDP_INI,
+    "/etc/ufw/ufw.conf",
+    "/etc/systemd/system/multi-user.target.wants",
+    "/etc/systemd/system/sockets.target.wants",
+];
+
+/// The command, for a script run as root, that brings the firewall up to what is shared
+/// here, and keeps it so from then on.
+pub(crate) fn firewall_sync() -> String {
+    let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nekoland-settings"));
+    let program = program.to_string_lossy().replace('\'', "'\\''");
+    let user = std::env::var("USER").unwrap_or_default();
+    format!("'{program}' {FIREWALL_FLAG} '{user}'\n")
 }
 
-/// Shell that lets `ports`, as ufw writes them ("3389/tcp", "47998:48000,48002/udp"), in
-/// through ufw from the LAN under `tag`, in place of what it let in before. ufw keeps them
-/// while it is off, for when it is turned on.
-pub(crate) fn firewall_allow(tag: &str, ports: &[String]) -> String {
-    let mut script = firewall_deny(tag);
-    script += &format!(
-        "if command -v ufw >/dev/null; then\n    nets=\"{}\"\n    if grep -q '^IPV6=yes' /etc/default/ufw; then nets=\"$nets {}\"; fi\n    for net in $nets; do\n",
-        LAN.join(" "),
-        LAN6.join(" ")
-    );
-    for (port, proto) in ports.iter().filter_map(|port| port.split_once('/')) {
-        script += &format!("        ufw allow from \"$net\" to any port {port} proto {proto} comment '{tag}' >/dev/null\n");
+/// As root: makes ufw's rules for what `user` shares what they are now (see
+/// `firewall_script`), and has systemd do it again whenever any of it changes, and at boot.
+pub(crate) fn sync_firewall(user: Option<&str>) -> glib::ExitCode {
+    let Some((user, home)) = user.and_then(|user| {
+        let entry = output("getent", &["passwd", user])?;
+        Some((user, PathBuf::from(entry.trim().split(':').nth(5)?)))
+    }) else {
+        eprintln!("{FIREWALL_FLAG}: no such user");
+        return glib::ExitCode::FAILURE;
+    };
+    if let Err(err) = watch_firewall(user, &home) {
+        eprintln!("{FIREWALL_FLAG}: {err}");
     }
-    script + "    done\nfi\n"
+    match Command::new("sh").arg("-c").arg(firewall_script(&home)).status() {
+        Ok(status) if status.success() => glib::ExitCode::SUCCESS,
+        done => {
+            eprintln!("{FIREWALL_FLAG}: {done:?}");
+            glib::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The system units that run this again for `user`: a path unit on what is watched, and
+/// the service it starts, at boot too. Written, and started, only when they change.
+fn watch_firewall(user: &str, home: &Path) -> std::io::Result<()> {
+    let name = format!("nekoland-firewall-{user}");
+    let program = std::env::current_exe()?;
+    let sunshine = home.join(".config/sunshine/sunshine.conf");
+    let watched: String = FIREWALL_WATCHED
+        .iter()
+        .map(|path| format!("PathChanged={path}\n"))
+        .chain([format!("PathChanged={}\n", sunshine.display())])
+        .collect();
+    let units = [
+        (
+            format!("{name}.service"),
+            format!(
+                "# Written by Nekoland's Settings.\n[Unit]\nDescription=Let what {user} shares through the firewall, from the LAN\n\n[Service]\nType=oneshot\nExecStart=\"{}\" {FIREWALL_FLAG} {user}\n\n[Install]\nWantedBy=multi-user.target\n",
+                program.display()
+            ),
+        ),
+        (
+            format!("{name}.path"),
+            format!("# Written by Nekoland's Settings.\n[Unit]\nDescription=Watch what {user} shares, for the firewall\n\n[Path]\n{watched}\n[Install]\nWantedBy=multi-user.target\n"),
+        ),
+    ];
+    let dir = Path::new("/etc/systemd/system");
+    let mut changed = false;
+    for (unit, text) in &units {
+        let path = dir.join(unit);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            write_atomic(&path, text)?;
+            changed = true;
+        }
+    }
+    if changed {
+        let systemctl = |args: &[&str]| Command::new("systemctl").args(args).status().map(drop);
+        systemctl(&["daemon-reload"])?;
+        systemctl(&["enable", &units[0].0])?;
+        systemctl(&["enable", "--now", &units[1].0])?;
+    }
+    Ok(())
+}
+
+/// Shell that makes ufw's rules for the shared services what they are now: each one that
+/// is on (Sunshine: installed, as it turns on without root) let in from the LAN on the
+/// ports its configuration has now, and the others not. ufw keeps them while it is off, for
+/// when it is turned on; nothing without ufw. `home` is whose Sunshine it is.
+fn firewall_script(home: &Path) -> String {
+    let xrdp = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
+    let conf = std::fs::read_to_string(home.join(".config/sunshine/sunshine.conf")).unwrap_or_default();
+    let sunshine = super::sunshine::firewall_ports(&conf).join(" ");
+    format!(
+        r#"if command -v ufw >/dev/null; then
+    nets="{lan}"
+    if grep -q '^IPV6=yes' /etc/default/ufw; then nets="$nets {lan6}"; fi
+    wanted=$(mktemp)
+    allow() {{
+        service=$1; shift
+        for net in $nets; do for spec in "$@"; do
+            echo "ufw allow from $net to any port ${{spec%/*}} proto ${{spec#*/}} comment '{RULES}$service'" >>"$wanted"
+        done; done
+    }}
+    if systemctl -q is-enabled ssh.socket || systemctl -q is-enabled ssh.service; then
+        ports=$(sshd -T 2>/dev/null | awk 'tolower($1) == "port" {{ print $2 }}' | sort -nu | paste -sd, -)
+        allow ssh "${{ports:-22}}/tcp"
+    fi
+    if systemctl -q is-enabled xrdp; then allow xrdp {xrdp}/tcp; fi
+    if systemctl -q is-enabled smbd; then allow samba {SAMBA_PORTS}; fi
+    if [ -x {sunshine_program} ]; then allow sunshine {sunshine}; fi
+    ufw show added | grep " comment '{RULES}" >"$wanted.had" || true
+    grep -vxF -f "$wanted" "$wanted.had" | sed "s/^ufw \(.*\) comment .*$/\1/" | while read -r rule; do
+        ufw delete $rule >/dev/null
+    done
+    grep -vxF -f "$wanted.had" "$wanted" | while read -r rule; do eval "$rule" >/dev/null; done
+    rm -f "$wanted" "$wanted.had"
+fi
+"#,
+        lan = LAN.join(" "),
+        lan6 = LAN6.join(" "),
+        sunshine_program = super::sunshine::PROGRAM,
+    )
 }
 
 /// xrdp, the X server it starts sessions in, and its sound through PipeWire.
@@ -147,7 +245,7 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
                     "set -e\n{} {verb} {}\n{}",
                     apt::APT_GET[..apt::APT_GET.len() - 2].join(" "),
                     XRDP_PACKAGES.join(" "),
-                    firewall_deny(XRDP_RULES)
+                    firewall_sync()
                 );
                 let show = show.clone();
                 as_root("移除 xrdp", &["sh", "-c", &script], None, move |worked| {
@@ -169,17 +267,14 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
         if showing.get() {
             return;
         }
-        let (verb, reason, firewall) = if row.is_active() {
-            // shortcut: the port as xrdp.ini has it now; changed there later, the rule follows
-            // the next time xrdp is turned on here.
-            let port = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
-            ("enable", "開啟遠端桌面", firewall_allow(XRDP_RULES, &[format!("{port}/tcp")]))
+        let (verb, reason) = if row.is_active() {
+            ("enable", "開啟遠端桌面")
         } else {
-            ("disable", "關閉遠端桌面", firewall_deny(XRDP_RULES))
+            ("disable", "關閉遠端桌面")
         };
         row.set_sensitive(false);
         let show = show.clone();
-        let script = format!("set -e\nsystemctl {verb} --now xrdp\n{firewall}");
+        let script = format!("set -e\nsystemctl {verb} --now xrdp\n{}", firewall_sync());
         match sudo(reason, &["sh", "-c", &script], gio::SubprocessFlags::NONE) {
             // Turned down or failed, the switch goes back to what xrdp is.
             Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
@@ -335,7 +430,7 @@ pub(crate) fn file_sharing_group(page: &adw::PreferencesPage) -> adw::Preference
                 service.set_sensitive(false);
                 service.set_subtitle("正在移除");
                 let apt = apt::APT_GET[..apt::APT_GET.len() - 2].join(" ");
-                let firewall = firewall_deny(SAMBA_RULES);
+                let firewall = firewall_sync();
                 let script = if purge {
                     format!("{UNSHARE_FOLDER}{apt} purge samba\n{UNSHARE_SETUP}{firewall}")
                 } else {
@@ -360,7 +455,7 @@ pub(crate) fn file_sharing_group(page: &adw::PreferencesPage) -> adw::Preference
         row.set_sensitive(false);
         let show = show.clone();
         if !row.is_active() {
-            let script = format!("set -e\nsystemctl disable --now smbd\n{}", firewall_deny(SAMBA_RULES));
+            let script = format!("set -e\nsystemctl disable --now smbd\n{}", firewall_sync());
             return as_root("關閉檔案共享", &["sh", "-c", &script], None, move |_| show());
         }
         if let Err(err) = std::fs::create_dir_all(&folder) {
@@ -370,8 +465,7 @@ pub(crate) fn file_sharing_group(page: &adw::PreferencesPage) -> adw::Preference
         let (user, folder, share, page) = (user.clone(), folder.display().to_string(), share.clone(), page.clone());
         let cancelled: Rc<dyn Fn()> = show.clone();
         users::ask_password(&page.clone(), "檔案共享密碼", "開啟", cancelled, move |typed| {
-            let ports = SAMBA_PORTS.map(String::from);
-            let script = format!("{SHARE_FOLDER}{}", firewall_allow(SAMBA_RULES, &ports));
+            let script = format!("{SHARE_FOLDER}{}", firewall_sync());
             let args = ["sh", "-c", script.as_str(), "sh", user.as_str(), folder.as_str(), share.as_str()];
             as_root("開啟檔案共享", &args, Some(format!("{typed}\n{typed}\n")), move |worked| {
                 if !worked {
@@ -419,12 +513,10 @@ pub(crate) fn ssh_row(unit: &'static str) -> adw::SwitchRow {
         if showing.get() {
             return;
         }
-        // shortcut: port 22, as Ubuntu's sshd listens on; one set otherwise in sshd_config is
-        // not let through the firewall.
         let script = if row.is_active() {
-            format!("set -e\nsystemctl enable --now {unit}\n{}", firewall_allow(SSH_RULES, &["22/tcp".into()]))
+            format!("set -e\nsystemctl enable --now {unit}\n{}", firewall_sync())
         } else {
-            format!("set -e\nsystemctl disable --now ssh.socket ssh.service\n{}", firewall_deny(SSH_RULES))
+            format!("set -e\nsystemctl disable --now ssh.socket ssh.service\n{}", firewall_sync())
         };
         let args = ["sh", "-c", script.as_str()];
         let reason = if row.is_active() { "開啟遠端登入" } else { "關閉遠端登入" };
@@ -438,4 +530,54 @@ pub(crate) fn ssh_row(unit: &'static str) -> adw::SwitchRow {
         });
     });
     service
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_firewall_is_brought_to_what_is_shared() {
+        let dir = std::env::temp_dir().join(format!("nekoland-firewall-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("ufw.log");
+        let stub = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // SSH on its own port and Samba on; xrdp off, with a rule left from when it was on;
+        // one SSH rule already there, and one rule made by hand.
+        stub("systemctl", r#"case "$3" in ssh.socket|smbd) exit 0;; *) exit 3;; esac"#);
+        stub("sshd", "echo 'Port 2222'");
+        stub(
+            "ufw",
+            &format!(
+                r#"if [ "$1" = show ]; then
+    echo "Added user rules (see 'ufw status' for running firewall):"
+    echo "ufw allow from 10.0.0.0/8 to any port 2222 proto tcp comment 'nekoland-ssh'"
+    echo "ufw allow from 10.0.0.0/8 to any port 3389 proto tcp comment 'nekoland-xrdp'"
+    echo "ufw allow 8080/tcp"
+else
+    echo "$*" >>{}
+fi"#,
+                log.display()
+            ),
+        );
+        let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
+        let ran = Command::new("sh").arg("-c").arg(firewall_script(&dir)).env("PATH", path).status().unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(ran.success());
+        let calls: Vec<&str> = calls.lines().collect();
+        assert!(calls.contains(&"delete allow from 10.0.0.0/8 to any port 3389 proto tcp"), "{calls:?}");
+        assert!(calls.contains(&"allow from 192.168.0.0/16 to any port 2222 proto tcp comment nekoland-ssh"), "{calls:?}");
+        assert!(calls.contains(&"allow from 10.0.0.0/8 to any port 139,445 proto tcp comment nekoland-samba"), "{calls:?}");
+        assert!(calls.contains(&"allow from 172.16.0.0/12 to any port 137,138 proto udp comment nekoland-samba"), "{calls:?}");
+        // What is there already stays, and what was made by hand is not touched.
+        assert!(!calls.iter().any(|call| call.contains("10.0.0.0/8 to any port 2222")), "{calls:?}");
+        assert!(!calls.iter().any(|call| call.contains("8080")), "{calls:?}");
+    }
 }

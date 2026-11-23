@@ -915,7 +915,12 @@ fn firewall_group() -> Option<adw::PreferencesGroup> {
                 row.set_sensitive(true);
             }
         };
-        match crate::sudo(reason, &["ufw", "--force", verb], gio::SubprocessFlags::NONE) {
+        // Turned on, it lets in from the LAN what is shared, as the Sharing page set it up.
+        let script = match verb {
+            "enable" => format!("set -e\n{}ufw --force enable\n", crate::sharing::firewall_sync()),
+            _ => format!("ufw --force {verb}\n"),
+        };
+        match crate::sudo(reason, &["sh", "-c", &script], gio::SubprocessFlags::NONE) {
             // Turned down or failed, the switch goes back to what ufw is.
             Ok(sudo) => sudo.wait_check_async(gio::Cancellable::NONE, move |result| {
                 if let Err(err) = result {

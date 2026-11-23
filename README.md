@@ -537,8 +537,13 @@ them when that is chosen, and shares the Public folder over SMB as
 turns on users' shares in `/etc/samba/smb.conf` and starts `smbd`.
 
 As on a Mac, what is turned on there is let through the firewall (ufw, 網路's 防火牆)
-from the LAN only, the private networks, and taken out again as it is turned off or
-removed; ufw keeps the rules while it is off, for when it is turned on.
+from the LAN only, the private networks, on the ports its configuration has, and taken
+out again as it is turned off or removed. A system path unit,
+`nekoland-firewall-USER.path`, which `install.sh` and Settings set up, brings the rules
+up to date (`nekoland-settings --firewall-sync USER`, as root) whenever SSH's, xrdp's or
+Sunshine's configuration changes, a service is turned on or off, by hand too, or the
+firewall is turned on, and at boot; ufw keeps them while it is off.
+
 遠端登入 also has Sunshine, for Moonlight clients. Settings installs it from LizardByte's
 newest release, the package built for this Ubuntu (its SHA-256 checked), with a udev rule
 that gives the person its virtual input devices and lets its ports through the firewall
