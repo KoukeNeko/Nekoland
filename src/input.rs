@@ -492,7 +492,7 @@ impl Nekoland {
             return;
         }
         let left_or_right = button == BUTTON_LEFT || button == BUTTON_RIGHT;
-        if (left_or_right && self.dock_press(pos, button == BUTTON_RIGHT))
+        if (left_or_right && self.dock_press(pos, button == BUTTON_RIGHT, serial))
             // Notifications are not shown over the overview, so nothing of them is there to press.
             || (button == BUTTON_LEFT && self.overview.is_none() && self.notice_press(pos))
         {

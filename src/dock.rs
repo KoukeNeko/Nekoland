@@ -32,7 +32,7 @@ use smithay::{
         keyboard::Keysym,
         pointer::{CursorIcon, CursorImageStatus},
     },
-    utils::{IsAlive, Logical, Point, Rectangle, Size},
+    utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
     input::dnd::Source,
 };
 
@@ -665,8 +665,13 @@ pub struct Dock {
     dnd: Option<Arc<Mutex<Option<Vec<PathBuf>>>>>,
     /// Where the pointer last moved to.
     pointer: Option<Point<f64, Logical>>,
-    /// The folder dragged files are held over, since when, and whether it was opened.
-    spring: Option<(PathBuf, Instant, bool)>,
+    /// The folder or application dragged files are held over, since when, and whether it
+    /// was opened or brought forward.
+    spring: Option<(Key, Instant, bool)>,
+    /// An item of the open folder pressed: let go where it was, it opens; moved, it is
+    /// dragged out as a file.
+    /// An item of the open folder pressed: where, and the middle of its icon there.
+    stack_press: Option<(PathBuf, Point<f64, Logical>, Serial, Point<f64, Logical>)>,
 }
 
 type Rgb = (f64, f64, f64);
@@ -1706,20 +1711,25 @@ impl Nekoland {
             .and_then(|index| self.dock.tiles.get(index))
             .filter(|tile| matches!(tile, Tile::App { .. } | Tile::Stack { .. } | Tile::Trash { .. }))
             .map(Tile::key);
-        // Spring-loading: files held over a folder open it in the file manager, where the
-        // drag goes on.
-        let folder = match &target {
-            Some(Key::Stack(path)) => Some(path.clone()),
-            _ => None,
-        };
-        match (&mut self.dock.spring, folder) {
-            (Some((held, at, opened)), Some(folder)) if *held == folder => {
+        // Spring-loading: files held over a folder open it in the file manager, and over an
+        // application bring its windows forward, where the drag goes on.
+        let held = target
+            .clone()
+            .filter(|key| matches!(key, Key::Stack(_) | Key::App(_)));
+        let mut sprung = None;
+        match (&mut self.dock.spring, held) {
+            (Some((was, at, opened)), Some(held)) if *was == held => {
                 if !*opened && at.elapsed().as_secs_f64() >= SPRING_TIME {
                     *opened = true;
-                    open_path(&folder);
+                    sprung = Some(held);
                 }
             }
-            (spring, folder) => *spring = folder.map(|folder| (folder, Instant::now(), false)),
+            (spring, held) => *spring = held.map(|held| (held, Instant::now(), false)),
+        }
+        match sprung {
+            Some(Key::Stack(folder)) => open_path(&folder),
+            Some(Key::App(app_id)) => self.bring_app(&app_id),
+            _ => {}
         }
         let drawn = Drawn {
             target,
@@ -2567,6 +2577,12 @@ impl Nekoland {
     /// a drag.
     pub fn dock_motion(&mut self, pos: Point<f64, Logical>) {
         self.dock.pointer = Some(pos);
+        if let Some((_, from, ..)) = &self.dock.stack_press {
+            if (pos.x - from.x).hypot(pos.y - from.y) > DRAG_THRESHOLD {
+                self.drag_out_of_stack();
+                return;
+            }
+        }
         if let (Some((start_y, start)), Some(frame)) = (self.dock.resizing, self.dock_frame()) {
             // The line stays under the pointer: the Dock is as tall as its art times this.
             let s = Sizes::of(start);
@@ -2644,36 +2660,49 @@ impl Nekoland {
     }
 
     /// A button went down. Returns whether the Dock took it.
-    pub fn dock_press(&mut self, pos: Point<f64, Logical>, right: bool) -> bool {
+    pub fn dock_press(&mut self, pos: Point<f64, Logical>, right: bool, serial: Serial) -> bool {
         self.dock.keyboard = None;
         if !self.dock_shown() {
             return false;
         }
-        // An open folder: an item opens and the folder closes; anywhere else only closes it.
+        // An open folder: an item opens, or is dragged out, and the folder closes; anywhere
+        // else only closes it.
         if let Some(stack) = self.dock.stack.take() {
             if stack.rect.to_f64().contains(pos) && !right {
+                // What is there, and, for one of the folder's items, the middle of its icon.
                 let open = match &stack.view {
                     Opened::Fan { fan, anchor, .. } => fan.hit(pos - *anchor).map(|index| {
+                        let (x, y, _) = fan.places[index];
                         stack
                             .items
                             .get(index)
                             .filter(|_| index < stacks::FAN_MAX)
-                            .map_or(stack.folder.clone(), |item| item.path.clone())
+                            .map_or((stack.folder.clone(), None), |item| {
+                                (item.path.clone(), Some(*anchor + Point::from((x, y))))
+                            })
                     }),
                     Opened::Grid { grid, scroll } => {
                         let local = (pos - stack.rect.loc.to_f64()).to_i32_round();
                         if grid.button(&open_label(&stack.name)).contains(local) {
-                            Some(stack.folder.clone())
+                            Some((stack.folder.clone(), None))
                         } else {
                             (0..grid.columns * grid.rows)
                                 .find(|&index| grid.cell(index).contains(local))
-                                .and_then(|index| stack.items.get(scroll * grid.columns + index))
-                                .map(|item| item.path.clone())
+                                .and_then(|index| {
+                                    let item = stack.items.get(scroll * grid.columns + index)?;
+                                    let cell = grid.cell(index).loc + stack.rect.loc;
+                                    let middle = (stacks::CELL_WIDTH / 2, 6 + stacks::GRID_ICON / 2);
+                                    Some((item.path.clone(), Some((cell + Point::from(middle)).to_f64())))
+                                })
                         }
                     }
                 };
                 match open {
-                    Some(path) => {
+                    Some((path, Some(middle))) => {
+                        self.dock.stack_press = Some((path, pos, serial, middle));
+                        self.dock.stack = Some(stack);
+                    }
+                    Some((path, None)) => {
                         open_path(&path);
                         self.put_stack_away(stack);
                     }
@@ -2868,6 +2897,13 @@ impl Nekoland {
     /// A button came up: a press let go where it went down is a click; a dragged icon is
     /// put where it was let go, or taken off the Dock.
     pub fn dock_release(&mut self, pos: Point<f64, Logical>) {
+        if let Some((path, ..)) = self.dock.stack_press.take() {
+            open_path(&path);
+            if let Some(stack) = self.dock.stack.take() {
+                self.put_stack_away(stack);
+            }
+            return;
+        }
         if self.dock.resizing.take().is_some() {
             if let Err(err) = config::set(&format!("dock_size = {}", self.config.dock_size)) {
                 tracing::warn!("{err}");
@@ -3615,6 +3651,24 @@ impl Nekoland {
         self.dock.closing = Some(stack);
     }
 
+    /// The pressed item of the open folder is dragged out of it, as a file, and the
+    /// folder closes.
+    fn drag_out_of_stack(&mut self) {
+        let Some((path, from, serial, middle)) = self.dock.stack_press.take() else {
+            return;
+        };
+        let Some(stack) = self.dock.stack.take() else {
+            return;
+        };
+        let item = stack.items.iter().find(|item| item.path == path).cloned();
+        let dark = self.menu_bar_dark();
+        let picture = item
+            .and_then(|item| self.file_icon(&item, dark))
+            .and_then(|icon| crate::desktop::dragged_alone(&icon, (middle - from).to_i32_round()));
+        self.put_stack_away(stack);
+        self.start_file_drag(vec![path], picture, from, serial);
+    }
+
     /// A file manager started dragging: what it drags is asked for at once, as a list of
     /// files, so that the Dock knows it if it is dropped there.
     pub fn dock_drag_started(&mut self, source: &impl Source) {
@@ -3622,9 +3676,14 @@ impl Nekoland {
         let offers = source
             .metadata()
             .is_some_and(|meta| meta.mime_types.iter().any(|mime| mime == "text/uri-list"));
-        if !offers {
-            return;
+        if offers {
+            self.read_dragged_files(source);
         }
+    }
+
+    /// Asks what is dragged for its files, as a `text/uri-list`, which comes when the
+    /// program gets to it; an X11 program's drag is asked before it says what it offers.
+    pub(crate) fn read_dragged_files(&mut self, source: &impl Source) {
         let mut fds = [0; 2];
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
             tracing::warn!("pipe: {}", std::io::Error::last_os_error());
@@ -3667,7 +3726,29 @@ impl Nekoland {
             .ok()
             .and_then(|found| found.clone())
             .unwrap_or_default();
-        self.drop_files_on_dock(pos, &paths);
+        if !self.drop_files_on_dock(pos, &paths) {
+            // A program's own drag goes back as the program draws it.
+            self.drop_files_on_desktop(pos, &paths);
+        }
+    }
+
+    /// Nekoland itself drags `paths`, known from the start.
+    pub(crate) fn dock_files_dragged(&mut self, paths: Vec<PathBuf>) {
+        self.dock.dnd = Some(Arc::new(Mutex::new(Some(paths))));
+    }
+
+    /// Whether files are being dragged, by Nekoland or a program, once it has said which.
+    pub(crate) fn dock_files_dragged_now(&self) -> bool {
+        self.dock.dnd.as_ref().is_some_and(|found| {
+            found
+                .lock()
+                .is_ok_and(|found| found.as_ref().is_some_and(|paths| !paths.is_empty()))
+        })
+    }
+
+    pub(crate) fn dock_drag_ended(&mut self) {
+        self.dock.dnd = None;
+        self.dock.spring = None;
     }
 
     /// Files dropped at `pos`: on an application, they open in it; on the Trash, they go
@@ -3702,7 +3783,7 @@ impl Nekoland {
                 self.dock.trash = None;
             }
             // Into a kept folder, as onto a folder in a file manager.
-            Some(Tile::Stack { path: folder, .. }) => drop_into(paths, &folder),
+            Some(Tile::Stack { path: folder, .. }) => drop_into(paths, &folder, self.modifiers().ctrl),
             _ => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let before = self.config.stacks.len();
@@ -3800,8 +3881,13 @@ pub(crate) fn move_into(paths: &[PathBuf], folder: &Path) {
 }
 
 /// Files dropped on a folder: moved there on the same disk and copied to another, as the
-/// Finder does, so that the only copy does not leave for a removable drive unasked.
-pub(crate) fn drop_into(paths: &[PathBuf], folder: &Path) {
+/// Finder does, so that the only copy does not leave for a removable drive unasked; all
+/// copied with `copy`, as Ctrl held does in the file manager.
+pub(crate) fn drop_into(paths: &[PathBuf], folder: &Path, copy: bool) {
+    if copy {
+        file_op("copy", paths, folder);
+        return;
+    }
     use std::os::unix::fs::MetadataExt;
     let disk = |path: &Path| std::fs::metadata(path).map(|meta| meta.dev()).ok();
     let (same, other): (Vec<PathBuf>, Vec<PathBuf>) = paths

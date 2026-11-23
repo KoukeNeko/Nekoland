@@ -266,6 +266,38 @@ impl XWmDnd {
             pending_transfers: xwm.dnd.selection.pending_transfers.clone(),
         });
         xwm.dnd.xdnd_active.store(true, Ordering::Release);
+        data.dnd_started(id, &source);
+        // What the compositor asked for at once is asked of the client now: it sends XdndPosition,
+        // whose time a request would wait for, only while over an X11 window or the proxy.
+        let asked = {
+            let mut state = source.state.lock().unwrap();
+            match std::mem::replace(&mut state.wayland, WlState::Active) {
+                WlState::GotFd(mime_type, fd) => Some((mime_type, fd)),
+                other => {
+                    state.wayland = other;
+                    None
+                }
+            }
+        };
+        if let Some((mime_type, fd)) = asked {
+            let xwm = data.xwm_state(id);
+            if let Some(atom) = atom_from_mime(&mime_type, &xwm.conn, &xwm.atoms)? {
+                xwm.dnd
+                    .selection
+                    .pending_transfers
+                    .lock()
+                    .unwrap()
+                    .insert(*source.target, (source.target.clone(), fd));
+                xwm.conn.convert_selection(
+                    *source.target,
+                    xwm.atoms.XdndSelection,
+                    atom,
+                    xwm.atoms._WL_SELECTION,
+                    CURRENT_TIME,
+                )?;
+                xwm.conn.flush()?;
+            }
+        }
 
         // create the DndGrab
         match (ptr_grab, touch_grab) {
@@ -754,7 +786,9 @@ impl Source for XwmDndSource {
 
     fn send(&self, mime_type: &str, fd: OwnedFd) {
         let mut state = self.state.lock().unwrap();
-        if !state.metadata.mime_types.iter().any(|m| m == mime_type) {
+        // Before the client's XdndEnter its types are not known yet: the request waits with
+        // the fd, like one before its first XdndPosition.
+        if !state.metadata.mime_types.is_empty() && !state.metadata.mime_types.iter().any(|m| m == mime_type) {
             return;
         }
 

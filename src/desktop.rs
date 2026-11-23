@@ -65,6 +65,14 @@ const RENAME_ROOM: i32 = 48;
 /// The name a new folder is given, numbered after the first.
 const NEW_FOLDER: &str = "未命名檔案夾";
 const URI_LIST: &str = "text/uri-list";
+/// How wide the badge counting what is dragged is; the picture leaves half of it above
+/// the icon.
+const DRAG_BADGE: f64 = 22.0;
+/// How long, in seconds, what nothing took takes to go back.
+const FLY_BACK_TIME: f64 = 0.3;
+/// How long, in seconds, what a folder, the Trash or an application took takes to shrink
+/// into it.
+const SINK_TIME: f64 = 0.2;
 /// Where the items were put, beside the configuration.
 const PLACES: &str = "desktop-places.toml";
 /// Quick Look's panel: its title strip, corners, the icon of what it has no picture of,
@@ -122,9 +130,10 @@ pub struct Desktop {
     press: Option<Press>,
     /// The box being dragged out to choose items, and its picture.
     band: Option<(Rectangle<i32, Logical>, Picture)>,
-    /// What was last dragged off the desktop, for whoever it is dropped on to ask for.
+    /// What Nekoland drags, off the desktop or out of a folder in the Dock, for whoever it
+    /// is dropped on to ask for.
     dragged: Vec<PathBuf>,
-    /// Whether what is dragged now is from the desktop.
+    /// Whether Nekoland drags it now.
     dragging: bool,
     /// The icon following the pointer while dragging, and where it is from the pointer.
     drag_picture: Option<(Picture, Point<i32, Logical>)>,
@@ -147,8 +156,15 @@ pub struct Desktop {
     icon_reads: Vec<(Item, stacks::Reading)>,
     /// Where the items were put, read once the desktop keeps them there.
     places: Option<Places>,
-    /// Where the pointer was when the drag off the desktop started.
-    drag_from: Point<f64, Logical>,
+    /// Where the pointer was when the drag started, when it was off the desktop.
+    drag_from: Option<Point<f64, Logical>>,
+    /// Where the pointer was when Nekoland's drag started, for its icon to go back to.
+    drag_start: Point<f64, Logical>,
+    /// The icon of what nothing took, going back where it was taken from, and since when.
+    flying_back: Option<(Picture, Point<f64, Logical>, Point<f64, Logical>, Instant)>,
+    /// The icon of what something on the desktop or the Dock took, shrinking into it at
+    /// the pointer: the picture, the pointer, the picture's offset from it, and since when.
+    sinking: Option<(Picture, Point<f64, Logical>, Point<i32, Logical>, Instant)>,
 }
 
 type Looked = (PathBuf, bool, Size<i32, Logical>);
@@ -511,6 +527,31 @@ impl Nekoland {
             .drag_picture
             .as_ref()
             .map(|(picture, offset)| (picture, self.desktop.pointer.to_i32_round() + *offset));
+        let flying = self.desktop.flying_back.as_ref().and_then(|(picture, from, to, since)| {
+            let t = since.elapsed().as_secs_f64() / FLY_BACK_TIME;
+            let eased = crate::control::ease_out(t.min(1.0));
+            (t < 1.0).then(|| (picture, (*from + (*to - *from).upscale(eased)).to_i32_round()))
+        });
+        let sinking = self.desktop.sinking.as_ref().and_then(|(picture, pointer, offset, since)| {
+            let t = since.elapsed().as_secs_f64() / SINK_TIME;
+            if t >= 1.0 {
+                return None;
+            }
+            let left = 1.0 - crate::control::ease_out(t);
+            let at = *pointer + offset.to_f64().upscale(left) - output_loc.to_f64();
+            let size = picture.size.to_f64().upscale(left).to_i32_round();
+            MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                at.to_physical(scale),
+                &picture.buffer,
+                Some(left as f32),
+                None,
+                Some(size),
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture)
+        });
         let looked = self
             .desktop
             .quick_look
@@ -519,8 +560,10 @@ impl Nekoland {
             .map(|((_, picture), area)| (picture, area.loc));
         dragged
             .into_iter()
+            .chain(flying)
             .chain(looked)
             .filter_map(|(picture, at)| picture_element(renderer, picture, at - output_loc, scale))
+            .chain(sinking)
             .collect()
     }
 
@@ -573,7 +616,7 @@ impl Nekoland {
             .map(|(item, _)| item.clone())
     }
 
-    fn modifiers(&self) -> ModifiersState {
+    pub(crate) fn modifiers(&self) -> ModifiersState {
         self.seat
             .get_keyboard()
             .map(|keyboard| keyboard.modifier_state())
@@ -641,7 +684,7 @@ impl Nekoland {
     /// desktop draws a box choosing what it touches.
     pub fn desktop_motion(&mut self, pos: Point<f64, Logical>) {
         self.desktop.pointer = pos;
-        if self.desktop.drag_picture.is_some() {
+        if self.dock_files_dragged_now() {
             self.desktop.drop_target = self.desktop_folder_at(pos).map(|folder| folder.path);
         }
         let Some(press) = &self.desktop.press else {
@@ -688,54 +731,126 @@ impl Nekoland {
         let Some((item, cell)) = self.desktop.items.iter().find(|(item, _)| item.path == path) else {
             return;
         };
-        self.desktop.dragged = self.desktop.selected.clone();
-        self.desktop.drag_from = press.from;
+        let paths = self.desktop.selected.clone();
         let icon_at = cell.loc + Point::from(((CELL_WIDTH - ICON) / 2, ICON_TOP));
         let icon = self.desktop.icons.iter().find(|(known, _)| known == item);
-        self.desktop.drag_picture = icon
-            .and_then(|(_, icon)| draw_dragged(icon, self.desktop.dragged.len()))
+        let picture = icon
+            .and_then(|(_, icon)| draw_dragged(icon, paths.len()))
             .map(|picture| (picture, icon_at - press.from.to_i32_round()));
-        let start = GrabStartData {
-            focus: None,
-            button: BUTTON_LEFT,
-            location: press.from,
-        };
+        self.start_file_drag(paths, picture, press.from, press.serial);
+        self.desktop.drag_from = Some(press.from);
+    }
+
+    /// Drags `paths` as files from `from`, with `picture` under the pointer, for a window,
+    /// the Dock or the desktop to take where they are let go of.
+    pub(crate) fn start_file_drag(
+        &mut self,
+        paths: Vec<PathBuf>,
+        picture: Option<(Picture, Point<i32, Logical>)>,
+        from: Point<f64, Logical>,
+        serial: Serial,
+    ) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let source = DesktopDrag(self.desktop.dragged.clone());
-        let grab = DnDGrab::new_pointer(&self.display_handle, start, source, self.seat.clone());
+        let start = GrabStartData {
+            focus: None,
+            button: BUTTON_LEFT,
+            location: from,
+        };
+        self.desktop.dragged = paths.clone();
+        self.desktop.drag_from = None;
+        self.desktop.drag_start = from;
+        self.desktop.flying_back = None;
+        self.desktop.sinking = None;
+        self.desktop.drag_picture = picture;
         self.desktop.dragging = true;
-        pointer.set_grab(self, grab, press.serial, Focus::Clear);
+        self.dock_files_dragged(paths.clone());
+        let grab = DnDGrab::new_pointer(&self.display_handle, start, DesktopDrag(paths), self.seat.clone());
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     pub fn desktop_dragging(&self) -> bool {
         self.desktop.dragging
     }
 
-    /// The drag off the desktop ended, taken by a window or not.
+    /// A drag of files ended, Nekoland's or a program's, taken by a window or not.
     pub fn desktop_drag_ended(&mut self) {
         self.desktop.dragging = false;
+        self.desktop.dragged.clear();
+        self.desktop.drag_from = None;
         self.desktop.drag_picture = None;
         self.desktop.drop_target = None;
+        self.dock_drag_ended();
     }
 
-    /// No window took what was dragged off the desktop: on the Dock, it goes where the
-    /// Dock puts files; on a folder on the desktop, into it.
+    /// No window took what Nekoland dragged: on the Dock, it goes where the Dock puts
+    /// files; on the desktop, where `drop_files_on_desktop` puts them.
     pub fn desktop_dropped_here(&mut self) {
         let pos = self.desktop.pointer;
         let paths = self.desktop.dragged.clone();
+        let on_folder = self.space.element_under(pos).is_none() && self.desktop_folder_at(pos).is_some();
         if self.drop_files_on_dock(pos, &paths) {
+            self.sink();
+        } else if self.drop_files_on_desktop(pos, &paths) {
+            // Put about the desktop, they are already where they were let go of.
+            if on_folder {
+                self.sink();
+            }
+        } else {
+            self.fly_back();
+        }
+    }
+
+    /// What a folder, the Trash or an application took shrinks into it, as on the Mac.
+    fn sink(&mut self) {
+        let Some((picture, offset)) = self.desktop.drag_picture.take() else {
+            return;
+        };
+        if self.config.animations {
+            self.desktop.sinking = Some((picture, self.desktop.pointer, offset, Instant::now()));
+        }
+    }
+
+    /// What nothing took goes back where it was taken from, as on the Mac.
+    fn fly_back(&mut self) {
+        let Some((picture, offset)) = self.desktop.drag_picture.take() else {
+            return;
+        };
+        if !self.config.animations {
             return;
         }
-        if let Some(folder) = self.desktop_folder_at(pos) {
-            drop_into(&paths, &folder.path);
-        } else if self.config.desktop_free
-            && self.space.element_under(pos).is_none()
-            && !self.dock_covers(pos)
+        let offset = offset.to_f64();
+        let (from, to) = (self.desktop.pointer + offset, self.desktop.drag_start + offset);
+        self.desktop.flying_back = Some((picture, from, to, Instant::now()));
+    }
+
+    /// Files let go of on the desktop, as on the Mac's: on a folder there, into it; dragged
+    /// about the desktop, where they were let go of if it keeps them where they are put;
+    /// from anywhere else, into the Desktop folder. Returns whether they went anywhere.
+    pub(crate) fn drop_files_on_desktop(&mut self, pos: Point<f64, Logical>, paths: &[PathBuf]) -> bool {
+        if self.space.element_under(pos).is_some()
+            || self.dock_covers(pos)
+            || self.overview.is_some()
+            || pos.y < f64::from(MENU_BAR_HEIGHT)
         {
-            self.place_dragged((pos - self.desktop.drag_from).to_i32_round());
+            return false;
         }
+        let copy = self.modifiers().ctrl;
+        if let Some(folder) = self.desktop_folder_at(pos) {
+            drop_into(paths, &folder.path, copy);
+        } else if let Some(from) = self.desktop.drag_from.filter(|_| self.config.desktop_free) {
+            self.place_dragged((pos - from).to_i32_round());
+        } else if let Some(folder) = desktop_folder() {
+            // Already there, they only go back to their places.
+            if !copy && paths.iter().all(|path| path.parent() == Some(folder.as_path())) {
+                return false;
+            }
+            drop_into(paths, &folder, copy);
+        } else {
+            return false;
+        }
+        true
     }
 
     /// What was dragged stays as far from where it was as it was dragged, in the cells
@@ -1500,10 +1615,20 @@ fn draw_band(size: Size<i32, Logical>) -> Option<Picture> {
     text::picture(surface)
 }
 
+/// `icon` dragged alone, as from a folder in the Dock, its middle `middle` from the
+/// pointer, where it was taken.
+pub(crate) fn dragged_alone(
+    icon: &ImageSurface,
+    middle: Point<i32, Logical>,
+) -> Option<(Picture, Point<i32, Logical>)> {
+    let offset = middle + Point::from((-ICON / 2, -ICON / 2 - DRAG_BADGE as i32 / 2));
+    draw_dragged(icon, 1).map(|picture| (picture, offset))
+}
+
 /// The icon dragged, faded, with how many items go with it on a red badge when more
 /// than one does.
 fn draw_dragged(icon: &ImageSurface, count: usize) -> Option<Picture> {
-    let badge = 22.0;
+    let badge = DRAG_BADGE;
     let surface = text::canvas(ICON + badge as i32 / 2, ICON + badge as i32 / 2).ok()?;
     let cr = cairo::Context::new(&surface).ok()?;
     let _ = cr.save();

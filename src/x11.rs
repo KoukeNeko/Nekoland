@@ -315,7 +315,21 @@ impl XwmHandler for Nekoland {
         )
     }
 
+    /// An X11 program drags: dropped where no window takes it, on the Dock or the desktop,
+    /// its files go where Nekoland puts files.
+    fn dnd_started<S: smithay::input::dnd::Source>(&mut self, _xwm: XwmId, source: &S) {
+        self.read_dragged_files(source);
+    }
+
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
+        // Files copied from the desktop are Nekoland's own to give, as no program holds them.
+        if selection == SelectionTarget::Clipboard {
+            let copied = current_data_device_selection_userdata(&self.seat).and_then(|copied| copied.clone());
+            if let Some(paths) = copied {
+                crate::desktop::send_copied(&mime_type, &paths, fd);
+                return;
+            }
+        }
         let sent = match selection {
             SelectionTarget::Clipboard => {
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| err.to_string())

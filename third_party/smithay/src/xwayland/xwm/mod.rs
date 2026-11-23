@@ -462,6 +462,12 @@ pub trait XwmHandler {
 
     /// WM has lost connection to X server
     fn disconnected(&mut self, _xwm: XwmId) {}
+
+    /// An X11 client started a drag. `source` can be asked for its data at once: what it
+    /// asks for is sent once the client says where the drag is.
+    fn dnd_started<S: crate::input::dnd::Source>(&mut self, xwm: XwmId, source: &S) {
+        let _ = (xwm, source);
+    }
 }
 
 /// The runtime state of an reparenting XWayland window manager.

@@ -130,15 +130,15 @@ impl DndGrabHandler for Nekoland {
         _location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
         self.dnd_icon = None;
-        // Files dragged off the desktop: no window took them, so Nekoland puts them.
+        // Files Nekoland dragged: no window took them, so Nekoland puts them.
         if self.desktop_dragging() {
             if !validated {
                 self.desktop_dropped_here();
             }
-            self.desktop_drag_ended();
         } else {
             self.dock_dropped(validated);
         }
+        self.desktop_drag_ended();
     }
 }
 
