@@ -21,6 +21,10 @@ mod selfupdate;
 #[path = "store/sources.rs"]
 mod sources;
 mod removal;
+// Where the Dock finds an app's icon.
+#[allow(dead_code)]
+#[path = "launcher/apps.rs"]
+mod apps;
 mod themes;
 mod web;
 
@@ -586,7 +590,38 @@ fn icon(app: &App, size: i32) -> gtk::Widget {
     holder.upcast()
 }
 
+thread_local! {
+    /// Where the Dock finds each icon name, as it is asked for, and where it looks.
+    static DOCK_ICONS: (RefCell<std::collections::HashMap<String, Option<PathBuf>>>, Vec<PathBuf>, Vec<String>) = {
+        let look = apps::Look::load();
+        let themes = look.icon_themes().into_iter().map(String::from).collect();
+        (RefCell::default(), apps::data_dirs(), themes)
+    };
+}
+
+/// The icon the Dock shows for the first of `names` it has one for.
+fn dock_icon(names: &[&str]) -> Option<PathBuf> {
+    DOCK_ICONS.with(|(found, dirs, themes)| {
+        let themes: Vec<&str> = themes.iter().map(String::as_str).collect();
+        names.iter().find_map(|name| {
+            found
+                .borrow_mut()
+                .entry(name.to_string())
+                .or_insert_with(|| apps::find_icon(dirs, &themes, name))
+                .clone()
+        })
+    })
+}
+
 fn local_icon(app: &App, size: i32) -> gtk::Widget {
+    let names: Vec<&str> = [app.icon_name.as_str(), app.key.as_str()]
+        .into_iter()
+        .chain(app.offers.iter().map(|offer| offer.id.as_str()))
+        .filter(|name| !name.is_empty() && !name.starts_with('/'))
+        .collect();
+    if let Some(path) = dock_icon(&names) {
+        return gtk::Image::builder().file(path.to_string_lossy()).pixel_size(size).build().upcast();
+    }
     if let Some(path) = &app.icon {
         return gtk::Image::builder()
             .file(path.to_string_lossy())
@@ -1766,7 +1801,7 @@ fn installed_page(store: &Rc<Store>) -> adw::NavigationPage {
     content.append(&loading());
     let page = page("已安裝", &content, None);
     background(
-        sources::installed,
+        installed_with_icons,
         glib::clone!(
             #[weak]
             store,
@@ -1795,6 +1830,24 @@ fn installed_page(store: &Rc<Store>) -> adw::NavigationPage {
         ),
     );
     page
+}
+
+/// What is installed, each app with the icon its desktop file names, as the Dock shows it.
+fn installed_with_icons() -> std::collections::BTreeMap<u8, Vec<App>> {
+    let mut found = sources::installed();
+    for app in found.values_mut().flatten() {
+        let Some(icon) = removal::launcher(app, &app.offers[0])
+            .and_then(|info| info.downcast_ref::<gio::DesktopAppInfo>()?.string("Icon"))
+        else {
+            continue;
+        };
+        if std::path::Path::new(icon.as_str()).is_absolute() {
+            app.icon = Some(PathBuf::from(icon.as_str()));
+        } else {
+            app.icon_name = icon.to_string();
+        }
+    }
+    found
 }
 
 fn size_label(app: &App) -> Option<gtk::Widget> {
@@ -1828,7 +1881,7 @@ fn source_page(store: &Rc<Store>, id: &'static str) -> adw::NavigationPage {
     let page = page(title, &content, None);
     let at = STANDARD.iter().position(|(_, key)| *key == id).unwrap_or(0) as u8;
     background(
-        sources::installed,
+        installed_with_icons,
         glib::clone!(
             #[weak]
             store,
