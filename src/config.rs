@@ -881,7 +881,7 @@ impl Default for Config {
             dock_bounce: true,
             dock_minimize_into_app: false,
             dock_minimize_effect: MinimizeEffect::Genie,
-            dock_recents: true,
+            dock_recents: false,
             dock_this_desktop: false,
             bar_opacity: 0.5,
             bar_blur: 0.5,
