@@ -98,17 +98,23 @@ pub fn prompt(
 /// Shows `icon` above the alert's question. libadwaita's alert has no place for one, so it goes
 /// first in the box that holds the question and everything under it.
 pub fn set_icon(alert: &adw::AlertDialog, icon: &str) {
-    let Some(area) = alert.child().as_ref().and_then(message_area) else {
-        eprintln!("alert: no message area to put the {icon} icon in");
-        return;
-    };
-    area.prepend(
+    set_picture(
+        alert,
         &gtk::Image::builder()
             .icon_name(icon)
             .pixel_size(32)
             .css_classes(["alert-icon"])
             .build(),
     );
+}
+
+/// Puts `picture` above the heading, where `set_icon` puts an icon.
+pub fn set_picture(alert: &adw::AlertDialog, picture: &impl IsA<gtk::Widget>) {
+    let Some(area) = alert.child().as_ref().and_then(message_area) else {
+        eprintln!("alert: no message area to put the picture in");
+        return;
+    };
+    area.prepend(picture);
 }
 
 fn message_area(widget: &gtk::Widget) -> Option<gtk::Box> {

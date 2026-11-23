@@ -380,6 +380,11 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         // The applications' windows, for the task manager, one a line: the process behind
         // it, its application ID, and `1` or `0` for whether it answers pings.
         "tasks" => return Some(task_windows(state)),
+        // The process the keyring's password prompt is for, when one asked lately.
+        "keyring-caller" => {
+            let pid = state.menu_bar.bus.as_ref().and_then(|bus| bus.keyring_caller());
+            return Some(pid.map(|pid| format!("{pid}\n")).unwrap_or_default());
+        }
         quit if quit.starts_with("quit-app ") => state.quit_app(&quit["quit-app ".len()..]),
         force if force.starts_with("force-quit-app ") => {
             state.force_quit_app(&force["force-quit-app ".len()..]);

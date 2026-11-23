@@ -12,6 +12,13 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 mod alert;
+#[allow(dead_code)]
+#[path = "launcher/apps.rs"]
+mod apps;
+mod ipc;
+#[allow(dead_code)]
+#[path = "tasks/proc.rs"]
+mod proc;
 
 use exchange::Exchange;
 
@@ -33,6 +40,13 @@ const SHAKE: &str = ".shake { animation: shake 360ms cubic-bezier(.2, .8, .2, 1)
 @keyframes shake {
   20% { transform: translateX(-8px); } 40% { transform: translateX(7px); }
   60% { transform: translateX(-4px); } 80% { transform: translateX(2px); }
+}
+/* Clear of the lock's overhang, 12px from the question below. */
+.asker { margin-top: 3px; margin-bottom: 12px; }
+.asker-badge {
+  min-width: 24px; min-height: 24px; border-radius: 12px; margin: 0 -6px -6px 0;
+  background-color: var(--dialog-fg-color); color: var(--dialog-bg-color);
+  box-shadow: 0 0 0 3px var(--dialog-bg-color);
 }";
 
 /// Who asks: a prompt object of gnome-keyring's on the bus.
@@ -398,6 +412,8 @@ fn stop(shared: &Shared, caller: &Caller, done: bool) {
 /// The alert, with every field it may need; what a prompt does not use is hidden.
 struct Prompt {
     alert: adw::AlertDialog,
+    /// The program the prompt is for, when Nekoland saw which asked.
+    asker: Option<String>,
     fields: gtk::Box,
     password: gtk::PasswordEntry,
     again: gtk::PasswordEntry,
@@ -432,7 +448,12 @@ impl Prompt {
         fields.append(&choice);
 
         let alert = adw::AlertDialog::new(None, None);
-        alert::set_icon(&alert, "system-lock-screen-symbolic");
+        alert.set_body_use_markup(true);
+        let asker = asker();
+        match &asker {
+            Some((_, icon)) => alert::set_picture(&alert, &asker_picture(icon)),
+            None => alert::set_icon(&alert, "system-lock-screen-symbolic"),
+        }
         alert.set_extra_child(Some(&fields));
         alert.add_responses(&[("cancel", "取消"), ("continue", "解鎖")]);
         alert.set_response_appearance("continue", adw::ResponseAppearance::Suggested);
@@ -459,6 +480,7 @@ impl Prompt {
 
         let prompt = Prompt {
             alert,
+            asker: asker.map(|(name, _)| name),
             fields,
             password,
             again,
@@ -503,6 +525,7 @@ impl Prompt {
             text("message"),
             text("description"),
             text("continue-label"),
+            self.asker.as_deref(),
         );
         self.alert.set_heading(Some(&copy.heading));
         self.alert.set_body(&copy.body);
@@ -537,6 +560,57 @@ impl Prompt {
     }
 }
 
+/// Who the prompt is for: the application, by the name and icon of its .desktop file, or
+/// else the command, by its name. None when the compositor saw no one ask.
+fn asker() -> Option<(String, gio::Icon)> {
+    let pid: i32 = ipc::msg("keyring-caller")?.trim().parse().ok()?;
+    // Each process belongs to the application whose window it, or a process it was started
+    // from, has, as the task manager counts them.
+    let windows: HashMap<i32, String> = ipc::msg("tasks")?
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            Some((fields.next()?.parse().ok()?, fields.next()?.to_owned()))
+        })
+        .collect();
+    let procs = proc::read_procs();
+    let app = proc::owners(&procs, &windows)
+        .get(&pid)
+        .and_then(|app| gio::DesktopAppInfo::new(&format!("{app}.desktop")));
+    // The icon the Dock shows: from the icon theme chosen in Appearance, else Nekoland's.
+    let look = apps::Look::load();
+    let (dirs, themes) = (apps::data_dirs(), look.icon_themes());
+    let icon = |name: &str| {
+        let path = apps::find_icon(&dirs, &themes, name)
+            .or_else(|| apps::find_icon(&dirs, &themes, apps::NO_ICON))?;
+        Some(gio::FileIcon::new(&gio::File::for_path(path)).upcast::<gio::Icon>())
+    };
+    if let Some(app) = app {
+        let name = app.string("Icon").unwrap_or_default();
+        return Some((app.name().to_string(), icon(&name)?));
+    }
+    let command = procs.iter().find(|proc| proc.pid == pid)?.name.clone();
+    Some((command, icon("utilities-terminal")?))
+}
+
+/// The asking program's icon, with a lock at its corner for what it asks.
+fn asker_picture(icon: &gio::Icon) -> gtk::Overlay {
+    let picture = gtk::Overlay::builder()
+        .halign(gtk::Align::Center)
+        .css_classes(["asker"])
+        .child(&gtk::Image::builder().gicon(icon).pixel_size(56).build())
+        .build();
+    let badge = gtk::Image::builder()
+        .icon_name("system-lock-screen-symbolic")
+        .pixel_size(13)
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::End)
+        .css_classes(["asker-badge"])
+        .build();
+    picture.add_overlay(&badge);
+    picture
+}
+
 /// A new password needs typing twice the same; any password, blank too, unlocks.
 fn valid(password: &gtk::PasswordEntry, again: &gtk::PasswordEntry) -> bool {
     !again.is_visible() || (!password.text().is_empty() && password.text() == again.text())
@@ -551,17 +625,21 @@ struct Copy {
 }
 
 impl Copy {
-    fn of(title: &str, message: &str, description: &str, verb: &str) -> Copy {
-        let name = keyring_name(description);
+    /// The body is Pango markup, with the asker's name in bold.
+    fn of(title: &str, message: &str, description: &str, verb: &str, asker: Option<&str>) -> Copy {
+        let name = glib::markup_escape_text(&keyring_name(description));
+        let who = asker.map_or("應用程式".to_owned(), |asker| {
+            format!("<b>{}</b> ", glib::markup_escape_text(asker))
+        });
         let (heading, body, verb) = match (title, message) {
             (_, "Choose password for new keyring") => (
                 "建立鑰匙圈",
-                format!("應用程式要把密碼保存在新的鑰匙圈「{name}」。"),
+                format!("{who}要把密碼保存在新的鑰匙圈「{name}」。"),
                 "建立",
             ),
             ("Unlock Keyring", _) => (
                 "解鎖鑰匙圈",
-                format!("應用程式要讀取鑰匙圈「{name}」中的密碼。"),
+                format!("{who}要讀取鑰匙圈「{name}」中的密碼。"),
                 "解鎖",
             ),
             ("Unlock Login Keyring", _) if description.contains("no longer matches") => (
@@ -593,7 +671,7 @@ impl Copy {
                 let heading = if message.is_empty() { title } else { message };
                 return Copy {
                     heading: heading.to_owned(),
-                    body: description.to_owned(),
+                    body: glib::markup_escape_text(description).to_string(),
                     verb: if verb.is_empty() { "繼續" } else { verb }.to_owned(),
                 };
             }
@@ -763,8 +841,11 @@ mod tests {
             "Authentication required",
             "An application wants access to the keyring “Login”, but it is locked",
             "Unlock",
+            None,
         );
         assert_eq!(copy.body, "應用程式要讀取鑰匙圈「登入」中的密碼。");
+        let named = super::Copy::of("Unlock Keyring", "", "the keyring “Login”", "", Some("A&B"));
+        assert_eq!(named.body, "<b>A&amp;B</b> 要讀取鑰匙圈「登入」中的密碼。");
         assert_eq!(super::keyring_name("called “Work”. Choose"), "Work");
     }
 }

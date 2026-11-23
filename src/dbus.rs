@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{mpsc, Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use smithay::reexports::calloop::channel::Sender;
@@ -36,6 +37,10 @@ const DBUSMENU: &str = "com.canonical.dbusmenu";
 const LAUNCHER_ENTRY: &str = "com.canonical.Unity.LauncherEntry";
 const GTK_MENUS: &str = "org.gtk.Menus";
 const GTK_ACTIONS: &str = "org.gtk.Actions";
+/// A program asking for a keyring prompt calls this on the prompt gnome-keyring gave it.
+const SECRET_PROMPT: &str = "org.freedesktop.Secret.Prompt";
+/// How long after asking a program is still the one the keyring's prompt is for.
+const KEYRING_CALLER_FOR: Duration = Duration::from_secs(30);
 
 /// Where a window's menus are, as its program said over Wayland.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -237,12 +242,20 @@ impl MenuEntry {
 /// The way to the D-Bus thread.
 pub struct Bus {
     requests: mpsc::Sender<Request>,
+    /// The process that last asked the keyring for a prompt, and when.
+    keyring_caller: Arc<Mutex<Option<(u32, Instant)>>>,
 }
 
 impl Bus {
     pub fn send(&self, request: Request) {
         // The thread only stops when the session bus is gone, and then there is nobody to ask.
         let _ = self.requests.send(request);
+    }
+
+    /// The process the keyring's prompt is for, when one asked lately.
+    pub fn keyring_caller(&self) -> Option<u32> {
+        let caller = *self.keyring_caller.lock().ok()?;
+        caller.filter(|(_, when)| when.elapsed() < KEYRING_CALLER_FOR).map(|(pid, _)| pid)
     }
 }
 
@@ -294,7 +307,46 @@ pub fn start(events: Sender<Event>) -> zbus::Result<Bus> {
         .name("nekoland-dbus".into())
         .spawn(move || serve(thread_connection, receiver, registered, events))
         .map_err(|err| zbus::Error::Failure(err.to_string()))?;
-    Ok(Bus { requests })
+    let keyring_caller = Arc::new(Mutex::new(None));
+    if let Err(err) = watch_keyring_callers(&connection, keyring_caller.clone()) {
+        tracing::warn!("keyring prompts will not name who asks: {err}");
+    }
+    Ok(Bus { requests, keyring_caller })
+}
+
+/// Notes who asks for each keyring prompt. gnome-keyring asks the prompter for it without
+/// saying who, and the prompter starts only then, so Nekoland watches for the asking: a
+/// monitor of the bus sees the call, which the bus delivers to gnome-keyring alone.
+fn watch_keyring_callers(connection: &Connection, caller: Arc<Mutex<Option<(u32, Instant)>>>) -> zbus::Result<()> {
+    let monitor = Connection::session()?;
+    monitor.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus.Monitoring"),
+        "BecomeMonitor",
+        &(vec![format!("type='method_call',interface='{SECRET_PROMPT}',member='Prompt'")], 0u32),
+    )?;
+    let dbus = zbus::blocking::fdo::DBusProxy::new(connection)?;
+    std::thread::Builder::new()
+        .name("nekoland-keyring-callers".into())
+        .spawn(move || {
+            for message in MessageIterator::from(&monitor).flatten() {
+                let Some(sender) = message.header().sender().map(|sender| sender.to_owned()) else {
+                    continue;
+                };
+                // Asked at once: a command such as secret-tool may be gone by the time it is shown.
+                match dbus.get_connection_unix_process_id(sender.into()) {
+                    Ok(pid) => {
+                        if let Ok(mut caller) = caller.lock() {
+                            *caller = Some((pid, Instant::now()));
+                        }
+                    }
+                    Err(err) => tracing::warn!("keyring prompt asker: {err}"),
+                }
+            }
+        })
+        .map_err(|err| zbus::Error::Failure(err.to_string()))?;
+    Ok(())
 }
 
 struct Watcher {
