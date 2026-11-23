@@ -432,7 +432,7 @@ fn with_login(page: &adw::PreferencesPage, then: impl FnOnce(Option<Login>) + 's
         }
         let entry = adw::PasswordEntryRow::builder().title("密碼").build();
         let alert = adw::AlertDialog::new(Some("Sunshine 密碼"), Some(&user));
-        alert.set_extra_child(Some(&users::form(&[entry.upcast_ref()])));
+        alert.set_extra_child(Some(&alert::form(&[entry.upcast_ref()])));
         alert.add_responses(&[("cancel", "取消"), ("do", "繼續")]);
         alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
         alert.set_default_response(Some("do"));
@@ -884,7 +884,7 @@ fn ask_pin(sharing: &adw::PreferencesPage, waiting: Vec<Pending>, then: Rc<dyn F
         move |device| name.set_text(names.get(device.selected() as usize).map_or("", String::as_str))
     ));
     let alert = adw::AlertDialog::new(Some("配對裝置"), None);
-    alert.set_extra_child(Some(&users::form(&[device.upcast_ref(), pin.upcast_ref(), name.upcast_ref()])));
+    alert.set_extra_child(Some(&alert::form(&[device.upcast_ref(), pin.upcast_ref(), name.upcast_ref()])));
     alert.add_responses(&[("cancel", "取消"), ("do", "配對")]);
     alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
     alert.set_default_response(Some("do"));

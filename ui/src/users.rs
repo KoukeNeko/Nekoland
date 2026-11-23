@@ -302,19 +302,6 @@ fn other_row(page: &adw::PreferencesPage, person: &Person, refresh: Rc<dyn Fn()>
     row
 }
 
-/// The rows a dialog asks with, in the list look of the rest of Settings.
-pub(crate) fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .width_request(alert::FIELD_WIDTH)
-        .css_classes(["boxed-list"])
-        .build();
-    for row in rows {
-        list.append(*row);
-    }
-    list
-}
-
 /// The PIN that unlocks the lock screen, kept by `nekoland-lock` hashed in the data folder.
 fn pin_is_set() -> bool {
     glib::user_data_dir().join("nekoland/pin").exists()
@@ -360,7 +347,7 @@ fn pin_row(page: &adw::PreferencesPage, refresh: Rc<dyn Fn()>) -> adw::ActionRow
         let first = adw::PasswordEntryRow::builder().title("新 PIN").build();
         let again = adw::PasswordEntryRow::builder().title("確認 PIN").build();
         let dialog = adw::AlertDialog::new(Some(if set { "變更 PIN" } else { "設定 PIN" }), None);
-        dialog.set_extra_child(Some(&form(&[first.upcast_ref(), again.upcast_ref()])));
+        dialog.set_extra_child(Some(&alert::form(&[first.upcast_ref(), again.upcast_ref()])));
         dialog.add_responses(&[("cancel", "取消"), ("do", if set { "變更" } else { "設定" })]);
         dialog.set_response_appearance("do", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("do"));
@@ -417,7 +404,7 @@ pub fn ask_password(
     let first = adw::PasswordEntryRow::builder().title("新密碼").build();
     let again = adw::PasswordEntryRow::builder().title("確認密碼").build();
     let alert = adw::AlertDialog::new(Some(title), None);
-    alert.set_extra_child(Some(&form(&[first.upcast_ref(), again.upcast_ref()])));
+    alert.set_extra_child(Some(&alert::form(&[first.upcast_ref(), again.upcast_ref()])));
     alert.add_responses(&[("cancel", "取消"), ("do", action)]);
     alert.set_response_appearance("do", adw::ResponseAppearance::Suggested);
     alert.set_default_response(Some("do"));
@@ -472,7 +459,7 @@ fn add_person(page: &adw::PreferencesPage, refresh: Rc<dyn Fn()>) {
         }
     ));
     let alert = adw::AlertDialog::new(Some("新增使用者"), None);
-    alert.set_extra_child(Some(&form(&[
+    alert.set_extra_child(Some(&alert::form(&[
         name.upcast_ref(),
         login.upcast_ref(),
         first.upcast_ref(),

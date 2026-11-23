@@ -130,15 +130,6 @@ fn dot(color: Option<usize>) -> gtk::DrawingArea {
     area
 }
 
-/// A group of rows in a card, as a form.
-fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
-    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).width_request(alert::FIELD_WIDTH).build();
-    for row in rows {
-        list.append(*row);
-    }
-    list
-}
-
 fn combo(title: &str, items: &[&str], selected: u32) -> adw::ComboRow {
     adw::ComboRow::builder().title(title).model(&gtk::StringList::new(items)).selected(selected).build()
 }
@@ -947,7 +938,7 @@ impl Window {
         let name = entry("名稱", &part.name);
         let wipe = combo("清除方式", &["快速", "覆寫零"], 0);
         let name_text = part.label();
-        let extra = form(&[fs.upcast_ref(), name.upcast_ref(), wipe.upcast_ref()]);
+        let extra = alert::form(&[fs.upcast_ref(), name.upcast_ref(), wipe.upcast_ref()]);
         let this = self.clone();
         self.ask(
             &format!("格式化「{name_text}」？"),
@@ -986,7 +977,7 @@ impl Window {
     fn new_table(self: &Rc<Self>) {
         let Some(disk) = self.current_disk() else { return };
         let kind = combo("類型", &["GPT", "MBR"], 0);
-        let extra = form(&[kind.upcast_ref()]);
+        let extra = alert::form(&[kind.upcast_ref()]);
         let this = self.clone();
         self.ask("建立分割表", Some("磁碟上的所有資料會被清除，無法復原。"), &extra, "建立", true, move || {
             let Some(disk) = disk_now(&disk) else {
@@ -1001,7 +992,7 @@ impl Window {
     fn wipe(self: &Rc<Self>, disk: Disk) {
         let how = combo("清除方式", &["快速", "覆寫零"], 0);
         let table = combo("分割表", &["GPT", "MBR", "無"], 0);
-        let extra = form(&[how.upcast_ref(), table.upcast_ref()]);
+        let extra = alert::form(&[how.upcast_ref(), table.upcast_ref()]);
         let this = self.clone();
         let title = disk.title();
         self.ask(&format!("清除「{title}」？"), Some("磁碟上的所有分割區與資料會被清除，無法復原。"), &extra, "清除", true, move || {
@@ -1031,7 +1022,7 @@ impl Window {
         let fs = combo("檔案系統", &known, 0);
         let name = entry("名稱", "");
         let extra = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).build();
-        extra.append(&form(&[size.upcast_ref(), fs.upcast_ref(), name.upcast_ref()]));
+        extra.append(&alert::form(&[size.upcast_ref(), fs.upcast_ref(), name.upcast_ref()]));
         extra.append(&scale);
         let this = self.clone();
         self.ask("新增分割區", None, &extra, "新增", false, move || {
@@ -1057,7 +1048,7 @@ impl Window {
         let scale = gtk::Scale::new(gtk::Orientation::Horizontal, Some(&adjustment));
         scale.set_draw_value(false);
         let extra = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).build();
-        extra.append(&form(&[fact("目前", &model::size(part.size)).upcast_ref(), fact("最小", &model::size(low)).upcast_ref(), size.upcast_ref()]));
+        extra.append(&alert::form(&[fact("目前", &model::size(part.size)).upcast_ref(), fact("最小", &model::size(low)).upcast_ref(), size.upcast_ref()]));
         extra.append(&scale);
         let this = self.clone();
         let name = part.label();
@@ -1076,7 +1067,7 @@ impl Window {
     fn image_create(self: &Rc<Self>, disk: Disk) {
         let has_zstd = ops::which("zstd").is_some();
         let compress = combo("壓縮", if has_zstd { &["zstd", "無"] } else { &["無"] }, 0);
-        let extra = form(&[compress.upcast_ref()]);
+        let extra = alert::form(&[compress.upcast_ref()]);
         let this = self.clone();
         let title = disk.title();
         self.ask(&format!("建立「{title}」的映像檔"), None, &extra, "建立", false, move || {
@@ -1107,7 +1098,7 @@ impl Window {
             let Some(path) = chosen.ok().and_then(|file| file.path()) else { return };
             let title = disk.title();
             let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            let extra = form(&[fact("映像檔", &file).upcast_ref(), fact("目標", &title).upcast_ref()]);
+            let extra = alert::form(&[fact("映像檔", &file).upcast_ref(), fact("目標", &title).upcast_ref()]);
             let this = this.clone();
             let disk = disk.clone();
             let again = this.clone();
@@ -1182,7 +1173,7 @@ impl Window {
             };
             let (read, write) = ops::speeds(&said);
             let speed = |bytes: Option<f64>| bytes.map(|bytes| if bytes >= 1e9 { format!("{:.1} GB/s", bytes / 1e9) } else { format!("{:.0} MB/s", bytes / 1e6) }).unwrap_or_else(|| "—".into());
-            let rows = form(&[fact("讀取", &speed(read)).upcast_ref(), fact("寫入", &speed(write)).upcast_ref()]);
+            let rows = alert::form(&[fact("讀取", &speed(read)).upcast_ref(), fact("寫入", &speed(write)).upcast_ref()]);
             let alert = adw::AlertDialog::new(Some(&format!("測試「{title}」的速度")), None);
             alert.set_extra_child(Some(&rows));
             alert.add_responses(&[("close", "關閉"), ("again", "再測一次")]);

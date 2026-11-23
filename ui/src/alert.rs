@@ -11,6 +11,19 @@ use gtk::{gio, glib};
 /// How wide a field in an alert is: the design language's dialog, less its padding.
 pub const FIELD_WIDTH: i32 = 320;
 
+/// Rows in a card, as the fields of an alert.
+pub fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .width_request(FIELD_WIDTH)
+        .css_classes(["boxed-list"])
+        .build();
+    for row in rows {
+        list.append(*row);
+    }
+    list
+}
+
 /// Tells what happened, with nothing to decide.
 pub fn notice(parent: &impl IsA<gtk::Widget>, title: &str, body: Option<&str>) {
     let alert = adw::AlertDialog::new(Some(title), body);
