@@ -40,6 +40,8 @@ use smithay::{
 
 /// How many times the scene is halved. Each one roughly doubles how far the blur reaches.
 const LEVELS: usize = 5;
+/// The grid, in pixels, a window's blur keeps its textures on.
+const CANVAS_GRID: i32 = 256;
 /// How far apart the samples of a pass are, in texels of the smaller texture, with the
 /// blur as strong as the configuration can make it.
 const MAX_SPREAD: f32 = 4.0;
@@ -282,7 +284,16 @@ impl Glass {
             area.loc - Point::from((reach, reach)),
             area.size + Size::from((reach * 2, reach * 2)),
         );
-        let Some(canvas) = reach.intersection(Rectangle::from_size(output)) else {
+        // On a grid, so that a window moving or growing a little, as it does through every
+        // frame of an animation or a drag, keeps its textures and what they hold.
+        let snapped = Rectangle::<i32, Physical>::from_extremities(
+            (reach.loc.x.div_euclid(CANVAS_GRID) * CANVAS_GRID, reach.loc.y.div_euclid(CANVAS_GRID) * CANVAS_GRID),
+            (
+                (reach.loc.x + reach.size.w + CANVAS_GRID - 1).div_euclid(CANVAS_GRID) * CANVAS_GRID,
+                (reach.loc.y + reach.size.h + CANVAS_GRID - 1).div_euclid(CANVAS_GRID) * CANVAS_GRID,
+            ),
+        );
+        let Some(canvas) = snapped.intersection(Rectangle::from_size(output)) else {
             return Ok(());
         };
         self.windows.entry(id).or_default().update(
