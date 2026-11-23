@@ -576,7 +576,6 @@ pub struct Window {
     empty_trash: gtk::Button,
     pub prefs: RefCell<Prefs>,
     quick_look: RefCell<Option<Rc<quicklook::QuickLook>>>,
-    actions: gio::SimpleActionGroup,
     /// Set while the toolbar follows the tab, which must not change the tab.
     syncing: Cell<bool>,
     typed: RefCell<(String, Option<Instant>)>,
@@ -756,7 +755,6 @@ impl Window {
             empty_trash,
             prefs: RefCell::new(prefs),
             quick_look: RefCell::new(None),
-            actions: gio::SimpleActionGroup::new(),
             syncing: Cell::new(false),
             typed: RefCell::new((String::new(), None)),
         });
@@ -893,7 +891,7 @@ impl Window {
         let typing = gtk::prelude::GtkWindowExt::focus(&self.window)
             .is_some_and(|w| w.ancestor(gtk::Editable::static_type()).is_some() || w.is::<gtk::Text>());
         let activate = |name: &str, target: Option<glib::Variant>| {
-            gio::prelude::ActionGroupExt::activate_action(&self.actions, name, target.as_ref());
+            gio::prelude::ActionGroupExt::activate_action(&self.window, name, target.as_ref());
             true
         };
         // What works while typing too.
@@ -1116,7 +1114,7 @@ impl Window {
                 .all(|i| info_file(i).is_some_and(|f| f.path().is_some()));
         let enable = |name: &str, on: bool| {
             if let Some(action) = self
-                .actions
+                .window
                 .lookup_action(name)
                 .and_downcast::<gio::SimpleAction>()
             {
@@ -1168,7 +1166,7 @@ impl Window {
     fn history_changed(&self) {
         for (name, on) in [("undo", undo::can_undo()), ("redo", undo::can_redo())] {
             if let Some(action) = self
-                .actions
+                .window
                 .lookup_action(name)
                 .and_downcast::<gio::SimpleAction>()
             {
@@ -1179,7 +1177,7 @@ impl Window {
 
     fn set_state(&self, name: &str, state: glib::Variant) {
         if let Some(action) = self
-            .actions
+            .window
             .lookup_action(name)
             .and_downcast::<gio::SimpleAction>()
         {
@@ -1200,7 +1198,7 @@ impl Window {
                     }
                 }
             });
-            self.actions.add_action(&action);
+            self.window.add_action(&action);
         };
         simple(
             "new-window",
@@ -1377,7 +1375,7 @@ impl Window {
                 ops::open_with(&w, &id, &pane.selected_files());
             }
         }));
-        self.actions.add_action(&open_with);
+        self.window.add_action(&open_with);
         let windows_menu = gio::SimpleAction::new("windows-menu", Some(glib::VariantTy::STRING));
         windows_menu.connect_activate(on!(self, |w, _a, value| {
             let chosen = w.pane().map(|pane| pane.selected_files()).unwrap_or_default();
@@ -1387,7 +1385,7 @@ impl Window {
                 }
             }
         }));
-        self.actions.add_action(&windows_menu);
+        self.window.add_action(&windows_menu);
         let go = gio::SimpleAction::new("go", Some(glib::VariantTy::STRING));
         go.connect_activate(on!(self, |w, _a, value| {
             let (Some(name), Some(pane)) = (value.and_then(|v| v.get::<String>()), w.pane()) else {
@@ -1408,7 +1406,7 @@ impl Window {
                 pane.go(to, true);
             }
         }));
-        self.actions.add_action(&go);
+        self.window.add_action(&go);
 
         let stateful = |name: &str, state: glib::Variant, run: Box<dyn Fn(&Rc<Window>, &glib::Variant)>| {
             let action = gio::SimpleAction::new_stateful(
@@ -1427,7 +1425,7 @@ impl Window {
                 action.set_state(&wanted);
                 run(&win, &wanted);
             });
-            self.actions.add_action(&action);
+            self.window.add_action(&action);
         };
         let prefs = self.prefs.borrow();
         stateful(
@@ -1542,13 +1540,12 @@ impl Window {
             );
         }
         drop(prefs);
-        self.window.insert_action_group("win", Some(&self.actions));
     }
 
     /// Adds or takes away a tag from what is chosen: on for all unless all have it.
     pub fn toggle_tag(self: &Rc<Self>, index: usize) {
         let name = format!("tag-{index}");
-        gio::prelude::ActionGroupExt::activate_action(&self.actions, &name, None);
+        gio::prelude::ActionGroupExt::activate_action(&self.window, &name, None);
     }
 
     pub fn quick_look(self: &Rc<Self>) {
