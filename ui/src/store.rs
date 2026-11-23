@@ -44,6 +44,9 @@ const APP_ID: &str = "io.github.koukeneko.Nekoland.Store";
 /// search:WORDS, or app:WORDS for the first found app's page; for screenshots, as NEKOLAND_SETTINGS_PAGE is for Settings.
 const PAGE_ENV: &str = "NEKOLAND_STORE_PAGE";
 
+/// The option, and the action, that remove an app by its desktop file's ID.
+const REMOVE_OPTION: &str = "remove";
+
 /// The categories Explore shows, as freedesktop names them, with programs known to be
 /// wanted put first.
 const CATEGORIES: [(&str, &str, &[&str]); 7] = [
@@ -194,6 +197,41 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
     let shown: Rc<RefCell<Weak<Store>>> = Rc::default();
+    // The Dock and the app grid ask for an app to be removed by its desktop file's ID; a
+    // Market already open is asked through its action.
+    app.add_main_option(
+        REMOVE_OPTION,
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "移除桌面檔案 ID 所屬的 app",
+        Some("ID"),
+    );
+    let remove = gio::SimpleAction::new(REMOVE_OPTION, Some(glib::VariantTy::STRING));
+    remove.connect_activate(glib::clone!(
+        #[weak]
+        app,
+        #[strong]
+        shown,
+        move |_, id| {
+            if let Some(id) = id.and_then(|id| id.str()) {
+                remove_launcher(&show(&app, &shown), id.to_string());
+            }
+        }
+    ));
+    app.add_action(&remove);
+    app.connect_handle_local_options(|app, options| {
+        let Some(id) = options.lookup::<String>(REMOVE_OPTION).ok().flatten() else {
+            return -1;
+        };
+        if let Err(err) = app.register(gio::Cancellable::NONE) {
+            eprintln!("nekoland-store: {err}");
+            return 1;
+        }
+        app.activate_action(REMOVE_OPTION, Some(&id.to_variant()));
+        // -1 goes on to run; a Market already open was asked, and this one is done.
+        if app.is_remote() { 0 } else { -1 }
+    });
     app.connect_activate(glib::clone!(
         #[strong]
         shown,
@@ -2403,6 +2441,11 @@ fn description_label(text: &str) -> gtk::Label {
 }
 
 fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
+    detail_view(store, app).0
+}
+
+/// An app's page, and what it shows, for what asks of it as its buttons do.
+fn detail_view(store: &Rc<Store>, app: App) -> (adw::NavigationPage, Rc<Detail>) {
     let content = column();
     let (head, actions) = app_head(&app);
     content.append(&head);
@@ -2503,7 +2546,38 @@ fn detail_page(store: &Rc<Store>, app: App) -> adw::NavigationPage {
             }
         ),
     );
-    page
+    (page, detail)
+}
+
+/// Opens the page of the installed app whose desktop file `desktop_id` is, and asks to remove it.
+fn remove_launcher(store: &Rc<Store>, desktop_id: String) {
+    let wanted = desktop_id.clone();
+    background(
+        move || {
+            installed_with_icons().into_values().flatten().find_map(|app| {
+                let offer = app.installed()?.clone();
+                let id = removal::launcher(&app, &offer)?.id()?;
+                (id == wanted).then_some((app, offer))
+            })
+        },
+        glib::clone!(
+            #[weak]
+            store,
+            move |found: Option<(App, Offer)>| match found {
+                Some((app, offer)) => {
+                    let (page, detail) = detail_view(&store, app);
+                    store.nav.push(&page);
+                    confirm_remove(&store, &detail, offer);
+                }
+                None => {
+                    let name = gio::DesktopAppInfo::new(&desktop_id)
+                        .map_or(desktop_id.clone(), |info| info.display_name().to_string());
+                    let title = format!("無法移除 {name}");
+                    alert::notice(&store.window, &title, Some("找不到安裝它的套件"));
+                }
+            }
+        ),
+    );
 }
 
 fn cli_facts(app: &App) -> Option<gtk::Widget> {

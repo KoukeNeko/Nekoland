@@ -517,10 +517,12 @@ pub enum Layer<'a> {
 }
 
 /// What the menu a right click on the grid opens offers.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AppsCommand {
     Edit,
     Reset,
+    /// Asks Market to remove the app of this desktop ID, as its page does.
+    Remove(String),
 }
 
 /// The kind of application a desktop entry says it is, as a folder of it is named.
@@ -557,7 +559,7 @@ const OWN_APPS: &str = "io.github.koukeneko.Nekoland.";
 
 /// Whether an application came with the system rather than being put there by its user:
 /// Nekoland's own, or one that runs in a terminal. A right click on one opens no menu.
-fn is_built_in(id: &str, in_terminal: bool) -> bool {
+pub(crate) fn is_built_in(id: &str, in_terminal: bool) -> bool {
     id.starts_with(OWN_APPS) || in_terminal
 }
 
@@ -1778,17 +1780,24 @@ impl Nekoland {
         }
         let edit = if apps.editing.is_some() { "完成" } else { "編輯" };
         let command = |command| crate::menubar::Command::Apps(command);
-        self.open_menu_at(
-            vec![
-                crate::menubar::Entry::item(edit, command(AppsCommand::Edit)),
-                crate::menubar::Entry::item("還原預設", command(AppsCommand::Reset)),
-            ],
-            on_screen.to_i32_round(),
-        );
+        let mut entries = Vec::new();
+        if let Some(Cell::Entry(Entry::App(app))) = under {
+            let remove = AppsCommand::Remove(apps.apps[app].id.clone());
+            entries.push(crate::menubar::Entry::item("移除", command(remove)));
+            entries.push(crate::menubar::Entry::separator());
+        }
+        entries.push(crate::menubar::Entry::item(edit, command(AppsCommand::Edit)));
+        entries.push(crate::menubar::Entry::item("還原預設", command(AppsCommand::Reset)));
+        self.open_menu_at(entries, on_screen.to_i32_round());
         true
     }
 
     pub fn run_apps_command(&mut self, command: AppsCommand) {
+        if let AppsCommand::Remove(id) = &command {
+            let desktop_id = crate::config::quote(&format!("{id}.desktop"));
+            crate::config::spawn(&format!("nekoland-store --remove {desktop_id}"));
+            return;
+        }
         let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) else {
             return;
         };
@@ -1800,6 +1809,7 @@ impl Nekoland {
                 }
             }
             AppsCommand::Reset => apps.reset(),
+            AppsCommand::Remove(_) => {}
         }
     }
 

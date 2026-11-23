@@ -3043,6 +3043,10 @@ impl Nekoland {
         ];
         if desktop_file(app_id).is_some() {
             options.push(Entry::item("在檔案中顯示", Command::Dock(DockCommand::RevealApp(id.clone()))));
+            if !crate::appgrid::is_built_in(app_id, false) {
+                let remove = crate::appgrid::AppsCommand::Remove(id.clone());
+                options.push(Entry::item("移除", Command::Apps(remove)));
+            }
         }
         entries.push(Entry::submenu("選項", options));
         if running {
