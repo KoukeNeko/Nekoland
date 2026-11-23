@@ -1,30 +1,27 @@
-//! 儲存空間: the disks, and what can be cleaned the way Mole cleans: the caches apps make
-//! again by themselves, from a fixed list, and the trash. A cache is left while a program
-//! that uses it runs.
+//! 儲存空間: the disks, and the space that can be freed: the trash, and the caches programs
+//! make again by themselves. Caches are found where each program says it keeps them, and one
+//! is left alone while a program has a file open in it or in its app's folder.
 
 use super::*;
-use std::{
-    collections::HashSet,
-    ffi::OsStr,
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
-};
+use std::{collections::HashSet, os::unix::fs::MetadataExt};
 
 /// The groups the caches are shown in, by `Cache::section`.
-const SECTIONS: [&str; 4] = ["瀏覽器快取", "應用程式快取", "開發工具快取", "Flatpak 快取"];
-/// What Electron apps keep in their folder in ~/.config that they make again (Mole's list).
-const ELECTRON_LEAVES: [&str; 7] =
-    ["Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "Crashpad/completed"];
-/// What editors built on VS Code keep besides.
-const EDITOR_LEAVES: [&str; 3] = ["CachedData", "CachedExtensionVSIXs", "logs"];
+const SECTIONS: [&str; 3] = ["應用程式快取", "開發工具快取", "Flatpak 快取"];
+/// The folders a Chromium-based browser or Electron app writes its caches to, in its own
+/// folder or in a profile within it, as they are named on disk.
+const CHROMIUM_CACHES: [&str; 6] =
+    ["Cache", "Code Cache", "GPUCache", "GPUPersistentCache", "DawnGraphiteCache", "DawnWebGPUCache"];
 
-/// Folders whose contents an app makes again, shown as one row.
-#[derive(Clone, Debug)]
+/// Folders whose contents a program makes again, shown as one row.
+#[derive(Clone, Debug, Default)]
 struct Cache {
     section: usize,
     label: String,
     roots: Vec<PathBuf>,
-    /// Process names that use it; a name ending in `*` is any name it starts.
-    owners: Vec<String>,
+    /// A file open in one of these means the program that uses the cache runs.
+    watched: Vec<PathBuf>,
+    /// So does a process of one of these names.
+    programs: Vec<String>,
     size: u64,
     running: bool,
 }
@@ -190,98 +187,113 @@ fn show(page: &adw::PreferencesPage, shown: &Rc<Shown>, found: Found) {
     });
 }
 
-/// The caches of the list that are on this computer, measured, and the trash's size.
+/// The caches on this computer, measured, and the trash's size.
 fn find(home: &Path) -> Found {
-    let (names, flatpak_known) = running_names();
-    let flatpaks = flatpak_known.then(|| flatpak_apps(home));
-    let mut caches = rules(home, flatpaks.as_deref());
+    let busy = Busy::now();
+    let flatpaks = busy.flatpak_known.then(|| flatpak_apps(home));
+    let mut caches = caches(home, &glib::user_cache_dir(), flatpaks.as_deref());
     for cache in &mut caches {
         cache.size = cache.roots.iter().map(|root| size_of(root)).sum();
-        cache.running = runs(&cache.owners, &names);
+        cache.running = busy.uses(cache);
     }
     Found { caches, trash: size_of(&glib::user_data_dir().join("Trash")) }
 }
 
-/// Mole's list of caches apps make again, those of them that are folders of their own
-/// under `home`; `flatpaks` are the sandboxed apps' ids, when it can be told which run.
-fn rules(home: &Path, flatpaks: Option<&[String]>) -> Vec<Cache> {
-    let cache_home = home.join(".cache");
-    let config = home.join(".config");
-    let mut caches: Vec<Cache> = Vec::new();
-    let mut add = |section: usize, label: &str, roots: Vec<PathBuf>, owners: &[&str]| {
-        let roots: Vec<PathBuf> = roots.into_iter().filter(|root| is_real_dir(root)).collect();
+/// Every cache under `home` this page knows how to find; `flatpaks` are the ids of the
+/// Flatpak apps, when Flatpak can tell which of them run.
+fn caches(home: &Path, cache_home: &Path, flatpaks: Option<&[String]>) -> Vec<Cache> {
+    let mut found = Vec::new();
+    let mut add = |cache: Cache| {
+        let roots: Vec<PathBuf> =
+            cache.roots.into_iter().filter(|root| root.starts_with(home) && is_real_dir(root)).collect();
         if !roots.is_empty() {
-            caches.push(Cache {
-                section,
-                label: label.to_string(),
-                roots,
-                owners: owners.iter().map(|owner| owner.to_string()).collect(),
-                size: 0,
-                running: false,
-            });
+            found.push(Cache { roots, ..cache });
         }
     };
-    let c = |path: &str| cache_home.join(path);
-    let h = |path: &str| home.join(path);
 
-    for (label, path, owners) in [
-        ("Chromium", "chromium", &["chromium"][..]),
-        ("Google Chrome", "google-chrome", &["chrome"]),
-        ("Brave", "BraveSoftware", &["brave"]),
-        ("Microsoft Edge", "microsoft-edge", &["msedge"]),
-        ("Vivaldi", "vivaldi", &["vivaldi-bin"]),
-        ("Zen", "zen", &["zen", "zen-bin"]),
-    ] {
-        add(0, label, vec![c(path)], owners);
-    }
-    // The Snap of Firefox, as Ubuntu installs it, keeps its own.
-    add(0, "Firefox", vec![c("mozilla/firefox"), h("snap/firefox/common/.cache/mozilla/firefox")], &["firefox"]);
+    // The freedesktop thumbnail specification's folder, which viewers fill again as needed.
+    add(Cache { label: "縮圖".into(), roots: vec![cache_home.join("thumbnails")], ..Cache::default() });
 
-    add(1, "縮圖", vec![c("thumbnails")], &[]);
-    add(1, "WebKitGTK", vec![c("webkitgtk/WebKitCache"), c("webkitgtk/MediaCache")], &["WebKitNetworkProcess", "WebKitWebProcess"]);
-    add(1, "GNOME 軟體", vec![c("gnome-software")], &["gnome-software"]);
-    for (folder, label, owners, editor) in [
-        ("Code", "VS Code", &["code", "electron*"][..], true),
-        ("Code - OSS", "Code - OSS", &["code-oss", "electron*"], true),
-        ("VSCodium", "VSCodium", &["codium", "vscodium", "electron*"], true),
-        ("Cursor", "Cursor", &["cursor"], true),
-        ("obsidian", "Obsidian", &["obsidian", "electron*"], false),
-        ("discord", "Discord", &["Discord", "discord"], false),
-        ("Slack", "Slack", &["slack"], false),
-        ("Signal", "Signal", &["signal-desktop", "electron*"], false),
-    ] {
-        let leaves = ELECTRON_LEAVES.iter().chain(if editor { &EDITOR_LEAVES[..] } else { &[] });
-        add(1, label, leaves.map(|leaf| config.join(folder).join(leaf)).collect(), owners);
+    // A Chromium-based program keeps "Local State" in its folder in ~/.config, and its disk
+    // cache in the folder of the same name in ~/.cache.
+    for app in subfolders(&home.join(".config")).into_iter().filter(|app| app.join("Local State").is_file()) {
+        let Some(name) = app.file_name().map(|name| name.to_string_lossy().into_owned()) else { continue };
+        let twin = cache_home.join(&name);
+        let mut roots = Vec::new();
+        for base in [&app, &twin] {
+            for folder in std::iter::once(base.clone()).chain(subfolders(base)) {
+                roots.extend(CHROMIUM_CACHES.iter().map(|leaf| folder.join(leaf)));
+            }
+        }
+        add(Cache { label: name, roots, watched: vec![app.clone(), twin], ..Cache::default() });
     }
 
-    for (label, path, owners) in [
-        ("npm", h(".npm/_cacache"), &["npm", "node"][..]),
-        ("Yarn", c("yarn"), &["yarn", "node"]),
-        ("pnpm", c("pnpm"), &["pnpm", "node"]),
-        ("Bun", h(".bun/install/cache"), &["bun", "bunx"]),
-        ("node-gyp", c("node-gyp"), &["node-gyp", "node"]),
-        ("Electron 下載", c("electron"), &[]),
-        ("TypeScript", c("typescript"), &["tsserver", "node"]),
-        ("pip", c("pip"), &["pip", "pip3", "python", "python3"]),
-        ("Poetry", c("pypoetry/cache"), &["poetry"]),
-        ("pre-commit", c("pre-commit"), &["pre-commit"]),
-        ("Ruff", c("ruff"), &["ruff"]),
-        ("mypy", c("mypy"), &["mypy", "dmypy"]),
-        ("Go", c("go-build"), &["go", "gopls"]),
-        ("Cargo", h(".cargo/registry/cache"), &["cargo", "rustc", "rust-analyzer"]),
-        ("rustup 下載", h(".rustup/downloads"), &["rustup", "cargo"]),
-        ("sccache", c("sccache"), &["sccache"]),
-        ("Zig", c("zig"), &["zig", "zls"]),
-        ("Composer", c("composer"), &["composer", "php"]),
-    ] {
-        add(2, label, vec![path], owners);
+    // Firefox keeps each profile's disk cache in cache2 of the profile's folder under the cache
+    // home; the Snap of Firefox has a home of its own.
+    for base in [home.to_path_buf(), home.join("snap/firefox/common")] {
+        let profiles = base.join(".mozilla/firefox");
+        let caches = base.join(".cache/mozilla/firefox");
+        let roots = subfolders(&caches).into_iter().map(|profile| profile.join("cache2")).collect();
+        add(Cache { label: "Firefox".into(), roots, watched: vec![profiles, caches], ..Cache::default() });
+    }
+
+    for tool in tools(home, cache_home) {
+        add(tool);
     }
 
     for id in flatpaks.unwrap_or_default() {
-        let owner = format!("flatpak:{id}");
-        add(3, id, vec![home.join(".var/app").join(id).join("cache")], &[owner.as_str()]);
+        let app = home.join(".var/app").join(id);
+        add(Cache {
+            section: 2,
+            label: id.clone(),
+            roots: vec![app.join("cache")],
+            programs: vec![format!("flatpak:{id}")],
+            ..Cache::default()
+        });
     }
-    caches
+    found
+}
+
+/// The download and build caches of developer tools: where the tool says, asked, or where
+/// its documentation says it keeps it when the tool cannot be run.
+fn tools(home: &Path, cache_home: &Path) -> Vec<Cache> {
+    let cargo_home = std::env::var_os("CARGO_HOME").map_or_else(|| home.join(".cargo"), PathBuf::from);
+    let tool = |label: &str, programs: &[&str], root: PathBuf| Cache {
+        section: 1,
+        label: label.into(),
+        watched: vec![root.clone()],
+        roots: vec![root],
+        programs: programs.iter().map(|program| program.to_string()).collect(),
+        ..Cache::default()
+    };
+    vec![
+        tool("Go", &["go"], asked("go", &["env", "GOCACHE"]).unwrap_or_else(|| cache_home.join("go-build"))),
+        tool("npm", &["npm"], asked("npm", &["config", "get", "cache"]).unwrap_or_else(|| home.join(".npm")).join("_cacache")),
+        tool("pip", &["pip", "pip3"], asked("pip3", &["cache", "dir"]).unwrap_or_else(|| cache_home.join("pip"))),
+        tool("Bun", &["bun"], asked("bun", &["pm", "cache"]).unwrap_or_else(|| home.join(".bun/install/cache"))),
+        // The .crate files Cargo downloaded; what they unpack to stays.
+        tool("Cargo", &["cargo"], cargo_home.join("registry/cache")),
+    ]
+}
+
+/// The folder `program` prints for `args`, if it runs and prints a whole path.
+fn asked(program: &str, args: &[&str]) -> Option<PathBuf> {
+    let ran = Command::new(program).args(args).stderr(std::process::Stdio::null()).output().ok()?;
+    let said = String::from_utf8(ran.stdout).ok()?;
+    let path = PathBuf::from(said.trim());
+    (ran.status.success() && path.is_absolute()).then_some(path)
+}
+
+fn subfolders(folder: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
 }
 
 /// A folder, not a link to one nor a disk mounted there.
@@ -305,62 +317,64 @@ fn size_of(path: &Path) -> u64 {
         + own
 }
 
-/// The names of the processes that run, as /proc tells them and as each was started, and
-/// `flatpak:<id>` for each sandboxed app that runs; and whether Flatpak could tell that.
-fn running_names() -> (HashSet<String>, bool) {
-    let mut names = HashSet::new();
-    for dir in std::fs::read_dir("/proc").into_iter().flatten().flatten().map(|entry| entry.path()) {
-        if let Ok(comm) = std::fs::read_to_string(dir.join("comm")) {
-            names.insert(comm.trim_end().to_string());
-        }
-        // comm is cut to 15 bytes; the command's first word is whole.
-        if let Ok(cmdline) = std::fs::read(dir.join("cmdline")) {
-            let first = cmdline.split(|byte| *byte == 0 || *byte == b' ').next().unwrap_or_default();
-            if let Some(name) = Path::new(OsStr::from_bytes(first)).file_name() {
-                names.insert(name.to_string_lossy().into_owned());
+/// What runs at one moment: the files processes have open, their names, and the Flatpak
+/// apps that run.
+struct Busy {
+    open: Vec<PathBuf>,
+    names: HashSet<String>,
+    flatpak_known: bool,
+}
+
+impl Busy {
+    fn now() -> Busy {
+        let mut open = Vec::new();
+        let mut names = HashSet::new();
+        for process in std::fs::read_dir("/proc").into_iter().flatten().flatten().map(|entry| entry.path()) {
+            if let Ok(name) = std::fs::read_to_string(process.join("comm")) {
+                names.insert(name.trim_end().to_string());
+            }
+            // Only this user's processes can be looked into, which are the ones using the home.
+            open.extend(std::fs::read_link(process.join("cwd")));
+            for fd in std::fs::read_dir(process.join("fd")).into_iter().flatten().flatten() {
+                open.extend(std::fs::read_link(fd.path()));
             }
         }
+        let flatpak = Command::new("flatpak")
+            .args(["ps", "--columns=application"])
+            .output()
+            .ok()
+            .filter(|ran| ran.status.success());
+        let flatpak_known = flatpak.is_some();
+        if let Some(ran) = flatpak {
+            names.extend(String::from_utf8_lossy(&ran.stdout).lines().map(|id| format!("flatpak:{}", id.trim())));
+        }
+        Busy { open, names, flatpak_known }
     }
-    let flatpak = Command::new("flatpak")
-        .args(["ps", "--columns=application"])
-        .output()
-        .ok()
-        .filter(|ran| ran.status.success());
-    let known = flatpak.is_some();
-    if let Some(ran) = flatpak {
-        names.extend(String::from_utf8_lossy(&ran.stdout).lines().map(|id| format!("flatpak:{}", id.trim())));
+
+    fn uses(&self, cache: &Cache) -> bool {
+        // Which Flatpak app runs cannot be told: it could be this one.
+        let unknown = !self.flatpak_known && cache.programs.iter().any(|program| program.starts_with("flatpak:"));
+        unknown
+            || cache.programs.iter().any(|program| self.names.contains(program))
+            || self.open.iter().any(|file| cache.watched.iter().chain(&cache.roots).any(|folder| file.starts_with(folder)))
     }
-    (names, known)
 }
 
 /// The ids of the Flatpak apps that keep files in the home.
 fn flatpak_apps(home: &Path) -> Vec<String> {
-    let mut ids: Vec<String> = std::fs::read_dir(home.join(".var/app"))
+    subfolders(&home.join(".var/app"))
         .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
-    ids.sort();
-    ids
+        .filter_map(|app| app.file_name()?.to_str().map(str::to_string))
+        .collect()
 }
 
-fn runs(owners: &[String], names: &HashSet<String>) -> bool {
-    owners.iter().any(|owner| match owner.strip_suffix('*') {
-        Some(start) => names.iter().any(|name| name.starts_with(start)),
-        None => names.contains(owner),
-    })
-}
-
-/// Empties each cache whose programs still do not run, and the trash if `trash`; what
-/// could not be, as it is told.
+/// Empties each cache no program uses now, and the trash if `trash`; what could not be, as
+/// it is told.
 fn remove(caches: &[Cache], trash: bool) -> Vec<String> {
-    let (names, flatpak_known) = running_names();
+    let busy = Busy::now();
     let mut failed = Vec::new();
     for cache in caches {
-        // Which sandboxed app runs cannot be told now: it could be this one.
-        let unknown = !flatpak_known && cache.owners.iter().any(|owner| owner.starts_with("flatpak:"));
-        if unknown || runs(&cache.owners, &names) {
+        if busy.uses(cache) {
             failed.push(format!("{}：執行中", cache.label));
             continue;
         }
@@ -442,25 +456,43 @@ mod tests {
     }
 
     #[test]
-    fn only_folders_there_are_listed_and_leaves_join_one_row() {
-        let home = scratch("rules");
-        std::fs::create_dir_all(home.join(".config/Code/Cache")).unwrap();
-        std::fs::create_dir_all(home.join(".config/Code/CachedData")).unwrap();
-        std::fs::create_dir_all(home.join(".cache/real")).unwrap();
-        std::os::unix::fs::symlink(home.join(".cache/real"), home.join(".cache/go-build")).unwrap();
+    fn a_chromium_app_has_its_cache_folders_only_in_its_own_and_its_profiles() {
+        let home = scratch("chromium");
+        let (app, cache_home) = (home.join(".config/SomeApp"), home.join(".cache"));
+        std::fs::create_dir_all(app.join("Default/GPUCache")).unwrap();
+        std::fs::create_dir_all(app.join("Code Cache")).unwrap();
+        std::fs::create_dir_all(app.join("Local Storage")).unwrap();
+        std::fs::write(app.join("Local State"), "{}").unwrap();
+        std::fs::create_dir_all(cache_home.join("SomeApp/Default/Cache")).unwrap();
+        // Not Chromium's: no Local State.
+        std::fs::create_dir_all(home.join(".config/Other/Cache")).unwrap();
 
-        let caches = rules(&home, None);
-        assert_eq!(caches.len(), 1, "{caches:?}");
-        assert_eq!(caches[0].label, "VS Code");
-        assert_eq!(caches[0].roots.len(), 2);
+        let found = caches(&home, &cache_home, None);
+        let app_cache = found.iter().find(|cache| cache.label == "SomeApp").expect("SomeApp found");
+        let mut roots = app_cache.roots.clone();
+        roots.sort();
+        assert_eq!(roots, [cache_home.join("SomeApp/Default/Cache"), app.join("Code Cache"), app.join("Default/GPUCache")]);
+        assert!(found.iter().all(|cache| cache.label != "Other"));
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn an_owner_with_a_star_is_any_name_it_starts() {
-        let names: HashSet<String> = ["electron37".to_string(), "bash".to_string()].into();
-        assert!(runs(&["electron*".to_string()], &names));
-        assert!(!runs(&["electron".to_string(), "code".to_string()], &names));
-        assert!(!runs(&[], &names));
+    fn a_file_open_in_the_app_folder_means_it_runs() {
+        let cache = Cache {
+            roots: vec![PathBuf::from("/h/.cache/App/Cache")],
+            watched: vec![PathBuf::from("/h/.config/App")],
+            ..Cache::default()
+        };
+        let busy = |open: &str| Busy { open: vec![PathBuf::from(open)], names: HashSet::new(), flatpak_known: true };
+        assert!(busy.clone()("/h/.config/App/Cookies").uses(&cache));
+        assert!(busy.clone()("/h/.cache/App/Cache/index").uses(&cache));
+        assert!(!busy("/h/.config/Application/Cookies").uses(&cache));
+    }
+
+    #[test]
+    fn a_flatpak_cache_is_kept_when_flatpak_cannot_say_what_runs() {
+        let cache = Cache { programs: vec!["flatpak:org.example.App".into()], ..Cache::default() };
+        let busy = Busy { open: Vec::new(), names: HashSet::new(), flatpak_known: false };
+        assert!(busy.uses(&cache));
     }
 }
