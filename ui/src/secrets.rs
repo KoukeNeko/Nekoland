@@ -55,14 +55,40 @@ impl Keyring {
 
     /// The items, unlocked: the keyring asks for its password when it is locked.
     async fn items(&self, attributes: &Attributes) -> Result<Vec<ObjectPath>, glib::Error> {
-        let reply = call(&self.bus, SERVICE_PATH, SERVICE_IFACE, "SearchItems", (attributes,).to_variant()).await?;
-        let (mut unlocked, locked): (Vec<ObjectPath>, Vec<ObjectPath>) =
-            reply.get().ok_or_else(|| unexpected("SearchItems"))?;
+        let (mut unlocked, mut locked) = self.search(attributes).await?;
+        // gnome-keyring finds nothing, not even locked items, in a keyring it has not unlocked
+        // since it started, as after an automatic login: unlocked, it finds them.
+        if unlocked.is_empty() && locked.is_empty() {
+            // Not default_collection, which would make a keyring where there is none.
+            let alias = call(&self.bus, SERVICE_PATH, SERVICE_IFACE, "ReadAlias", ("default",).to_variant()).await?;
+            let collection = match alias.child_value(0).str() {
+                Some(NONE) => return Ok(Vec::new()),
+                Some(collection) => path(collection)?,
+                None => return Err(unexpected("ReadAlias")),
+            };
+            let state = call(
+                &self.bus,
+                collection.as_str(),
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                ("org.freedesktop.Secret.Collection", "Locked").to_variant(),
+            )
+            .await?;
+            if state.child_value(0).as_variant().and_then(|locked| locked.get::<bool>()) == Some(true) {
+                self.unlock(vec![collection]).await?;
+                (unlocked, locked) = self.search(attributes).await?;
+            }
+        }
         if !locked.is_empty() {
             self.unlock(locked.clone()).await?;
             unlocked.extend(locked);
         }
         Ok(unlocked)
+    }
+
+    async fn search(&self, attributes: &Attributes) -> Result<(Vec<ObjectPath>, Vec<ObjectPath>), glib::Error> {
+        let reply = call(&self.bus, SERVICE_PATH, SERVICE_IFACE, "SearchItems", (attributes,).to_variant()).await?;
+        reply.get().ok_or_else(|| unexpected("SearchItems"))
     }
 
     async fn unlock(&self, objects: Vec<ObjectPath>) -> Result<(), glib::Error> {
