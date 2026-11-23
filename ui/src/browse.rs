@@ -405,7 +405,7 @@ pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
         (Some("書籤"), bookmarks),
         (Some("裝置"), drives),
         (Some("網路"), network),
-        (Some("Hamasen"), servers),
+        (Some("伺服器"), servers),
     ]
 }
 

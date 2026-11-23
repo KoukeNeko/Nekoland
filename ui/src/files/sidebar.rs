@@ -177,9 +177,9 @@ impl Sidebar {
                         }
                     }
                 }
-                Some("Hamasen") => {
+                Some("伺服器") => {
                     if !section.is_empty() {
-                        headers.push((targets.len() as i32, "Hamasen"));
+                        headers.push((targets.len() as i32, "伺服器"));
                     }
                     for place in section {
                         let (Location::Folder(file), Some(id)) = (place.location, place.hamasen) else {
