@@ -668,6 +668,8 @@ pub struct Dock {
     /// The folder or application dragged files are held over, since when, and whether it
     /// was opened or brought forward.
     spring: Option<(Key, Instant, bool)>,
+    /// Whether the program dragging lets go only of copies, as Preview of its open file.
+    copy_only: bool,
     /// An item of the open folder pressed: let go where it was, it opens; moved, it is
     /// dragged out as a file.
     /// An item of the open folder pressed: where, and the middle of its icon there.
@@ -3673,9 +3675,12 @@ impl Nekoland {
     /// files, so that the Dock knows it if it is dropped there.
     pub fn dock_drag_started(&mut self, source: &impl Source) {
         self.dock.dnd = None;
-        let offers = source
-            .metadata()
-            .is_some_and(|meta| meta.mime_types.iter().any(|mime| mime == "text/uri-list"));
+        self.dock.copy_only = source.metadata().is_some_and(|meta| {
+            !meta.dnd_actions.is_empty() && !meta.dnd_actions.contains(&smithay::input::dnd::DndAction::Move)
+        });
+        let offers = source.metadata().is_some_and(|meta| {
+            (meta.mime_types.iter()).any(|mime| mime == "text/uri-list" || dragged_data_name(mime).is_some())
+        });
         if offers {
             self.read_dragged_files(source);
         }
@@ -3684,24 +3689,36 @@ impl Nekoland {
     /// Asks what is dragged for its files, as a `text/uri-list`, which comes when the
     /// program gets to it; an X11 program's drag is asked before it says what it offers.
     pub(crate) fn read_dragged_files(&mut self, source: &impl Source) {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            tracing::warn!("pipe: {}", std::io::Error::last_os_error());
-            return;
-        }
-        // SAFETY: pipe2 just made these two descriptors, which nothing else owns.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        source.send("text/uri-list", write);
+        let mimes = source.metadata().map(|meta| meta.mime_types).unwrap_or_default();
+        // What X11 programs offer is not known yet: their files are asked for regardless.
+        let uris = (mimes.is_empty() || mimes.iter().any(|mime| mime == "text/uri-list"))
+            .then(|| asked(source, "text/uri-list"))
+            .flatten();
+        // A picture dragged out of a web page comes as its bytes, with no file to it.
+        let data = mimes
+            .iter()
+            .find_map(|mime| Some((mime, dragged_data_name(mime)?)))
+            .and_then(|(mime, name)| Some((asked(source, mime)?, name)));
         let found = Arc::new(Mutex::new(None));
         let into = found.clone();
-        // The program writes it when it reads its socket, after this frame's events go out.
+        // The program writes them when it reads its socket, after this frame's events go out.
         std::thread::spawn(move || {
-            let mut text = String::new();
-            if let Err(err) = std::fs::File::from(read).read_to_string(&mut text) {
-                tracing::warn!("reading a drag's files: {err}");
+            let mut paths = Vec::new();
+            if let Some(read) = uris {
+                let mut text = String::new();
+                if let Err(err) = std::fs::File::from(read).read_to_string(&mut text) {
+                    tracing::warn!("reading a drag's files: {err}");
+                }
+                paths = uri_paths(&text);
+            }
+            if let Some((read, name)) = data.filter(|_| paths.is_empty()) {
+                match save_dragged_data(read, &name) {
+                    Ok(path) => paths.push(path),
+                    Err(err) => tracing::warn!("keeping a dragged {name}: {err}"),
+                }
             }
             if let Ok(mut found) = into.lock() {
-                *found = Some(uri_paths(&text));
+                *found = Some(paths);
             }
         });
         self.dock.dnd = Some(found);
@@ -3746,7 +3763,14 @@ impl Nekoland {
         })
     }
 
+    /// Whether what is dropped is copied: with Ctrl held, or when its source lets go only
+    /// of copies.
+    pub(crate) fn copying(&self) -> bool {
+        self.modifiers().ctrl || self.dock.copy_only
+    }
+
     pub(crate) fn dock_drag_ended(&mut self) {
+        self.dock.copy_only = false;
         self.dock.dnd = None;
         self.dock.spring = None;
     }
@@ -3783,7 +3807,7 @@ impl Nekoland {
                 self.dock.trash = None;
             }
             // Into a kept folder, as onto a folder in a file manager.
-            Some(Tile::Stack { path: folder, .. }) => drop_into(paths, &folder, self.modifiers().ctrl),
+            Some(Tile::Stack { path: folder, .. }) => drop_into(paths, &folder, self.copying()),
             _ => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let before = self.config.stacks.len();
@@ -3950,6 +3974,67 @@ fn open_uri(uri: &str) {
 }
 
 /// The local files in a `text/uri-list`, as dragged out of a file manager.
+/// Asks a drag's source for `mime`, which comes through the returned pipe.
+fn asked(source: &impl Source, mime: &str) -> Option<OwnedFd> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        tracing::warn!("pipe: {}", std::io::Error::last_os_error());
+        return None;
+    }
+    // SAFETY: pipe2 just made these two descriptors, which nothing else owns.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    source.send(mime, write);
+    Some(read)
+}
+
+/// The file name for data a drag offers as `mime`, when it is a file's bytes or a picture:
+/// Chromium names the file, `application/octet-stream;name="cat.png"`.
+fn dragged_data_name(mime: &str) -> Option<String> {
+    if let Some(name) = mime.strip_prefix("application/octet-stream;name=") {
+        let name = name.trim_matches('"');
+        // Only a name: the program says it, not where it goes.
+        return Path::new(name).file_name().map(|name| name.to_string_lossy().into_owned());
+    }
+    let kind = mime.strip_prefix("image/")?.split(';').next()?;
+    let extension = match kind {
+        "jpeg" => "jpg",
+        "svg+xml" => "svg",
+        "x-icon" | "vnd.microsoft.icon" => "ico",
+        kind if kind.chars().all(|c| c.is_ascii_alphanumeric()) => kind,
+        _ => return None,
+    };
+    Some(format!("圖片.{extension}"))
+}
+
+/// Writes what was dragged into a folder of its own under the runtime directory, as a
+/// file for the Dock and the desktop to take as any other. Folders of earlier drags go
+/// once they are old enough for whatever took their files to have copied them.
+fn save_dragged_data(read: OwnedFd, name: &str) -> std::io::Result<PathBuf> {
+    const KEPT: std::time::Duration = std::time::Duration::from_secs(600);
+    const LARGEST: u64 = 1 << 30;
+    let dragged = gio::glib::user_runtime_dir().join("nekoland-dragged");
+    if let Ok(entries) = std::fs::read_dir(&dragged) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age > KEPT));
+            if old {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let folder = dragged.join(nanos.to_string());
+    std::fs::create_dir_all(&folder)?;
+    let path = folder.join(name);
+    let mut file = std::fs::File::create(&path)?;
+    std::io::copy(&mut std::fs::File::from(read).take(LARGEST), &mut file)?;
+    Ok(path)
+}
+
 pub(crate) fn uri_paths(text: &str) -> Vec<PathBuf> {
     text.lines()
         .map(str::trim)

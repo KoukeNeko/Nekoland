@@ -1046,7 +1046,7 @@ impl Pane {
                 let (Ok(list), Some(folder)) = (value.get::<gdk::FileList>(), folder_of()) else {
                     return false;
                 };
-                ops::drop_into(&list.files(), &folder, target.current_event_state());
+                ops::drop_into(&list.files(), &folder, target);
                 true
             });
         }
@@ -1178,22 +1178,41 @@ impl Pane {
             });
             view.add_controller(click);
             // Dropped on no folder in particular: into this one.
-            let drop = gtk::DropTarget::new(
-                gdk::FileList::static_type(),
-                gdk::DragAction::COPY | gdk::DragAction::MOVE,
-            );
+            let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY | gdk::DragAction::MOVE);
+            // Files first; a picture with no file to it, as from a web page, is kept as one.
+            drop.set_types(&[gdk::FileList::static_type(), gdk::Texture::static_type()]);
             let weak = Rc::downgrade(self);
             drop.connect_drop(move |target, value, _, _| {
-                let (Ok(list), Some(pane)) = (value.get::<gdk::FileList>(), weak.upgrade()) else {
-                    return false;
-                };
+                let Some(pane) = weak.upgrade() else { return false };
                 let Some(folder) = pane.here().folder().filter(|f| f.path().is_some()) else {
                     return false;
                 };
-                ops::drop_into(&list.files(), &folder, target.current_event_state());
+                if let Ok(list) = value.get::<gdk::FileList>() {
+                    ops::drop_into(&list.files(), &folder, target);
+                } else if let (Ok(texture), Some(win)) = (value.get::<gdk::Texture>(), pane.window()) {
+                    ops::drop_picture(&win, &texture, &folder);
+                } else {
+                    return false;
+                }
                 true
             });
             view.add_controller(drop);
+            let bytes = gtk::DropTargetAsync::new(None, gdk::DragAction::COPY);
+            bytes.connect_accept(|_, drop| ops::dropped_file(&drop.formats()).is_some());
+            let weak = Rc::downgrade(self);
+            bytes.connect_drop(move |_, drop, _, _| {
+                let Some(pane) = weak.upgrade() else { return false };
+                let (Some((mime, name)), Some(folder), Some(win)) = (
+                    ops::dropped_file(&drop.formats()),
+                    pane.here().folder().and_then(|f| f.path()),
+                    pane.window(),
+                ) else {
+                    return false;
+                };
+                ops::drop_file_bytes(Rc::downgrade(&win), drop.clone(), mime, name, folder);
+                true
+            });
+            view.add_controller(bytes);
         }
     }
 
@@ -1873,7 +1892,7 @@ impl Pane {
                     let Ok(list) = value.get::<gdk::FileList>() else {
                         return false;
                     };
-                    ops::drop_into(&list.files(), &into, target.current_event_state());
+                    ops::drop_into(&list.files(), &into, target);
                     true
                 });
                 self.spring(&drop, button.upcast_ref(), move || {

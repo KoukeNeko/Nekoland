@@ -325,7 +325,7 @@ impl Sidebar {
                     let Ok(list) = value.get::<gdk::FileList>() else {
                         return false;
                     };
-                    ops::drop_into(&list.files(), &into, target.current_event_state());
+                    ops::drop_into(&list.files(), &into, target);
                     true
                 });
                 let (to, win) = (to.clone(), self.win.clone());

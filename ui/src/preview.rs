@@ -1425,6 +1425,7 @@ impl Win {
             }
         });
         self.scroll.add_controller(pan);
+        self.drag_out();
 
         let double = gtk::GestureClick::new();
         double.connect_pressed({
@@ -1461,6 +1462,67 @@ impl Win {
                 _ => glib::Propagation::Proceed,
             }
         });
+    }
+
+    /// What is shown dragged out as a file, with its picture for programs that take only
+    /// that: from the title, as the Mac's proxy icon, and from the picture itself when it
+    /// fits and there is nothing to pan.
+    fn drag_out(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let prepare = move |source: &gtk::DragSource, from_picture: bool| {
+            let win = weak.upgrade()?;
+            let (h, v) = (win.scroll.hadjustment(), win.scroll.vadjustment());
+            let pans = h.upper() > h.page_size() + 1.0 || v.upper() > v.page_size() + 1.0;
+            if from_picture && (pans || win.tool.get().is_some()) {
+                return None;
+            }
+            let item = win.item()?;
+            let picture = win.shown.borrow().as_ref().map(gdk::Texture::for_pixbuf);
+            let mut kinds = Vec::new();
+            if !item.untitled {
+                let files = gdk::FileList::from_array(&[gio::File::for_path(&item.path)]);
+                kinds.push(gdk::ContentProvider::for_value(&files.to_value()));
+            }
+            if let Some(picture) = &picture {
+                kinds.push(gdk::ContentProvider::for_value(&picture.to_value()));
+            }
+            if kinds.is_empty() {
+                return None;
+            }
+            let icon = win.shown.borrow().as_ref().and_then(|pixbuf| {
+                let scale = 128.0 / f64::from(pixbuf.width().max(pixbuf.height()));
+                let (w, h) = ((f64::from(pixbuf.width()) * scale) as i32, (f64::from(pixbuf.height()) * scale) as i32);
+                pixbuf.scale_simple(w.max(1), h.max(1), gtk::gdk_pixbuf::InterpType::Bilinear)
+            });
+            match icon {
+                Some(icon) => source.set_icon(Some(&gdk::Texture::for_pixbuf(&icon)), icon.width() / 2, icon.height() / 2),
+                None => source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&win.title))), 0, 0),
+            }
+            Some(gdk::ContentProvider::new_union(&kinds))
+        };
+        let from_title = gtk::DragSource::builder()
+            .actions(gdk::DragAction::COPY)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let prepare = Rc::new(prepare);
+        from_title.connect_prepare({
+            let prepare = prepare.clone();
+            move |source, _, _| prepare(source, false)
+        });
+        // Held, the title is the file's, not the header bar's: the bar would move the window
+        // when the pointer leaps before the drag has seen it go far enough.
+        let hold = gtk::GestureClick::builder()
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        hold.connect_pressed(|hold, _, _, _| {
+            hold.set_state(gtk::EventSequenceState::Claimed);
+        });
+        self.title.add_controller(from_title.clone());
+        self.title.add_controller(hold.clone());
+        hold.group_with(&from_title);
+        let from_picture = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
+        from_picture.connect_prepare(move |source, _, _| prepare(source, true));
+        self.scroll.add_controller(from_picture);
     }
 
     fn item(&self) -> Option<Rc<Item>> {

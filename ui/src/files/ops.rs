@@ -615,14 +615,19 @@ fn transferred(
 
 /// What is dropped on a folder: moved when it is on the same drive, copied when it is not
 /// or Ctrl is held, as the Finder decides.
-pub fn drop_into(files: &[gio::File], folder: &gio::File, modifiers: gdk::ModifierType) {
+pub fn drop_into(files: &[gio::File], folder: &gio::File, target: &gtk::DropTarget) {
     let Some(folder) = folder.path() else { return };
+    let modifiers = target.current_event_state();
+    // A source that only lets go of copies, as Preview its open file, is copied.
+    let movable = target
+        .current_drop()
+        .is_none_or(|drop| drop.actions().contains(gdk::DragAction::MOVE));
     let paths: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
     let device = |path: &Path| std::fs::metadata(path).map(|m| m.dev()).ok();
     let same_drive = paths
         .iter()
         .all(|p| device(p).is_some() && device(p) == device(&folder));
-    if same_drive && !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+    if same_drive && movable && !modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
         let moving: Vec<PathBuf> = paths
             .into_iter()
             .filter(|p| *p != folder && p.parent() != Some(folder.as_path()))
@@ -631,6 +636,59 @@ pub fn drop_into(files: &[gio::File], folder: &gio::File, modifiers: gdk::Modifi
     } else {
         transfer("copy", &folder, &paths, true);
     }
+}
+
+/// A picture dropped with no file to it, as from a web page: kept as a PNG in `folder`.
+pub fn drop_picture(win: &Window, texture: &gdk::Texture, folder: &gio::File) {
+    let Some(folder) = folder.path() else { return };
+    let path = free_name(&folder.join("圖片.png"));
+    if let Err(err) = texture.save_to_png(&path) {
+        win.alert("無法儲存圖片", Some(&err.message));
+        return;
+    }
+    undo::record(Change::Made(vec![path]));
+}
+
+/// The file whose bytes a drag carries with no file to it, as Chromium drags a picture
+/// out of a web page: `application/octet-stream;name="cat.png"`, and its name.
+pub fn dropped_file(formats: &gdk::ContentFormats) -> Option<(glib::GString, String)> {
+    formats.mime_types().into_iter().find_map(|mime| {
+        let name = mime.strip_prefix("application/octet-stream;name=")?.trim_matches('"');
+        // Only a name: the program says it, not where it goes.
+        let name = Path::new(name).file_name()?.to_string_lossy().into_owned();
+        Some((mime, name))
+    })
+}
+
+/// Writes the bytes of `dropped_file` into `folder`, under its name or the next free one.
+pub fn drop_file_bytes(win: Weak<Window>, drop: gdk::Drop, mime: glib::GString, name: String, folder: PathBuf) {
+    glib::spawn_future_local(async move {
+        let path = folder.join(&name);
+        let path = if path.exists() { free_name(&path) } else { path };
+        let written = async {
+            let (bytes, _) = drop.read_future(&[mime.as_str()], glib::Priority::DEFAULT).await?;
+            let file = gio::File::for_path(&path);
+            let out = file
+                .create_future(gio::FileCreateFlags::NONE, glib::Priority::DEFAULT)
+                .await?;
+            let flags = gio::OutputStreamSpliceFlags::CLOSE_SOURCE | gio::OutputStreamSpliceFlags::CLOSE_TARGET;
+            out.splice_future(&bytes, flags, glib::Priority::DEFAULT).await
+        }
+        .await;
+        match written {
+            Ok(_) => {
+                undo::record(Change::Made(vec![path]));
+                drop.finish(gdk::DragAction::COPY);
+            }
+            Err(err) => {
+                drop.finish(gdk::DragAction::empty());
+                let _ = std::fs::remove_file(&path);
+                if let Some(win) = win.upgrade() {
+                    win.alert(&format!("無法儲存「{name}」"), Some(err.message()));
+                }
+            }
+        }
+    });
 }
 
 pub fn duplicate(files: &[gio::File]) {

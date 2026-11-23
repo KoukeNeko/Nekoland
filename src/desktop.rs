@@ -147,6 +147,9 @@ pub struct Desktop {
     /// that item, theme and output.
     looking: bool,
     quick_look: Option<(Looked, Picture)>,
+    /// A press on the Quick Look panel, which drags out what it shows once the pointer goes
+    /// far enough: where, and its serial.
+    look_press: Option<(Point<f64, Logical>, Serial)>,
     /// A picture being read for Quick Look away from the compositor's thread, which a
     /// camera's largest photos would hold up for half a second.
     reading: Option<(Looked, stacks::Reading)>,
@@ -627,6 +630,10 @@ impl Nekoland {
     /// click, or given its menu; the desktop itself gets its own menu, or starts a box.
     /// Returns whether the desktop takes the keyboard: whenever it shows items or a menu.
     pub fn desktop_press(&mut self, pos: Point<f64, Logical>, right: bool, serial: Serial) -> bool {
+        if !right && self.quick_look_area().is_some_and(|area| area.to_f64().contains(pos)) {
+            self.desktop.look_press = Some((pos, serial));
+            return true;
+        }
         let item = self.desktop_item_at(pos);
         let modifiers = self.modifiers();
         let adding = (modifiers.shift || modifiers.ctrl) && !right;
@@ -687,6 +694,14 @@ impl Nekoland {
         if self.dock_files_dragged_now() {
             self.desktop.drop_target = self.desktop_folder_at(pos).map(|folder| folder.path);
         }
+        if let Some((from, serial)) = self.desktop.look_press {
+            let moved = pos - from;
+            if moved.x.hypot(moved.y) >= DRAG_DISTANCE {
+                self.desktop.look_press = None;
+                self.drag_out_of_quick_look(from, serial);
+            }
+            return;
+        }
         let Some(press) = &self.desktop.press else {
             return;
         };
@@ -712,6 +727,7 @@ impl Nekoland {
 
     pub fn desktop_release(&mut self) {
         self.desktop.band = None;
+        self.desktop.look_press = None;
         let Some(press) = self.desktop.press.take() else {
             return;
         };
@@ -739,6 +755,18 @@ impl Nekoland {
             .map(|picture| (picture, icon_at - press.from.to_i32_round()));
         self.start_file_drag(paths, picture, press.from, press.serial);
         self.desktop.drag_from = Some(press.from);
+    }
+
+    /// What Quick Look shows dragged out of its panel, as a file, as on the Mac.
+    fn drag_out_of_quick_look(&mut self, from: Point<f64, Logical>, serial: Serial) {
+        let Some(((path, ..), _)) = &self.desktop.quick_look else {
+            return;
+        };
+        let path = path.clone();
+        let picture = (self.desktop.icons.iter())
+            .find(|(item, _)| item.path == path)
+            .and_then(|(_, icon)| dragged_alone(icon, Point::default()));
+        self.start_file_drag(vec![path], picture, from, serial);
     }
 
     /// Drags `paths` as files from `from`, with `picture` under the pointer, for a window,
@@ -836,7 +864,7 @@ impl Nekoland {
         {
             return false;
         }
-        let copy = self.modifiers().ctrl;
+        let copy = self.copying();
         if let Some(folder) = self.desktop_folder_at(pos) {
             drop_into(paths, &folder.path, copy);
         } else if let Some(from) = self.desktop.drag_from.filter(|_| self.config.desktop_free) {
