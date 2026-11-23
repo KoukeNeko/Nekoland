@@ -46,6 +46,8 @@ pub struct Sidebar {
 /// onto it.
 struct Ring {
     root: PathBuf,
+    /// The files rclone still has to upload, when it serves the folder.
+    uploads: gtk::Label,
     eject: Option<gtk::Button>,
     area: gtk::DrawingArea,
     done: Rc<Cell<f64>>,
@@ -108,6 +110,9 @@ impl Sidebar {
     fn show_transfers(&self) {
         for ring in self.rings.borrow().iter() {
             let running = ops::transfer_into(&ring.root);
+            let uploads = hamasen::uploads_into(&ring.root);
+            ring.uploads.set_visible(uploads > 0);
+            ring.uploads.set_label(&format!("上傳中 {uploads}"));
             ring.area.set_visible(running.is_some());
             if let Some(eject) = &ring.eject {
                 eject.set_visible(running.is_none());
@@ -187,6 +192,14 @@ impl Sidebar {
                             let line = self.add_plain_row(&place.icon, &place.label);
                             if hamasen::connecting(&id) {
                                 line.append(&gtk::Spinner::builder().spinning(true).build());
+                                let cancel = gtk::Button::builder()
+                                    .icon_name("process-stop-symbolic")
+                                    .tooltip_text("取消")
+                                    .css_classes(["flat", "circular", "nf-eject"])
+                                    .valign(gtk::Align::Center)
+                                    .build();
+                                cancel.connect_clicked(move |_| hamasen::cancel(&id));
+                                line.append(&cancel);
                             }
                             self.add_server_menu(server);
                             targets.push(Target::Hamasen(server.clone()));
@@ -271,6 +284,11 @@ impl Sidebar {
         let line = row_line();
         line.append(&gtk::Image::from_gicon(icon));
         line.append(&row_label(label));
+        let uploads = gtk::Label::builder()
+            .css_classes(["caption", "dim-label"])
+            .visible(false)
+            .build();
+        line.append(&uploads);
         let eject = mount.filter(|m| m.can_eject() || m.can_unmount()).map(|mount| {
             let eject = gtk::Button::builder()
                 .icon_name("media-eject-symbolic")
@@ -288,6 +306,7 @@ impl Sidebar {
             line.append(&area);
             self.rings.borrow_mut().push(Ring {
                 root,
+                uploads,
                 eject,
                 area,
                 done,
@@ -410,8 +429,11 @@ impl Sidebar {
                 glib::spawn_future_local(async move {
                     let mounted = mounting.await;
                     let Some(sidebar) = weak.upgrade() else { return };
-                    if let Err(why) = mounted {
+                    // Cancelled or dismissed, it is not opened when mounted later.
+                    if !hamasen::is_mounted(&server) {
                         sidebar.opening.take();
+                    }
+                    if let Err(why) = mounted {
                         if let Some(win) = sidebar.win.upgrade() {
                             win.alert(&format!("無法掛載「{}」", server.name), Some(&why));
                         }
@@ -552,16 +574,21 @@ fn eject_mount(win: &Weak<Window>, mount: &gio::Mount) {
     // A folder rclone serves waits for the uploads still on their way, and loses its
     // bookmark with it.
     let all = [mount.clone()];
-    if let Some(server) = browse::hamasen_servers()
-        .into_iter()
-        .find(|s| !s.gvfs && s.mount(&all).is_some())
-    {
+    let server = browse::hamasen_servers().into_iter().find(|s| s.mount(&all).is_some());
+    if let Some(server) = server.clone().filter(|s| !s.gvfs) {
         hamasen::unmount(&window, server);
         return;
+    }
+    let id = server.map(|s| s.id);
+    if let Some(id) = &id {
+        hamasen::releasing(id, true);
     }
     let operation = gtk::MountOperation::new(Some(&window.window));
     let (win, name) = (win.clone(), mount.name());
     let done = move |result: Result<(), glib::Error>| {
+        if let (Err(_), Some(id)) = (&result, &id) {
+            hamasen::releasing(id, false);
+        }
         if let (Err(err), Some(win)) = (result, win.upgrade()) {
             if !err.matches(gio::IOErrorEnum::FailedHandled) {
                 win.alert(&format!("無法退出「{name}」"), Some(err.message()));

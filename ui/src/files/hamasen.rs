@@ -4,11 +4,11 @@
 
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     io::{Read, Write},
     os::unix::net::UnixStream,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
 };
@@ -20,16 +20,104 @@ use serde_json::{Map, Value};
 use crate::{
     alert,
     browse::{self, hamasen_records, hamasen_servers, protocol, Kind, Server, PROTOCOLS},
-    secrets, Window,
+    ops, secrets, Window,
 };
-pub use crate::mount::{connecting, mount};
-use crate::mount::{finish, is_mounted, keyring_item, rc_socket, rclone, run, set_bookmark, spawn, KEYRING_LABEL};
+pub use crate::mount::{cancel, connecting, is_mounted, mount};
+use crate::mount::{finish, keyring_item, rc_socket, rclone, run, set_bookmark, spawn, KEYRING_LABEL};
 
 
 const GUIDE_URL: &str = "https://console.cloud.google.com/apis/credentials";
 /// At login the network, a VPN and the keyring may not be up yet, so it is tried a while.
 const LOGIN_ATTEMPTS: u32 = 20;
 const LOGIN_RETRY: u32 = 15;
+const WATCH_EVERY: u32 = 3;
+
+thread_local! {
+    /// The servers being unmounted from Files, whose going is no lost connection.
+    static RELEASING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// The files rclone still has to upload, by the folder it serves.
+    static UPLOADS: RefCell<HashMap<PathBuf, u64>> = RefCell::new(HashMap::new());
+}
+
+/// Says the server is being unmounted, or with `false` that it stayed.
+pub fn releasing(id: &str, going: bool) {
+    RELEASING.with_borrow_mut(|r| {
+        if going {
+            r.insert(id.to_owned());
+        } else {
+            r.remove(id);
+        }
+    });
+}
+
+/// The files rclone still has to upload into the folder it serves.
+pub fn uploads_into(root: &Path) -> u64 {
+    UPLOADS.with_borrow(|u| u.get(root).copied().unwrap_or(0))
+}
+
+fn mounted_ids(servers: &[Server]) -> HashSet<String> {
+    servers.iter().filter(|s| is_mounted(s)).map(|s| s.id.clone()).collect()
+}
+
+fn notify(app: &adw::Application, key: &str, title: &str) {
+    app.send_notification(Some(key), &gio::Notification::new(title));
+}
+
+/// Says when a server's connection is lost, or rclone has sent on all it took; Files keeps
+/// running for it while a server is mounted, with no window open.
+pub fn watch(app: &adw::Application) {
+    let app = app.clone();
+    let mut mounted = mounted_ids(&hamasen_servers());
+    let mut hold = None;
+    let asking: Rc<RefCell<HashSet<String>>> = Rc::default();
+    glib::timeout_add_seconds_local(WATCH_EVERY, move || {
+        let servers = hamasen_servers();
+        let now = mounted_ids(&servers);
+        RELEASING.with_borrow_mut(|releasing| {
+            for server in servers.iter().filter(|s| mounted.contains(&s.id) && !now.contains(&s.id)) {
+                if !releasing.contains(&server.id) {
+                    notify(&app, &format!("lost-{}", server.id), &format!("「{}」連線中斷", server.name));
+                }
+            }
+            releasing.retain(|id| now.contains(id));
+        });
+        mounted = now;
+        hold = (!mounted.is_empty()).then(|| hold.take().unwrap_or_else(|| app.hold()));
+
+        let served: Vec<&Server> = servers.iter().filter(|s| !s.gvfs && mounted.contains(&s.id)).collect();
+        let roots: HashSet<PathBuf> = served.iter().filter_map(|s| s.location.path()).collect();
+        let gone = UPLOADS.with_borrow_mut(|u| {
+            let before = u.len();
+            u.retain(|root, _| roots.contains(root));
+            u.len() != before
+        });
+        if gone {
+            ops::transfers_changed();
+        }
+        // rclone answers slowly while it is busy listing, so off the main loop, once at a time.
+        for server in served {
+            let Some(root) = server.location.path() else { continue };
+            if !asking.borrow_mut().insert(server.id.clone()) {
+                continue;
+            }
+            let (app, asking, server) = (app.clone(), asking.clone(), server.clone());
+            glib::spawn_future_local(async move {
+                let socket = rc_socket(&server.id);
+                let count = gio::spawn_blocking(move || pending_uploads(&socket)).await.unwrap_or(0);
+                asking.borrow_mut().remove(&server.id);
+                let before = UPLOADS.with_borrow_mut(|u| u.insert(root, count)).unwrap_or(0);
+                if before == count {
+                    return;
+                }
+                if count == 0 {
+                    notify(&app, &format!("uploaded-{}", server.id), &format!("「{}」上傳完成", server.name));
+                }
+                ops::transfers_changed();
+            });
+        }
+        glib::ControlFlow::Continue
+    });
+}
 
 
 fn save_records(records: &[Map<String, Value>]) -> Result<(), String> {
@@ -71,11 +159,13 @@ pub fn unmount(win: &Rc<Window>, server: Server) {
 
 fn eject(win: &Rc<Window>, server: Server) {
     let weak = Rc::downgrade(win);
+    releasing(&server.id, true);
     glib::spawn_future_local(async move {
         let path = server.location.path().expect("rclone mounts on a folder");
         match run(&["fusermount3".as_ref(), "-u".as_ref(), path.as_os_str()], &[]).await {
             Ok(()) => set_bookmark(&server, false),
             Err(why) => {
+                releasing(&server.id, false);
                 if let Some(win) = weak.upgrade() {
                     win.alert(&format!("無法退出「{}」", server.name), Some(&why));
                 }

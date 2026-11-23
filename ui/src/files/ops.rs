@@ -498,7 +498,7 @@ pub fn watch_transfers(watcher: impl Fn() -> bool + 'static) {
     WATCHERS.with(|w| w.borrow_mut().push(Box::new(watcher)));
 }
 
-fn transfers_changed() {
+pub fn transfers_changed() {
     WATCHERS.with(|w| w.borrow_mut().retain(|watcher| watcher()));
 }
 

@@ -3,7 +3,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::HashMap,
     ffi::OsStr,
     future::Future,
     os::unix::fs::MetadataExt,
@@ -29,12 +29,19 @@ pub fn keyring_item(id: &str) -> secrets::Attributes {
     ])
 }
 thread_local! {
-    /// The servers being mounted now, by id.
-    static CONNECTING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// The servers being mounted now, by id, each with what stops it.
+    static CONNECTING: RefCell<HashMap<String, gio::Cancellable>> = RefCell::new(HashMap::new());
 }
 
 pub fn connecting(id: &str) -> bool {
-    CONNECTING.with_borrow(|c| c.contains(id))
+    CONNECTING.with_borrow(|c| c.contains_key(id))
+}
+
+/// Stops mounting the server, which is no failure.
+pub fn cancel(id: &str) {
+    if let Some(cancellable) = CONNECTING.with_borrow(|c| c.get(id).cloned()) {
+        cancellable.cancel();
+    }
 }
 pub fn is_mounted(server: &Server) -> bool {
     if server.gvfs {
@@ -108,23 +115,30 @@ pub async fn run(argv: &[&OsStr], env: &[(&str, String)]) -> Result<(), String> 
 /// Mounts the server, asking for a password in GTK's own way when the kept one does not
 /// do. Cancelled, dismissed or mounted already is no failure; a failure says why.
 pub fn mount(server: &Server, parent: Option<gtk::Window>) -> impl Future<Output = Result<(), String>> {
-    let fresh = CONNECTING.with_borrow_mut(|c| c.insert(server.id.clone()));
+    let cancellable = gio::Cancellable::new();
+    let fresh = CONNECTING.with_borrow_mut(|c| {
+        if c.contains_key(&server.id) {
+            return false;
+        }
+        c.insert(server.id.clone(), cancellable.clone());
+        true
+    });
     let server = server.clone();
     async move {
         if !fresh {
             return Ok(());
         }
         let mounted = if server.gvfs {
-            mount_gvfs(&server, parent.as_ref()).await
+            mount_gvfs(&server, parent.as_ref(), &cancellable).await
         } else {
-            mount_rclone(&server).await
+            mount_rclone(&server, &cancellable).await
         };
         CONNECTING.with_borrow_mut(|c| c.remove(&server.id));
         mounted
     }
 }
 
-async fn mount_gvfs(server: &Server, parent: Option<&gtk::Window>) -> Result<(), String> {
+async fn mount_gvfs(server: &Server, parent: Option<&gtk::Window>, cancellable: &gio::Cancellable) -> Result<(), String> {
     let kept = secrets::lookup(&keyring_item(&server.id)).await.unwrap_or_else(|err| {
         eprintln!("nekoland-files: no password for {} from the keyring: {err}", server.name);
         None
@@ -144,11 +158,14 @@ async fn mount_gvfs(server: &Server, parent: Option<&gtk::Window>) -> Result<(),
             op.stop_signal_emission_by_name("ask-password");
         });
     }
-    match server
+    let mounting = server
         .location
-        .mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation))
-        .await
-    {
+        .mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation));
+    // Dropped when cancelled, the mount stops with it.
+    let Ok(mounted) = gio::CancellableFuture::new(mounting, cancellable.clone()).await else {
+        return Ok(());
+    };
+    match mounted {
         Ok(()) => Ok(()),
         Err(err) if err.matches(gio::IOErrorEnum::Cancelled) || err.matches(gio::IOErrorEnum::FailedHandled) => Ok(()),
         Err(err) if err.matches(gio::IOErrorEnum::AlreadyMounted) && is_mounted(server) => Ok(()),
@@ -165,7 +182,7 @@ async fn mount_gvfs(server: &Server, parent: Option<&gtk::Window>) -> Result<(),
     }
 }
 
-async fn mount_rclone(server: &Server) -> Result<(), String> {
+async fn mount_rclone(server: &Server, cancellable: &gio::Cancellable) -> Result<(), String> {
     let path = server.location.path().expect("rclone mounts on a folder");
     std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     // S3's keys go in the environment, not on the command line or in rclone.conf.
@@ -178,7 +195,13 @@ async fn mount_rclone(server: &Server) -> Result<(), String> {
     } else {
         Vec::new()
     };
-    let rc = format!("--rc-addr=unix://{}", rc_socket(&server.id).display());
+    let socket = rc_socket(&server.id);
+    // rclone leaves its socket behind when its folder is unmounted from outside or it
+    // stops, and will not start on it again; a socket nothing answers on is that one.
+    if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        let _ = std::fs::remove_file(&socket);
+    }
+    let rc = format!("--rc-addr=unix://{}", socket.display());
     let (rclone, remote) = (rclone(), rclone_remote(server));
     // --daemon returns once the folder is mounted.
     let argv: Vec<&OsStr> = [
@@ -197,7 +220,14 @@ async fn mount_rclone(server: &Server) -> Result<(), String> {
         path.as_os_str(),
     ]
     .to_vec();
-    run(&argv, &env).await?;
+    let process = spawn(&argv, &env).map_err(|e| e.message().to_owned())?;
+    let stopped = process.clone();
+    cancellable.connect_cancelled_local(move |_| stopped.force_exit());
+    let mounted = finish(&process).await;
+    if cancellable.is_cancelled() {
+        return Ok(());
+    }
+    mounted?;
     set_bookmark(server, true);
     Ok(())
 }
