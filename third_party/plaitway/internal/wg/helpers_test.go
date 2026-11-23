@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
@@ -585,6 +586,9 @@ func (p *pair) up() {
 	p.client.start()
 	p.client.waitState(tunnel.StateUp)
 	p.server.waitState(tunnel.StateUp)
+	// The server drops an initiation within HandshakeInitationRate of the last
+	// one as a flood, so a Rebind straight after this would wait RekeyTimeout.
+	time.Sleep(time.Until(p.client.stats().lastHandshake.Add(device.HandshakeInitationRate)))
 }
 
 func sendPacket(t *testing.T, from, to *tuntest.ChannelTUN, packet []byte) {
