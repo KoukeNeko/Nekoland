@@ -207,7 +207,16 @@ impl Nekoland {
     }
 
     fn title_rect(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
-        let location = self.space.element_location(window)?;
+        self.title_rect_at(window, self.space.element_location(window)?)
+    }
+
+    /// Where the bar is over a window at `location`, which a window on its way into the Dock
+    /// is no longer in the space at.
+    fn title_rect_at(
+        &self,
+        window: &Window,
+        location: Point<i32, Logical>,
+    ) -> Option<Rectangle<i32, Logical>> {
         if let Some(height) = self.covered_title(window) {
             let room = self.title_room(window);
             return Some(Rectangle::new(
@@ -367,6 +376,26 @@ pub fn title_element(
         f64::from(shown.size.h) / f64::from(actual.size.h),
     ));
     Some(SceneElement::ZoomedPicture(smithay::backend::renderer::element::utils::RescaleRenderElement::from_element(bar, origin, factor)))
+}
+
+/// The bar over a window at `location` though not in the space, as one on its way into the
+/// Dock is, drawn with `origin` at the top left.
+pub fn title_element_at(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    location: Point<i32, Logical>,
+    origin: Point<i32, Logical>,
+    scale: f64,
+) -> Option<SceneElement> {
+    let title = state.title_rect_at(window, location)?;
+    let picture = state.title_picture(window, title.size.w, title.size.h)?;
+    let at: Point<i32, Physical> = (title.loc - origin).to_physical_precise_round(scale);
+    let at = at.to_f64();
+    let buffer = &picture.buffer;
+    MemoryRenderBufferRenderElement::from_buffer(renderer, at, buffer, None, None, None, Kind::Unspecified)
+        .ok()
+        .map(SceneElement::Picture)
 }
 
 /// The colours of GTK's header bar: its background, what is written on it, and the line

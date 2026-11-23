@@ -1,21 +1,27 @@
 //! What an output shows, as render elements. Both backends draw the same scene.
 
 use smithay::{
-    backend::renderer::{
-        element::{
-            memory::MemoryRenderBufferRenderElement,
-            render_elements,
-            solid::SolidColorRenderElement,
-            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
-            AsRenderElements, Element, Id, Kind,
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            damage::OutputDamageTracker,
+            element::{
+                memory::MemoryRenderBufferRenderElement,
+                render_elements,
+                solid::SolidColorRenderElement,
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                texture::{TextureBuffer, TextureRenderElement},
+                utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
+                AsRenderElements, Element, Id, Kind,
+            },
+            gles::{element::PixelShaderElement, GlesRenderer, GlesTexture},
+            utils::{CommitCounter, RendererSurfaceStateUserData},
+            Bind, Color32F, Offscreen,
         },
-        gles::{element::PixelShaderElement, GlesRenderer},
-        utils::{CommitCounter, RendererSurfaceStateUserData},
     },
     desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
     output::Output,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
         shell::wlr_layer::Layer,
@@ -48,6 +54,7 @@ pub(crate) const OUTLINE_COLOR: [f32; 4] = [0.04, 0.52, 1.0, 1.0];
 const TOP_PANEL_MAX_HEIGHT: i32 = 96;
 
 type SurfaceElement = WaylandSurfaceRenderElement<GlesRenderer>;
+type Snapshot = TextureRenderElement<GlesTexture>;
 
 render_elements! {
     pub SceneElement<=GlesRenderer>;
@@ -59,6 +66,7 @@ render_elements! {
     RoundedThumbnail=RelocateRenderElement<RescaleRenderElement<crate::rounded::RoundedSurface>>,
     Desktop=CropRenderElement<RelocateRenderElement<RescaleRenderElement<SurfaceElement>>>,
     BentGlass=CropRenderElement<RelocateRenderElement<RescaleRenderElement<Pane>>>,
+    BentPicture=CropRenderElement<RelocateRenderElement<RescaleRenderElement<Snapshot>>>,
     Solid=SolidColorRenderElement,
     Ghost=GhostElement,
     ZoomedPicture=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
@@ -530,7 +538,7 @@ fn switcher_front(
         })
         .collect();
     for (window, rect, _, _) in thumbnails {
-        elements.extend(window_fitted(renderer, window, None, *rect, output_loc, scale));
+        elements.extend(window_fitted(renderer, window, *rect, output_loc, scale));
     }
     elements
 }
@@ -591,8 +599,12 @@ fn dock_front(
         .dock_genies()
         .into_iter()
         .flat_map(|genie| {
+            let shown = genie_shown(state, &genie.window, genie.from);
+            let Some(picture) = window_picture(state, renderer, &genie.window, shown, scale) else {
+                return Vec::new();
+            };
             // The glass its see-through parts show, of what is where it was, goes with it.
-            let pane = glass.zip(genie_glass(state, &genie.window, genie.from, output_loc, scale)).and_then(
+            let pane = glass.zip(genie_glass(state, &genie.window, shown, output_loc, scale)).and_then(
                 |(glass, (area, radius))| glass.window_pane(window_glass_id(&genie.window), area, radius),
             )
             .map(Pane::circular);
@@ -600,24 +612,23 @@ fn dock_front(
                 // Straight to its place in the Dock, shrinking as it goes.
                 let t = 1.0 - (1.0 - genie.progress.clamp(0.0, 1.0)).powi(3);
                 let mix = |from: i32, to: i32| (f64::from(from) + f64::from(to - from) * t).round() as i32;
-                let (from, into) = (genie.from, genie.into);
+                let (from, into) = (shown, genie.into);
                 let rect = Rectangle::new(
                     (mix(from.loc.x, into.loc.x), mix(from.loc.y, into.loc.y)).into(),
                     (mix(from.size.w, into.size.w), mix(from.size.h, into.size.h)).into(),
                 );
-                return window_fitted(renderer, &genie.window, pane.as_ref(), rect, output_loc, scale);
+                let Some((factor, fitted)) = fit(shown.size, rect) else {
+                    return Vec::new();
+                };
+                let crop =
+                    Rectangle::new(fitted.loc - output_loc, fitted.size).to_physical_precise_round(scale);
+                return bent_picture(&picture, shown.size, factor, crop.loc, scale, crop)
+                    .into_iter()
+                    .chain(pane.and_then(|pane| bent_glass(&pane, factor, crop.loc, scale, crop)))
+                    .collect();
             }
-            draw_genie(
-                renderer,
-                genie.frame,
-                &genie.window,
-                pane.as_ref(),
-                genie.from,
-                genie.into,
-                genie.progress,
-                output_loc,
-                scale,
-            )
+            let (into, progress) = (genie.into, genie.progress);
+            draw_genie(genie.frame, &picture, pane.as_ref(), shown, into, progress, output_loc, scale)
         })
         .collect();
     elements.extend(state.dock_badge_pictures().into_iter().filter_map(|(badge, at)| {
@@ -634,7 +645,7 @@ fn dock_front(
         .map(SceneElement::Picture)
     }));
     for (window, rect) in state.dock_thumbnails() {
-        elements.extend(window_fitted(renderer, &window, None, rect, output_loc, scale));
+        elements.extend(window_fitted(renderer, &window, rect, output_loc, scale));
     }
     elements
 }
@@ -652,9 +663,8 @@ const GENIE_BEND: f64 = 0.4;
 /// the funnel's width where it is. All this is worked out in the Dock's turned `frame`, so
 /// that into a side Dock the window flows sideways, in bands from top to bottom.
 fn draw_genie(
-    renderer: &mut GlesRenderer,
     frame: Frame,
-    window: &Window,
+    picture: &TextureBuffer<GlesTexture>,
     pane: Option<&Pane>,
     from: Rectangle<i32, Logical>,
     into: Rectangle<i32, Logical>,
@@ -662,8 +672,8 @@ fn draw_genie(
     output_loc: Point<i32, Logical>,
     output_scale: f64,
 ) -> Vec<SceneElement> {
-    let geometry = window.geometry();
-    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+    let size = from.size;
+    if size.w <= 0 || size.h <= 0 {
         return Vec::new();
     }
     let progress = progress.clamp(0.0, 1.0);
@@ -676,8 +686,8 @@ fn draw_genie(
     let (from, into) = (frame.unrect(from.to_f64()), frame.unrect(into.to_f64()));
     // The window's length down the turned output, across which the bands are cut.
     let length = match frame.side {
-        DockPosition::Bottom => f64::from(geometry.size.h),
-        _ => f64::from(geometry.size.w),
+        DockPosition::Bottom => f64::from(size.h),
+        _ => f64::from(size.w),
     };
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     // How far a height on screen is down the funnel, from the window's top to its picture's.
@@ -707,12 +717,12 @@ fn draw_genie(
         };
         let (scale, offset, grown) = match frame.side {
             DockPosition::Bottom => {
-                let scale = Scale::from((band.size.w / f64::from(geometry.size.w), band.size.h / part));
+                let scale = Scale::from((band.size.w / f64::from(size.w), band.size.h / part));
                 let offset = Point::from((band.loc.x, band.loc.y - start * scale.y));
                 (scale, offset, Size::from((0.0, 1.0)))
             }
             _ => {
-                let scale = Scale::from((band.size.w / part, band.size.h / f64::from(geometry.size.h)));
+                let scale = Scale::from((band.size.w / part, band.size.h / f64::from(size.h)));
                 let offset = Point::from((band.loc.x - start * scale.x, band.loc.y));
                 (scale, offset, Size::from((1.0, 0.0)))
             }
@@ -722,30 +732,106 @@ fn draw_genie(
         let crop = Rectangle::<f64, Logical>::new(band.loc - output_loc.to_f64(), band.size + grown)
             .to_physical(output_scale)
             .to_i32_round();
-        // Each band draws the window anew; its surfaces' elements are not copied.
-        let surfaces = AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
-            window,
-            renderer,
-            Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical_precise_round(output_scale),
-            Scale::from(output_scale),
-            1.0,
-        );
-        for surface in surfaces {
-            let scaled = RescaleRenderElement::from_element(surface, (0, 0).into(), scale);
-            let placed = RelocateRenderElement::from_element(
-                scaled,
-                offset.to_physical(output_scale).to_i32_round(),
-                Relocate::Relative,
-            );
-            elements.extend(
-                CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::Desktop),
-            );
-        }
         let offset = offset.to_physical(output_scale).to_i32_round();
+        elements.extend(bent_picture(picture, size, scale, offset, output_scale, crop));
         glass.extend(pane.and_then(|pane| bent_glass(pane, scale, offset, output_scale, crop)));
     }
     elements.extend(glass);
     elements
+}
+
+/// `picture` of a window `size` large, stretched by `scale` and put at `at`, as much of it as
+/// is within `crop`.
+fn bent_picture(
+    picture: &TextureBuffer<GlesTexture>,
+    size: Size<i32, Logical>,
+    scale: impl Into<Scale<f64>>,
+    at: Point<i32, Physical>,
+    output_scale: f64,
+    crop: Rectangle<i32, Physical>,
+) -> Option<SceneElement> {
+    // The picture is as many pixels as the window is at `output_scale`; without its own
+    // source the element would read only `size` of them.
+    let pixels: Size<i32, Physical> = size.to_physical_precise_round(output_scale);
+    let src = Rectangle::from_size(Size::from((f64::from(pixels.w), f64::from(pixels.h))));
+    let element =
+        Snapshot::from_texture_buffer((0.0, 0.0), picture, None, Some(src), Some(size), Kind::Unspecified);
+    let scaled = RescaleRenderElement::from_element(element, (0, 0).into(), scale);
+    let placed = RelocateRenderElement::from_element(scaled, at, Relocate::Relative);
+    CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::BentPicture)
+}
+
+/// Where a window on its way into the Dock or out is shown when it is not minimized, at
+/// `from`: without what is trimmed off it, with the compositor's bar over it.
+fn genie_shown(state: &Nekoland, window: &Window, from: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    state.with_title(window, Rectangle::new(from.loc, from.size - crate::frame::trim(window)))
+}
+
+/// A window as it is drawn where it is `shown`: under the compositor's bar and with the
+/// corners it cuts, in a texture of its own for its way into the Dock to bend.
+fn window_picture(
+    state: &Nekoland,
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    shown: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Option<TextureBuffer<GlesTexture>> {
+    let size: Size<i32, Physical> = shown.size.to_physical_precise_round(scale);
+    if size.w <= 0 || size.h <= 0 {
+        return None;
+    }
+    // Where the window's own top left is, under the bar.
+    let own = state.without_title(window, shown).loc;
+    let location: Point<i32, Physical> =
+        (own - shown.loc - window.geometry().loc).to_physical_precise_round(scale);
+    let corner = (f64::from(WINDOW_RADIUS) * crate::windows::roundness(window).0).round() as i32;
+    let rounding = (corner > 0 && state.cuts_corners(window))
+        .then(|| {
+            let radius = (f64::from(corner) * scale).round() as i32;
+            crate::rounded::Rounding::new(renderer, radius, Rectangle::from_size(size), scale, false)
+        })
+        .flatten();
+    let mut elements: Vec<SceneElement> =
+        crate::frame::title_element_at(state, renderer, window, own, shown.loc, scale).into_iter().collect();
+    let surfaces = AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
+        window,
+        renderer,
+        location,
+        Scale::from(scale),
+        1.0,
+    );
+    elements.extend(surfaces.into_iter().map(|surface| match &rounding {
+        Some(rounding) => SceneElement::Rounded(rounding.apply(surface)),
+        None => SceneElement::Surface(surface),
+    }));
+    let drawn = (|| -> Result<GlesTexture, Box<dyn std::error::Error>> {
+        let mut texture: GlesTexture =
+            Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, (size.w, size.h).into())?;
+        let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+        let mut target = renderer.bind(&mut texture)?;
+        tracker
+            .render_output(renderer, &mut target, 0, &elements, Color32F::TRANSPARENT)
+            .map_err(|err| format!("{err:?}"))?;
+        drop(target);
+        Ok(texture)
+    })();
+    let texture = drawn.inspect_err(|err| tracing::warn!("window picture: {err}")).ok()?;
+    Some(TextureBuffer::from_texture(renderer, texture, 1, Transform::Normal, None))
+}
+
+/// How much smaller something `size` large is drawn to fit `rect`, and where it then is, in
+/// the middle of it.
+fn fit(size: Size<i32, Logical>, rect: Rectangle<i32, Logical>) -> Option<(f64, Rectangle<i32, Logical>)> {
+    if size.w <= 0 || size.h <= 0 {
+        return None;
+    }
+    let factor = (f64::from(rect.size.w) / f64::from(size.w)).min(f64::from(rect.size.h) / f64::from(size.h));
+    let fitted = Size::from((
+        (f64::from(size.w) * factor).round() as i32,
+        (f64::from(size.h) * factor).round() as i32,
+    ));
+    let at = rect.loc + Point::from(((rect.size.w - fitted.w) / 2, (rect.size.h - fitted.h) / 2));
+    Some((factor, Rectangle::new(at, fitted)))
 }
 
 /// `pane`, the glass behind a window and its edge, stretched by `scale` as the window is and
@@ -796,23 +882,16 @@ fn genie_glass(
 fn window_fitted(
     renderer: &mut GlesRenderer,
     window: &Window,
-    pane: Option<&Pane>,
     rect: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Vec<SceneElement> {
     let geometry = window.geometry();
-    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+    let Some((factor, fitted)) = fit(geometry.size, rect) else {
         return Vec::new();
-    }
-    let factor = (f64::from(rect.size.w) / f64::from(geometry.size.w))
-        .min(f64::from(rect.size.h) / f64::from(geometry.size.h));
-    let size = Size::from((
-        (f64::from(geometry.size.w) * factor).round() as i32,
-        (f64::from(geometry.size.h) * factor).round() as i32,
-    ));
-    let at = rect.loc + Point::from(((rect.size.w - size.w) / 2, (rect.size.h - size.h) / 2)) - output_loc;
-    let crop = Rectangle::new(at, size).to_physical_precise_round(scale);
+    };
+    let at = fitted.loc - output_loc;
+    let crop = Rectangle::new(at, fitted.size).to_physical_precise_round(scale);
     AsRenderElements::<GlesRenderer>::render_elements::<SurfaceElement>(
         window,
         renderer,
@@ -830,7 +909,6 @@ fn window_fitted(
         );
         CropRenderElement::from_element(placed, scale, crop).map(SceneElement::Desktop)
     })
-    .chain(pane.and_then(|pane| bent_glass(pane, factor, at.to_physical_precise_round(scale), scale, crop)))
     .collect()
 }
 
@@ -1409,8 +1487,9 @@ fn windows_on_glass(
     if let Some(glass) = glass {
         // A window on its way into the Dock keeps the glass of what is under where it was.
         for genie in state.dock_genies() {
+            let shown = genie_shown(state, &genie.window, genie.from);
             let (Some((area, _)), Some(size)) =
-                (genie_glass(state, &genie.window, genie.from, output_loc, scale), output_size)
+                (genie_glass(state, &genie.window, shown, output_loc, scale), output_size)
             else {
                 continue;
             };
