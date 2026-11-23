@@ -12,6 +12,7 @@ mod display;
 mod edid;
 mod focus;
 mod imagegen;
+mod ipc;
 mod keys;
 mod network;
 mod printers;
@@ -106,6 +107,8 @@ const WALLPAPER_DIRS: [&str; 3] = [
     "/usr/share/backgrounds",
 ];
 const WALLPAPERS: usize = 8;
+/// How often a slider being dragged passes its value on.
+const SLIDER_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 const SINK: &str = "@DEFAULT_AUDIO_SINK@";
 /// What PipeWire calls the sound a program is playing.
 const PLAYBACK_STREAM: &str = "Stream/Output/Audio";
@@ -115,6 +118,10 @@ const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 fn output(program: &str, args: &[&str]) -> Option<String> {
     if let ("gsettings", ["set" | "reset", schema, key, ..]) = (program, args) {
         WROTE.with_borrow_mut(|wrote| wrote.insert(format!("{schema} {key}")));
+    }
+    // Straight over the socket rather than through a `nekoland msg` process per message.
+    if let ("nekoland", ["msg", message]) = (program, args) {
+        return ipc::msg(message);
     }
     let result = Command::new(program)
         .args(args)
@@ -1153,6 +1160,10 @@ fn scale_row(
     scale.set_width_request(220);
     scale.set_valign(gtk::Align::Center);
     let shown_label = label.clone();
+    let changed = Rc::new(changed);
+    // The value a drag has reached and not yet passed on: a drag applies its value at most
+    // every `SLIDER_EVERY`, each change being a reload of the compositor's settings.
+    let unsent: Rc<Cell<Option<f64>>> = Rc::default();
     scale.connect_value_changed(move |scale| {
         // A click on the trough lands between steps; it is put on the nearest one.
         let snapped = low + ((scale.value() - low) / step).round() * step;
@@ -1161,7 +1172,14 @@ fn scale_row(
             return;
         }
         shown_label.set_label(&shown(scale.value()));
-        changed(scale.value());
+        if unsent.replace(Some(scale.value())).is_none() {
+            let (changed, unsent) = (changed.clone(), unsent.clone());
+            glib::timeout_add_local_once(SLIDER_EVERY, move || {
+                if let Some(value) = unsent.take() {
+                    changed(value);
+                }
+            });
+        }
     });
     let row = adw::ActionRow::builder().title(title).build();
     row.add_suffix(&line(8, &[label.upcast_ref(), scale.upcast_ref()]));
