@@ -185,8 +185,11 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         redraw.ping();
     }
     match message {
-        // The configuration changed: the settings application wrote it.
-        "reload" => state.reload_config(),
+        // The configuration changed, or the icons did: their restyle asks for them anew.
+        "reload" => {
+            state.reload_config();
+            state.forget_icons();
+        }
         // `action ID`: one of the shortcuts' actions, as its keys would do it: the same
         // actions, whatever program asks for them.
         action if argument(action, "action").is_some() => {

@@ -519,22 +519,25 @@ impl Nekoland {
         let old_wallpaper = (self.desktop_wallpaper(self.workspaces.active), self.config.wallpaper_mode);
         let old_keyboard = self.config.keyboard();
         let old_font = std::mem::take(&mut self.config.font);
+        let old_icon_theme = std::mem::take(&mut self.config.icon_theme);
         self.config = Config::load();
         self.turn_with_orientation();
         // What the bar and the Dock show may have changed with it.
         self.dock.drawn = None;
         self.menu_bar.drawn = None;
-        // Icons already drawn are kept by name; the theme, or the files in it, may be new.
-        self.dock.icons.clear();
-        self.app_stock.clear();
-        // So are the desktop entries, as of an application installed since it was first seen.
+        // Finding every icon again walks the themes' folders for seconds, so only a new theme
+        // does; Settings saves here at each change.
+        if self.config.icon_theme != old_icon_theme {
+            self.forget_icons();
+        }
+        // The desktop entries, as of an application installed since it was first seen.
         self.apps = Apps::default();
-        crate::text::set_icon_theme(&self.config.icon_theme);
         self.draw_lock_shortcuts();
         if self.config.font != old_font {
-            // shortcut: other text than the bar's and the Dock's keeps the old font until it is
-            // next drawn.
+            // shortcut: other text than the bar's, the Dock's and the applications' names keeps
+            // the old font until it is next drawn.
             crate::text::set_family(&self.config.font);
+            self.app_stock.clear();
         }
         let keyboard = self.seat.get_keyboard().unwrap();
         let (delay, rate) = self.config.repeat();
@@ -554,6 +557,13 @@ impl Nekoland {
         for device in devices {
             self.add_pointer_device(device);
         }
+    }
+
+    /// Draws icons anew from the theme, whose files may have changed, as the next ones shown.
+    pub fn forget_icons(&mut self) {
+        self.dock.icons.clear();
+        self.app_stock.clear();
+        crate::text::set_icon_theme(&self.config.icon_theme);
     }
 
     /// Magnifies the screen more or less, and keeps the level for next time, without reading
