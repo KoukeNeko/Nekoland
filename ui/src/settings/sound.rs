@@ -213,7 +213,7 @@ pub(crate) fn default_clock(dump: &str) -> Option<(u64, u64)> {
 
 /// The rate and buffer the first device driving PipeWire runs with, in `pw-top`'s last
 /// look; None when nothing plays or records. A driver's line is the one not marked as
-/// following another with "+" or "=".
+/// following another with "+" or "=", and one at a rate of 0 drives nothing.
 pub(crate) fn running_clock(text: &str) -> Option<(u64, u64)> {
     let last = text.rsplit_once("QUANT")?.1;
     last.lines().find_map(|line| {
@@ -221,7 +221,8 @@ pub(crate) fn running_clock(text: &str) -> Option<(u64, u64)> {
         if fields.first() != Some(&"R") || fields.iter().any(|field| *field == "+" || *field == "=") {
             return None;
         }
-        Some((fields.get(3)?.parse().ok()?, fields.get(2)?.parse().ok()?))
+        let clock: (u64, u64) = (fields.get(3)?.parse().ok()?, fields.get(2)?.parse().ok()?);
+        (clock.0 > 0 && clock.1 > 0).then_some(clock)
     })
 }
 

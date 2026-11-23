@@ -3345,6 +3345,10 @@ mod tests {
                        R   62    256  44100  37.1us  17.7us  0.00  0.00    0    S16LE 2 44100  = pw-play\n";
         assert_eq!(running_clock(&format!("{header}{playing}{header}{idle}")), None);
         assert_eq!(running_clock(&format!("{header}{idle}{header}{playing}")), Some((48000, 1024)));
+        // A device open with nothing on it runs as a driver of nothing, at no rate.
+        let unclocked = "R   60      0      0   0.0us   0.0us  ???   ???     0    S24LE 2 96000 alsa_input.mic\n";
+        assert_eq!(running_clock(&format!("{header}{unclocked}{playing}")), Some((48000, 1024)));
+        assert_eq!(running_clock(&format!("{header}{unclocked}")), None);
         assert_eq!(clock_text((48000, 1024)), "48000 Hz · 緩衝區 1024 個取樣（21.3 毫秒）");
     }
 
