@@ -68,6 +68,23 @@ fn preferences(app: &adw::Application) {
     images.add(&zoom);
     let editing = adw::PreferencesGroup::new();
     editing.add(&switch("拷貝主體", prefs.copy_subject, |prefs, on| prefs.copy_subject = on));
+    if subject::model_path().exists() {
+        let model = adw::ActionRow::builder().title("拷貝主體的模型").subtitle(subject::MODEL_SIZE).build();
+        let remove = gtk::Button::builder().icon_name("user-trash-symbolic").tooltip_text("刪除").valign(gtk::Align::Center).css_classes(["flat"]).build();
+        let (row, group) = (model.downgrade(), editing.downgrade());
+        remove.connect_clicked(move |button| {
+            let (row, group) = (row.clone(), group.clone());
+            alert::confirm(button, "刪除拷貝主體的模型？", Some("下次拷貝主體時會再詢問是否下載。"), "刪除", move || {
+                let (Some(row), Some(group)) = (row.upgrade(), group.upgrade()) else { return };
+                match std::fs::remove_file(subject::model_path()) {
+                    Ok(()) => group.remove(&row),
+                    Err(err) => alert::notice(&group, "無法刪除模型", Some(&err.to_string())),
+                }
+            });
+        });
+        model.add_suffix(&remove);
+        editing.add(&model);
+    }
     images.add(&editing);
 
     let pdf = adw::PreferencesPage::builder().title("PDF").icon_name("x-office-document-symbolic").build();
