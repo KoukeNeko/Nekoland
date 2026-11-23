@@ -966,14 +966,18 @@ impl Config {
     /// The size the display named `display` is asked for, and the rate in hertz if one is
     /// named.
     pub fn wanted_mode(&self, display: &str) -> Option<((u16, u16), Option<u32>)> {
-        let mode = self.display_modes.get(display).or(self.mode.as_ref())?.as_str();
-        let (size, rate) = match mode.split_once('@') {
-            Some((size, rate)) => (size, Some(rate.trim().parse().ok()?)),
-            None => (mode, None),
-        };
-        let (width, height) = size.split_once('x')?;
-        Some(((width.trim().parse().ok()?, height.trim().parse().ok()?), rate))
+        parse_mode(self.display_modes.get(display).or(self.mode.as_ref())?)
     }
+}
+
+/// `WIDTHxHEIGHT` or `WIDTHxHEIGHT@HZ`: the size, and the rate in hertz if one is named.
+pub fn parse_mode(mode: &str) -> Option<((u16, u16), Option<u32>)> {
+    let (size, rate) = match mode.split_once('@') {
+        Some((size, rate)) => (size, Some(rate.trim().parse().ok()?)),
+        None => (mode, None),
+    };
+    let (width, height) = size.split_once('x')?;
+    Some(((width.trim().parse().ok()?, height.trim().parse().ok()?), rate))
 }
 
 pub fn xkb([layout, variant, options]: &[String; 3]) -> smithay::input::keyboard::XkbConfig<'_> {

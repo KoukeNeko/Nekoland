@@ -112,6 +112,11 @@ pub struct Nekoland {
     /// Every display plugged in, the main one first, shown or not; empty where the backend has
     /// only the outputs on the desktop.
     pub connected_outputs: Vec<Output>,
+    /// The size and rate a Sunshine client asked for while it streams, as `nekoland msg
+    /// stream-mode` set it: the remote screen takes it, and the main display the mode
+    /// nearest it. Never kept in the settings, so a stream that ends uncleanly lasts only
+    /// until Nekoland restarts.
+    pub stream_mode: Option<((u16, u16), Option<u32>)>,
     /// Where the window being dragged goes if it is let go of now.
     pub snap: crate::windows::SnapPreview,
     pub overview: Option<Overview>,
@@ -267,6 +272,7 @@ impl Nekoland {
             orientation: None,
             turned: None,
             connected_outputs: Vec::new(),
+            stream_mode: None,
             snap: Default::default(),
             overview: None,
             app_stock: Default::default(),

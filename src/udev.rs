@@ -176,7 +176,7 @@ pub fn init_udev(
         displays: HashMap::new(),
         globals: HashMap::new(),
         scanner: DrmScanner::new(),
-        applied: applied_settings(&state.config),
+        applied: applied_settings(&state.config, state.stream_mode),
         gamma: HashMap::new(),
         ramps: HashMap::new(),
         filters: HashMap::new(),
@@ -363,7 +363,7 @@ fn render(
     state.refresh_notices();
     state.refresh_fps();
     let mut guard = udev.borrow_mut();
-    if guard.applied != applied_settings(&state.config) {
+    if guard.applied != applied_settings(&state.config, state.stream_mode) {
         apply_display_settings(&mut guard, state);
     }
     let Udev {
@@ -523,7 +523,7 @@ fn rescan(udev: &mut Udev, state: &mut Nekoland) -> std::io::Result<()> {
 fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, crtc: crtc::Handle) -> Result<(), String> {
     let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
     let modes = connector.modes();
-    let drm_mode = choose_mode(&name, modes, &state.config).ok_or(format!("{name} has no modes"))?;
+    let drm_mode = choose_mode(&name, modes, &state.config, None).ok_or(format!("{name} has no modes"))?;
     let mode = Mode::from(drm_mode);
     let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
 
@@ -605,8 +605,25 @@ fn disconnect(udev: &mut Udev, state: &mut Nekoland, crtc: crtc::Handle) {
 }
 
 /// The mode the settings ask for, at its fastest rate unless they name one; the display's
-/// preferred mode otherwise.
-fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode> {
+/// preferred mode otherwise. While a Sunshine client streams, `stream` is its size and rate,
+/// and the mode nearest it is chosen instead.
+fn choose_mode(
+    name: &str,
+    modes: &[DrmMode],
+    config: &Config,
+    stream: Option<((u16, u16), Option<u32>)>,
+) -> Option<DrmMode> {
+    if let Some((wanted, rate)) = stream {
+        let sizes: Vec<(u16, u16)> = modes.iter().map(DrmMode::size).collect();
+        let size = nearest_size(&sizes, wanted)?;
+        let of_size = || modes.iter().filter(move |mode| mode.size() == size);
+        // As fast as the client shows, else as fast as the display goes.
+        return of_size()
+            .filter(|mode| rate.is_none_or(|rate| mode.vrefresh() <= rate))
+            .max_by_key(|mode| mode.vrefresh())
+            .or_else(|| of_size().max_by_key(|mode| mode.vrefresh()))
+            .copied();
+    }
     let configured = config.wanted_mode(name).and_then(|(size, rate)| {
         let found = modes
             .iter()
@@ -618,6 +635,18 @@ fn choose_mode(name: &str, modes: &[DrmMode], config: &Config) -> Option<DrmMode
         found
     });
     configured.copied().or_else(|| preferred_mode(modes))
+}
+
+/// The size of a display's nearest to a client's screen: its own, else the smallest that holds
+/// it, which Sunshine scales down sharply, else the largest the display has.
+fn nearest_size(sizes: &[(u16, u16)], wanted: (u16, u16)) -> Option<(u16, u16)> {
+    let area = |(width, height): (u16, u16)| u32::from(width) * u32::from(height);
+    sizes
+        .iter()
+        .copied()
+        .filter(|&(width, height)| width >= wanted.0 && height >= wanted.1)
+        .min_by_key(|&size| area(size))
+        .or_else(|| sizes.iter().copied().max_by_key(|&size| area(size)))
 }
 
 /// The display's preferred size at its fastest rate: a display's EDID prefers 60 Hz even
@@ -716,10 +745,11 @@ fn set_colour_matrix(
 }
 
 /// The settings the outputs are set up from, to tell when they change.
-fn applied_settings(config: &Config) -> String {
+fn applied_settings(config: &Config, stream: Option<((u16, u16), Option<u32>)>) -> String {
     format!(
         "{:?}",
         (
+            stream,
             &config.mode,
             &config.display_modes,
             config.scale,
@@ -744,22 +774,12 @@ pub fn logical_size(output: &Output) -> Size<i32, Logical> {
 /// side in the order they name; the first shown is the main display everything else follows.
 /// Those it leaves dark are taken off the desktop, and from the programs.
 fn lay_out_outputs(udev: &mut Udev, state: &mut Nekoland) {
-    let mut outputs: Vec<(crtc::Handle, Output)> =
-        udev.surfaces.iter().map(|(crtc, (_, output))| (*crtc, output.clone())).collect();
-    let order = |output: &Output| state.config.display_order.iter().position(|name| *name == output.name());
-    outputs.sort_by_key(|(_, output)| (order(output).unwrap_or(usize::MAX), output.name()));
+    let outputs = ordered_outputs(udev, &state.config);
     let projection = state.config.projection();
-    let shown = |index: usize| match projection {
-        _ if outputs.len() < 2 => true,
-        Projection::MainOnly => index == 0,
-        Projection::SecondOnly => index > 0,
-        Projection::Extend | Projection::Duplicate => true,
-    };
-
     let mut places: Vec<(Output, Point<i32, Logical>)> = Vec::new();
     let mut right = 0;
-    for (index, (_, output)) in outputs.iter().enumerate() {
-        if !shown(index) {
+    for (_, output, shown) in &outputs {
+        if !shown {
             continue;
         }
         let place: Point<i32, Logical> = match projection {
@@ -774,10 +794,10 @@ fn lay_out_outputs(udev: &mut Udev, state: &mut Nekoland) {
         Some(least.map_or(*place, |least| (least.x.min(place.x), least.y.min(place.y)).into()))
     });
 
-    for (_, output) in &outputs {
+    for (_, output, _) in &outputs {
         state.space.unmap_output(output);
     }
-    for (crtc, output) in &outputs {
+    for (crtc, output, _) in &outputs {
         let place = places.iter().find(|(placed, _)| placed == output).map(|(_, place)| *place - origin.unwrap_or_default());
         match place {
             Some(place) => {
@@ -794,22 +814,52 @@ fn lay_out_outputs(udev: &mut Udev, state: &mut Nekoland) {
             }
         }
     }
-    state.connected_outputs = outputs.into_iter().map(|(_, output)| output).collect();
+    state.connected_outputs = outputs.into_iter().map(|(_, output, _)| output).collect();
     // The menu bar's and the Dock's pictures are drawn for the main display.
     if let Some((main, _)) = places.first() {
         crate::text::set_picture_scale(main.current_scale().fractional_scale());
     }
 }
 
+/// The outputs in the order the settings give them, each with whether the projection shows
+/// it; the first shown is the main display.
+fn ordered_outputs(udev: &Udev, config: &Config) -> Vec<(crtc::Handle, Output, bool)> {
+    let mut outputs: Vec<(crtc::Handle, Output)> =
+        udev.surfaces.iter().map(|(crtc, (_, output))| (*crtc, output.clone())).collect();
+    let order = |output: &Output| config.display_order.iter().position(|name| *name == output.name());
+    outputs.sort_by_key(|(_, output)| (order(output).unwrap_or(usize::MAX), output.name()));
+    let projection = config.projection();
+    let count = outputs.len();
+    outputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (crtc, output))| {
+            let shown = match projection {
+                _ if count < 2 => true,
+                Projection::MainOnly => index == 0,
+                Projection::SecondOnly => index > 0,
+                Projection::Extend | Projection::Duplicate => true,
+            };
+            (crtc, output, shown)
+        })
+        .collect()
+}
+
 /// Sets every output to the mode, scale and rotation the settings now ask for, lays the
 /// outputs out side by side again, and fits the windows to them.
 fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
-    udev.applied = applied_settings(&state.config);
+    udev.applied = applied_settings(&state.config, state.stream_mode);
+    // What Sunshine captures is the main display.
+    let main = ordered_outputs(udev, &state.config)
+        .into_iter()
+        .find(|(_, _, shown)| *shown)
+        .map(|(crtc, _, _)| crtc);
     for (crtc, (surface, output)) in &mut udev.surfaces {
         let Some((_, modes, size_mm)) = udev.displays.get(crtc) else {
             continue;
         };
-        let Some(drm_mode) = choose_mode(&output.name(), modes, &state.config) else {
+        let stream = state.stream_mode.filter(|_| main == Some(*crtc));
+        let Some(drm_mode) = choose_mode(&output.name(), modes, &state.config, stream) else {
             continue;
         };
         let mode = Mode::from(drm_mode);
@@ -1002,7 +1052,19 @@ pub fn density_scale(width: i32, height: i32, width_mm: u32, height_mm: u32) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{density_scale, filter_matrix};
+    use super::{density_scale, filter_matrix, nearest_size};
+
+    #[test]
+    fn a_client_gets_its_own_size_else_the_smallest_that_holds_it() {
+        let sizes = [(3840, 2160), (2560, 1440), (1920, 1080), (1680, 1050)];
+        assert_eq!(nearest_size(&sizes, (1920, 1080)), Some((1920, 1080)));
+        // A 16:10 Mac: no mode of its shape holds it, so the 4K one, scaled down.
+        assert_eq!(nearest_size(&sizes, (2560, 1600)), Some((3840, 2160)));
+        assert_eq!(nearest_size(&sizes, (1280, 800)), Some((1680, 1050)));
+        // Larger than any mode: the largest.
+        assert_eq!(nearest_size(&sizes, (5120, 2880)), Some((3840, 2160)));
+        assert_eq!(nearest_size(&[], (1920, 1080)), None);
+    }
 
     #[test]
     fn a_filter_keeps_white_white_and_none_is_no_matrix() {

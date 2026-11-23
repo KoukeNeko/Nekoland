@@ -360,6 +360,19 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                     .collect(),
             );
         }
+        // `stream-mode WIDTHxHEIGHT@HZ`: the size a Sunshine client streams at, which its
+        // prep command sets as it connects; `stream-mode` alone ends it as it leaves.
+        stream if argument(stream, "stream-mode").is_some() => {
+            let text = argument(stream, "stream-mode")?.trim();
+            if text.is_empty() {
+                state.stream_mode = None;
+            } else {
+                match crate::config::parse_mode(text).filter(|((width, height), _)| *width > 0 && *height > 0) {
+                    Some(mode) => state.stream_mode = Some(mode),
+                    None => return Some(format!("not a mode: {text}\n")),
+                }
+            }
+        }
         // The windows on screen, the topmost first: `X Y WIDTH HEIGHT` in points, a tab and
         // the title. 截圖 takes a window by these.
         "window-areas" => {

@@ -20,6 +20,8 @@ const WEB_UI: &str = "https://localhost:47990";
 const KEYRING_SCHEMA: &str = "org.nekoland.Sunshine";
 /// How Nekoland is drawn for Sunshine: wlr-screencopy, which both of its sessions have.
 const CAPTURE: (&str, &str) = ("capture", "wlr");
+/// What Sunshine runs as each client connects and leaves, `do` and `undo`.
+const PREP_COMMANDS: &str = "global_prep_cmd";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Mode {
@@ -218,18 +220,40 @@ fn apply(mode: Option<Mode>) -> Result<(), String> {
     let Some(mode) = mode else {
         return Ok(());
     };
-    // Unless it was told another way to draw.
+    // Unless it was told another way to draw, or other commands to run for its clients.
     let path = conf_path();
-    let conf = std::fs::read_to_string(&path).unwrap_or_default();
-    if !conf_entries(&conf).iter().any(|(key, _)| key == CAPTURE.0) {
+    let read = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut conf = read.clone();
+    let has = |conf: &str, key: &str| conf_entries(conf).iter().any(|(found, _)| found == key);
+    if !has(&conf, CAPTURE.0) {
+        conf = with_conf_value(&conf, CAPTURE.0, Some(CAPTURE.1));
+    }
+    if !has(&conf, PREP_COMMANDS) {
+        conf = with_conf_value(&conf, PREP_COMMANDS, Some(&stream_mode_commands(&nekoland_program())));
+    }
+    if conf != read {
         std::fs::create_dir_all(sunshine_dir()).map_err(|err| err.to_string())?;
-        write_atomic(&path, &with_conf_value(&conf, CAPTURE.0, Some(CAPTURE.1))).map_err(|err| err.to_string())?;
+        write_atomic(&path, &conf).map_err(|err| err.to_string())?;
     }
     if mode == Mode::Session {
         // The user's services, this session among them, then start as the computer does.
         said(Command::new("loginctl").arg("enable-linger"))?;
     }
     systemctl(&["enable", "--now", mode.unit()])
+}
+
+/// Sunshine's prep commands that give each client a screen of its own size and rate: Nekoland
+/// is told them as the client connects, and to go back as it leaves.
+fn stream_mode_commands(nekoland: &Path) -> String {
+    let program = format!("'{}'", nekoland.display().to_string().replace('\'', r"'\''"));
+    let prep = serde_json::json!([{
+        "do": format!(
+            "sh -c \"{program} msg 'stream-mode '${{SUNSHINE_CLIENT_WIDTH}}x${{SUNSHINE_CLIENT_HEIGHT}}@${{SUNSHINE_CLIENT_FPS}}\""
+        ),
+        "undo": format!("sh -c \"{program} msg stream-mode\""),
+        "elevated": false,
+    }]);
+    prep.to_string()
 }
 
 /// Restarts Sunshine where it runs, for a setting changed.
@@ -983,6 +1007,18 @@ mod tests {
         let debian = "ID=debian\nVERSION_ID=\"13\"\nVERSION_CODENAME=trixie\n";
         assert_eq!(package_url(release, debian, "amd64"), Some(("https://x/trixie".into(), "dd".into())));
         assert_eq!(package_url(release, "ID=fedora\nVERSION_ID=44\n", "amd64"), None);
+    }
+
+    #[test]
+    fn clients_tell_nekoland_their_size_as_they_connect_and_leave() {
+        let commands = stream_mode_commands(Path::new("/usr/local/bin/nekoland"));
+        let prep: serde_json::Value = serde_json::from_str(&commands).unwrap();
+        assert_eq!(
+            prep[0]["do"],
+            "sh -c \"'/usr/local/bin/nekoland' msg 'stream-mode '${SUNSHINE_CLIENT_WIDTH}x${SUNSHINE_CLIENT_HEIGHT}@${SUNSHINE_CLIENT_FPS}\""
+        );
+        assert_eq!(prep[0]["undo"], "sh -c \"'/usr/local/bin/nekoland' msg stream-mode\"");
+        assert!(!commands.contains('\n'), "one line of sunshine.conf");
     }
 
     #[test]

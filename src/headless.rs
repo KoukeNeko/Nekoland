@@ -29,7 +29,7 @@ use smithay::{
     utils::Transform,
     wayland::dmabuf::DmabufFeedbackBuilder,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     cursor::Cursors,
@@ -188,6 +188,20 @@ pub fn init_headless(
         .inspect_err(|err| warn!("no glass: {err}"))
         .ok();
     let mut draw = move |state: &mut Nekoland| {
+        // The client's own size and rate while one streams, as its prep command set them.
+        let wanted = state.stream_mode.map_or(mode, |((width, height), rate)| Mode {
+            size: (i32::from(width), i32::from(height)).into(),
+            refresh: (rate.unwrap_or(DEFAULT_RATE) * 1000) as i32,
+        });
+        if output.current_mode() != Some(wanted) {
+            output.change_current_state(Some(wanted), None, None, None);
+            output.set_preferred(wanted);
+            smithay::desktop::layer_map_for_output(&output).arrange();
+            state.dock.drawn = None;
+            state.menu_bar.drawn = None;
+            state.fit_windows_to_display();
+            info!("{OUTPUT_NAME}: {}x{}", wanted.size.w, wanted.size.h);
+        }
         state.tick_overview();
         state.tick_motion();
         state.refresh_menu_bar();
@@ -227,12 +241,13 @@ pub fn init_headless(
     // The tick is the only clock: drawn at every commit too, a client that draws again on
     // each frame it is told was shown would spin. Sunshine's frames wait for it, a frame's
     // time at most.
-    let frame = Duration::from_micros(1_000_000 / u64::from(rate.max(1)));
+    let frame = |millihertz: i32| Duration::from_micros(1_000_000_000 / u64::from(millihertz.max(1000) as u32));
     event_loop
         .handle()
-        .insert_source(Timer::from_duration(frame), move |_, _, data| {
+        .insert_source(Timer::from_duration(frame(mode.refresh)), move |_, _, data| {
             draw(data);
-            TimeoutAction::ToDuration(frame)
+            let refresh = data.space.outputs().next().and_then(Output::current_mode).map_or(mode.refresh, |mode| mode.refresh);
+            TimeoutAction::ToDuration(frame(refresh))
         })
         .map_err(|err| err.error)?;
     Ok(())

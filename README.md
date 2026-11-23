@@ -560,7 +560,12 @@ desktop at the computer (`nekoland-sunshine.service`) or a session of its own
 of its own whose screen, `HEADLESS-1` (1920×1080 unless the configuration gives it a mode),
 is drawn only into the frames Sunshine asks for over wlr-screencopy, which starts locked,
 takes input only from Sunshine's devices, and keeps running after logging out (lingering).
-The desktop at the computer then ignores those devices. The page sets Sunshine's web
+The desktop at the computer then ignores those devices. Each client gets a screen of its
+own size: Settings gives Sunshine prep commands (`global_prep_cmd`, unless it has its own)
+that run `nekoland msg stream-mode WIDTHxHEIGHT@HZ` with the client's size and rate as it
+connects and `nekoland msg stream-mode` as it leaves. `HEADLESS-1` takes that size and
+rate exactly; the desktop at the computer puts its main display in the mode nearest it,
+the client's own size when it has one, else the smallest that holds it. The page sets Sunshine's web
 login, pairs a device that is waiting with the PIN Moonlight shows, removes paired ones,
 and edits `sunshine.conf`; the login is kept in the keyring.
 
@@ -805,14 +810,15 @@ system's dark or light setting; `NEKOLAND_THEME=dark` or `light` pins one.
 
 ## From other programs
 
-`nekoland msg WORD` talks to the running compositor: `overview`, `apps`, `notification-center`, `lock`,
+`nekoland msg WORDS` talks to the running compositor: `overview`, `apps`, `notification-center`, `lock`,
 `sleep`, `workspace-add`, `workspace-next`, `workspace-previous`, `quit`; `'window COMMAND'` arranges the active window
 as the launcher's window commands do, by their names in `src/arrange.rs` (`left`, `top-right`,
 `first-third`, `larger`, `move-left` and so on); `reload` reads the configuration again,
 `config` prints the settings in effect, `modes` the display's mode and then all it has,
 `display` its mode, preferred mode, scale and the scale its density gives, `scales` the
 scale each of its sizes is drawn at when the settings name none, `sun` today's
-sunset and sunrise where the time zone is,
+sunset and sunrise where the time zone is, `stream-mode WIDTHxHEIGHT@HZ` the size a
+Sunshine client streams at, until `stream-mode` alone ends it,
 and `'set KEY = VALUE'` changes one setting in the file, keeping the rest of it, and puts
 it in effect, or says why not; `'unset KEY'` puts one back at its default.
 
