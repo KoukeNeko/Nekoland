@@ -103,6 +103,10 @@ impl WaylandDndGrabHandler for Nekoland {
         type_: GrabType,
     ) {
         self.dnd_icon = icon.map(|icon| (icon, Default::default()));
+        // Where what nothing takes goes back to.
+        if let Some(start) = seat.get_pointer().and_then(|pointer| pointer.grab_start_data()) {
+            self.desktop_drag_started_at(start.location);
+        }
         self.dock_drag_started(&source);
         let display = self.display_handle.clone();
         match type_ {
@@ -129,13 +133,17 @@ impl DndGrabHandler for Nekoland {
         _seat: Seat<Self>,
         _location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        self.dnd_icon = None;
+        let icon = self.dnd_icon.take();
         // Files Nekoland dragged: no window took them, so Nekoland puts them.
         if self.desktop_dragging() {
             if !validated {
                 self.desktop_dropped_here();
             }
         } else {
+            // A program's icon, which it takes away as it lets go, is shown going on as
+            // Nekoland's own does.
+            let picture = icon.and_then(|(surface, offset)| Some((dragged_picture(&surface)?, offset)));
+            self.desktop_program_dropped(picture);
             self.dock_dropped(validated);
         }
         self.desktop_drag_ended();
@@ -143,6 +151,17 @@ impl DndGrabHandler for Nekoland {
 }
 
 delegate_data_device!(Nekoland);
+
+/// What a drag icon shows, as the compositor last drew it, kept past the program taking
+/// the icon away.
+fn dragged_picture(surface: &WlSurface) -> Option<crate::desktop::Dragged> {
+    use smithay::backend::renderer::{gles::GlesTexture, utils::with_renderer_surface_state};
+    with_renderer_surface_state(surface, |state| {
+        let textures = state.textures::<GlesTexture>();
+        let size = state.surface_size()?;
+        (!textures.is_empty()).then(|| crate::desktop::Dragged::Program { textures, size, scale: state.buffer_scale() })
+    })?
+}
 
 //
 // Wl Output & Xdg Output

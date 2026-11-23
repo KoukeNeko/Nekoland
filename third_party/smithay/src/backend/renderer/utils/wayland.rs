@@ -325,6 +325,18 @@ impl RendererSurfaceState {
         self.textures.get(&id.erased()).and_then(|e| e.downcast_ref())
     }
 
+    /// Every texture of this surface of type `T`, with the renderer context it belongs to,
+    /// to be drawn after the surface is gone.
+    pub fn textures<T>(&self) -> Vec<(crate::backend::renderer::ErasedContextId, T)>
+    where
+        T: Texture + Clone + 'static,
+    {
+        self.textures
+            .iter()
+            .filter_map(|(id, texture)| Some((id.clone(), texture.downcast_ref::<T>()?.clone())))
+            .collect()
+    }
+
     /// Gets the opaque regions of this surface
     pub fn opaque_regions(&self) -> Option<&[Rectangle<i32, Logical>]> {
         // If the surface is unmapped there can be no opaque regions

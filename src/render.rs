@@ -71,6 +71,7 @@ render_elements! {
     Ghost=GhostElement,
     ZoomedPicture=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     Picture=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Texture=Snapshot,
     Sprite=crate::sprite::SpriteElement,
 }
 

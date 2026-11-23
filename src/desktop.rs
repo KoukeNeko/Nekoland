@@ -17,8 +17,9 @@ use cairo::ImageSurface;
 use gio::prelude::*;
 use smithay::{
     backend::renderer::{
-        element::{memory::MemoryRenderBufferRenderElement, Kind},
-        gles::GlesRenderer,
+        element::{memory::MemoryRenderBufferRenderElement, texture::TextureRenderElement, Id, Kind},
+        gles::{GlesRenderer, GlesTexture},
+        ErasedContextId, Renderer,
     },
     input::{
         dnd::{DnDGrab, DndAction, Source, SourceMetadata},
@@ -26,7 +27,7 @@ use smithay::{
         keyboard::ModifiersState,
         pointer::{Focus, GrabStartData},
     },
-    utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Serial, Size, Transform},
     wayland::selection::{
         data_device::{
             current_data_device_selection_userdata, request_data_device_client_selection,
@@ -136,7 +137,7 @@ pub struct Desktop {
     /// Whether Nekoland drags it now.
     dragging: bool,
     /// The icon following the pointer while dragging, and where it is from the pointer.
-    drag_picture: Option<(Picture, Point<i32, Logical>)>,
+    drag_picture: Option<(Dragged, Point<i32, Logical>)>,
     /// The folder on the desktop what is dragged would go into, marked as chosen.
     drop_target: Option<PathBuf>,
     pointer: Point<f64, Logical>,
@@ -164,10 +165,70 @@ pub struct Desktop {
     /// Where the pointer was when Nekoland's drag started, for its icon to go back to.
     drag_start: Point<f64, Logical>,
     /// The icon of what nothing took, going back where it was taken from, and since when.
-    flying_back: Option<(Picture, Point<f64, Logical>, Point<f64, Logical>, Instant)>,
+    flying_back: Option<(Dragged, Point<f64, Logical>, Point<f64, Logical>, Instant)>,
     /// The icon of what something on the desktop or the Dock took, shrinking into it at
     /// the pointer: the picture, the pointer, the picture's offset from it, and since when.
-    sinking: Option<(Picture, Point<f64, Logical>, Point<i32, Logical>, Instant)>,
+    sinking: Option<(Dragged, Point<f64, Logical>, Point<i32, Logical>, Instant)>,
+}
+
+/// What is shown of something dragged: drawn by Nekoland, or a program's drag icon as the
+/// compositor last drew it, in a texture of each renderer, which outlasts the icon.
+#[derive(Clone)]
+pub enum Dragged {
+    Drawn(Picture),
+    Program {
+        textures: Vec<(ErasedContextId, GlesTexture)>,
+        size: Size<i32, Logical>,
+        scale: i32,
+    },
+}
+
+impl Dragged {
+    fn size(&self) -> Size<i32, Logical> {
+        match self {
+            Dragged::Drawn(picture) => picture.size,
+            Dragged::Program { size, .. } => *size,
+        }
+    }
+
+    fn element(
+        &self,
+        renderer: &mut GlesRenderer,
+        at: Point<f64, Physical>,
+        alpha: f32,
+        size: Size<i32, Logical>,
+    ) -> Option<SceneElement> {
+        match self {
+            Dragged::Drawn(picture) => MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                at,
+                &picture.buffer,
+                Some(alpha),
+                None,
+                Some(size),
+                Kind::Unspecified,
+            )
+            .ok()
+            .map(SceneElement::Picture),
+            Dragged::Program { textures, scale, .. } => {
+                let context = renderer.context_id();
+                let (_, texture) = textures.iter().find(|(id, _)| *id == context.clone().erased())?;
+                Some(SceneElement::Texture(TextureRenderElement::from_static_texture(
+                    Id::new(),
+                    context,
+                    at,
+                    texture.clone(),
+                    *scale,
+                    Transform::Normal,
+                    Some(alpha),
+                    None,
+                    Some(size),
+                    None,
+                    Kind::Unspecified,
+                )))
+            }
+        }
+    }
 }
 
 type Looked = (PathBuf, bool, Size<i32, Logical>);
@@ -525,49 +586,36 @@ impl Nekoland {
         output_loc: Point<i32, Logical>,
         scale: f64,
     ) -> Vec<SceneElement> {
-        let dragged = self
-            .desktop
-            .drag_picture
-            .as_ref()
-            .map(|(picture, offset)| (picture, self.desktop.pointer.to_i32_round() + *offset));
-        let flying = self.desktop.flying_back.as_ref().and_then(|(picture, from, to, since)| {
+        let mut elements = Vec::new();
+        let mut show = |dragged: &Dragged, at: Point<f64, Logical>, alpha: f64, size: Size<i32, Logical>| {
+            let at = (at - output_loc.to_f64()).to_physical(scale);
+            elements.extend(dragged.element(renderer, at, alpha as f32, size));
+        };
+        if let Some((dragged, offset)) = &self.desktop.drag_picture {
+            show(dragged, (self.desktop.pointer.to_i32_round() + *offset).to_f64(), 1.0, dragged.size());
+        }
+        if let Some((dragged, from, to, since)) = &self.desktop.flying_back {
             let t = since.elapsed().as_secs_f64() / FLY_BACK_TIME;
-            let eased = crate::control::ease_out(t.min(1.0));
-            (t < 1.0).then(|| (picture, (*from + (*to - *from).upscale(eased)).to_i32_round()))
-        });
-        let sinking = self.desktop.sinking.as_ref().and_then(|(picture, pointer, offset, since)| {
-            let t = since.elapsed().as_secs_f64() / SINK_TIME;
-            if t >= 1.0 {
-                return None;
+            if t < 1.0 {
+                let eased = crate::control::ease_out(t);
+                show(dragged, (*from + (*to - *from).upscale(eased)).to_i32_round::<i32>().to_f64(), 1.0, dragged.size());
             }
-            let left = 1.0 - crate::control::ease_out(t);
-            let at = *pointer + offset.to_f64().upscale(left) - output_loc.to_f64();
-            let size = picture.size.to_f64().upscale(left).to_i32_round();
-            MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                at.to_physical(scale),
-                &picture.buffer,
-                Some(left as f32),
-                None,
-                Some(size),
-                Kind::Unspecified,
-            )
-            .ok()
-            .map(SceneElement::Picture)
-        });
-        let looked = self
-            .desktop
-            .quick_look
-            .as_ref()
-            .zip(self.quick_look_area())
-            .map(|((_, picture), area)| (picture, area.loc));
-        dragged
-            .into_iter()
-            .chain(flying)
-            .chain(looked)
-            .filter_map(|(picture, at)| picture_element(renderer, picture, at - output_loc, scale))
-            .chain(sinking)
-            .collect()
+        }
+        let looked = self.desktop.quick_look.as_ref().zip(self.quick_look_area());
+        if let Some(((_, picture), area)) = looked {
+            elements.extend(picture_element(renderer, picture, area.loc - output_loc, scale));
+        }
+        if let Some((dragged, pointer, offset, since)) = &self.desktop.sinking {
+            let t = since.elapsed().as_secs_f64() / SINK_TIME;
+            if t < 1.0 {
+                let left = 1.0 - crate::control::ease_out(t);
+                let size = dragged.size().to_f64().upscale(left).to_i32_round();
+                let at = *pointer + offset.to_f64().upscale(left);
+                let at = (at - output_loc.to_f64()).to_physical(scale);
+                elements.extend(dragged.element(renderer, at, left as f32, size));
+            }
+        }
+        elements
     }
 
     /// Where the Quick Look panel is: in the middle of the output.
@@ -791,7 +839,7 @@ impl Nekoland {
         self.desktop.drag_start = from;
         self.desktop.flying_back = None;
         self.desktop.sinking = None;
-        self.desktop.drag_picture = picture;
+        self.desktop.drag_picture = picture.map(|(picture, offset)| (Dragged::Drawn(picture), offset));
         self.desktop.dragging = true;
         self.dock_files_dragged(paths.clone());
         let grab = DnDGrab::new_pointer(&self.display_handle, start, DesktopDrag(paths), self.seat.clone());
@@ -812,11 +860,34 @@ impl Nekoland {
         self.dock_drag_ended();
     }
 
+    /// A program started a drag at `from`.
+    pub fn desktop_drag_started_at(&mut self, from: Point<f64, Logical>) {
+        self.desktop.drag_start = from;
+        self.desktop.flying_back = None;
+        self.desktop.sinking = None;
+    }
+
+    /// A program's drag ended, its icon as it was: shown going into what takes it, or back.
+    pub fn desktop_program_dropped(&mut self, picture: Option<(Dragged, Point<i32, Logical>)>) {
+        self.desktop.drag_picture = picture;
+    }
+
     /// No window took what Nekoland dragged: on the Dock, it goes where the Dock puts
     /// files; on the desktop, where `drop_files_on_desktop` puts them.
     pub fn desktop_dropped_here(&mut self) {
-        let pos = self.desktop.pointer;
         let paths = self.desktop.dragged.clone();
+        self.files_dropped_here(&paths);
+    }
+
+    /// No window took `paths`: they go into the Dock or onto the desktop, shown sinking into
+    /// a folder, the Trash or an application; what nothing takes goes back.
+    pub(crate) fn files_dropped_here(&mut self, paths: &[PathBuf]) {
+        let pos = self.desktop.pointer;
+        let paths = paths.to_vec();
+        if paths.is_empty() {
+            self.fly_back();
+            return;
+        }
         let on_folder = self.space.element_under(pos).is_none() && self.desktop_folder_at(pos).is_some();
         if self.drop_files_on_dock(pos, &paths) {
             self.sink();

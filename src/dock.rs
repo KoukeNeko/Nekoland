@@ -3727,26 +3727,14 @@ impl Nekoland {
     /// A drag ended. Dropped on the Dock, where no program took it, the files go where
     /// `drop_files_on_dock` puts them.
     pub fn dock_dropped(&mut self, validated: bool) {
-        let Some(found) = self.dock.dnd.take() else {
-            return;
-        };
-        // Where the pointer was last seen: the drag holds the pointer while this runs, and
-        // asking it where it is now would wait on itself.
-        let Some(pos) = self.dock.pointer else {
-            return;
-        };
+        let found = self.dock.dnd.take();
         if validated {
             return;
         }
         let paths = found
-            .lock()
-            .ok()
-            .and_then(|found| found.clone())
+            .and_then(|found| found.lock().ok().and_then(|found| found.clone()))
             .unwrap_or_default();
-        if !self.drop_files_on_dock(pos, &paths) {
-            // A program's own drag goes back as the program draws it.
-            self.drop_files_on_desktop(pos, &paths);
-        }
+        self.files_dropped_here(&paths);
     }
 
     /// Nekoland itself drags `paths`, known from the start.
