@@ -432,12 +432,15 @@ thread_local! {
 
 /// A folder's files, read with the program's `attributes`, as kept from a moment ago when
 /// the folder has not changed since, so that opening it again, going back to it or
-/// unfolding it shows them at once. Folders elsewhere than this computer are read anew
-/// each time.
+/// unfolding it shows them at once. Folders elsewhere than this computer, a network
+/// mount's among them, are read anew each time.
 pub fn listing(folder: &gio::File, attributes: &str) -> gtk::DirectoryList {
+    // Asking a network mount for the folder's time waits on the network, on the window's
+    // thread, and forever when the mount is stale.
+    let local = folder.path().filter(|path| !on_network_mount(path));
     // A watch misses what another computer changes on a shared drive; its time does not.
-    let changed = folder
-        .path()
+    let changed = local
+        .as_ref()
         .and_then(|path| std::fs::metadata(path).ok())
         .and_then(|meta| meta.modified().ok());
     let kept = KEPT.with_borrow_mut(|kept| {
@@ -455,7 +458,7 @@ pub fn listing(folder: &gio::File, attributes: &str) -> gtk::DirectoryList {
     }
     let list = gtk::DirectoryList::new(Some(attributes), Some(folder));
     list.set_monitored(true);
-    if folder.is_native() {
+    if local.is_some() {
         KEPT.with_borrow_mut(|kept| {
             kept.push_back((list.clone(), changed));
             if kept.len() > KEPT_FOLDERS {
@@ -464,6 +467,58 @@ pub fn listing(folder: &gio::File, attributes: &str) -> gtk::DirectoryList {
         });
     }
     list
+}
+
+/// Whether `path` is under a FUSE or network file system's mount, as the kernel's mount
+/// table says, which is read without asking the mount anything.
+fn on_network_mount(path: &Path) -> bool {
+    let Ok(table) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    mount_is_network(&table, path)
+}
+
+fn mount_is_network(table: &str, path: &Path) -> bool {
+    let mount = table
+        .lines()
+        .filter_map(|line| {
+            let (before, after) = line.split_once(" - ")?;
+            let point = PathBuf::from(unescape_mount(before.split(' ').nth(4)?));
+            let kind = after.split(' ').next()?;
+            path.starts_with(&point).then_some((point, kind))
+        })
+        .max_by_key(|(point, _)| point.as_os_str().len());
+    mount.is_some_and(|(_, kind)| {
+        kind.starts_with("fuse.")
+            || [
+                "fuse", "nfs", "nfs4", "cifs", "smb3", "9p", "ceph", "afs", "sshfs",
+            ]
+            .contains(&kind)
+    })
+}
+
+/// The kernel writes a space, tab, newline or backslash in a mount point as `\ooo`.
+fn unescape_mount(field: &str) -> String {
+    let mut out = String::new();
+    let mut rest = field;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let code = rest
+            .get(at + 1..at + 4)
+            .and_then(|o| u8::from_str_radix(o, 8).ok());
+        match code {
+            Some(byte) => {
+                out.push(byte as char);
+                rest = &rest[at + 4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Reads a folder anew the next time it is listed.
@@ -492,6 +547,21 @@ mod tests {
         let drive = hamasen_server(record(drive)).unwrap();
         assert!(!drive.gvfs);
         assert_eq!(drive.location.path().unwrap(), home().join("Hamasen/a_b"));
+    }
+
+    #[test]
+    fn network_mounts_are_told_by_the_innermost_mount() {
+        let table = "46 1 259:5 / / rw - ext4 /dev/nvme1n1p5 rw\n\
+3445 260 0:91 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+3446 46 0:92 / /home/neko/My\\040NAS rw - fuse.rclone nas: rw\n\
+3447 3446 259:6 / /home/neko/My\\040NAS/disk rw - ext4 /dev/sda1 rw\n";
+        assert!(!mount_is_network(table, Path::new("/home/neko/Documents")));
+        assert!(mount_is_network(
+            table,
+            Path::new("/run/user/1000/gvfs/sftp:host=a")
+        ));
+        assert!(mount_is_network(table, Path::new("/home/neko/My NAS/x")));
+        assert!(!mount_is_network(table, Path::new("/home/neko/My NAS/disk/x")));
     }
 
     #[test]

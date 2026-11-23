@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     time::SystemTime,
 };
 
@@ -37,6 +37,8 @@ enum Job {
 
 enum Done {
     Thumbnail(String, Option<PathBuf>),
+    /// A thumbnail no picture showed any more when a thread came to it.
+    Skipped(Job),
     Picture(u64, Option<Pixels>),
 }
 
@@ -72,9 +74,14 @@ impl Pixels {
 
 type Shown = Box<dyn FnOnce(Option<PathBuf>)>;
 type Read = Box<dyn FnOnce(Option<gdk::Texture>)>;
+/// Jobs waiting for a thread, the newest taken first: what was scrolled to last is on screen.
+type Jobs = Arc<(Mutex<Vec<(u64, Job)>>, Condvar)>;
 
 thread_local! {
-    static QUEUE: RefCell<Option<mpsc::Sender<(u64, Job)>>> = const { RefCell::new(None) };
+    static QUEUE: RefCell<Option<Jobs>> = const { RefCell::new(None) };
+    /// How many pictures wait for each thumbnail not made yet; the threads skip one
+    /// nothing waits for, as when a folder is scrolled past.
+    static WANTED: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
     static NEXT: Cell<u64> = const { Cell::new(0) };
     static THUMBNAILS: RefCell<HashMap<String, Vec<Shown>>> = RefCell::new(HashMap::new());
     static PICTURES: RefCell<HashMap<u64, Read>> = RefCell::new(HashMap::new());
@@ -91,17 +98,27 @@ fn queue(job: Job) -> u64 {
         next.get()
     });
     QUEUE.with_borrow_mut(|queue| {
-        let sender = queue.get_or_insert_with(|| {
-            let (sender, receiver) = mpsc::channel::<(u64, Job)>();
-            let receiver = Arc::new(Mutex::new(receiver));
+        let jobs = queue.get_or_insert_with(|| {
+            let jobs: Jobs = Arc::default();
+            let wanted = WANTED.with(Arc::clone);
             for _ in 0..WORKERS {
-                let receiver = receiver.clone();
+                let (jobs, wanted) = (jobs.clone(), wanted.clone());
                 std::thread::spawn(move || loop {
-                    let Ok((id, job)) = receiver.lock().map_err(drop).and_then(|r| r.recv().map_err(drop))
-                    else {
-                        return;
+                    let (id, job) = {
+                        let (waiting, ready) = &*jobs;
+                        let Ok(waiting) = waiting.lock() else { return };
+                        let Ok(mut waiting) = ready.wait_while(waiting, |w| w.is_empty()) else {
+                            return;
+                        };
+                        let Some(next) = waiting.pop() else { continue };
+                        next
                     };
                     let done = match job {
+                        Job::Thumbnail { ref uri, .. }
+                            if !wanted.lock().is_ok_and(|w| w.contains_key(uri)) =>
+                        {
+                            Done::Skipped(job)
+                        }
                         Job::Thumbnail {
                             uri,
                             path,
@@ -118,10 +135,15 @@ fn queue(job: Job) -> u64 {
                     glib::MainContext::default().invoke(move || deliver(done));
                 });
             }
-            sender
+            jobs
         });
-        if sender.send((id, job)).is_err() {
-            eprintln!("nekoland-files: the picture threads have stopped");
+        let (waiting, ready) = &**jobs;
+        match waiting.lock() {
+            Ok(mut waiting) => {
+                waiting.push((id, job));
+                ready.notify_one();
+            }
+            Err(_) => eprintln!("nekoland-files: the picture threads have stopped"),
         }
     });
     id
@@ -129,7 +151,19 @@ fn queue(job: Job) -> u64 {
 
 fn deliver(done: Done) {
     match done {
+        Done::Skipped(job) => {
+            let Job::Thumbnail { ref uri, .. } = job else {
+                return;
+            };
+            // Shown again since the thread looked: made after all.
+            if WANTED.with(|w| w.lock().is_ok_and(|w| w.contains_key(uri))) {
+                queue(job);
+            } else {
+                THUMBNAILS.with_borrow_mut(|waiting| waiting.remove(uri));
+            }
+        }
         Done::Thumbnail(uri, made) => {
+            WANTED.with(|w| w.lock().map(|mut w| w.remove(&uri)).ok());
             if made.is_none() {
                 FAILED.with_borrow_mut(|failed| failed.insert(uri.clone()));
             }
@@ -163,7 +197,22 @@ pub fn show(picture: &gtk::Picture, image: &gtk::Image, info: &gio::FileInfo, fi
     picture.set_paintable(None::<&gdk::Paintable>);
     picture.set_visible(false);
     image.set_visible(true);
-    let Some(file) = file else { return };
+    // A list reuses the picture for another file: the one it showed is no longer wanted.
+    let previous = picture.widget_name();
+    WANTED.with(|w| {
+        if let Ok(mut w) = w.lock() {
+            if let Some(count) = w.get_mut(previous.as_str()) {
+                *count -= 1;
+                if *count == 0 {
+                    w.remove(previous.as_str());
+                }
+            }
+        }
+    });
+    let Some(file) = file else {
+        picture.set_widget_name("");
+        return;
+    };
     let uri = file.uri().to_string();
     picture.set_widget_name(&uri);
     let set = {
@@ -202,6 +251,7 @@ pub fn show(picture: &gtk::Picture, image: &gtk::Image, info: &gio::FileInfo, fi
         list.push(Box::new(set));
         list.len() == 1
     });
+    WANTED.with(|w| w.lock().map(|mut w| *w.entry(uri.clone()).or_default() += 1).ok());
     if first {
         let mtime = info
             .modification_date_time()

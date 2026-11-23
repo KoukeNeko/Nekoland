@@ -724,6 +724,17 @@ fn load_picture(path: &Path) -> Result<Pixbuf, String> {
     loaded
 }
 
+/// Reads a picture on a thread of its own, so a large one or ImageMagick's conversion does
+/// not hold up the window. A Pixbuf cannot cross from a thread to the window's; its pixels can.
+async fn read_off_thread(read: impl FnOnce() -> Result<Pixbuf, String> + Send + 'static) -> Result<Pixbuf, String> {
+    let (bytes, alpha, width, height, stride) = gio::spawn_blocking(move || {
+        read().map(|pixbuf| (pixbuf.read_pixel_bytes(), pixbuf.has_alpha(), pixbuf.width(), pixbuf.height(), pixbuf.rowstride()))
+    })
+    .await
+    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    Ok(Pixbuf::from_bytes(&bytes, gtk::gdk_pixbuf::Colorspace::Rgb, alpha, 8, width, height, stride))
+}
+
 fn is_pdf(path: &Path) -> bool {
     path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
@@ -1608,10 +1619,20 @@ impl Win {
                     glib::timeout_future(std::time::Duration::from_millis(1)).await;
                     continue;
                 }
-                let pixbuf = item.edited.borrow().clone().or_else(|| {
-                    Pixbuf::from_file_at_scale(&item.path, THUMB_SIZE, THUMB_SIZE, true).ok().or_else(|| load_picture(&item.path).ok())
-                });
-                if let Some(small) = pixbuf.and_then(|pixbuf| thumbnail_of(&pixbuf)) {
+                let edited = item.edited.borrow().clone();
+                let small = match edited {
+                    Some(pixbuf) => thumbnail_of(&pixbuf),
+                    None => {
+                        let path = item.path.clone();
+                        read_off_thread(move || {
+                            let pixbuf = Pixbuf::from_file_at_scale(&path, THUMB_SIZE, THUMB_SIZE, true).or_else(|_| load_picture(&path))?;
+                            thumbnail_of(&pixbuf).ok_or_else(String::new)
+                        })
+                        .await
+                        .ok()
+                    }
+                };
+                if let Some(small) = small {
                     picture.set_size_request(small.width(), small.height());
                     picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&small)));
                 }
@@ -1642,10 +1663,28 @@ impl Win {
             return self.show(&item, edited);
         }
         match item.page {
-            None => match load_picture(&item.path) {
-                Ok(pixbuf) => self.show(&item, pixbuf.apply_embedded_orientation().unwrap_or(pixbuf)),
-                Err(err) => self.fail(&item, &err),
-            },
+            None => {
+                // Nothing is edited or saved from the picture before while this one is read.
+                *self.shown.borrow_mut() = None;
+                self.update_actions();
+                let weak = Rc::downgrade(self);
+                let path = item.path.clone();
+                glib::spawn_future_local(async move {
+                    let loaded = read_off_thread(move || {
+                        load_picture(&path).map(|pixbuf| pixbuf.apply_embedded_orientation().unwrap_or(pixbuf))
+                    })
+                    .await;
+                    let Some(win) = weak.upgrade() else { return };
+                    // Another item was shown meanwhile, or this one was drawn on.
+                    if !win.item().is_some_and(|shown| Rc::ptr_eq(&shown, &item)) || item.edited.borrow().is_some() {
+                        return;
+                    }
+                    match loaded {
+                        Ok(pixbuf) => win.show(&item, pixbuf),
+                        Err(err) => win.fail(&item, &err),
+                    }
+                });
+            }
             Some(page) => match self.show_pdf(&item.path) {
                 Ok(()) => {
                     *self.shown.borrow_mut() = None;

@@ -4,6 +4,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     path::PathBuf,
     rc::{Rc, Weak},
     time::Duration,
@@ -194,6 +195,9 @@ pub struct Pane {
     /// The directory's handlers, to take off when another folder is listed.
     watching: RefCell<Vec<glib::SignalHandlerId>>,
     results: gio::ListStore,
+    /// Which filling of `results` is current, so files still being read for one before
+    /// are not added to the next.
+    results_filling: Cell<u64>,
     shown: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
     pub sorter: gtk::MultiSorter,
@@ -500,6 +504,7 @@ impl Pane {
             jobs: RefCell::new(Vec::new()),
             bars: RefCell::new(Vec::new()),
             tag_walk: RefCell::new(None),
+            results_filling: Cell::new(0),
         });
         drop(prefs);
         // The columns are made with the pane, whose cells hold it weakly.
@@ -1219,7 +1224,7 @@ impl Pane {
             }
             Where::Tag(tag) => {
                 self.crossfade();
-                self.results.remove_all();
+                self.clear_results();
                 self.expandable.set(false);
                 self.filtered.set_model(Some(&self.results));
                 let weak = Rc::downgrade(self);
@@ -1340,7 +1345,7 @@ impl Pane {
     }
 
     fn fill_recent(&self) {
-        self.results.remove_all();
+        self.clear_results();
         let mut items = gtk::RecentManager::default().items();
         items.sort_by_key(|item| std::cmp::Reverse(item.modified().to_unix()));
         for item in items
@@ -1354,12 +1359,31 @@ impl Pane {
         }
     }
 
-    fn add_results(&self, batch: Vec<std::path::PathBuf>) {
-        let infos: Vec<gio::FileInfo> = batch
-            .iter()
-            .filter_map(|path| query(&gio::File::for_path(path)))
-            .collect();
-        self.results.extend_from_slice(&infos);
+    fn clear_results(&self) {
+        self.results_filling.set(self.results_filling.get() + 1);
+        self.results.remove_all();
+    }
+
+    /// Adds what a walk found as each file's info is read, off the window's thread: a
+    /// search can find thousands, and on a network mount each read waits on the network.
+    fn add_results(self: &Rc<Self>, batch: Vec<std::path::PathBuf>) {
+        let filling = self.results_filling.get();
+        for path in batch {
+            let weak = Rc::downgrade(self);
+            let file = gio::File::for_path(path);
+            glib::spawn_future_local(async move {
+                let info = file
+                    .query_info_future(ATTRIBUTES, gio::FileQueryInfoFlags::NONE, glib::Priority::LOW)
+                    .await;
+                let Some(pane) = weak.upgrade().filter(|p| p.results_filling.get() == filling) else {
+                    return;
+                };
+                if let Ok(info) = info {
+                    info.set_attribute_object("standard::file", &file);
+                    pane.results.append(&info);
+                }
+            });
+        }
     }
 
     /// Which columns the list has: where each found file is, or where each item in the
@@ -1449,7 +1473,7 @@ impl Pane {
         } else {
             here.iter().filter_map(|f| f.path()).collect()
         };
-        self.results.remove_all();
+        self.clear_results();
         let weak = Rc::downgrade(self);
         let hidden = self.window().is_some_and(|w| w.prefs.borrow().hidden);
         let walk = search::walk(
@@ -2181,16 +2205,20 @@ impl Pane {
             return;
         }
         let model = self.active_selection();
-        model.unselect_all();
+        // One pass and one change, so choosing thousands of files is not quadratic.
+        let wanted: HashSet<glib::GString> = files.iter().map(|f| f.uri()).collect();
+        let all = gtk::Bitset::new_range(0, model.n_items());
+        let chosen = gtk::Bitset::new_empty();
         for position in 0..model.n_items() {
             if model
                 .item(position)
                 .and_then(item_file)
-                .is_some_and(|f| files.iter().any(|g| g.equal(&f)))
+                .is_some_and(|f| wanted.contains(&f.uri()))
             {
-                model.select_item(position, false);
+                chosen.add(position);
             }
         }
+        model.set_selection(&chosen, &all);
     }
 
     /// Chooses the file of this name once the folder has been read, as a new folder or a
@@ -2254,12 +2282,19 @@ impl Pane {
         if removed == 0 || added == 0 {
             return;
         }
-        let chosen = self.chosen_files.borrow().clone();
+        let chosen: HashSet<glib::GString> = self.chosen_files.borrow().iter().map(|f| f.uri()).collect();
+        if chosen.is_empty() {
+            return;
+        }
+        let keep = gtk::Bitset::new_empty();
         for position in (at..at + added).filter(|p| !model.is_selected(*p)) {
             let file = model.item(position).and_then(item_file);
-            if file.is_some_and(|f| chosen.iter().any(|c| c.equal(&f))) {
-                model.select_item(position, false);
+            if file.is_some_and(|f| chosen.contains(&f.uri())) {
+                keep.add(position);
             }
+        }
+        if !keep.is_empty() {
+            model.set_selection(&keep, &keep);
         }
     }
 
@@ -2531,7 +2566,8 @@ fn item_info(item: glib::Object) -> Option<gio::FileInfo> {
 /// Chooses these files in a column, and nothing else there, once its folder has been read.
 fn choose_when_read(list: &gtk::DirectoryList, selection: &gtk::MultiSelection, files: &[gio::File]) {
     let choose = {
-        let (selection, files) = (selection.downgrade(), files.to_vec());
+        let files: HashSet<glib::GString> = files.iter().map(|f| f.uri()).collect();
+        let selection = selection.downgrade();
         move || {
             let Some(selection) = selection.upgrade() else {
                 return;
@@ -2540,7 +2576,7 @@ fn choose_when_read(list: &gtk::DirectoryList, selection: &gtk::MultiSelection, 
             let chosen = gtk::Bitset::new_empty();
             for position in 0..selection.n_items() {
                 let file = selection.item(position).and_then(item_file);
-                if file.is_some_and(|f| files.iter().any(|g| g.equal(&f))) {
+                if file.is_some_and(|f| files.contains(&f.uri())) {
                     chosen.add(position);
                 }
             }

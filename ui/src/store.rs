@@ -282,6 +282,8 @@ fn build(app: &adw::Application) -> Rc<Store> {
 
     let search = gtk::SearchEntry::builder()
         .placeholder_text("搜尋")
+        // Each search asks every source at once; it waits for a pause in the typing.
+        .search_delay(400)
         .margin_start(8)
         .margin_end(8)
         .margin_bottom(8)
@@ -605,30 +607,52 @@ fn icon(app: &App, size: i32) -> gtk::Widget {
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
         .build();
-    holder.append(&local);
     let url = app.icon_url.clone();
-    background(
-        move || sources::fetch(&url),
-        glib::clone!(
-            #[weak]
-            holder,
+    if let Some(texture) = WEB_ICONS.with_borrow(|fetched| fetched.get(&url).cloned()) {
+        holder.append(&gtk::Image::builder().paintable(&texture).pixel_size(size).build());
+        return holder.upcast();
+    }
+    holder.append(&local);
+    // Every tile of the same app waits on one fetch of its icon.
+    let first = FETCHING.with_borrow_mut(|fetching| {
+        let waiting = fetching.entry(url.clone()).or_default();
+        waiting.push((holder.downgrade(), size));
+        waiting.len() == 1
+    });
+    if first {
+        let address = url.clone();
+        background(
+            move || sources::fetch(&address),
             move |bytes: Option<Vec<u8>>| {
+                let waiting = FETCHING
+                    .with_borrow_mut(|fetching| fetching.remove(&url))
+                    .unwrap_or_default();
                 let Some(texture) =
                     bytes.and_then(|bytes| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok())
                 else {
                     return;
                 };
-                if let Some(tile) = holder.first_child() {
-                    holder.remove(&tile);
+                WEB_ICONS.with_borrow_mut(|fetched| fetched.insert(url, texture.clone()));
+                for (holder, size) in waiting {
+                    let Some(holder) = holder.upgrade() else { continue };
+                    if let Some(tile) = holder.first_child() {
+                        holder.remove(&tile);
+                    }
+                    holder.append(&gtk::Image::builder().paintable(&texture).pixel_size(size).build());
                 }
-                holder.append(&gtk::Image::builder().paintable(&texture).pixel_size(size).build());
-            }
-        ),
-    );
+            },
+        );
+    }
     holder.upcast()
 }
 
 thread_local! {
+    /// Icons fetched from the web, by address, so each is fetched once while Market is open.
+    static WEB_ICONS: RefCell<std::collections::HashMap<String, gdk::Texture>> = RefCell::default();
+    /// The tiles, with their sizes, waiting on an icon being fetched.
+    static FETCHING: RefCell<std::collections::HashMap<String, Vec<(glib::WeakRef<gtk::Box>, i32)>>> =
+        RefCell::default();
+
     /// Where the Dock finds each icon name, as it is asked for, and where it looks.
     static DOCK_ICONS: (RefCell<std::collections::HashMap<String, Option<PathBuf>>>, Vec<PathBuf>, Vec<String>) = {
         let look = apps::Look::load();

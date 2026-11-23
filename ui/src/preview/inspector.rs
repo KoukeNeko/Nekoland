@@ -30,38 +30,79 @@ fn unix_date(seconds: std::ffi::c_long) -> Option<glib::DateTime> {
     (seconds > 0).then(|| glib::DateTime::from_unix_local(i64::from(seconds)).ok()).flatten()
 }
 
-/// What exiftool reads of the file, a name and value a line; nothing when it is not there.
-fn exif_rows(path: &Path) -> Vec<(String, String)> {
-    let Ok(output) = Command::new("exiftool").args(["-S", "-G1", "-q", "-EXIF:all", "-XMP:all", "-IPTC:all", "-Composite:GPSPosition"]).arg(path).output() else {
-        return Vec::new();
+/// What exiftool reads of a picture: its rows to show, where it was taken, signed, and its
+/// keywords.
+#[derive(Default)]
+struct Exif {
+    rows: Vec<(String, String)>,
+    gps: Option<(f64, f64)>,
+    keywords: Vec<String>,
+}
+
+/// Runs exiftool once for all the inspector shows; nothing when it is not there.
+fn read_exif(path: &Path) -> Exif {
+    let mut exif = Exif::default();
+    // `#` reads those two as signed numbers, the rest as exiftool words them.
+    let args = ["-j", "-G1", "-q", "-EXIF:all", "-XMP:all", "-IPTC:all", "-Composite:GPSPosition", "-Composite:GPSLatitude#", "-Composite:GPSLongitude#"];
+    let Ok(output) = Command::new("exiftool").args(args).arg(path).output() else {
+        return exif;
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (name, value) = line.split_once(": ")?;
-            let name = name.split_once(']').map_or(name, |(_, name)| name).trim();
-            (!value.trim().is_empty()).then(|| (name.to_owned(), value.trim().to_owned()))
-        })
-        .collect()
+    let (mut latitude, mut longitude) = (None, None);
+    // A tag a line: read one at a time, since serde_json's maps here sort what the file orders.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim().trim_end_matches(',');
+        let Ok(entry) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&format!("{{{line}}}")) else { continue };
+        for (key, value) in entry {
+            let words: Vec<String> = match value {
+                serde_json::Value::Array(items) => items.iter().map(json_word).collect(),
+                value => vec![json_word(&value)],
+            };
+            match key.as_str() {
+                "SourceFile" => {}
+                "Composite:GPSLatitude" => latitude = words.first().and_then(|word| word.parse::<f64>().ok()),
+                "Composite:GPSLongitude" => longitude = words.first().and_then(|word| word.parse::<f64>().ok()),
+                _ => {
+                    if key == "XMP-dc:Subject" {
+                        exif.keywords = words.iter().map(|word| word.trim()).filter(|word| !word.is_empty()).map(str::to_owned).collect();
+                    }
+                    let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
+                    let value = words.join(", ");
+                    if !value.trim().is_empty() {
+                        exif.rows.push((name.to_owned(), value.trim().to_owned()));
+                    }
+                }
+            }
+        }
+    }
+    exif.gps = latitude.zip(longitude);
+    exif
 }
 
-/// The latitude and longitude exiftool reads, signed, as numbers.
-fn gps(path: &Path) -> Option<(f64, f64)> {
-    let output = Command::new("exiftool").args(["-n", "-s3", "-GPSLatitude", "-GPSLongitude"]).arg(path).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut numbers = text.lines().filter_map(|line| line.trim().parse::<f64>().ok());
-    Some((numbers.next()?, numbers.next()?))
-}
-
-/// The keywords a picture carries.
-fn picture_keywords(path: &Path) -> Vec<String> {
-    let Ok(output) = Command::new("exiftool").args(["-s3", "-sep", "\n", "-XMP-dc:Subject"]).arg(path).output() else { return Vec::new() };
-    String::from_utf8_lossy(&output.stdout).lines().map(str::trim).filter(|word| !word.is_empty()).map(str::to_owned).collect()
+fn json_word(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        value => value.to_string(),
+    }
 }
 
 impl Win {
     pub fn show_info(self: &Rc<Self>) {
         let Some(item) = self.item() else { return };
+        if item.is_page() || item.untitled {
+            return self.present_info(&item, Exif::default());
+        }
+        // exiftool takes a while on a large file; the window's thread is not held up for it.
+        let (weak, path) = (Rc::downgrade(self), item.path.clone());
+        glib::spawn_future_local(async move {
+            let exif = gio::spawn_blocking(move || read_exif(&path)).await.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            let Some(win) = weak.upgrade() else { return };
+            if win.item().is_some_and(|shown| Rc::ptr_eq(&shown, &item)) {
+                win.present_info(&item, exif);
+            }
+        });
+    }
+
+    fn present_info(self: &Rc<Self>, item: &Rc<Item>, exif: Exif) {
         let pdf = self.pdf.borrow().clone().filter(|_| item.is_page());
         let stack = adw::ViewStack::new();
 
@@ -108,15 +149,14 @@ impl Win {
                     ("快速網頁檢視".to_owned(), if document.is_linearized() { "是".to_owned() } else { "否".to_owned() }),
                 ]
             }
-            None if !item.untitled => exif_rows(&item.path),
-            None => Vec::new(),
+            None => exif.rows,
         };
         if more_rows.is_empty() {
             more.add(&adw::PreferencesGroup::builder().title("沒有其他資訊").build());
         } else {
             more.add(&group_of(more_rows));
         }
-        if let Some((latitude, longitude)) = pdf.is_none().then(|| gps(&item.path)).flatten() {
+        if let Some((latitude, longitude)) = exif.gps {
             let place = adw::PreferencesGroup::builder().title("位置").build();
             let row = adw::ActionRow::builder().title(format!("{latitude:.5}, {longitude:.5}")).activatable(true).build();
             row.add_suffix(&gtk::Image::from_icon_name("adw-external-link-symbolic"));
@@ -132,7 +172,7 @@ impl Win {
 
         // 關鍵字
         if !item.untitled {
-            stack.add_titled_with_icon(&self.keywords_page(&item, pdf.clone()), Some("keywords"), "關鍵字", "tag-symbolic");
+            stack.add_titled_with_icon(&self.keywords_page(item, pdf.clone(), exif.keywords), Some("keywords"), "關鍵字", "tag-symbolic");
         }
 
         // 加密
@@ -212,10 +252,10 @@ impl Win {
     }
 
     /// 關鍵字: a PDF's kept in it, to be saved with it; a picture's written at once.
-    fn keywords_page(self: &Rc<Self>, item: &Rc<Item>, pdf: Option<Rc<Pdf>>) -> adw::PreferencesPage {
+    fn keywords_page(self: &Rc<Self>, item: &Rc<Item>, pdf: Option<Rc<Pdf>>, picture_keywords: Vec<String>) -> adw::PreferencesPage {
         let words: Vec<String> = match &pdf {
             Some(pdf) => pdf.document().keywords().map(|words| words.split([',', ';']).map(str::trim).filter(|word| !word.is_empty()).map(str::to_owned).collect()).unwrap_or_default(),
-            None => picture_keywords(&item.path),
+            None => picture_keywords,
         };
         let words = Rc::new(RefCell::new(words));
         let page = adw::PreferencesPage::new();

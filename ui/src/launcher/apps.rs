@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 use gtk::{gio, prelude::*};
 
+// Not every program that lists apps talks to the compositor otherwise.
+#[path = "../ipc.rs"]
+mod ipc;
+
 pub const ICON_THEMES: [&str; 4] = ["Nekoland", "Yaru", "Adwaita", "hicolor"];
 /// What an application without an icon of its own shows.
 pub const NO_ICON: &str = "application-x-executable";
@@ -17,14 +21,12 @@ pub struct Look {
 
 impl Look {
     pub fn load() -> Self {
-        let config: toml::Table = std::process::Command::new("nekoland")
-            .args(["msg", "config"])
-            .output()
-            .inspect_err(|err| eprintln!("nekoland msg config: {err}"))
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
+        // Straight over the socket rather than through a `nekoland msg` process.
+        let config: toml::Table = ipc::msg("config")
             .and_then(|text| {
-                toml::from_str(&text).inspect_err(|err| eprintln!("nekoland msg config: {err}")).ok()
+                toml::from_str(&text)
+                    .inspect_err(|err| eprintln!("nekoland msg config: {err}"))
+                    .ok()
             })
             .unwrap_or_default();
         let glass_opacity = match config.get("glass_opacity") {
@@ -53,7 +55,8 @@ pub struct App {
     /// Everything it can be found by, in lower case.
     pub words: String,
     pub exec: String,
-    pub icon: Option<PathBuf>,
+    /// Its desktop entry's Icon: a name to find in the icon themes, or a file.
+    pub icon: Option<String>,
 }
 
 pub fn data_dirs() -> Vec<PathBuf> {
@@ -127,8 +130,7 @@ pub fn find_icon(dirs: &[PathBuf], themes: &[&str], icon: &str) -> Option<PathBu
 
 /// Every application the user can start, once each, by name, as GIO lists them: the same
 /// ones the app grid shows, those kept to other desktops left out.
-pub fn applications(themes: &[&str]) -> Vec<App> {
-    let dirs = data_dirs();
+pub fn applications() -> Vec<App> {
     let mut apps: Vec<App> = gio::AppInfo::all()
         .into_iter()
         .filter(|info| info.should_show())
@@ -155,9 +157,7 @@ pub fn applications(themes: &[&str]) -> Vec<App> {
             ]
             .join(" ")
             .to_lowercase();
-            let icon = entry
-                .string("Icon")
-                .and_then(|icon| find_icon(&dirs, themes, &icon));
+            let icon = entry.string("Icon").map(String::from);
             Some(App {
                 id,
                 name,

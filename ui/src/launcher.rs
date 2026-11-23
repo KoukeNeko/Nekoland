@@ -348,15 +348,21 @@ impl State {
         self.no_icon.clone()
     }
 
+    /// An app's icon, looked for only once it is shown, so the window opens before every
+    /// app's is found.
     fn app_image(&mut self, index: usize) -> Image {
-        let Some(path) = self.apps[index].icon.clone() else {
+        let Some(name) = self.apps[index].icon.clone() else {
             return self.no_icon.clone();
         };
-        let key = path.display().to_string();
+        // Kept apart from `image`'s, as an app's icon not found is kept too.
+        let key = format!("app:{name}");
         if let Some(image) = self.icons.get(&key) {
             return image.clone();
         }
-        let image = Image::load_from_path(&path).unwrap_or_else(|_| self.no_icon.clone());
+        let themes: Vec<&str> = self.themes.iter().map(String::as_str).collect();
+        let image = apps::find_icon(&apps::data_dirs(), &themes, &name)
+            .and_then(|path| Image::load_from_path(&path).ok())
+            .unwrap_or_else(|| self.no_icon.clone());
         self.icons.insert(key, image.clone());
         image
     }
@@ -1312,7 +1318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let look = apps::Look::load();
     let themes: Vec<String> = look.icon_themes().into_iter().map(String::from).collect();
     let theme_names: Vec<&str> = themes.iter().map(String::as_str).collect();
-    let apps = apps::applications(&theme_names);
+    let apps = apps::applications();
     let no_icon = apps::find_icon(&apps::data_dirs(), &theme_names, apps::NO_ICON)
         .and_then(|path| Image::load_from_path(&path).ok())
         .unwrap_or_default();

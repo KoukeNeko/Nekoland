@@ -541,7 +541,20 @@ impl Win {
                             page_texture(&page, screen / height.max(width * 9.0 / 16.0))
                         })
                     }
-                    None => item.edited.borrow().clone().or_else(|| load_picture(&item.path).ok()).map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf)),
+                    None => match item.edited.borrow().clone() {
+                        Some(pixbuf) => Some(gdk::Texture::for_pixbuf(&pixbuf)),
+                        None => {
+                            let (picture, at, index, path) = (picture.clone(), at.clone(), at.get(), item.path.clone());
+                            glib::spawn_future_local(async move {
+                                let loaded = read_off_thread(move || load_picture(&path)).await;
+                                // The slideshow has gone on to another picture meanwhile.
+                                if at.get() == index {
+                                    picture.set_paintable(loaded.ok().map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf)).as_ref());
+                                }
+                            });
+                            return;
+                        }
+                    },
                 };
                 picture.set_paintable(texture.as_ref());
             }
