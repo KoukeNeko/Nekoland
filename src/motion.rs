@@ -167,6 +167,28 @@ pub fn notice_out(left: Instant) -> Option<f64> {
     (!NOTICE_OUT.is_over(left)).then(|| NOTICE_OUT.at(left))
 }
 
+/// A banner held down sinks to this much of its size, as iOS's do under a finger: quickly,
+/// without swinging, and let go comes back up a little past it.
+const NOTICE_HELD_SCALE: f64 = 0.95;
+const NOTICE_HOLD: Spring = Spring::new(0.2, 1.0);
+const NOTICE_LET_GO: Spring = Spring::new(0.36, 0.62);
+
+/// How far down a banner held since `held` has sunk, 0 to 1.
+pub fn notice_sunk(held: Instant) -> f64 {
+    NOTICE_HOLD.at(held)
+}
+
+/// How large a banner held since `held` is, or once `let_go` at how far it had sunk, as it
+/// comes back up; None once it is at rest again.
+pub fn notice_held_zoom(held: Instant, let_go: Option<(Instant, f64)>) -> Option<f64> {
+    let depth = match let_go {
+        None => notice_sunk(held),
+        Some((at, _)) if NOTICE_LET_GO.is_over(at) => return None,
+        Some((at, sunk)) => sunk * (1.0 - NOTICE_LET_GO.at(at)),
+    };
+    Some(1.0 - (1.0 - NOTICE_HELD_SCALE) * depth)
+}
+
 /// How far a banner making room for another, or closing a gap, has gone from where it was
 /// `moved` to its new place, 0 to 1.
 pub fn notice_moved(moved: Instant) -> f64 {
@@ -833,6 +855,16 @@ impl Nekoland {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_banner_sinks_and_comes_back_up_once_let_go() {
+        let long_ago = Instant::now() - std::time::Duration::from_secs(5);
+        let held = notice_held_zoom(long_ago, None).unwrap();
+        assert!((held - NOTICE_HELD_SCALE).abs() < 1e-3);
+        let just_let_go = notice_held_zoom(long_ago, Some((Instant::now(), 1.0))).unwrap();
+        assert!((just_let_go - NOTICE_HELD_SCALE).abs() < 1e-3);
+        assert_eq!(notice_held_zoom(long_ago, Some((long_ago, 1.0))), None);
+    }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())

@@ -307,6 +307,7 @@ impl Nekoland {
                     self.dock_release(pointer.current_location());
                     self.desktop_release();
                     self.overview_release(pointer.current_location());
+                    self.notice_release(pointer.current_location());
                 }
 
                 pointer.button(

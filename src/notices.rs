@@ -65,6 +65,8 @@ struct Banner {
     /// Where it stands from the top, and where it was before it last moved and when, to
     /// glide there.
     place: Option<(i32, f64, Instant)>,
+    /// When it was pressed, and when it was let go and how far it had sunk then.
+    held: Option<(Instant, Option<(Instant, f64)>)>,
 }
 
 /// A banner gone, still going back out the way it came.
@@ -73,6 +75,7 @@ struct Leaving {
     id: Id,
     rect: Rectangle<i32, Logical>,
     left: Instant,
+    held: Option<(Instant, Option<(Instant, f64)>)>,
 }
 
 /// A notification kept after its banner, for the Notification Center.
@@ -401,6 +404,7 @@ impl Nekoland {
                             came: None,
                             paused: None,
                             place: None,
+                            held: None,
                         },
                     ),
                 }
@@ -463,6 +467,7 @@ impl Nekoland {
                 id: banner.id,
                 rect,
                 left: Instant::now(),
+                held: banner.held,
             });
         }
         true
@@ -690,14 +695,45 @@ impl Nekoland {
         self.notices.hovered = hovered;
     }
 
-    /// A click on a banner: its program's default action if it has one, and it goes.
+    /// A banner pressed sinks under the pointer until it is let go.
     pub fn notice_press(&mut self, pos: Point<f64, Logical>) -> bool {
         let Some(id) = self.notice_at(pos) else {
             return false;
         };
-        self.notices.hovered = None;
-        self.activate_notice(id);
+        if let Some(banner) = self.notices.banners.iter_mut().find(|banner| banner.notification.id == id) {
+            banner.held = Some((Instant::now(), None));
+        }
         true
+    }
+
+    /// A banner let go comes back up; let go over it, its program's default action is taken
+    /// if it has one, and it goes.
+    pub fn notice_release(&mut self, pos: Point<f64, Logical>) {
+        let now = Instant::now();
+        let mut held = self.notices.banners.iter_mut().filter_map(|banner| match banner.held {
+            Some((pressed, None)) => Some((banner, pressed)),
+            _ => None,
+        });
+        let Some((banner, pressed)) = held.next() else {
+            return;
+        };
+        banner.held = Some((pressed, Some((now, crate::motion::notice_sunk(pressed)))));
+        let id = banner.notification.id;
+        if self.notice_at(pos) == Some(id) {
+            self.notices.hovered = None;
+            self.activate_notice(id);
+        }
+    }
+
+    /// How large a banner held down or just let go is drawn, around its middle.
+    pub fn notice_zoom_of(&self, id: &Id) -> Option<f64> {
+        if !self.config.animations {
+            return None;
+        }
+        let banner = self.notices.banners.iter().find(|banner| &banner.id == id).map(|banner| banner.held);
+        let leaving = || self.notices.leaving.iter().find(|leaving| &leaving.id == id).map(|leaving| leaving.held);
+        let (pressed, let_go) = banner.or_else(leaving)??;
+        crate::motion::notice_held_zoom(pressed, let_go)
     }
 }
 
