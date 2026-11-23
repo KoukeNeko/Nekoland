@@ -17,6 +17,9 @@ const LAN6: [&str; 2] = ["fe80::/10", "fc00::/7"];
 const RULES: &str = "nekoland-";
 const SAMBA_PORTS: &str = "137,138/udp 139,445/tcp";
 
+/// The SSH and xrdp ports last put in effect, to restart them by when their configuration
+/// names others; in /run, as each starts with its own at boot.
+const PORTS_SEEN: &str = "/run/nekoland-sharing-ports";
 /// `nekoland-settings --firewall-sync USER`, run as root: see `sync_firewall`.
 pub(crate) const FIREWALL_FLAG: &str = "--firewall-sync";
 /// What, changed, brings the rules up to date: the ports' configurations, the firewall
@@ -52,7 +55,7 @@ pub(crate) fn sync_firewall(user: Option<&str>) -> glib::ExitCode {
     if let Err(err) = watch_firewall(user, &home) {
         eprintln!("{FIREWALL_FLAG}: {err}");
     }
-    match Command::new("sh").arg("-c").arg(firewall_script(&home)).status() {
+    match Command::new("sh").arg("-c").arg(firewall_script(&home, Path::new(PORTS_SEEN))).status() {
         Ok(status) if status.success() => glib::ExitCode::SUCCESS,
         done => {
             eprintln!("{FIREWALL_FLAG}: {done:?}");
@@ -107,12 +110,30 @@ fn watch_firewall(user: &str, home: &Path) -> std::io::Result<()> {
 /// is on (Sunshine: installed, as it turns on without root) let in from the LAN on the
 /// ports its configuration has now, and the others not. ufw keeps them while it is off, for
 /// when it is turned on; nothing without ufw. `home` is whose Sunshine it is.
-fn firewall_script(home: &Path) -> String {
+fn firewall_script(home: &Path, seen: &Path) -> String {
     let xrdp = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
     let conf = std::fs::read_to_string(home.join(".config/sunshine/sunshine.conf")).unwrap_or_default();
     let sunshine = super::sunshine::firewall_ports(&conf).join(" ");
     format!(
-        r#"if command -v ufw >/dev/null; then
+        r#"ssh_ports=$(sshd -T 2>/dev/null | awk 'tolower($1) == "port" {{ print $2 }}' | sort -nu | paste -sd, -)
+ssh_ports=${{ssh_ports:-22}}
+# A port changed in a configuration since it was last seen here is put in effect: the
+# service listens on it once restarted. Not at boot, when each starts with its own.
+seen='{seen}'
+if [ -f "$seen" ]; then
+    if [ "$(sed -n 's/^ssh //p' "$seen")" != "$ssh_ports" ]; then
+        if systemctl -q is-active ssh.socket; then
+            # Its ports are generated from sshd_config as systemd reloads.
+            systemctl daemon-reload
+            systemctl restart ssh.socket
+        else
+            systemctl try-restart ssh.service
+        fi
+    fi
+    if [ "$(sed -n 's/^xrdp //p' "$seen")" != {xrdp} ]; then systemctl try-restart xrdp; fi
+fi
+printf 'ssh %s\nxrdp %s\n' "$ssh_ports" {xrdp} >"$seen"
+if command -v ufw >/dev/null; then
     nets="{lan}"
     if grep -q '^IPV6=yes' /etc/default/ufw; then nets="$nets {lan6}"; fi
     wanted=$(mktemp)
@@ -123,8 +144,7 @@ fn firewall_script(home: &Path) -> String {
         done; done
     }}
     if systemctl -q is-enabled ssh.socket || systemctl -q is-enabled ssh.service; then
-        ports=$(sshd -T 2>/dev/null | awk 'tolower($1) == "port" {{ print $2 }}' | sort -nu | paste -sd, -)
-        allow ssh "${{ports:-22}}/tcp"
+        allow ssh "$ssh_ports/tcp"
     fi
     if systemctl -q is-enabled xrdp; then allow xrdp {xrdp}/tcp; fi
     if systemctl -q is-enabled smbd; then allow samba {SAMBA_PORTS}; fi
@@ -140,6 +160,7 @@ fi
         lan = LAN.join(" "),
         lan6 = LAN6.join(" "),
         sunshine_program = super::sunshine::PROGRAM,
+        seen = seen.display(),
     )
 }
 
@@ -160,8 +181,9 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
     let remove = text_button("移除");
     service.add_suffix(&remove);
     let address = fact_row("位址", &remote_address());
-    let port = std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini));
-    let port = fact_row("連接埠", &port.to_string());
+    let port = adw::ActionRow::builder().title("連接埠").build();
+    let port_value = fact_label("");
+    port.add_suffix(&port_value);
     let session = adw::ComboRow::builder()
         .title("遠端工作階段")
         .model(&gtk::StringList::new(&["Nekoland", "系統預設"]))
@@ -188,11 +210,15 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
         #[weak]
         port,
         #[weak]
+        port_value,
+        #[weak]
         session,
         #[strong]
         showing,
         move || {
             let running = xrdp_running();
+            // As xrdp.ini has it now, changed there since too.
+            port_value.set_label(&std::fs::read_to_string(XRDP_INI).map_or(RDP_PORT, |ini| xrdp_port(&ini)).to_string());
             showing.set(true);
             service.set_active(running == Some(true));
             showing.set(false);
@@ -211,6 +237,12 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
         }
     ));
     show();
+    // Shown again, what changed meanwhile, by hand too.
+    page.connect_map(glib::clone!(
+        #[strong]
+        show,
+        move |_| show()
+    ));
     install.connect_clicked(glib::clone!(
         #[weak]
         missing,
@@ -492,6 +524,37 @@ pub(crate) fn ssh_units() -> Option<&'static str> {
     }
 }
 
+/// The ports sshd listens on, as its configuration names them: the files in sshd_config.d,
+/// which Ubuntu's sshd_config includes first, then sshd_config itself, up to a `Match`
+/// block. They are readable by anyone, unlike what `sshd -T` needs.
+fn ssh_ports() -> Vec<u16> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir("/etc/ssh/sshd_config.d")
+        .map(|dir| dir.flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "conf")).collect())
+        .unwrap_or_default();
+    files.sort();
+    files.push(PathBuf::from("/etc/ssh/sshd_config"));
+    files.iter().flat_map(|file| sshd_config_ports(&std::fs::read_to_string(file).unwrap_or_default())).collect()
+}
+
+fn sshd_config_ports(text: &str) -> Vec<u16> {
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .take_while(|words| !words.first().is_some_and(|word| word.eq_ignore_ascii_case("match")))
+        .filter_map(|words| match words.as_slice() {
+            [key, port] if key.eq_ignore_ascii_case("port") => port.parse().ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What to type on the other computer: `-p` only for a port other than SSH's own.
+fn ssh_command(user: &str, ports: &[u16]) -> String {
+    match ports.first() {
+        Some(port) if *port != 22 => format!("ssh -p {port} {user}@{}", remote_address()),
+        _ => format!("ssh {user}@{}", remote_address()),
+    }
+}
+
 /// Letting others in over SSH, which the Mac calls 遠端登入, as the group it is in here is.
 pub(crate) fn ssh_row(unit: &'static str) -> adw::SwitchRow {
     // `systemctl is-active` fails when any is not, so its lines are read rather than its status.
@@ -504,9 +567,11 @@ pub(crate) fn ssh_row(unit: &'static str) -> adw::SwitchRow {
     let user = std::env::var("USER").unwrap_or_default();
     service
         .bind_property("active", &service, "subtitle")
-        .transform_to(move |_, on: bool| Some(if on { format!("ssh {user}@{}", remote_address()) } else { String::new() }))
+        .transform_to(move |_, on: bool| Some(if on { ssh_command(&user, &ssh_ports()) } else { String::new() }))
         .sync_create()
         .build();
+    // Shown again, with the port sshd_config has now.
+    service.connect_map(|row| row.notify("active"));
     // Set while the switch is put back to what the service is.
     let showing = Rc::new(Cell::new(false));
     service.connect_active_notify(move |row| {
@@ -538,6 +603,12 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn sshds_ports_stop_at_a_match_block() {
+        assert_eq!(sshd_config_ports("# Port 2200\nPort 2222\nport 22\nMatch User x\n    Port 23\n"), [2222, 22]);
+        assert!(sshd_config_ports("#Port 22\n").is_empty());
+    }
+
+    #[test]
     fn the_firewall_is_brought_to_what_is_shared() {
         let dir = std::env::temp_dir().join(format!("nekoland-firewall-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -549,7 +620,8 @@ mod tests {
         };
         // SSH on its own port and Samba on; xrdp off, with a rule left from when it was on;
         // one SSH rule already there, and one rule made by hand.
-        stub("systemctl", r#"case "$3" in ssh.socket|smbd) exit 0;; *) exit 3;; esac"#);
+        stub("systemctl", &format!(r#"case "$1" in -q) ;; *) echo "systemctl $*" >>{};; esac
+case "$3" in ssh.socket|smbd) exit 0;; *) exit 3;; esac"#, log.display()));
         stub("sshd", "echo 'Port 2222'");
         stub(
             "ufw",
@@ -566,11 +638,18 @@ fi"#,
             ),
         );
         let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
-        let ran = Command::new("sh").arg("-c").arg(firewall_script(&dir)).env("PATH", path).status().unwrap();
+        // SSH's port was another the last time.
+        let seen = dir.join("seen");
+        std::fs::write(&seen, "ssh 22\nxrdp 3389\n").unwrap();
+        let ran = Command::new("sh").arg("-c").arg(firewall_script(&dir, &seen)).env("PATH", path).status().unwrap();
+        let seen = std::fs::read_to_string(&seen).unwrap();
         let calls = std::fs::read_to_string(&log).unwrap_or_default();
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert!(ran.success());
+        assert_eq!(seen, "ssh 2222\nxrdp 3389\n");
+        assert!(calls.contains("systemctl restart ssh.socket"), "{calls}");
+        assert!(!calls.contains("xrdp"), "{calls}");
         let calls: Vec<&str> = calls.lines().collect();
         assert!(calls.contains(&"delete allow from 10.0.0.0/8 to any port 3389 proto tcp"), "{calls:?}");
         assert!(calls.contains(&"allow from 192.168.0.0/16 to any port 2222 proto tcp comment nekoland-ssh"), "{calls:?}");

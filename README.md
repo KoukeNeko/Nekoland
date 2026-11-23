@@ -542,7 +542,9 @@ out again as it is turned off or removed. A system path unit,
 `nekoland-firewall-USER.path`, which `install.sh` and Settings set up, brings the rules
 up to date (`nekoland-settings --firewall-sync USER`, as root) whenever SSH's, xrdp's or
 Sunshine's configuration changes, a service is turned on or off, by hand too, or the
-firewall is turned on, and at boot; ufw keeps them while it is off.
+firewall is turned on, and at boot; ufw keeps them while it is off. A port changed in
+`sshd_config` or `xrdp.ini` is put in effect then too, by restarting the service, and
+the page shows the ports as they are each time it is shown.
 
 遠端登入 also has Sunshine, for Moonlight clients. Settings installs it from LizardByte's
 newest release, the package built for this Ubuntu (its SHA-256 checked), with a udev rule

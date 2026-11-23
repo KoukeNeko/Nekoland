@@ -1278,14 +1278,17 @@ fn calendar_day_group(config: &Config) -> adw::PreferencesGroup {
 /// A row stating a fact, which can be selected to copy.
 fn fact_row(title: &str, value: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(
-        &gtk::Label::builder()
-            .label(value)
-            .css_classes(["dim-label"])
-            .selectable(true)
-            .build(),
-    );
+    row.add_suffix(&fact_label(value));
     row
+}
+
+/// A fact row's value, for one that changes.
+fn fact_label(value: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(value)
+        .css_classes(["dim-label"])
+        .selectable(true)
+        .build()
 }
 
 fn group(title: &str) -> adw::PreferencesGroup {
