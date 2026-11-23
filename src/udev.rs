@@ -103,6 +103,8 @@ struct Udev {
     last_drawn: Instant,
     /// The outputs whose frame on its way was drawn locked, for sleep to wait for.
     locked_pending: HashSet<crtc::Handle>,
+    /// Screen captures being read back from the GPU, copied to their clients at the next draw.
+    readings: Vec<crate::screencopy::Reading>,
     /// The outputs whose gamma can be set, by the length of their ramps.
     gamma: HashMap<crtc::Handle, u32>,
     /// The red, green and blue gains each output's ramps were last set to, and whether the
@@ -177,6 +179,7 @@ pub fn init_udev(
         empty: HashMap::new(),
         last_drawn: Instant::now(),
         locked_pending: HashSet::new(),
+        readings: Vec::new(),
         displays: HashMap::new(),
         globals: HashMap::new(),
         scanner: DrmScanner::new(),
@@ -392,6 +395,7 @@ fn render(
         ramps,
         filters,
         profile,
+        readings,
         ..
     } = &mut *guard;
     let Some((surface, output)) = surfaces.get_mut(&crtc) else {
@@ -448,6 +452,9 @@ fn render(
         }
     }
 
+    // Read back by now, at a refresh or more since they were drawn.
+    crate::screencopy::finish(renderer, std::mem::take(readings));
+
     // A dark output is still looked at every `IDLE_REDRAW`, to come back on at once.
     let queued = if state.screens_off || state.space.output_geometry(output).is_none() {
         if dark.insert(crtc) {
@@ -461,7 +468,7 @@ fn render(
             surface.reset_buffers();
         }
         let frames = state.take_screencopy(output);
-        let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames).unwrap_or_else(|err| {
+        let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames, readings).unwrap_or_else(|err| {
             warn!("render: {err}");
             false
         });
@@ -469,7 +476,12 @@ fn render(
         queued
     };
     let output = output.clone();
-    let idle = if guard.last_drawn.elapsed() < QUIET_AFTER { IDLE_REDRAW } else { QUIET_REDRAW };
+    // Captures read back are copied at the next draw, which comes soon for them.
+    let idle = if guard.last_drawn.elapsed() < QUIET_AFTER || !guard.readings.is_empty() {
+        IDLE_REDRAW
+    } else {
+        QUIET_REDRAW
+    };
     let retry = if queued {
         guard.last_drawn = Instant::now();
         guard.pending.insert(crtc);
@@ -992,6 +1004,7 @@ fn draw(
     cursors: &mut Cursors,
     glass: Option<&mut Glass>,
     screencopy: Vec<crate::screencopy::Frame>,
+    readings: &mut Vec<crate::screencopy::Reading>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let output_origin = state
         .space
@@ -1022,7 +1035,7 @@ fn draw(
     wait_until_drawn(&frame);
     let is_empty = frame.is_empty;
     if !screencopy.is_empty() {
-        crate::screencopy::copy(renderer, output, &elements, cursor, screencopy);
+        readings.extend(crate::screencopy::copy(renderer, output, &elements, cursor, screencopy));
     }
     if is_empty {
         return Ok(false);

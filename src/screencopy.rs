@@ -2,7 +2,9 @@
 //! and xdg-desktop-portal-wlr shares the screen through it with the programs that ask the
 //! portal, such as browsers and Discord. A frame asked for is copied, into the client's
 //! shared memory, when the output is next drawn; ext-image-copy-capture's frames of an
-//! output (`image_capture`) wait and are copied with these.
+//! output (`image_capture`) wait and are copied with these. The picture comes back from
+//! the GPU meanwhile, and is copied into the client's memory at the draw after, rather than
+//! waited for: a screen share asks for every frame.
 //!
 //! A wlr frame of a whole display may also be a dmabuf, drawn into on the GPU: Sunshine
 //! takes nothing else.
@@ -13,8 +15,10 @@ use smithay::{
     backend::{
         allocator::{dmabuf::Dmabuf, Buffer, Fourcc},
         renderer::{
-            damage::OutputDamageTracker, element::RenderElement, gles::GlesRenderer, Bind, ExportMem,
-            Offscreen, TextureMapping,
+            damage::OutputDamageTracker,
+            element::RenderElement,
+            gles::{GlesMapping, GlesRenderer, GlesTexture},
+            Bind, ExportMem, Offscreen, TextureMapping,
         },
     },
     output::Output,
@@ -296,17 +300,31 @@ impl Nekoland {
     }
 }
 
+/// A frame whose picture is on its way back from the GPU, for `finish` to copy into its
+/// buffer.
+pub struct Reading {
+    frame: Frame,
+    mapping: GlesMapping,
+    size: Size<i32, Physical>,
+    transform: Transform,
+    time: Duration,
+}
+
 /// Copies what is drawn on `output` into each frame; `cursor` is how many of the elements,
-/// at their front, are the cursor.
+/// at their front, are the cursor. A frame in shared memory is returned still being read
+/// back, for `finish`.
+#[must_use]
 pub fn copy<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     output: &Output,
     elements: &[E],
     cursor: usize,
     frames: Vec<Frame>,
-) {
+) -> Vec<Reading> {
+    let mut readings = Vec::new();
     let Some(size) = output.current_mode().map(|mode| mode.size) else {
-        return frames.iter().for_each(Frame::failed);
+        frames.iter().for_each(Frame::failed);
+        return readings;
     };
     let time = monotonic_now();
     let turned = output.current_transform();
@@ -321,18 +339,41 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
         let drawn = (size, output.current_scale().fractional_scale(), transform);
         // The region was cut from the output as it was when the frame was asked for; a
         // display made smaller since then no longer holds it.
-        let copied = if let Ok(dmabuf) = get_dmabuf(&frame.buffer) {
+        let copied = if let Some(dmabuf) = get_dmabuf(&frame.buffer).ok().cloned() {
             if frame.region == Rectangle::from_size(size) {
-                draw_into(renderer, drawn, elements, dmabuf.clone())
+                draw_into(renderer, drawn, elements, dmabuf)
             } else {
                 Err("the display changed size since the frame was asked for".into())
             }
         } else if Rectangle::from_size(size).contains_rect(frame.region) {
-            copy_into(renderer, drawn, elements, frame.region, &frame.buffer)
+            match read(renderer, drawn, elements) {
+                Ok(mapping) => {
+                    readings.push(Reading { frame, mapping, size, transform, time });
+                    continue;
+                }
+                Err(err) => Err(err),
+            }
         } else {
             Err("the display changed size since the frame was asked for".into())
         };
         match copied {
+            Ok(()) => frame.ready(transform, time),
+            Err(err) => {
+                tracing::warn!("screen capture: {err}");
+                frame.failed();
+            }
+        }
+    }
+    readings
+}
+
+/// Copies each picture read back into its frame's buffer, and tells the client it is there.
+pub fn finish(renderer: &mut GlesRenderer, readings: Vec<Reading>) {
+    for Reading { frame, mapping, size, transform, time } in readings {
+        if !frame.is_alive() {
+            continue;
+        }
+        match write(renderer, &mapping, size, frame.region, &frame.buffer) {
             Ok(()) => frame.ready(transform, time),
             Err(err) => {
                 tracing::warn!("screen capture: {err}");
@@ -346,12 +387,22 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
 /// copies `region` of it into `buffer`, which `fits` it.
 pub fn copy_into<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
-    (size, scale, transform): (Size<i32, Physical>, f64, Transform),
+    drawn: (Size<i32, Physical>, f64, Transform),
     elements: &[E],
     region: Rectangle<i32, Physical>,
     buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut texture = Offscreen::<smithay::backend::renderer::gles::GlesTexture>::create_buffer(
+    let mapping = read(renderer, drawn, elements)?;
+    write(renderer, &mapping, drawn.0, region, buffer)
+}
+
+/// Draws `elements` as `copy_into` does, and starts reading the whole of it back.
+fn read<E: RenderElement<GlesRenderer>>(
+    renderer: &mut GlesRenderer,
+    (size, scale, transform): (Size<i32, Physical>, f64, Transform),
+    elements: &[E],
+) -> Result<GlesMapping, Box<dyn std::error::Error>> {
+    let mut texture = Offscreen::<GlesTexture>::create_buffer(
         renderer,
         Fourcc::Abgr8888,
         size.to_logical(1).to_buffer(1, Transform::Normal),
@@ -365,13 +416,28 @@ pub fn copy_into<E: RenderElement<GlesRenderer>>(
         elements,
         CLEAR_COLOR,
     )?;
-    // The whole output is read, and the region cut from it here, whichever way up it comes.
+    // The whole output is read, and the region cut from it in `write`, whichever way up it
+    // comes.
     let whole = Rectangle::from_size((size.w, size.h).into());
     let mapping = renderer.copy_framebuffer(&target, whole, Fourcc::Xrgb8888)?;
+    // Sent to the GPU now, to be done by the time it is mapped.
+    renderer.with_context(|gl| unsafe { gl.Flush() })?;
+    Ok(mapping)
+}
+
+/// Copies `region` of the picture `mapping` holds, of a display `size` large, into `buffer`,
+/// which `fits` it; waits for the GPU if it is not done reading it back.
+fn write(
+    renderer: &mut GlesRenderer,
+    mapping: &GlesMapping,
+    size: Size<i32, Physical>,
+    region: Rectangle<i32, Physical>,
+    buffer: &WlBuffer,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Drawn into a texture, the picture is bottom row first, as GL counts from the lower
     // left: the mapping's flag says so the other way round.
     let flipped = !mapping.flipped();
-    let pixels = renderer.map_texture(&mapping)?;
+    let pixels = renderer.map_texture(mapping)?;
     let output_row = (size.w * BYTES_PER_PIXEL) as usize;
     let row = (region.size.w * BYTES_PER_PIXEL) as usize;
     let left = (region.loc.x * BYTES_PER_PIXEL) as usize;

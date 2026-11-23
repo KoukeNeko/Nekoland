@@ -220,7 +220,8 @@ pub fn init_headless(
                 Err(err) => warn!("render: {err}"),
             }
             elements.extend(zoomed(scene, pointer, state.config.zoom));
-            crate::screencopy::copy(&mut renderer, &output, &elements, cursor, frames);
+            let readings = crate::screencopy::copy(&mut renderer, &output, &elements, cursor, frames);
+            crate::screencopy::finish(&mut renderer, readings);
             state.count_frame();
         }
         state.capture_windows(&mut renderer);

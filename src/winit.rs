@@ -239,7 +239,8 @@ pub fn init_winit(
                 }
                 let frames = state.take_screencopy(&output);
                 if !frames.is_empty() {
-                    crate::screencopy::copy(backend.renderer(), &output, &elements, 0, frames);
+                    let readings = crate::screencopy::copy(backend.renderer(), &output, &elements, 0, frames);
+                    crate::screencopy::finish(backend.renderer(), readings);
                 }
                 state.capture_windows(backend.renderer());
 
