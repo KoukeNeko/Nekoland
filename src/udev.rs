@@ -96,6 +96,9 @@ struct Udev {
     pending: HashSet<crtc::Handle>,
     /// The outputs with a timer set to look again for something new to draw.
     retrying: HashSet<crtc::Handle>,
+    /// When each output last had nothing new to draw, and whether a draw is held back until
+    /// a refresh after it.
+    empty: HashMap<crtc::Handle, (Instant, bool)>,
     /// When a frame last had something new, for the outputs to be looked at less often after.
     last_drawn: Instant,
     /// The outputs whose frame on its way was drawn locked, for sleep to wait for.
@@ -171,6 +174,7 @@ pub fn init_udev(
         dark: HashSet::new(),
         pending: HashSet::new(),
         retrying: HashSet::new(),
+        empty: HashMap::new(),
         last_drawn: Instant::now(),
         locked_pending: HashSet::new(),
         displays: HashMap::new(),
@@ -347,8 +351,27 @@ fn render(
     data: &mut Nekoland,
     handle: &LoopHandle<'static, Nekoland>,
 ) {
-    // Its vblank draws it next.
-    if udev.borrow().pending.contains(&crtc) {
+    // Its vblank draws it next, or the timer holding it back.
+    let held = udev.borrow().empty.get(&crtc).is_some_and(|(_, held)| *held);
+    if held || udev.borrow().pending.contains(&crtc) {
+        return;
+    }
+    // After a frame with nothing new, the next waits a refresh, as a shown frame waits for
+    // its vblank: a program drawing where nothing of it shows, which is told at once that
+    // its frame was shown, would otherwise have everything drawn again as fast as it can.
+    if let Some(wait) = hold_after_empty(udev, crtc) {
+        let timed = udev.clone();
+        let loop_handle = handle.clone();
+        if let Err(err) = handle.insert_source(Timer::from_duration(wait), move |_, _, data| {
+            if let Some((_, held)) = timed.borrow_mut().empty.get_mut(&crtc) {
+                *held = false;
+            }
+            render(&timed, crtc, data, &loop_handle);
+            TimeoutAction::Drop
+        }) {
+            warn!("could not schedule a redraw: {err}");
+            udev.borrow_mut().empty.remove(&crtc);
+        }
         return;
     }
     let state = &mut *data;
@@ -461,8 +484,10 @@ fn render(
         if state.unshown_locked.is_some() && state.lock.is_some() {
             guard.locked_pending.insert(crtc);
         }
+        guard.empty.remove(&crtc);
         false
     } else {
+        guard.empty.insert(crtc, (Instant::now(), false));
         guard.retrying.insert(crtc)
     };
     drop(guard);
@@ -487,6 +512,23 @@ fn render(
 
     state.finish_frame(&output);
     let _ = data.display_handle.flush_clients();
+}
+
+/// How long a draw of `crtc` waits, when its last frame had nothing new and a refresh has not
+/// passed since; None when it draws now.
+fn hold_after_empty(udev: &SharedUdev, crtc: crtc::Handle) -> Option<Duration> {
+    let mut guard = udev.borrow_mut();
+    let refresh = guard
+        .surfaces
+        .get(&crtc)
+        .and_then(|(_, output)| output.current_mode())
+        .map(|mode| mode.refresh)
+        .filter(|millihertz| *millihertz > 0)
+        .map_or(IDLE_REDRAW, |millihertz| Duration::from_secs_f64(1000.0 / f64::from(millihertz)));
+    let (at, held) = guard.empty.get_mut(&crtc)?;
+    let wait = refresh.checked_sub(at.elapsed())?;
+    *held = true;
+    Some(wait)
 }
 
 /// Sets up the displays plugged in since the last look, and lets go of those unplugged.
