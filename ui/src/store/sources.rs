@@ -1334,11 +1334,13 @@ pub fn install_plan(offer: &Offer) -> Plan {
     plan
 }
 
-pub fn remove_plan(offer: &Offer) -> Plan {
+/// The commands that remove an offer; `everything` takes what the system keeps of it too:
+/// apt's configuration files, and the snapshot of its data snapd would keep.
+pub fn remove_plan(offer: &Offer, everything: bool) -> Plan {
     let mut plan = Plan::default();
     match offer.kind {
         Some(Kind::Apt) => plan.admin.push(
-            [&APT_GET[..], &["remove", &offer.id]]
+            [&APT_GET[..], &[if everything { "purge" } else { "remove" }, &offer.id]]
                 .concat()
                 .iter()
                 .map(|w| w.to_string())
@@ -1369,11 +1371,49 @@ pub fn remove_plan(offer: &Offer) -> Plan {
                 ]));
             }
         }
+        Some(Kind::Snap) if everything => plan.admin.push(words(&["snap", "remove", "--purge", &offer.id])),
         Some(Kind::Snap) => plan.admin.push(words(&["snap", "remove", &offer.id])),
         Some(Kind::Brew) => plan.user.push(words(&["brew", "uninstall", &offer.id])),
         None => {}
     }
     plan
+}
+
+/// Folders of the desktop's own that no app's files are, though an app may share a name.
+const SHARED_FOLDERS: [&str; 12] = [
+    "applications", "autostart", "dconf", "flatpak", "fonts", "icons", "keyrings", "mime", "nekoland",
+    "systemd", "Trash", "user-dirs.dirs",
+];
+
+/// What an app leaves in `home` once removed: a sandboxed app's own folder, and otherwise the
+/// folders in the configuration, cache, data and state folders named exactly as one of
+/// `names` (its package, desktop file and window class), and its autostart entries.
+// shortcut: reads the XDG folders at their default places, not where XDG_*_HOME moves them;
+// follow those variables if someone sets them.
+pub fn leftovers(offer: &Offer, names: &[String], home: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    match offer.kind {
+        Some(Kind::Flatpak) => found.push(home.join(".var/app").join(&offer.id)),
+        Some(Kind::Snap) => found.push(home.join("snap").join(&offer.id)),
+        _ => {
+            for base in [".config", ".cache", ".local/share", ".local/state"] {
+                let Ok(entries) = std::fs::read_dir(home.join(base)) else { continue };
+                for entry in entries.filter_map(Result::ok) {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let named = names.iter().any(|wanted| wanted.eq_ignore_ascii_case(&name));
+                    if named && !SHARED_FOLDERS.iter().any(|shared| shared.eq_ignore_ascii_case(&name)) {
+                        found.push(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    let autostart = home.join(".config/autostart");
+    found.extend(names.iter().map(|name| autostart.join(format!("{name}.desktop"))));
+    found.retain(|path| std::fs::symlink_metadata(path).is_ok());
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// The commands that add a vendor's repository: its key, then its sources file.
@@ -1754,6 +1794,26 @@ pub fn installed() -> BTreeMap<u8, Vec<App>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leftovers_are_folders_named_exactly_as_the_app() {
+        let home = std::env::temp_dir().join(format!("nekoland-leftovers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for folder in [".config/Code", ".config/Code-extra", ".cache/code", ".local/share/fonts", ".config/autostart"] {
+            std::fs::create_dir_all(home.join(folder)).unwrap();
+        }
+        std::fs::write(home.join(".config/autostart/code.desktop"), "").unwrap();
+        let offer = Offer { kind: Some(Kind::Apt), id: "code".into(), ..Offer::default() };
+        let names = ["code".to_string(), "fonts".to_string()];
+
+        let found = leftovers(&offer, &names, &home);
+        assert_eq!(found, [home.join(".cache/code"), home.join(".config/Code"), home.join(".config/autostart/code.desktop")]);
+
+        let flatpak = Offer { kind: Some(Kind::Flatpak), id: "org.example.App".into(), ..Offer::default() };
+        std::fs::create_dir_all(home.join(".var/app/org.example.App")).unwrap();
+        assert_eq!(leftovers(&flatpak, &["org.example.App".into()], &home), [home.join(".var/app/org.example.App")]);
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn appstream_blocks_become_offers_merged_by_id() {
