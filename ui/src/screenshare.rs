@@ -148,9 +148,12 @@ fn choose(app: &adw::Application) {
 
     let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
     let page = |grid: &gtk::FlowBox| {
+        // As tall as the tiles would be, not as short as they could be squeezed, so that many
+        // windows scroll.
+        let viewport = gtk::Viewport::builder().vscroll_policy(gtk::ScrollablePolicy::Natural).child(grid).build();
         gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(grid)
+            .child(&viewport)
             .build()
     };
     let windows_page: gtk::Widget = if windows.child_at_index(0).is_some() {
@@ -287,14 +290,16 @@ fn choose(app: &adw::Application) {
 /// with its name and a detail under it.
 fn tile(what: [&str; 2], shape: (i32, i32), icon: Option<&gio::Icon>, name: &str, detail: &str) -> gtk::FlowBoxChild {
     let shot = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).build();
-    // Every tile one shape, whatever shape the window is: a tall one is shown narrower.
-    let frame = gtk::AspectFrame::builder()
-        .ratio(shape.0.max(1) as f32 / shape.1.max(1) as f32)
-        .obey_child(false)
+    // Every tile one shape, whatever shape the window is: a tall one is shown narrower. An
+    // empty picture of that shape gives the tile its height for its width, which an
+    // AspectFrame does not: it is measured as its child is.
+    let shape = gtk::Picture::for_paintable(&gdk::Paintable::new_empty(shape.0.max(1), shape.1.max(1)));
+    let frame = gtk::Overlay::builder()
         .css_classes(["card"])
         .overflow(gtk::Overflow::Hidden)
-        .child(&shot)
+        .child(&shape)
         .build();
+    frame.add_overlay(&shot);
     let label = |text: &str, classes: &[&str]| {
         gtk::Label::builder()
             .label(text)
