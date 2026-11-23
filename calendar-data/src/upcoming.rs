@@ -2,7 +2,7 @@
 //! enough to call attention to itself.
 
 use crate::{
-    date::{local_parts, local_seconds, now, Date},
+    date::{local_parts, local_seconds, Date},
     event::{Event, Kind},
 };
 
@@ -75,11 +75,6 @@ pub fn alert_due(event: &Event, day: Date, seconds: i64, window: i64) -> bool {
     };
     let at = begins - i64::from(minutes) * SECONDS_IN_MINUTE;
     (at..at + window).contains(&seconds)
-}
-
-/// The same instant the seconds count, as now.
-pub fn current_seconds() -> i64 {
-    now()
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::date::{Date, Month};
+use crate::date::Date;
 
 const NO_TIME: &str = "-";
 const COLUMN_SEPARATOR: char = '\t';
@@ -136,12 +136,6 @@ impl Event {
                 day.month == self.date.month && day.day == self.date.day.min(day.month_of().length())
             }
         }
-    }
-
-    /// The first day on or after `day` that it is on, if there is one within a year of it.
-    pub fn next_on_or_after(&self, day: Date) -> Option<Date> {
-        const LOOK_AHEAD_DAYS: i64 = 400;
-        (0..LOOK_AHEAD_DAYS).map(|ahead| day.plus_days(ahead)).find(|&found| self.occurs_on(found))
     }
 
     /// A line of the file.
@@ -286,17 +280,6 @@ impl Ord for Kind {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (*self as u8).cmp(&(*other as u8))
     }
-}
-
-/// How many days of a month have anything on them, from 1: for the dots under them.
-pub fn days_with_events(events: &[Event], month: Month) -> Vec<(Date, Vec<usize>)> {
-    (1..=month.length())
-        .filter_map(|day| {
-            let date = Date { year: month.year, month: month.month, day };
-            let calendars: Vec<usize> = on_day(events, date).iter().map(|found| found.event.calendar).collect();
-            (!calendars.is_empty()).then_some((date, calendars))
-        })
-        .collect()
 }
 
 /// Where the events are kept.
@@ -467,7 +450,6 @@ mod tests {
         event.repeat = Repeat::Daily;
         event.skipped = vec![date(2026, 11, 3)];
         assert!(event.occurs_on(date(2026, 11, 2)) && !event.occurs_on(date(2026, 11, 3)));
-        assert_eq!(event.next_on_or_after(date(2026, 11, 3)), Some(date(2026, 11, 4)));
     }
 
     #[test]

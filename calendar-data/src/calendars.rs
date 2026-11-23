@@ -43,7 +43,8 @@ fn hex(color: Rgb) -> String {
 
 pub fn parse_hex(text: &str) -> Option<Rgb> {
     let digits = text.strip_prefix('#')?;
-    if digits.len() != 6 {
+    // Slicing by byte below needs every digit to be one byte.
+    if digits.len() != 6 || !digits.is_ascii() {
         return None;
     }
     let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok().map(|value| f64::from(value) / 255.0);
@@ -104,6 +105,7 @@ mod tests {
         assert_eq!(hex((1.0, 0.0, 0.0)), "#ff0000");
         assert_eq!(parse_hex("ff8000"), None);
         assert_eq!(parse_hex("#ff80"), None);
+        assert_eq!(parse_hex("#1é234"), None);
     }
 
     #[test]
