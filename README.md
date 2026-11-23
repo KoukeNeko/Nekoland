@@ -290,7 +290,10 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
 Programs learn whether to be dark from `xdg-desktop-portal`. With
 `xdg-desktop-portal-gtk` installed, copy `shell/nekoland-portals.conf` to
 `~/.config/xdg-desktop-portal/`; the GSetting
-`org.gnome.desktop.interface color-scheme` then switches them.
+`org.gnome.desktop.interface color-scheme` then switches them. The portal runs in a
+graphical session only: Nekoland starts systemd's `graphical-session.target` through
+`nekoland-session.target`, which `install.sh` puts in `/usr/local/lib/systemd/user`, and
+stops it as it ends, so the person's units wanted by that target run with it too.
 
 ## Menu bar
 
@@ -659,8 +662,9 @@ default and opened. While there is none, Settings' 預設應用程式 shows 網�
 with 取得 opening Market's 瀏覽器 page.
 
 `nekoland-filechooser`, from `ui/`, is the window programs open and save files in when they
-ask `xdg-desktop-portal`: browsers, Flatpak and Snap applications, GTK 4's file dialog and
-Electron. The places are on the left (recent files, the home folders, the bookmarks Files
+ask `xdg-desktop-portal`: browsers, Flatpak and Snap applications, GTK 4's file dialog,
+Electron, and GTK 3's native one, as Nekoland sets `GTK_USE_PORTAL=1`; a GTK 3 program that
+builds its own `GtkFileChooserDialog` keeps GTK's. The places are on the left (recent files, the home folders, the bookmarks Files
 keeps and mounted drives), the folder as a list or as icons with Files' thumbnails, the
 types the program asked for at the bottom, with what is not of the chosen type shown faded
 rather than hidden. Saving shows only the name and the folder until it is unfolded into the

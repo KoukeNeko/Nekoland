@@ -1,0 +1,7 @@
+# Nekoland's session, which it starts once its display is up and stops as it ends: the
+# graphical session that portals and the person's own units wait for comes and goes with it.
+[Unit]
+Description=Nekoland session
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target

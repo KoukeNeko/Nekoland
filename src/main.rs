@@ -74,6 +74,8 @@ const GTK_RENDERER: &str = "GSK_RENDERER";
 const GTK_RENDERER_WITHOUT_GL: &str = "cairo";
 const SESSION_TYPE: &str = "XDG_SESSION_TYPE";
 const SESSION_TYPE_WAYLAND: &str = "wayland";
+/// `shell/nekoland-session.target`, which brings up systemd's graphical session.
+const SESSION_TARGET: &str = "nekoland-session.target";
 /// Runs the compositor for Sunshine, with no display: see `headless`.
 const HEADLESS_FLAG: &str = "--headless";
 
@@ -197,6 +199,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if owns_session {
         // Portals pick their backends by the desktop's name.
         std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
+        // GTK 3 opens and saves files in its own old window unless told to ask the portal,
+        // which shows Nekoland's; GTK 4 asks it already.
+        std::env::set_var("GTK_USE_PORTAL", "1");
         // A session logged into on a console is "tty" to logind, and Chrome, Electron and
         // others choose X11 then, as XWayland's DISPLAY is there too: drawn through XWayland,
         // Chrome has no window buttons and its menus' shadows take glass.
@@ -270,10 +275,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !updated.as_ref().is_ok_and(|status| status.success()) {
                 tracing::warn!("D-Bus services will not find this display: {updated:?}");
             }
-            // The menu bar's question of dark or light started the portal before it could know
-            // the desktop's name, and it picks its backends once, as it starts: the file chooser
-            // would be GTK's.
-            config::spawn("systemctl --user try-restart xdg-desktop-portal.service");
+            // The portal, and units such as the person's own, start in a graphical session
+            // only. The menu bar's question of dark or light started the portal before it could
+            // know the desktop's name, and it picks its backends once, as it starts: the file
+            // chooser would be GTK's.
+            config::spawn(&format!(
+                "systemctl --user start {SESSION_TARGET}; systemctl --user try-restart xdg-desktop-portal.service"
+            ));
             // Sunshine, when Settings set it to stream this desktop, started with the user's
             // services, before there was a display to find; an xrdp session is not streamed.
             if !data.remote {
@@ -319,6 +327,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.run(None, &mut data, move |_| {
         // Nekoland is running
     })?;
+    if owns_session {
+        // The graphical session ends with it, and the units bound to it.
+        let stopped = std::process::Command::new("systemctl")
+            .args(["--user", "stop", SESSION_TARGET])
+            .status();
+        if !stopped.as_ref().is_ok_and(|status| status.success()) {
+            tracing::warn!("{SESSION_TARGET} is left running: {stopped:?}");
+        }
+    }
 
     Ok(())
 }

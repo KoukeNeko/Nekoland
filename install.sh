@@ -144,6 +144,7 @@ sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.FileManager1.service" \
     "$src/shell/org.gnome.keyring.SystemPrompter.service" \
     "$src/shell/org.gnome.keyring.PrivatePrompter.service"
+sudo install -Dm 644 -t /usr/local/lib/systemd/user "$src/shell/nekoland-session.target"
 # xdg-desktop-portal reads its backends from its own folder only, not from /usr/local.
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal/portals "$src/shell/nekoland.portal"
 sudo install -Dm 644 -t /usr/share/xdg-desktop-portal "$src/shell/nekoland-portals.conf"
