@@ -13,13 +13,23 @@ use std::{
 
 use adw::prelude::*;
 use browse::{
-    home, icon_button, info_file, is_dir, listing, modified_label, places, scrolled, Location, EDGE, GAP,
-    READ_WAIT,
+    home, icon_button, info_file, is_dir, listing, modified_label, places, scrolled, Location, Server, EDGE,
+    GAP, READ_WAIT,
 };
 use gtk::{gdk, gio, glib};
 
 mod alert;
 mod browse;
+#[allow(dead_code)]
+#[path = "files/mount.rs"]
+mod mount;
+#[allow(dead_code)]
+#[path = "files/search.rs"]
+mod search;
+mod secrets;
+#[allow(dead_code)]
+#[path = "files/tags.rs"]
+mod tags;
 #[allow(dead_code)]
 #[path = "files/thumbs.rs"]
 mod thumbs;
@@ -95,7 +105,7 @@ fn main() -> glib::ExitCode {
         .build();
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
-        css.load_from_string(CSS);
+        css.load_from_string(&format!("{CSS}{}", tags::CSS));
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
                 &display,
@@ -493,6 +503,16 @@ impl ChoiceWidget {
 
 type Reply = Box<dyn FnOnce(u32, glib::Variant)>;
 
+/// Where a sidebar row takes the window.
+#[derive(Clone)]
+enum Target {
+    Go(Location),
+    /// A drive not mounted yet: choosing it mounts it.
+    Volume(gio::Volume),
+    /// A Hamasen server not mounted yet: choosing it mounts it.
+    Hamasen(Server),
+}
+
 struct Dialog {
     request: Request,
     window: adw::Window,
@@ -504,7 +524,10 @@ struct Dialog {
     directory: RefCell<gtk::DirectoryList>,
     /// The directory's handlers, to take off when another folder is listed.
     watching: RefCell<Vec<glib::SignalHandlerId>>,
+    /// The files of a list rather than of a folder: those used lately, or those with a tag.
     recent: gio::ListStore,
+    /// The search for a tag's files going on, stopped when dropped.
+    tag_walk: RefCell<Option<search::Walk>>,
     shown: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
     selection: gtk::SelectionModel,
@@ -512,7 +535,7 @@ struct Dialog {
     filter: RefCell<Option<gtk::FileFilter>>,
     filter_index: Cell<usize>,
     places: gtk::ListBox,
-    place_locations: RefCell<Vec<Location>>,
+    place_targets: RefCell<Vec<Target>>,
     crumbs: gtk::Box,
     path_stack: gtk::Stack,
     path_entry: gtk::Entry,
@@ -805,11 +828,12 @@ impl Dialog {
             directory: RefCell::new(directory),
             watching: RefCell::new(Vec::new()),
             recent,
+            tag_walk: RefCell::new(None),
             shown,
             filtered,
             selection,
             places,
-            place_locations: RefCell::new(Vec::new()),
+            place_targets: RefCell::new(Vec::new()),
             crumbs,
             path_stack,
             path_entry,
@@ -1171,9 +1195,12 @@ impl Dialog {
         self.back_button.connect_clicked(on!(|d, _b| d.step(-1)));
         self.forward_button.connect_clicked(on!(|d, _b| d.step(1)));
         self.places.connect_row_activated(on!(|d, _l, row| {
-            let location = d.place_locations.borrow().get(row.index() as usize).cloned();
-            if let Some(location) = location {
-                d.go(location, true);
+            let target = d.place_targets.borrow().get(row.index() as usize).cloned();
+            match target {
+                Some(Target::Go(location)) => d.go(location, true),
+                Some(Target::Volume(volume)) => d.mount_volume(volume),
+                Some(Target::Hamasen(server)) => d.mount_server(server),
+                None => {}
             }
         }));
         self.path_entry
@@ -1283,7 +1310,7 @@ impl Dialog {
     fn here_folder(&self) -> Option<gio::File> {
         match &*self.here.borrow() {
             Location::Folder(file) => Some(file.clone()),
-            Location::Recent => None,
+            Location::Recent | Location::Tag(_) => None,
         }
     }
 
@@ -1299,11 +1326,26 @@ impl Dialog {
             self.here.replace(location.clone());
         }
         self.search.set_text("");
+        self.tag_walk.take();
         match &location {
             Location::Folder(file) => self.set_directory(listing(file, ATTRIBUTES)),
             Location::Recent => {
                 self.fill_recent();
                 self.filtered.set_model(Some(&self.recent));
+            }
+            Location::Tag(tag) => {
+                self.recent.remove_all();
+                self.filtered.set_model(Some(&self.recent));
+                let weak = Rc::downgrade(self);
+                let walk = search::walk(vec![home()], search::Find::Tag(tag.clone()), false, move |found, _| {
+                    if let Some(dialog) = weak.upgrade() {
+                        for path in found {
+                            dialog.add_listed(gio::File::for_path(path));
+                        }
+                        dialog.update_status();
+                    }
+                });
+                self.tag_walk.replace(Some(walk));
             }
         }
         self.show_path_entry(None);
@@ -1397,14 +1439,51 @@ impl Dialog {
             .filter(|item| item.is_local() && item.exists())
             .take(50)
         {
-            let file = gio::File::for_uri(&item.uri());
-            if let Ok(info) =
-                file.query_info(ATTRIBUTES, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
-            {
-                info.set_attribute_object("standard::file", &file);
-                self.recent.append(&info);
-            }
+            self.add_listed(gio::File::for_uri(&item.uri()));
         }
+    }
+
+    fn add_listed(&self, file: gio::File) {
+        if let Ok(info) = file.query_info(ATTRIBUTES, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
+            info.set_attribute_object("standard::file", &file);
+            self.recent.append(&info);
+        }
+    }
+
+    fn mount_volume(self: &Rc<Self>, volume: gio::Volume) {
+        let operation = gtk::MountOperation::new(Some(&self.window));
+        let weak = Rc::downgrade(self);
+        let kept = volume.clone();
+        volume.mount(gio::MountMountFlags::NONE, Some(&operation), gio::Cancellable::NONE, move |mounted| {
+            let Some(dialog) = weak.upgrade() else { return };
+            match mounted {
+                Ok(()) => {
+                    dialog.fill_places();
+                    if let Some(mount) = kept.get_mount() {
+                        dialog.go(Location::Folder(mount.root()), true);
+                    }
+                }
+                Err(err) if err.matches(gio::IOErrorEnum::FailedHandled) => {}
+                Err(err) => alert::notice(&dialog.window, &format!("無法掛載「{}」", kept.name()), Some(err.message())),
+            }
+        });
+    }
+
+    fn mount_server(self: &Rc<Self>, server: Server) {
+        let mounting = mount::mount(&server, Some(self.window.clone().upcast()));
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let mounted = mounting.await;
+            let Some(dialog) = weak.upgrade() else { return };
+            match mounted {
+                Ok(()) if mount::is_mounted(&server) => {
+                    dialog.fill_places();
+                    dialog.go(Location::Folder(server.location.clone()), true);
+                }
+                Ok(()) => {}
+                Err(why) => alert::notice(&dialog.window, &format!("無法掛載「{}」", server.name), Some(&why)),
+            }
+        });
     }
 
     fn fill_crumbs(self: &Rc<Self>) {
@@ -1414,6 +1493,7 @@ impl Dialog {
         let mut trail: Vec<(String, Location)> = Vec::new();
         match &*self.here.borrow() {
             Location::Recent => trail.push(("最近使用".into(), Location::Recent)),
+            Location::Tag(tag) => trail.push((tag.clone(), Location::Tag(tag.clone()))),
             Location::Folder(file) => {
                 let home = gio::File::for_path(home());
                 let mounts = gio::VolumeMonitor::get().mounts();
@@ -1470,37 +1550,55 @@ impl Dialog {
     }
 
     fn fill_places(&self) {
-        let mut locations = Vec::new();
-        let mut first_of_section = Vec::new();
+        self.places.remove_all();
+        let mut targets = Vec::new();
+        let mut headers: Vec<(i32, &'static str)> = Vec::new();
+        let servers = browse::hamasen_servers();
+        let row = |icon: &gtk::Widget, label: &str| {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
+            line.append(icon);
+            line.append(
+                &gtk::Label::builder()
+                    .label(label)
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+            );
+            self.places.append(&line);
+        };
         for (title, section) in places() {
-            // A Hamasen server not mounted has no folder yet to choose in.
-            let section: Vec<_> = section
-                .into_iter()
-                .filter(|place| place.hamasen.is_none() || place.mount.is_some())
-                .collect();
-            if section.is_empty() {
-                continue;
+            match title {
+                // The first, recent, stands above the places' heading, as in Files.
+                None => headers.push((1, "位置")),
+                Some(title) if !section.is_empty() => headers.push((targets.len() as i32, title)),
+                Some(_) => {}
             }
-            first_of_section.push((locations.len() as i32, title));
             for place in section {
-                let line = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
-                line.append(&gtk::Image::from_gicon(&place.icon));
-                line.append(
-                    &gtk::Label::builder()
-                        .label(&place.label)
-                        .xalign(0.0)
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
-                        .build(),
-                );
-                self.places.append(&line);
-                locations.push(place.location);
+                row(gtk::Image::from_gicon(&place.icon).upcast_ref(), &place.label);
+                let server = place.hamasen.as_ref().filter(|_| place.mount.is_none());
+                targets.push(match (place.volume, server) {
+                    (Some(volume), _) => Target::Volume(volume),
+                    (None, Some(id)) => match servers.iter().find(|s| s.id == *id) {
+                        Some(server) => Target::Hamasen(server.clone()),
+                        None => Target::Go(place.location),
+                    },
+                    (None, None) => Target::Go(place.location),
+                });
             }
         }
+        headers.push((targets.len() as i32, "標籤"));
+        for (tag, _) in tags::TAGS {
+            // In an icon's width, so the dot and name line up with the rows above.
+            let slot = gtk::CenterBox::builder().width_request(16).build();
+            slot.set_center_widget(Some(&tags::dot(tag)));
+            row(slot.upcast_ref(), tag);
+            targets.push(Target::Go(Location::Tag(tag.to_string())));
+        }
         self.places.set_header_func(move |row, _| {
-            let title = first_of_section
+            let title = headers
                 .iter()
                 .find(|(index, _)| *index == row.index())
-                .and_then(|(_, title)| *title);
+                .map(|(_, title)| *title);
             row.set_header(
                 title
                     .map(|title| {
@@ -1516,12 +1614,17 @@ impl Dialog {
                     .as_ref(),
             );
         });
-        *self.place_locations.borrow_mut() = locations;
+        *self.place_targets.borrow_mut() = targets;
+        self.sync_places();
     }
 
     fn sync_places(&self) {
         let here = self.here.borrow();
-        let index = self.place_locations.borrow().iter().position(|l| *l == *here);
+        let index = self
+            .place_targets
+            .borrow()
+            .iter()
+            .position(|t| matches!(t, Target::Go(l) if *l == *here));
         match index.and_then(|i| self.places.row_at_index(i as i32)) {
             Some(row) => self.places.select_row(Some(&row)),
             None => self.places.unselect_all(),
@@ -1538,6 +1641,10 @@ impl Dialog {
                     continue;
                 }
                 if let Location::Folder(file) = place.location {
+                    // Nothing is saved in the trash or the network's list of computers.
+                    if matches!(file.uri_scheme().as_deref(), Some("trash" | "network")) {
+                        continue;
+                    }
                     files.push(file);
                     labels.push(place.label);
                 }

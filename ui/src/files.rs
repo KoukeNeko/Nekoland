@@ -32,6 +32,8 @@ mod program;
 mod secrets;
 mod browse;
 mod focus;
+#[path = "files/mount.rs"]
+mod mount;
 #[path = "files/hamasen.rs"]
 mod hamasen;
 #[path = "files/info.rs"]
@@ -122,17 +124,8 @@ button.nf-chip { padding: 0 8px; font-weight: 500; }
 .nf-tag-menu row { min-height: 28px; padding: 0 8px; border-radius: 6px; }
 .nf-tag-menu row:hover { background-color: var(--nekoland-ink); color: var(--nekoland-on-ink); }
 .nf-tag-menu row > separator { margin: 4px 0; }
-.nf-dot { min-width: 10px; min-height: 10px; border-radius: 5px; box-shadow: 0 0 0 1.5px var(--view-bg-color); }
-.nf-dots > .nf-dot + .nf-dot { margin-left: -3px; }
 .nf-tag-button { min-width: 18px; min-height: 18px; padding: 0; border-radius: 9px; }
 .nf-tag-button.on, .nf-tag-button:checked { box-shadow: 0 0 0 2px var(--popover-bg-color), 0 0 0 3.5px var(--window-fg-color); }
-.red { background-color: #d4493f; }
-.orange { background-color: #dc8436; }
-.yellow { background-color: #cfa92e; }
-.green { background-color: #4f9a61; }
-.blue { background-color: #4a7fc0; }
-.purple { background-color: #8e63b5; }
-.gray { background-color: #8e8c90; }
 @keyframes nf-blink { 50% { outline-color: transparent; } }
 .nf-spring { outline: 2px solid currentColor; outline-offset: -2px; border-radius: 8px; animation: nf-blink 120ms steps(1) 2; }
 .nf-quick-look { background-color: var(--view-bg-color); }
@@ -260,7 +253,7 @@ fn main() -> glib::ExitCode {
     });
     app.connect_startup(|app| {
         let css = gtk::CssProvider::new();
-        css.load_from_string(CSS);
+        css.load_from_string(&format!("{CSS}{}", tags::CSS));
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
                 &display,

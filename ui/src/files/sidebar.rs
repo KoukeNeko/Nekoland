@@ -11,7 +11,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::{
-    browse::{self, is_server, places, Location, Server, EDGE, GAP},
+    browse::{self, places, Location, Server, EDGE, GAP},
     hamasen, ops,
     pane::{trash, Where},
     tags, Window,
@@ -140,7 +140,6 @@ impl Sidebar {
         self.rings.borrow_mut().clear();
         let mut targets = Vec::new();
         let mut headers: Vec<(i32, &'static str)> = Vec::new();
-        let themed = |name: &str| gio::ThemedIcon::new(name).upcast::<gio::Icon>();
         let mut bookmarks = Vec::new();
         let sections = places();
         let servers = browse::hamasen_servers();
@@ -154,25 +153,11 @@ impl Sidebar {
                         let to = match place.location {
                             Location::Recent => Where::Recent,
                             Location::Folder(file) => Where::Folder(file),
+                            Location::Tag(tag) => Where::Tag(tag),
                         };
                         self.add_row(&place.icon, &place.label, None, &to);
                         targets.push(Target::Go(to));
                     }
-                    let full = trash()
-                        .query_info(
-                            "trash::item-count",
-                            gio::FileQueryInfoFlags::NONE,
-                            gio::Cancellable::NONE,
-                        )
-                        .is_ok_and(|info| info.attribute_uint32("trash::item-count") > 0);
-                    let icon = themed(if full {
-                        "user-trash-full-symbolic"
-                    } else {
-                        "user-trash-symbolic"
-                    });
-                    let to = Where::Folder(trash());
-                    self.add_row(&icon, "垃圾桶", None, &to);
-                    targets.push(Target::Go(to));
                 }
                 Some("書籤") => {
                     if !section.is_empty() {
@@ -219,20 +204,16 @@ impl Sidebar {
                         targets.push(Target::Go(to));
                     }
                 }
-                Some(_) => {
-                    let (local, remote): (Vec<_>, Vec<_>) = section
-                        .into_iter()
-                        .partition(|place| place.mount.as_ref().is_some_and(|m| !is_server(m)));
-                    // Drives plugged in but not mounted yet.
-                    let unmounted: Vec<gio::Volume> = gio::VolumeMonitor::get()
-                        .volumes()
-                        .into_iter()
-                        .filter(|v| v.get_mount().is_none() && v.can_mount())
-                        .collect();
-                    if !local.is_empty() || !unmounted.is_empty() {
-                        headers.push((targets.len() as i32, "裝置"));
+                Some(title) => {
+                    if !section.is_empty() {
+                        headers.push((targets.len() as i32, title));
                     }
-                    for place in local {
+                    for place in section {
+                        if let Some(volume) = place.volume {
+                            self.add_plain_row(&place.icon, &place.label);
+                            targets.push(Target::Volume(volume));
+                            continue;
+                        }
                         let Location::Folder(file) = place.location else {
                             continue;
                         };
@@ -240,22 +221,6 @@ impl Sidebar {
                         self.add_row(&place.icon, &place.label, place.mount.as_ref(), &to);
                         targets.push(Target::Go(to));
                     }
-                    for volume in unmounted {
-                        self.add_plain_row(&volume.symbolic_icon(), &volume.name());
-                        targets.push(Target::Volume(volume));
-                    }
-                    headers.push((targets.len() as i32, "網路"));
-                    for place in remote {
-                        let Location::Folder(file) = place.location else {
-                            continue;
-                        };
-                        let to = Where::Folder(file);
-                        self.add_row(&place.icon, &place.label, place.mount.as_ref(), &to);
-                        targets.push(Target::Go(to));
-                    }
-                    let network = Where::Folder(gio::File::for_uri("network:///"));
-                    self.add_row(&themed("network-workgroup-symbolic"), "網路", None, &network);
-                    targets.push(Target::Go(network));
                 }
             }
         }

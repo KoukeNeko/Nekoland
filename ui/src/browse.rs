@@ -251,6 +251,8 @@ pub fn free_name(path: &Path) -> PathBuf {
 pub enum Location {
     Recent,
     Folder(gio::File),
+    /// The files given a tag.
+    Tag(String),
 }
 
 impl PartialEq for Location {
@@ -258,6 +260,7 @@ impl PartialEq for Location {
         match (self, other) {
             (Location::Recent, Location::Recent) => true,
             (Location::Folder(a), Location::Folder(b)) => a.equal(b),
+            (Location::Tag(a), Location::Tag(b)) => a == b,
             _ => false,
         }
     }
@@ -272,27 +275,31 @@ pub struct Place {
     pub mount: Option<gio::Mount>,
     /// The id of the Hamasen server it is, mounted or not.
     pub hamasen: Option<String>,
+    /// The drive plugged in but not mounted yet, which choosing the place mounts; it has no
+    /// location until then.
+    pub volume: Option<gio::Volume>,
 }
 
-/// The places the sidebar lists, in sections: recent and the home folders, the GTK
-/// bookmarks Files keeps too, mounted drives, and the servers set up in Hamasen.
+pub fn trash() -> gio::File {
+    gio::File::for_uri("trash:///")
+}
+
+/// The places the sidebar lists, in sections: recent, the home folders and the trash, the
+/// GTK bookmarks Files keeps too, drives, network shares, and the servers set up in Hamasen.
 pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
     let themed = |name: &str| gio::ThemedIcon::new(name).upcast::<gio::Icon>();
-    let folder = |icon: &str, label: &str, path: PathBuf| Place {
-        icon: themed(icon),
+    let place = |icon: gio::Icon, label: &str, location: Location| Place {
+        icon,
         label: label.to_owned(),
-        location: Location::Folder(gio::File::for_path(path)),
+        location,
         mount: None,
         hamasen: None,
+        volume: None,
     };
+    let folder =
+        |icon: &str, label: &str, path: PathBuf| place(themed(icon), label, Location::Folder(gio::File::for_path(path)));
     let mut first = vec![
-        Place {
-            icon: themed("document-open-recent-symbolic"),
-            label: "最近使用".into(),
-            location: Location::Recent,
-            mount: None,
-            hamasen: None,
-        },
+        place(themed("document-open-recent-symbolic"), "最近使用", Location::Recent),
         folder("user-home-symbolic", &glib::user_name().to_string_lossy(), home()),
     ];
     for (dir, icon, label) in [
@@ -312,6 +319,11 @@ pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
             first.push(folder(icon, label, path));
         }
     }
+    let full = trash()
+        .query_info("trash::item-count", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+        .is_ok_and(|info| info.attribute_uint32("trash::item-count") > 0);
+    let trash_icon = if full { "user-trash-full-symbolic" } else { "user-trash-symbolic" };
+    first.push(place(themed(trash_icon), "垃圾桶", Location::Folder(trash())));
     let all: Vec<gio::Mount> = gio::VolumeMonitor::get()
         .mounts()
         .into_iter()
@@ -329,10 +341,11 @@ pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
                 location: Location::Folder(server.location),
                 mount,
                 hamasen: Some(server.id),
+                volume: None,
             }
         })
         .collect();
-    let mounts: Vec<Place> = all
+    let (mut drives, mut network): (Vec<Place>, Vec<Place>) = all
         .iter()
         .filter(|mount| !claimed.contains(mount))
         .map(|mount| Place {
@@ -345,8 +358,24 @@ pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
             location: Location::Folder(mount.root()),
             mount: Some(mount.clone()),
             hamasen: None,
+            volume: None,
         })
-        .collect();
+        .partition(|place| place.mount.as_ref().is_some_and(|m| !is_server(m)));
+    drives.extend(
+        gio::VolumeMonitor::get()
+            .volumes()
+            .into_iter()
+            .filter(|volume| volume.get_mount().is_none() && volume.can_mount())
+            .map(|volume| Place {
+                volume: Some(volume.clone()),
+                ..place(volume.symbolic_icon(), &volume.name(), Location::Recent)
+            }),
+    );
+    network.push(place(
+        themed("network-workgroup-symbolic"),
+        "網路",
+        Location::Folder(gio::File::for_uri("network:///")),
+    ));
     let bookmarks = std::fs::read_to_string(bookmarks_path())
         .map(|text| parse_bookmarks(&text))
         .unwrap_or_default()
@@ -362,13 +391,15 @@ pub fn places() -> Vec<(Option<&'static str>, Vec<Place>)> {
                 location: Location::Folder(file),
                 mount: None,
                 hamasen: None,
+                volume: None,
             })
         })
         .collect();
     vec![
         (None, first),
         (Some("書籤"), bookmarks),
-        (Some("裝置"), mounts),
+        (Some("裝置"), drives),
+        (Some("網路"), network),
         (Some("Hamasen"), servers),
     ]
 }

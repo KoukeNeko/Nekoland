@@ -59,6 +59,19 @@ fn unescape(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A tag's dot, in each of the tags' colours.
+pub const CSS: &str = "
+.nf-dot { min-width: 10px; min-height: 10px; border-radius: 5px; box-shadow: 0 0 0 1.5px var(--view-bg-color); }
+.nf-dots > .nf-dot + .nf-dot { margin-left: -3px; }
+.red { background-color: #d4493f; }
+.orange { background-color: #dc8436; }
+.yellow { background-color: #cfa92e; }
+.green { background-color: #4f9a61; }
+.blue { background-color: #4a7fc0; }
+.purple { background-color: #8e63b5; }
+.gray { background-color: #8e8c90; }
+";
+
 /// The colour a tag is drawn in; one the sidebar does not list is gray.
 pub fn color(tag: &str) -> &'static str {
     TAGS.iter()

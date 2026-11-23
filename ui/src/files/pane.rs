@@ -110,9 +110,7 @@ impl PartialEq for Where {
     }
 }
 
-pub fn trash() -> gio::File {
-    gio::File::for_uri("trash:///")
-}
+pub use crate::browse::trash;
 
 /// A folder's name as the window says it: home as the user, a drive as its name.
 pub fn folder_title(file: &gio::File) -> String {
