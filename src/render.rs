@@ -594,7 +594,8 @@ fn dock_front(
             // The glass its see-through parts show, of what is where it was, goes with it.
             let pane = glass.zip(genie_glass(state, &genie.window, genie.from, output_loc, scale)).and_then(
                 |(glass, (area, radius))| glass.window_pane(window_glass_id(&genie.window), area, radius),
-            );
+            )
+            .map(Pane::circular);
             if scaled {
                 // Straight to its place in the Dock, shrinking as it goes.
                 let t = 1.0 - (1.0 - genie.progress.clamp(0.0, 1.0)).powi(3);
@@ -685,6 +686,8 @@ fn draw_genie(
     let row_y = |v: f64| lerp(from.loc.y + v * from.size.h, into.loc.y + v * into.size.h, slide);
     let bands = (from.size.h / GENIE_BAND).ceil().clamp(16.0, 240.0) as usize;
     let mut elements = Vec::new();
+    // Behind all the bands, which its edge past each one would otherwise cross.
+    let mut glass = Vec::new();
     for band in 0..bands {
         let (v0, v1) = (band as f64 / bands as f64, (band + 1) as f64 / bands as f64);
         let (y0, y1) = (row_y(v0), row_y(v1));
@@ -739,13 +742,15 @@ fn draw_genie(
             );
         }
         let offset = offset.to_physical(output_scale).to_i32_round();
-        elements.extend(pane.and_then(|pane| bent_glass(pane, scale, offset, output_scale, crop)));
+        glass.extend(pane.and_then(|pane| bent_glass(pane, scale, offset, output_scale, crop)));
     }
+    elements.extend(glass);
     elements
 }
 
-/// `pane`, the glass behind a window, stretched by `scale` as the window is and put where
-/// the window's top left then is, `at`, as much of it as is within `crop`.
+/// `pane`, the glass behind a window and its edge, stretched by `scale` as the window is and
+/// put where the window's top left then is, `at`, as much of it as is within `crop` of the
+/// window and the edge around that.
 fn bent_glass(
     pane: &Pane,
     scale: impl Into<Scale<f64>>,
@@ -753,14 +758,19 @@ fn bent_glass(
     output_scale: f64,
     crop: Rectangle<i32, Physical>,
 ) -> Option<SceneElement> {
-    let origin = pane.geometry(Scale::from(output_scale)).loc;
+    let origin = pane.geometry(Scale::from(output_scale)).loc + Point::from((RIM, RIM));
     let scaled = RescaleRenderElement::from_element(pane.clone(), origin, scale);
     let placed = RelocateRenderElement::from_element(scaled, at - origin, Relocate::Relative);
+    let crop = Rectangle::new(
+        crop.loc - Point::from((RIM, RIM)),
+        crop.size + Size::from((2 * RIM, 2 * RIM)),
+    );
     CropRenderElement::from_element(placed, output_scale, crop).map(SceneElement::BentGlass)
 }
 
 /// Where the glass behind a window on its way into the Dock or out is, and how round, as
-/// where it is when it is not minimized, `from`: for one that has glass behind it whole.
+/// where it is when it is not minimized, `from`: behind all of it, with the edge that shows
+/// past it, for one that has glass or an edge of it.
 fn genie_glass(
     state: &Nekoland,
     window: &Window,
@@ -769,14 +779,17 @@ fn genie_glass(
     scale: f64,
 ) -> Option<(Rectangle<i32, Physical>, i32)> {
     let corner = (f64::from(WINDOW_RADIUS) * crate::windows::roundness(window).0).round() as i32;
-    if !is_managed(window)
-        || is_x11_drawing_own_frame(window)
-        || state.shadow_radius(window, corner).is_some()
-    {
-        return None;
-    }
-    let area = Rectangle::new(from.loc - output_loc, from.size).to_physical_precise_round(scale);
-    Some((area, (f64::from(corner) * scale).round() as i32))
+    let radius = match state.shadow_radius(window, corner) {
+        Some(radius) => radius,
+        None if is_managed(window) && !is_x11_drawing_own_frame(window) => corner,
+        None => return None,
+    };
+    let body = Rectangle::new(from.loc - output_loc, from.size).to_physical_precise_round(scale);
+    let area = Rectangle::new(
+        body.loc - Point::from((RIM, RIM)),
+        body.size + Size::from((2 * RIM, 2 * RIM)),
+    );
+    Some((area, (f64::from(radius) * scale).round() as i32 + RIM))
 }
 
 /// A window scaled down to fit `rect`, in the middle of it, its shadow cut off.
@@ -1373,6 +1386,8 @@ fn windows_on_glass(
             elements.extend(
                 glass
                     .window_pane(id.clone(), area, radius)
+                    // An edge round as the corners the compositor cuts, past them all along.
+                    .map(|pane| if rim.is_some() { pane.circular() } else { pane })
                     .map(|pane| SceneElement::Glass(pane.faded(pose.alpha).reshaped(turning))),
             );
             kept.push(id);

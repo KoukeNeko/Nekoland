@@ -151,11 +151,12 @@ uniform vec2 uv_size;
 uniform vec2 size;
 uniform float radius;
 uniform float edge;
+uniform float circular;
 void main() {
     vec2 local = (v_coords - uv_origin) / uv_size * size;
     // Corners smooth as the Mac's, as text::rounded_rectangle draws them; one too short for
-    // them has round ends instead.
-    bool capsule = radius * CORNER_EXTENT > min(size.x, size.y) * 0.5;
+    // them has round ends instead, as has a circular one.
+    bool capsule = circular > 0.5 || radius * CORNER_EXTENT > min(size.x, size.y) * 0.5;
     float corner = capsule ? radius : radius * CORNER_EXTENT;
     float power = capsule ? 2.0 : CORNER_EXPONENT;
     vec2 q = abs(local - size * 0.5) - (size * 0.5 - vec2(corner));
@@ -219,6 +220,7 @@ impl Glass {
             UniformName::new("size", UniformType::_2f),
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("edge", UniformType::_1f),
+            UniformName::new("circular", UniformType::_1f),
         ];
         Ok(Self {
             down: renderer.compile_custom_texture_shader(format!("{SAMPLER}{DOWN}"), &pass_uniforms)?,
@@ -506,6 +508,7 @@ impl Blur {
             radius: radius.min(rect.size.w / 2).min(rect.size.h / 2),
             alpha: 1.0,
             reshaped: false,
+            circular: false,
         })
     }
 }
@@ -584,6 +587,8 @@ pub struct Pane {
     alpha: f32,
     /// Drawn again whole, as while its corners turn.
     reshaped: bool,
+    /// With corners round as a circle's, as a window's GTK or the compositor rounds.
+    circular: bool,
 }
 
 impl Pane {
@@ -595,6 +600,11 @@ impl Pane {
     /// The same glass, drawn again whole each frame while `reshaped`.
     pub fn reshaped(self, reshaped: bool) -> Self {
         Self { reshaped, ..self }
+    }
+
+    /// The same glass, its corners round as a circle's, to follow a window's.
+    pub fn circular(self) -> Self {
+        Self { circular: true, ..self }
     }
 }
 
@@ -666,6 +676,7 @@ impl RenderElement<GlesRenderer> for Pane {
                 Uniform::new("size", (whole.0 as f32, whole.1 as f32)),
                 Uniform::new("radius", self.radius as f32),
                 Uniform::new("edge", if self.dst.loc.y > 0 { 1.0f32 } else { 0.0 }),
+                Uniform::new("circular", if self.circular { 1.0f32 } else { 0.0 }),
             ],
         )
     }
