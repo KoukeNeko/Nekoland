@@ -1263,16 +1263,20 @@ fn windows_on_glass(
         }
         let (round, turning) = crate::windows::roundness(window);
         let corner = (f64::from(WINDOW_RADIUS) * round).round() as i32;
-        // X11 gives a window no way to know it is composited, so its corners are cut here:
-        // still while they turn square, for a window maximized as it grows.
-        let rounding = (corner > 0 && window.x11_surface().is_some_and(crate::frame::is_own_window))
+        // Corners a program draws square are cut here: still while they turn square, for a
+        // window maximized as it grows.
+        let rounding = (corner > 0 && state.cuts_corners(window))
             .then(|| {
                 let radius = (f64::from(corner) * scale).round() as i32;
-                let trim = crate::frame::trim(window).to_f64().to_physical(scale).to_i32_round::<i32>();
-                // Under the compositor's bar the corners are the bar's, so only the bottom ones.
-                let room = window.x11_surface().map_or(0, crate::frame::title_room);
-                let top = (f64::from(room) * scale).round() as i32;
-                crate::rounded::Rounding::new(renderer, radius, (trim.w, trim.h), top, turning)
+                // Where the window is, not where it is shown: its surfaces are put there and
+                // then stretched. Under the compositor's bar the corners are the bar's, so
+                // only the bottom ones are round.
+                let body = Rectangle::new(
+                    pose.actual.loc - output_loc,
+                    pose.actual.size - crate::frame::trim(window),
+                );
+                let body = state.with_title(window, body).to_physical_precise_round(scale);
+                crate::rounded::Rounding::new(renderer, radius, body, scale, turning)
             })
             .flatten();
         let mut elements =
@@ -1280,7 +1284,7 @@ fn windows_on_glass(
         // In front of the window, which a bar over a title bar of the program's own covers.
         elements.splice(0..0, crate::frame::title_element(state, renderer, window, *pose, output_loc, scale));
         // Where the compositor draws the window's frame: around the window and the bar over it.
-        let framed = crate::windows::shadow_radius(window, corner).map(|radius| {
+        let framed = state.shadow_radius(window, corner).map(|radius| {
             let body = Rectangle::new(
                 pose.shown.loc - output_loc,
                 pose.shown.size - crate::frame::trim(window),

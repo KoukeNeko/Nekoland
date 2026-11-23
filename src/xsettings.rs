@@ -111,6 +111,40 @@ fn render(values: &Values) -> String {
     lines.join("\n") + "\n"
 }
 
+/// The X resources of the cursor, for X11 programs that take its size from them rather than
+/// from XSettings, as Chromium's and Electron's do.
+fn cursor_resources(values: &Values) -> Option<String> {
+    if values.cursor_size <= 0 {
+        return None;
+    }
+    let size = (values.cursor_size as f64 * values.scale.max(1.0)).round() as i64;
+    let mut text = format!("Xcursor.size: {size}\n");
+    if !values.cursor.is_empty() {
+        text += &format!("Xcursor.theme: {}\n", values.cursor.replace(['\n', '\\'], ""));
+    }
+    Some(text)
+}
+
+/// Merges `resources` into the X server's, for programs started from now on.
+fn merge_resources(resources: &str) {
+    use std::io::Write;
+    let merged = Command::new("xrdb")
+        .args(["-nocpp", "-merge"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().expect("piped").write_all(resources.as_bytes())?;
+            child.wait()
+        });
+    match merged {
+        Ok(status) if status.success() => {}
+        Ok(status) => tracing::warn!("xrdb: {status}"),
+        Err(err) => tracing::warn!("xrdb: X11 programs keep their own cursor size: {err}"),
+    }
+}
+
 /// Nekoland's own file, in the runtime folder: the person's xsettingsd, if they have one,
 /// is not touched.
 fn path() -> Option<PathBuf> {
@@ -122,6 +156,9 @@ fn write() -> Option<PathBuf> {
     let values = read();
     NEKOLAND_LOOK.store(values.theme == NEKOLAND_THEME, Ordering::Relaxed);
     let text = render(&values);
+    if let Some(resources) = cursor_resources(&values) {
+        merge_resources(&resources);
+    }
     if let Err(err) = std::fs::write(&path, &text) {
         tracing::warn!("{}: {err}", path.display());
         return None;
@@ -208,6 +245,21 @@ mod tests {
         assert!(text.contains("Gtk/ApplicationPreferDarkTheme 1\n"));
         assert!(text.contains(&format!("Xft/DPI {}\n", 120 * 1024)));
         assert!(!text.contains("Net/IconThemeName") && !text.contains("Gtk/CursorThemeName"));
+    }
+
+    #[test]
+    fn the_cursor_resources_are_as_large_as_its_xsettings() {
+        let values = Values {
+            cursor: "WhiteSur-cursors".into(),
+            cursor_size: 24,
+            scale: 1.5,
+            ..Default::default()
+        };
+        assert_eq!(
+            cursor_resources(&values).as_deref(),
+            Some("Xcursor.size: 36\nXcursor.theme: WhiteSur-cursors\n")
+        );
+        assert_eq!(cursor_resources(&Values::default()), None);
     }
 
     #[test]

@@ -89,48 +89,9 @@ pub fn is_x11_drawing_own_frame(window: &Window) -> bool {
     matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_decorated())
 }
 
-/// Whether the compositor rounds the corners of a window: an X11 program's own, which it
-/// draws square, framed by itself or by the compositor's bar, left where it was put.
-/// Maximized, fullscreen and arranged ones are square, as GTK's are.
-fn rounds_x11_corners(window: &Window) -> bool {
-    matches!(window.underlying_surface(), WindowSurface::X11(surface) if crate::frame::is_own_window(surface))
-        && matches!(placement_of(window), Placement::Free)
-}
-
 /// How far past its body a window's own shadow reaches at least: libadwaita's reaches 15
 /// without the focus.
 const OWN_SHADOW_MIN: i32 = 10;
-
-/// The corners of the shadow the compositor draws around a window, as libadwaita draws
-/// GTK's, for one left where it was put that has none of its own: an X11 program's, framed
-/// by it or by the compositor's bar, Nekoland's alerts that leave theirs to it, and a
-/// Wayland program's with no shadow outside its body.
-pub fn shadow_radius(window: &Window, radius: i32) -> Option<i32> {
-    if !matches!(placement_of(window), Placement::Free) {
-        return None;
-    }
-    match window.underlying_surface() {
-        WindowSurface::X11(surface) => crate::frame::is_own_window(surface).then_some(radius),
-        WindowSurface::Wayland(_) => {
-            let id = app_id(window);
-            if [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&id.as_str()) {
-                return Some(radius);
-            }
-            let (bbox, geometry) = (window.bbox(), window.geometry());
-            let margin = [
-                geometry.loc.x - bbox.loc.x,
-                geometry.loc.y - bbox.loc.y,
-                bbox.loc.x + bbox.size.w - geometry.loc.x - geometry.size.w,
-                bbox.loc.y + bbox.size.h - geometry.loc.y - geometry.size.h,
-            ];
-            // Less than a shadow: only the clear edges foot and its like are resized by.
-            let edge_to_edge = margin.into_iter().max().unwrap_or(0) < OWN_SHADOW_MIN;
-            // Their corners are not known: square ones are covered whole.
-            (edge_to_edge && id != KEYBOARD_APP_ID && window_names(window).0 != SHOT_OVERLAY_TITLE)
-                .then_some(0)
-        }
-    }
-}
 
 /// The tiled states a window left where it was put is given for the sides of the display it
 /// reaches, which GTK draws square, as it does a tiled window.
@@ -182,6 +143,8 @@ struct WindowData {
     snapped: Cell<bool>,
     /// How round the corners the compositor draws for it are, on their way to round or square.
     corners: Cell<Option<Corners>>,
+    /// Whether its program is Chromium or an Electron program, once looked up.
+    chromium: std::cell::OnceCell<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -590,6 +553,62 @@ impl Nekoland {
         }
     }
 
+    /// Whether a Wayland window is Chromium's or an Electron program's: it keeps a clear
+    /// margin around its body, as if for a shadow, but draws its corners square and no
+    /// shadow there, so the compositor draws them. Each of them keeps V8's snapshot beside
+    /// its program.
+    // shortcut: one in a sandbox, whose program is not where its path says, is left as it is.
+    fn is_chromium(&self, window: &Window) -> bool {
+        window.toplevel().is_some()
+            && *data(window).chromium.get_or_init(|| {
+                self.window_pid(window)
+                    .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
+                    .and_then(|exe| Some(exe.parent()?.join("v8_context_snapshot.bin").exists()))
+                    .unwrap_or(false)
+            })
+    }
+
+    /// Whether the compositor cuts a window's corners, round or square, its program drawing
+    /// them square: an X11 program's own window, framed by itself or by the compositor's bar,
+    /// and Chromium's.
+    pub fn cuts_corners(&self, window: &Window) -> bool {
+        match window.underlying_surface() {
+            WindowSurface::X11(surface) => crate::frame::is_own_window(surface),
+            WindowSurface::Wayland(_) => self.is_chromium(window),
+        }
+    }
+
+    /// The corners of the shadow the compositor draws around a window, as libadwaita draws
+    /// GTK's, for one left where it was put that has none of its own: those whose corners it
+    /// cuts, Nekoland's alerts that leave theirs to it, and a Wayland program's with no
+    /// shadow outside its body.
+    pub fn shadow_radius(&self, window: &Window, radius: i32) -> Option<i32> {
+        if !matches!(placement_of(window), Placement::Free) {
+            return None;
+        }
+        if self.cuts_corners(window) {
+            return Some(radius);
+        }
+        if window.toplevel().is_none() {
+            return None;
+        }
+        let id = app_id(window);
+        if [CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&id.as_str()) {
+            return Some(radius);
+        }
+        let (bbox, geometry) = (window.bbox(), window.geometry());
+        let margin = [
+            geometry.loc.x - bbox.loc.x,
+            geometry.loc.y - bbox.loc.y,
+            bbox.loc.x + bbox.size.w - geometry.loc.x - geometry.size.w,
+            bbox.loc.y + bbox.size.h - geometry.loc.y - geometry.size.h,
+        ];
+        // Less than a shadow: only the clear edges foot and its like are resized by.
+        let edge_to_edge = margin.into_iter().max().unwrap_or(0) < OWN_SHADOW_MIN;
+        // Their corners are not known: square ones are covered whole.
+        (edge_to_edge && id != KEYBOARD_APP_ID && window_names(window).0 != SHOT_OVERLAY_TITLE).then_some(0)
+    }
+
     /// Whether a window left where it was put reaches the left or right of the part of its
     /// display that windows go in, where its corners are square to lie against the edge.
     pub fn is_against_side(&self, window: &Window) -> bool {
@@ -632,7 +651,13 @@ impl Nekoland {
                     }
                     !has_square_corners(&window)
                 }
-                WindowSurface::X11(_) => rounds_x11_corners(&window) && !against,
+                WindowSurface::X11(_) => true,
+            };
+            // Round where it was put and away from the sides, as GTK's are.
+            let goal = if self.cuts_corners(&window) {
+                matches!(placement_of(&window), Placement::Free) && !against
+            } else {
+                goal
             };
             let goal = f64::from(u8::from(goal));
             let corners = &data(&window).corners;

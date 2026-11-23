@@ -25,8 +25,8 @@ use smithay::{
 
 use crate::render::SceneElement;
 
-/// The surface within a rounded rectangle as large as where it is drawn; what lies outside
-/// the corners is left clear.
+/// The surface within a rounded rectangle, `area` of where it is drawn; what lies outside it
+/// is left clear.
 const ROUNDED: &str = r#"#version 100
 //_DEFINES_
 #if defined(EXTERNAL)
@@ -47,20 +47,16 @@ uniform vec2 dst_size;
 uniform vec2 uv_origin;
 uniform vec2 uv_size;
 uniform float radius;
-uniform vec2 trim;
-uniform float top;
+uniform vec4 area;
 varying vec2 v_coords;
 void main() {
     vec4 color = texture2D(tex, v_coords);
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0);
 #endif
-    // v_coords is in the whole texture, which may be larger than what is shown; the right
-    // and bottom of what is shown are left out by trim. The rounded rectangle reaches top
-    // above it, past what is drawn.
-    vec2 shown = dst_size - trim + vec2(0.0, top);
-    vec2 centered = (v_coords - uv_origin) / uv_size * dst_size + vec2(0.0, top) - shown * 0.5;
-    vec2 q = abs(centered) - (shown * 0.5 - vec2(radius));
+    // v_coords is in the whole texture, which may be larger than what is shown.
+    vec2 centered = (v_coords - uv_origin) / uv_size * dst_size - (area.xy + area.zw * 0.5);
+    vec2 q = abs(centered) - (area.zw * 0.5 - vec2(radius));
     float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     gl_FragColor = color * clamp(0.5 - distance, 0.0, 1.0) * alpha;
 }
@@ -81,8 +77,7 @@ fn program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
                     UniformName::new("uv_origin", UniformType::_2f),
                     UniformName::new("uv_size", UniformType::_2f),
                     UniformName::new("radius", UniformType::_1f),
-                    UniformName::new("trim", UniformType::_2f),
-                    UniformName::new("top", UniformType::_1f),
+                    UniformName::new("area", UniformType::_4f),
                 ];
                 renderer
                     .compile_custom_texture_shader(ROUNDED, &uniforms)
@@ -93,15 +88,15 @@ fn program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
     })
 }
 
-/// How a window's surfaces are drawn: `radius` physical pixels round at the corners as
-/// they are drawn, without `trim` physical pixels of their right and bottom, and as if `top`
-/// more were above them: as much as `radius` leaves the top corners square. All of them are
+/// How a window's surfaces are drawn: within `body`, where the window is on the output at
+/// `scale`, with its corners `radius` physical pixels round as they are drawn; a body that
+/// reaches above the surfaces, under a bar, leaves their top corners square. All of them are
 /// drawn again while `turning`, as the corners are.
 pub struct Rounding {
     program: GlesTexProgram,
     radius: i32,
-    trim: (i32, i32),
-    top: i32,
+    body: Rectangle<i32, Physical>,
+    scale: f64,
     turning: bool,
 }
 
@@ -110,21 +105,22 @@ impl Rounding {
     pub fn new(
         renderer: &mut GlesRenderer,
         radius: i32,
-        trim: (i32, i32),
-        top: i32,
+        body: Rectangle<i32, Physical>,
+        scale: f64,
         turning: bool,
     ) -> Option<Self> {
         let program = program(renderer)?;
-        Some(Self { program, radius, trim, top, turning })
+        Some(Self { program, radius, body, scale, turning })
     }
 
     pub fn apply(&self, inner: WaylandSurfaceRenderElement<GlesRenderer>) -> RoundedSurface {
+        let own = inner.geometry(Scale::from(self.scale));
         RoundedSurface {
             inner,
             program: self.program.clone(),
             radius: self.radius,
-            trim: self.trim,
-            top: self.top,
+            area: Rectangle::new(self.body.loc - own.loc, self.body.size),
+            own: own.size,
             turning: self.turning,
         }
     }
@@ -134,8 +130,9 @@ pub struct RoundedSurface {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     program: GlesTexProgram,
     radius: i32,
-    trim: (i32, i32),
-    top: i32,
+    /// The body, from where the surface starts, as large as the surface's `own` size.
+    area: Rectangle<i32, Physical>,
+    own: Size<i32, Physical>,
     turning: bool,
 }
 
@@ -200,6 +197,17 @@ impl RenderElement<GlesRenderer> for RoundedSurface {
             return RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
         };
         let tex_size = texture.size().to_f64();
+        // Where it is drawn stretched, so is its body.
+        let (fx, fy) = (
+            f64::from(dst.size.w) / f64::from(self.own.w.max(1)),
+            f64::from(dst.size.h) / f64::from(self.own.h.max(1)),
+        );
+        let area = (
+            (f64::from(self.area.loc.x) * fx) as f32,
+            (f64::from(self.area.loc.y) * fy) as f32,
+            (f64::from(self.area.size.w) * fx) as f32,
+            (f64::from(self.area.size.h) * fy) as f32,
+        );
         frame.override_default_tex_program(
             self.program.clone(),
             vec![
@@ -207,8 +215,7 @@ impl RenderElement<GlesRenderer> for RoundedSurface {
                 Uniform::new("uv_origin", ((src.loc.x / tex_size.w) as f32, (src.loc.y / tex_size.h) as f32)),
                 Uniform::new("uv_size", ((src.size.w / tex_size.w) as f32, (src.size.h / tex_size.h) as f32)),
                 Uniform::new("radius", self.radius as f32),
-                Uniform::new("trim", (self.trim.0 as f32, self.trim.1 as f32)),
-                Uniform::new("top", self.top as f32),
+                Uniform::new("area", area),
             ],
         );
         let drawn = RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
