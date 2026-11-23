@@ -43,6 +43,8 @@ mod updates;
 mod design;
 #[path = "settings/vpn.rs"]
 mod vpn;
+#[path = "settings/sunshine.rs"]
+mod sunshine;
 
 use lock_screen::*;
 use hover::*;
@@ -2813,16 +2815,19 @@ fn set_xsession(nekoland: bool) -> std::io::Result<()> {
         std::fs::create_dir_all(saved.parent().unwrap_or(Path::new("/")))?;
         std::fs::rename(&path, &saved)?;
     }
-    // The compositor that started Settings put itself first on the PATH.
-    let program = std::env::var_os("PATH")
+    let program = nekoland_program().to_string_lossy().replace('\'', "'\\''");
+    write_atomic(&path, &format!("{XSESSION_HEAD}exec '{program}'\n"))
+}
+
+/// The compositor's program: the one that started Settings put itself first on the PATH.
+fn nekoland_program() -> PathBuf {
+    std::env::var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|dir| dir.join("nekoland"))
                 .find(|program| program.exists())
         })
-        .unwrap_or_else(|| PathBuf::from("nekoland"));
-    let program = program.to_string_lossy().replace('\'', "'\\''");
-    write_atomic(&path, &format!("{XSESSION_HEAD}exec '{program}'\n"))
+        .unwrap_or_else(|| PathBuf::from("nekoland"))
 }
 
 #[derive(Debug, PartialEq)]

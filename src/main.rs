@@ -17,6 +17,7 @@ mod focus;
 mod frame;
 mod glass;
 mod handlers;
+mod headless;
 mod hover;
 mod icc;
 mod ime;
@@ -73,6 +74,8 @@ const GTK_RENDERER: &str = "GSK_RENDERER";
 const GTK_RENDERER_WITHOUT_GL: &str = "cairo";
 const SESSION_TYPE: &str = "XDG_SESSION_TYPE";
 const SESSION_TYPE_WAYLAND: &str = "wayland";
+/// Runs the compositor for Sunshine, with no display: see `headless`.
+const HEADLESS_FLAG: &str = "--headless";
 
 /// Without a GPU, GTK 4 draws with OpenGL on llvmpipe, whose buffers and compiled shaders
 /// cost each program of it some 150 MB more than Cairo does (243 MB against 89 MB for the
@@ -191,10 +194,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .inspect_err(|err| tracing::warn!("the menu bar has no D-Bus: {err}"))
         .ok();
 
-    // Inside another session, be a window in it; on a bare console, drive the display.
-    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
-    // An xrdp session is Nekoland's own, though it is drawn in the X server xrdp started.
-    let owns_session = !nested || data.state.remote;
+    // `--headless`: a session of its own for Sunshine to stream, beside whatever the
+    // computer shows. Inside another session, be a window in it; on a bare console, drive
+    // the display.
+    let headless = arguments.first().is_some_and(|flag| flag == HEADLESS_FLAG);
+    let arguments = &arguments[usize::from(headless)..];
+    let nested = !headless && (std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some());
+    // An xrdp session is Nekoland's own, though it is drawn in the X server xrdp started; a
+    // headless one leaves the D-Bus services to the session at the computer.
+    let owns_session = !headless && (!nested || data.state.remote);
     if owns_session {
         // Portals pick their backends by the desktop's name.
         std::env::set_var("XDG_CURRENT_DESKTOP", "Nekoland");
@@ -203,7 +211,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Chrome has no window buttons and its menus' shadows take glass.
         std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
     }
-    if nested {
+    if headless {
+        crate::headless::init_headless(&mut event_loop, &mut data)?;
+    } else if nested {
         // XWayland takes DISPLAY; the clipboard of xrdp's client is on this one.
         if let Some(host) = std::env::var_os("DISPLAY") {
             std::env::set_var(HOST_DISPLAY, host);
@@ -213,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::udev::init_udev(&mut event_loop, &mut data)?;
     }
 
-    let command = match arguments.as_slice() {
+    let command = match arguments {
         [flag, command] if flag == "-c" || flag == "--command" => Some(command.clone()),
         _ => None,
     };
@@ -273,6 +283,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the desktop's name, and it picks its backends once, as it starts: the file chooser
             // would be GTK's.
             config::spawn("systemctl --user try-restart xdg-desktop-portal.service");
+            // Sunshine, when Settings set it to stream this desktop, started with the user's
+            // services, before there was a display to find; an xrdp session is not streamed.
+            if !data.state.remote {
+                config::spawn(&format!("systemctl --user try-restart {}", headless::DESKTOP_UNIT));
+            }
         }
         if data.state.remote {
             // shortcut: text only, and xrdp's side is looked at twice a second; bridge the
@@ -290,6 +305,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::spawn("nekoland-store --choose-browser");
         // The servers set to mount at login; it ends once they are, or after a few minutes.
         config::spawn("nekoland-files --mount-servers");
+        // A remote session is open to whoever can connect to Sunshine: it starts locked, for
+        // the account's password.
+        if headless {
+            data.state.lock_screen();
+        }
         let config = &data.state.config;
         config.autostart.iter().for_each(|command| config::spawn(command));
         let wallpaper = config::start_wallpaper(

@@ -1,4 +1,4 @@
-//! The Sharing page: remote desktop, file sharing and remote login.
+//! The Sharing page: remote desktop, remote login over SSH and Sunshine, and file sharing.
 
 use super::*;
 
@@ -88,9 +88,12 @@ pub(crate) fn sharing_page() -> adw::PreferencesPage {
             eprintln!("~/.xsession: {err}");
         }
     });
+    let login = group("遠端登入");
     if let Some(ssh) = ssh_units() {
-        page.add(&remote_login_group(ssh));
+        login.add(&ssh_row(ssh));
     }
+    sunshine::add_sunshine_rows(&page, &login);
+    page.add(&login);
     page.add(&file_sharing_group(&page));
     page
 }
@@ -202,15 +205,14 @@ pub(crate) fn ssh_units() -> Option<&'static str> {
     }
 }
 
-/// 遠端登入, the Mac's name for letting others in over SSH.
-pub(crate) fn remote_login_group(unit: &'static str) -> adw::PreferencesGroup {
-    let login = group("");
+/// Letting others in over SSH, which the Mac calls 遠端登入, as the group it is in here is.
+pub(crate) fn ssh_row(unit: &'static str) -> adw::SwitchRow {
     // `systemctl is-active` fails when any is not, so its lines are read rather than its status.
     let running = || {
         let states = Command::new("systemctl").args(["is-active", "ssh.socket", "ssh.service"]).output();
         states.is_ok_and(|states| String::from_utf8_lossy(&states.stdout).lines().any(|state| state == "active"))
     };
-    let service = adw::SwitchRow::builder().title("遠端登入").active(running()).build();
+    let service = adw::SwitchRow::builder().title("SSH").active(running()).build();
     // What to type on the other computer, while it can be typed.
     let user = std::env::var("USER").unwrap_or_default();
     service
@@ -239,6 +241,5 @@ pub(crate) fn remote_login_group(unit: &'static str) -> adw::PreferencesGroup {
             row.set_sensitive(true);
         });
     });
-    login.add(&service);
-    login
+    service
 }

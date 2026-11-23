@@ -303,7 +303,7 @@ fn other_row(page: &adw::PreferencesPage, person: &Person, refresh: Rc<dyn Fn()>
 }
 
 /// The rows a dialog asks with, in the list look of the rest of Settings.
-fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
+pub(crate) fn form(rows: &[&gtk::Widget]) -> gtk::ListBox {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .width_request(alert::FIELD_WIDTH)

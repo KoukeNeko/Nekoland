@@ -534,6 +534,19 @@ there is one) and shows the `ssh` command to reach this computer with. With Samb
 `Public-USER`: turning it on asks for a Samba password, adds the person to `sambashare`,
 turns on users' shares in `/etc/samba/smb.conf` and starts `smbd`.
 
+遠端登入 also has Sunshine, for Moonlight clients. Settings installs it from LizardByte's
+newest release, the package built for this Ubuntu (its SHA-256 checked), with a udev rule
+that gives the person its virtual input devices, and removes it again, keeping its
+settings and paired devices. Turned on, it runs as a user service, either streaming the
+desktop at the computer (`nekoland-sunshine.service`) or a session of its own
+(`nekoland-remote-session.service`): `nekoland --headless`, a compositor with no display
+of its own whose screen, `HEADLESS-1` (1920×1080 unless the configuration gives it a mode),
+is drawn only into the frames Sunshine asks for over wlr-screencopy, which starts locked,
+takes input only from Sunshine's devices, and keeps running after logging out (lingering).
+The desktop at the computer then ignores those devices. The page sets Sunshine's web
+login, pairs a device that is waiting with the PIN Moonlight shows, removes paired ones,
+and edits `sunshine.conf`; the login is kept in the keyring.
+
 Nekoland knows the session by xrdp's `XRDP_SESSION` and, as on a console, names itself
 to the portals and to the services D-Bus starts. Sleep, from the menu, the power button
 or idleness, only locks the screen there, since the computer is elsewhere. Frames are

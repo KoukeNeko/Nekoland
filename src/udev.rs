@@ -44,7 +44,7 @@ use smithay::{
             EventLoop, LoopHandle,
         },
         drm::control::{connector, crtc, Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags},
-        input::Libinput,
+        input::{Libinput, SendEventsMode},
         rustix::fs::OFlags,
     },
     reexports::wayland_server::backend::GlobalId,
@@ -230,6 +230,13 @@ pub fn init_udev(
         .map_err(|()| "libinput could not take the seat")?;
     handle.insert_source(LibinputInputBackend::new(libinput.clone()), |event, _, data| {
         if let InputEvent::DeviceAdded { device } = &event {
+            // Sunshine's mouse and keyboard belong to the session it streams.
+            if crate::headless::is_sunshine_device(&device.name()) && crate::headless::streams_own_session() {
+                if let Err(err) = device.clone().config_send_events_set_mode(SendEventsMode::DISABLED) {
+                    warn!("could not leave {} to the remote session: {err:?}", device.name());
+                }
+                return;
+            }
             data.state.add_pointer_device(device.clone());
         }
         data.state.process_input_event(event)
@@ -921,7 +928,7 @@ fn wait_until_drawn<B: Buffer, F: Framebuffer, E>(frame: &RenderFrameResult<'_, 
 }
 
 /// The cursor a client drew itself, or the theme's picture for the one it named.
-fn cursor_elements(
+pub(crate) fn cursor_elements(
     state: &Nekoland,
     renderer: &mut GlesRenderer,
     cursors: &mut Cursors,
