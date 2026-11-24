@@ -438,16 +438,30 @@ impl Nekoland {
                 }
             }
         };
+        // Those whose icons are still being decoded, drawn again once the rest are.
+        let mut decoding = Vec::new();
         while started.elapsed() < WARM_BUDGET {
             let Some(wanted) = pending.pop() else {
-                self.app_stock.warm = true;
-                return;
+                break;
             };
             if !self.app_stock.has(&wanted) {
                 self.stock(&wanted);
+                if !self.app_stock.has(&wanted) {
+                    decoding.push(wanted);
+                }
             }
         }
-        self.app_stock.pending = Some(pending);
+        // The rest at the next frame, which a still screen would otherwise draw only when next
+        // looked at, a tenth of a second later; those decoding have it drawn once they are.
+        if !pending.is_empty() {
+            text::redraw_soon();
+        }
+        decoding.append(&mut pending);
+        if decoding.is_empty() {
+            self.app_stock.warm = true;
+            return;
+        }
+        self.app_stock.pending = Some(decoding);
     }
 }
 
