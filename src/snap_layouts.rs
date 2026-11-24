@@ -131,8 +131,17 @@ impl Nekoland {
 
     fn apply_snap_layout(&mut self, (layout, part): (usize, usize)) {
         self.snap_layouts = None;
-        if let Some((_, command)) = LAYOUTS.get(layout).and_then(|parts| parts.get(part)) {
+        let Some(parts) = LAYOUTS.get(layout) else {
+            return;
+        };
+        if let Some((_, command)) = parts.get(part) {
+            let window = self.focused_window();
             self.window_command(command);
+            // What is left of the layout chosen offers the other windows, part after part.
+            let commands: Vec<&'static str> = parts.iter().map(|(_, command)| *command).collect();
+            if let Some(window) = window {
+                self.offer_snap_assist(&window, command, Some(&commands));
+            }
         }
     }
 

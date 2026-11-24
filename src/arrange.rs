@@ -44,7 +44,7 @@ const DROP_DOWN_SHARE: f64 = 0.45;
 /// How far Rectangle's 「Make Larger」 and 「Make Smaller」 move each edge.
 const RESIZE_STEP: i32 = 30;
 /// No smaller than this does a window get made.
-const MIN_SIZE: i32 = 120;
+pub const MIN_SIZE: i32 = 120;
 /// The widest gap left between windows, and around them.
 pub const MAX_GAP: i32 = 64;
 
@@ -307,6 +307,129 @@ pub fn lifted(
     Point::from((x.round() as i32, frame.loc.y))
 }
 
+/// A line parts of the area meet along, as the bar between two windows in the Mac's Split
+/// View: moving it moves the edges against it of every part on either side.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seam {
+    /// Up and down, between parts side by side, rather than across, between parts one over
+    /// the other.
+    pub upright: bool,
+    /// Where it is, as a share of the area's width, or of its height when it goes across.
+    pub at: f64,
+    /// Where along it the parts meet, as shares the other way.
+    pub from: f64,
+    pub to: f64,
+    /// The parts before it, left of it or above, and after it, by their place in the list.
+    pub before: Vec<usize>,
+    pub after: Vec<usize>,
+}
+
+/// How near two edges are to be the same one.
+const SAME_EDGE: f64 = 1e-6;
+
+/// Where along the seam's way a part starts and ends, then where it lies along the seam.
+fn spans(part: &Part, upright: bool) -> ((f64, f64), (f64, f64)) {
+    let [left, top, right, bottom] = *part;
+    if upright {
+        ((left, right), (top, bottom))
+    } else {
+        ((top, bottom), (left, right))
+    }
+}
+
+/// The lines inside the area that `parts` meet along. Parts meeting along one line in pieces,
+/// as four quarters do, share one seam, which moves them all.
+pub fn seams(parts: &[Part]) -> Vec<Seam> {
+    let mut seams: Vec<Seam> = Vec::new();
+    for upright in [true, false] {
+        for (i, a) in parts.iter().enumerate() {
+            for (j, b) in parts.iter().enumerate() {
+                let ((_, end), (a_from, a_to)) = spans(a, upright);
+                let ((start, _), (b_from, b_to)) = spans(b, upright);
+                if (end - start).abs() > SAME_EDGE || end <= SAME_EDGE || end >= 1.0 - SAME_EDGE {
+                    continue;
+                }
+                let (from, to) = (a_from.max(b_from), a_to.min(b_to));
+                if to - from <= SAME_EDGE {
+                    continue;
+                }
+                let found = seams.iter_mut().find(|seam| {
+                    seam.upright == upright
+                        && (seam.at - end).abs() <= SAME_EDGE
+                        && seam.from <= to + SAME_EDGE
+                        && from <= seam.to + SAME_EDGE
+                });
+                let seam = match found {
+                    Some(seam) => seam,
+                    None => {
+                        seams.push(Seam {
+                            upright,
+                            at: end,
+                            from,
+                            to,
+                            before: Vec::new(),
+                            after: Vec::new(),
+                        });
+                        seams.last_mut().unwrap()
+                    }
+                };
+                seam.from = seam.from.min(from);
+                seam.to = seam.to.max(to);
+                if !seam.before.contains(&i) {
+                    seam.before.push(i);
+                }
+                if !seam.after.contains(&j) {
+                    seam.after.push(j);
+                }
+            }
+        }
+    }
+    seams
+}
+
+/// How far `seam` can go: each part kept at least as wide, or as tall, as the first of its
+/// `limits`, and no wider than the second, as shares of the area. Where it is when it cannot
+/// move at all.
+pub fn seam_range(seam: &Seam, parts: &[Part], limits: &[(f64, f64)]) -> (f64, f64) {
+    let span = |index: usize| spans(&parts[index], seam.upright).0;
+    let mut low = 0.0_f64;
+    let mut high = 1.0_f64;
+    for &index in &seam.before {
+        let ((start, _), (least, most)) = (span(index), limits[index]);
+        low = low.max(start + least);
+        high = high.min(start + most);
+    }
+    for &index in &seam.after {
+        let ((_, end), (least, most)) = (span(index), limits[index]);
+        high = high.min(end - least);
+        low = low.max(end - most);
+    }
+    if low > high {
+        (seam.at, seam.at)
+    } else {
+        (low, high)
+    }
+}
+
+/// Halfway between the far edges of the parts on either side, where a double click on the
+/// bar between them puts it.
+pub fn seam_middle(seam: &Seam, parts: &[Part]) -> f64 {
+    let span = |index: usize| spans(&parts[index], seam.upright).0;
+    let start = seam.before.iter().map(|&index| span(index).0).fold(1.0, f64::min);
+    let end = seam.after.iter().map(|&index| span(index).1).fold(0.0, f64::max);
+    (start + end) / 2.0
+}
+
+/// The parts with `seam` moved `to` there.
+pub fn moved_seam(parts: &mut [Part], seam: &Seam, to: f64) {
+    for &index in &seam.before {
+        parts[index][if seam.upright { 2 } else { 3 }] = to;
+    }
+    for &index in &seam.after {
+        parts[index][if seam.upright { 0 } else { 1 }] = to;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +569,67 @@ mod tests {
             rect(100, 30, 300, 900)
         );
         assert_eq!(inset(area(), 8), rect(8, 38, 1184, 884));
+    }
+
+    #[test]
+    fn halves_side_by_side_meet_at_one_seam() {
+        let seams = seams(&[[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]]);
+        assert_eq!(
+            seams,
+            vec![Seam {
+                upright: true,
+                at: 0.5,
+                from: 0.0,
+                to: 1.0,
+                before: vec![0],
+                after: vec![1],
+            }]
+        );
+    }
+
+    #[test]
+    fn quarters_meet_at_a_seam_each_way_that_moves_them_all() {
+        let quarters = [
+            [0.0, 0.0, 0.5, 0.5],
+            [0.5, 0.0, 1.0, 0.5],
+            [0.0, 0.5, 0.5, 1.0],
+            [0.5, 0.5, 1.0, 1.0],
+        ];
+        let seams = seams(&quarters);
+        assert_eq!(seams.len(), 2);
+        let upright = seams.iter().find(|seam| seam.upright).unwrap();
+        assert_eq!((upright.from, upright.to), (0.0, 1.0));
+        assert_eq!((upright.before.len(), upright.after.len()), (2, 2));
+        let mut moved = quarters;
+        moved_seam(&mut moved, upright, 0.6);
+        assert_eq!(moved[0], [0.0, 0.0, 0.6, 0.5]);
+        assert_eq!(moved[3], [0.6, 0.5, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn parts_apart_or_at_the_area_edge_have_no_seam() {
+        assert!(seams(&[[0.0, 0.0, 0.4, 1.0], [0.5, 0.0, 1.0, 1.0]]).is_empty());
+        assert!(seams(&[[0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]]).is_empty());
+        assert!(seams(&[[0.0, 0.0, 1.0, 1.0]]).is_empty());
+    }
+
+    #[test]
+    fn a_seam_stops_where_a_part_would_get_too_small_or_too_large() {
+        let parts = [[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]];
+        let seam = &seams(&parts)[0];
+        let free = (0.1, f64::INFINITY);
+        assert_eq!(seam_range(seam, &parts, &[free, free]), (0.1, 0.9));
+        assert_eq!(
+            seam_range(seam, &parts, &[(0.1, 0.7), (0.4, f64::INFINITY)]),
+            (0.1, 0.6)
+        );
+        // Neither can give way: the seam stays.
+        assert_eq!(seam_range(seam, &parts, &[(0.6, 1.0), (0.6, 1.0)]), (0.5, 0.5));
+    }
+
+    #[test]
+    fn a_double_clicked_seam_goes_halfway() {
+        let parts = [[0.0, 0.0, 0.7, 1.0], [0.7, 0.0, 1.0, 1.0]];
+        assert_eq!(seam_middle(&seams(&parts)[0], &parts), 0.5);
     }
 }

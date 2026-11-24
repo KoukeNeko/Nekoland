@@ -774,6 +774,11 @@ impl Nekoland {
         });
     }
 
+    /// A window is drawn where it is again, no longer stretched toward a size it was given.
+    pub fn stop_morph(&mut self, window: &Window) {
+        self.motion.morphing.retain(|morph| &morph.window != window);
+    }
+
     /// A window on screen is going away: its picture is kept to fade where it was.
     pub fn motion_close(&mut self, window: &Window) {
         // In the overview windows are drawn small, elsewhere; under the lock, not at all. An

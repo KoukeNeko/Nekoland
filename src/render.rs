@@ -33,7 +33,7 @@ use crate::{
     dock::Frame,
     glass::{Glass, Pane, Tier},
     appgrid::{Backdrop, Layer as AppsLayer},
-    menubar::Overlay,
+    menubar::{Overlay, MENU_RADIUS},
     sprite::Placed,
     motion::{self, GhostElement, Pose},
     overview::ICON_SIZE,
@@ -521,7 +521,11 @@ fn switcher_front(
     output_loc: Point<i32, Logical>,
     scale: f64,
 ) -> Vec<SceneElement> {
-    let thumbnails = state.switcher_thumbnails();
+    let thumbnails: Vec<_> = state
+        .switcher_thumbnails()
+        .iter()
+        .chain(state.snap_assist_thumbnails())
+        .collect();
     let mut elements: Vec<SceneElement> = thumbnails
         .iter()
         .filter_map(|(_, _, icon, at)| {
@@ -1395,10 +1399,36 @@ fn windows_on_glass(
     for (window, pose) in windows.iter().rev() {
         // Where a window being dragged will go shows under it, over the rest.
         if let Some(target) = state.snap.target.as_ref().filter(|target| &target.window == window) {
+            let area = Rectangle::new(target.rect.loc - output_loc, target.rect.size)
+                .to_physical_precise_round(scale);
+            if let (Some(glass), Some(size)) = (glass.as_deref_mut(), output_size) {
+                let id = state.snap.id.clone();
+                if let Err(err) = glass.update_window(renderer, id, (size, scale), area, &scene) {
+                    tracing::warn!("glass: {err}");
+                }
+                let radius = (f64::from(MENU_RADIUS) * scale).round() as i32;
+                scene.extend(glass.window_pane(state.snap.id.clone(), area, radius).map(SceneElement::Glass));
+                kept.push(state.snap.id.clone());
+            }
             scene.extend(
-                snap_preview(&state.snap.ids, target.rect, output_loc, scale)
-                    .into_iter()
-                    .rev(),
+                state
+                    .snap
+                    .picture
+                    .as_ref()
+                    .filter(|(size, ..)| *size == target.rect.size)
+                    .and_then(|(_, _, picture)| {
+                        MemoryRenderBufferRenderElement::from_buffer(
+                            renderer,
+                            area.loc.to_f64(),
+                            &picture.buffer,
+                            None,
+                            None,
+                            None,
+                            Kind::Unspecified,
+                        )
+                        .ok()
+                    })
+                    .map(SceneElement::Picture),
             );
         }
         let (round, turning) = crate::windows::roundness(window);
@@ -1546,12 +1576,10 @@ fn hides_glass(window: &Window, pose: Pose, radius: i32) -> bool {
     })
 }
 
-/// How opaque the white of the box choosing desktop items is, inside and at its edge; a
-/// snap preview is drawn the same. The design page in Settings shows them as `.nk-band`.
+/// How opaque the white of the box choosing desktop items is, inside and at its edge. The
+/// design page in Settings shows them as `.nk-band`.
 pub(crate) const BAND_FILL_ALPHA: f32 = 0.15;
 pub(crate) const BAND_EDGE_ALPHA: f32 = 0.6;
-/// How thick the line around a snap preview is, as the desktop's box.
-const PREVIEW_OUTLINE: i32 = 1;
 
 /// The four sides of a line width thick just inside outer: top, bottom, left, right.
 fn outline_sides(outer: Rectangle<i32, Logical>, width: i32) -> [Rectangle<i32, Logical>; 4] {
@@ -1569,32 +1597,6 @@ fn outline_sides(outer: Rectangle<i32, Logical>, width: i32) -> [Rectangle<i32, 
     ]
 }
 
-/// White at `alpha`, premultiplied as the renderer blends it.
-fn white(alpha: f32) -> [f32; 4] {
-    [alpha; 4]
-}
-
-/// Where a dragged window goes if let go of now: a tinted area, outlined, front first.
-fn snap_preview(ids: &[Id; 5], rect: Rectangle<i32, Logical>, output_loc: Point<i32, Logical>, scale: f64) -> Vec<SceneElement> {
-    let rect = Rectangle::new(rect.loc - output_loc, rect.size);
-    let [fill_id, side_ids @ ..] = ids;
-    let solid = |id: &Id, area: Rectangle<i32, Logical>, color: [f32; 4]| {
-        SceneElement::Solid(SolidColorRenderElement::new(
-            id.clone(),
-            area.to_physical_precise_round(scale),
-            CommitCounter::default(),
-            color,
-            Kind::Unspecified,
-        ))
-    };
-    let mut elements: Vec<SceneElement> = side_ids
-        .iter()
-        .zip(outline_sides(rect, PREVIEW_OUTLINE))
-        .map(|(id, side)| solid(id, side, white(BAND_EDGE_ALPHA)))
-        .collect();
-    elements.push(solid(fill_id, rect, white(BAND_FILL_ALPHA)));
-    elements
-}
 /// The part of the output a window is drawn over, without its shadow.
 fn window_area(
     state: &Nekoland,

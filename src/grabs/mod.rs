@@ -1,3 +1,6 @@
+pub mod divider_grab;
+pub use divider_grab::DividerGrab;
+
 pub mod move_grab;
 pub use move_grab::MoveSurfaceGrab;
 

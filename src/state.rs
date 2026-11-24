@@ -114,6 +114,8 @@ pub struct Nekoland {
     pub switcher: Option<crate::switcher::Switcher>,
     pub widgets: Option<crate::widgets::Widgets>,
     pub snap_layouts: Option<crate::snap_layouts::SnapLayouts>,
+    pub snap_assist: Option<crate::snap_assist::SnapAssist>,
+    pub splits: crate::split::Splits,
     /// Which way up iio-sensor-proxy last said the computer is held.
     pub orientation: Option<String>,
     /// The turn last given the computer's own display for it, which the rotation lock holds.
@@ -280,6 +282,8 @@ impl Nekoland {
             switcher: None,
             widgets: None,
             snap_layouts: None,
+            snap_assist: None,
+            splits: Default::default(),
             orientation: None,
             turned: None,
             connected_outputs: Vec::new(),
@@ -399,6 +403,8 @@ impl Nekoland {
             || self.dock_covers(pos)
             || self.notice_covers(pos)
             || self.hover_covers(pos)
+            || self.snap_assist_covers(pos)
+            || self.divider_covers(pos)
         {
             return None;
         }

@@ -170,17 +170,23 @@ struct Arranged {
     command: String,
     step: usize,
     at: Point<i32, Logical>,
+    /// The part of the usable area it was put in, which the bar between it and the window
+    /// beside it moves.
+    part: Part,
 }
 
 fn data(window: &Window) -> &WindowData {
     window.user_data().get_or_insert(WindowData::default)
 }
 
-/// Where a window being dragged will go if it is let go of where it is, shown under it.
+/// Where a window being dragged will go if it is let go of where it is, shown under it on
+/// the glass menus have.
 pub struct SnapPreview {
     pub target: Option<SnapTarget>,
-    /// The fill and the four sides of the outline, which keep their ids from frame to frame.
-    pub ids: [Id; 5],
+    /// What its glass goes by from frame to frame.
+    pub id: Id,
+    /// The menus' sheet and edge at the target's size, and whether it was drawn dark.
+    pub picture: Option<(Size<i32, Logical>, bool, crate::text::Picture)>,
 }
 
 pub struct SnapTarget {
@@ -193,7 +199,8 @@ impl Default for SnapPreview {
     fn default() -> Self {
         Self {
             target: None,
-            ids: std::array::from_fn(|_| Id::new()),
+            id: Id::new(),
+            picture: None,
         }
     }
 }
@@ -751,8 +758,12 @@ impl Nekoland {
             Arrangement::Maximize => self.maximize(window),
             Arrangement::Part(part) => {
                 let step = if cycle { next_step(window, command, frame.loc) } else { 0 };
-                self.remember_place(window);
-                self.put_in_part(window, area, command, arrange::cycled(part, step), step);
+                self.place_in_part(window, area, command, arrange::cycled(part, step), step);
+                // Put in a half or a part of a layout, as Windows does, what is left of it
+                // offers the other windows; not as the command goes on to the next size.
+                if step == 0 {
+                    self.offer_snap_assist(window, command, None);
+                }
             }
             Arrangement::MaximizeHeight => self.reframe(window, arrange::full_height(inner, frame), true),
             Arrangement::Center => self.reframe(window, arrange::centered(inner, frame.size), false),
@@ -761,8 +772,29 @@ impl Nekoland {
         }
     }
 
+    /// Puts a window in a part of `area`, remembering where it was to go back to when it is
+    /// dragged out.
+    pub(crate) fn place_in_part(
+        &mut self,
+        window: &Window,
+        area: Rectangle<i32, Logical>,
+        command: &str,
+        part: Part,
+        step: usize,
+    ) {
+        self.remember_place(window);
+        self.put_in_part(window, area, command, part, step);
+    }
+
     /// Puts a window in a part of `area`, as `command` at its `step` named it.
-    fn put_in_part(&mut self, window: &Window, area: Rectangle<i32, Logical>, command: &str, part: Part, step: usize) {
+    pub(crate) fn put_in_part(
+        &mut self,
+        window: &Window,
+        area: Rectangle<i32, Logical>,
+        command: &str,
+        part: Part,
+        step: usize,
+    ) {
         if has_fixed_size(window) {
             return;
         }
@@ -778,6 +810,7 @@ impl Nekoland {
             command: command.to_string(),
             step,
             at: rect.loc,
+            part,
         };
         mark(window, Some(arranged), true);
     }
@@ -785,17 +818,36 @@ impl Nekoland {
     /// Puts a window a command put in a part of the display back in that part, as the
     /// display now is.
     fn rearrange(&mut self, window: &Window, area: Rectangle<i32, Logical>) {
-        let Some((command, step)) = data(window)
+        let Some((command, step, part)) = data(window)
             .arranged
             .borrow()
             .as_ref()
-            .map(|arranged| (arranged.command.clone(), arranged.step))
+            .map(|arranged| (arranged.command.clone(), arranged.step, arranged.part))
         else {
             return;
         };
-        if let Some(Arrangement::Part(part)) = arrange::arrangement(&command) {
-            self.put_in_part(window, area, &command, arrange::cycled(part, step), step);
-        }
+        self.put_in_part(window, area, &command, part, step);
+    }
+
+    /// The part of the usable area a window was put in, while it is still there.
+    pub(crate) fn arranged_part(&self, window: &Window) -> Option<Part> {
+        let at = self.frame(window)?.loc;
+        data(window)
+            .arranged
+            .borrow()
+            .as_ref()
+            .filter(|arranged| arranged.at == at)
+            .map(|arranged| arranged.part)
+    }
+
+    /// Whether a window has one size only, and so is left out of halves and thirds.
+    pub(crate) fn is_fixed_size(&self, window: &Window) -> bool {
+        has_fixed_size(window)
+    }
+
+    /// The points left between windows put side by side, and around them.
+    pub(crate) fn gap_between_windows(&self) -> i32 {
+        self.window_gap()
     }
 
     /// Puts a window somewhere a command worked out from where it was.
@@ -947,6 +999,21 @@ impl Nekoland {
     /// the pointer at `pos`.
     pub fn preview_snap(&mut self, window: &Window, pos: Point<f64, Logical>) {
         self.snap.target = self.snap_target(window, pos);
+        let dark = self.menu_bar.dark;
+        let Some(size) = self.snap.target.as_ref().map(|target| target.rect.size) else {
+            return;
+        };
+        let drawn = self.snap.picture.as_ref();
+        if drawn.is_some_and(|(drawn, was_dark, _)| *drawn == size && *was_dark == dark) {
+            return;
+        }
+        let colors = crate::menubar::colors(dark);
+        self.snap.picture = crate::control::draw_panel(size.w, size.h, dark, &colors)
+            .and_then(|(surface, cr)| {
+                drop(cr);
+                crate::text::picture(surface)
+            })
+            .map(|picture| (size, dark, picture));
     }
 
     fn snap_target(&self, window: &Window, pos: Point<f64, Logical>) -> Option<SnapTarget> {

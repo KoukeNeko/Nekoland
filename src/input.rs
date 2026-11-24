@@ -428,6 +428,8 @@ impl Nekoland {
         self.overview_motion(pos);
         self.corner_motion(pos);
         self.snap_layouts_motion(pos);
+        self.snap_assist_motion(pos);
+        self.divider_motion(pos);
     }
 
     /// The surface holding the pointer at `at`, where it is, and how; one that no longer has
@@ -482,6 +484,9 @@ impl Nekoland {
             return;
         }
         if self.switcher_press(pos) || self.snap_layouts_press(pos) || self.widgets_press(pos) {
+            return;
+        }
+        if self.snap_assist_press(pos) || (button == BUTTON_LEFT && self.divider_press(pos, button, serial)) {
             return;
         }
         let clicked = self.space.element_under(pos).map(|(window, _)| window.clone());
@@ -567,7 +572,11 @@ impl Nekoland {
         if self.keyboard_frame_key(sym, ctrl) {
             return true;
         }
-        if self.switcher_key(sym, shift) || self.snap_layouts_key(sym) || self.widgets_key(sym) {
+        if self.switcher_key(sym, shift)
+            || self.snap_layouts_key(sym)
+            || self.snap_assist_key(sym, shift)
+            || self.widgets_key(sym)
+        {
             return true;
         }
         if self.alert_shown() && sym == Keysym::Escape {

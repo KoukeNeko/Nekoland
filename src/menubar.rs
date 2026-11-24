@@ -1587,6 +1587,8 @@ impl Nekoland {
         self.refresh_alert();
         self.refresh_switcher();
         self.refresh_snap_layouts();
+        self.refresh_snap_assist();
+        self.refresh_divider();
         self.refresh_widgets();
     }
 
@@ -1616,6 +1618,8 @@ impl Nekoland {
             overlays.insert(0, switcher);
         }
         overlays.extend(self.snap_layouts_overlay());
+        overlays.extend(self.snap_assist_overlay());
+        overlays.extend(self.divider_overlay());
         overlays.extend(self.widgets_overlay());
         if !self.menu_bar_shown() {
             return overlays;
