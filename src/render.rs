@@ -1483,9 +1483,8 @@ fn windows_on_glass(
             );
             (state.with_title(window, body), radius)
         });
-        // A program not GTK's has glass only at its edge, a line past it as wide as GTK
-        // leaves of its own, through which what is around the window shows as it does
-        // through GTK's.
+        // A program not GTK's has only a line at its edge, as wide as GTK's own and grey as
+        // it, lighter than what is around the window.
         let rim = framed.filter(|_| ![CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()));
         // Only what shows is blurred and drawn: the program's body covers the rest.
         let (area, radius, covered) = match rim {
@@ -1537,7 +1536,7 @@ fn windows_on_glass(
                 glass
                     .window_pane(id.clone(), area, radius)
                     // An edge round as the corners the compositor cuts, past them all along.
-                    .map(|pane| if rim.is_some() { pane.circular() } else { pane })
+                    .map(|pane| if rim.is_some() { pane.circular().outline() } else { pane })
                     .map(|pane| SceneElement::Glass(pane.only(&shown).faded(pose.alpha).reshaped(turning))),
             );
             kept.push(id);

@@ -152,6 +152,7 @@ uniform vec2 size;
 uniform float radius;
 uniform float edge;
 uniform float circular;
+uniform float outline;
 void main() {
     vec2 local = (v_coords - uv_origin) / uv_size * size;
     // Corners smooth as the Mac's, as text::rounded_rectangle draws them; one too short for
@@ -170,9 +171,15 @@ void main() {
 
     vec3 color = texture2D(tex, v_coords).rgb;
     float grey = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(grey), color, 1.4);
-    float light = exp(-local.y / 1.5) * 0.22 * edge + (1.0 - local.y / size.y) * 0.04;
-    color = min(color + light, 1.0);
+    if (outline > 0.5) {
+        // A program's edge, as GTK draws its own: grey, lighter than what is behind, which
+        // shows on a dark background as the shadow does on a light one.
+        color = vec3(grey + (1.0 - grey) * 0.12);
+    } else {
+        color = mix(vec3(grey), color, 1.4);
+        float light = exp(-local.y / 1.5) * 0.22 * edge + (1.0 - local.y / size.y) * 0.04;
+        color = min(color + light, 1.0);
+    }
 
     gl_FragColor = vec4(color, 1.0) * inside * alpha;
 }
@@ -221,6 +228,7 @@ impl Glass {
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("edge", UniformType::_1f),
             UniformName::new("circular", UniformType::_1f),
+            UniformName::new("outline", UniformType::_1f),
         ];
         Ok(Self {
             down: renderer.compile_custom_texture_shader(format!("{SAMPLER}{DOWN}"), &pass_uniforms)?,
@@ -513,6 +521,7 @@ impl Blur {
             alpha: 1.0,
             reshaped: false,
             circular: false,
+            outline: false,
             parts: None,
         })
     }
@@ -594,6 +603,8 @@ pub struct Pane {
     reshaped: bool,
     /// With corners round as a circle's, as a window's GTK or the compositor rounds.
     circular: bool,
+    /// Drawn as the grey line of an edge, not as glass.
+    outline: bool,
     /// The only parts drawn, from its top left, where the rest is never seen.
     parts: Option<Vec<Rectangle<i32, Physical>>>,
 }
@@ -602,6 +613,11 @@ impl Pane {
     /// The same glass, only partly there, as while it fades in.
     pub fn faded(self, alpha: f32) -> Self {
         Self { alpha, ..self }
+    }
+
+    /// The same glass as a window's edge, a grey line lighter than what is behind it.
+    pub fn outline(self) -> Self {
+        Self { outline: true, ..self }
     }
 
     /// The same glass, drawn only over `parts` of the output, which alone were blurred.
@@ -718,6 +734,7 @@ impl RenderElement<GlesRenderer> for Pane {
                 Uniform::new("radius", self.radius as f32),
                 Uniform::new("edge", if self.dst.loc.y > 0 { 1.0f32 } else { 0.0 }),
                 Uniform::new("circular", if self.circular { 1.0f32 } else { 0.0 }),
+                Uniform::new("outline", if self.outline { 1.0f32 } else { 0.0 }),
             ],
         )
     }
