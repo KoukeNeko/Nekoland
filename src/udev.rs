@@ -484,7 +484,7 @@ fn render(
             warn!("render: {err}");
             false
         });
-        state.capture_windows(renderer);
+        readings.extend(state.capture_windows(renderer));
         queued
     };
     let output = output.clone();

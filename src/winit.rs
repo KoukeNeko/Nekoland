@@ -243,7 +243,8 @@ pub fn init_winit(
                     let readings = crate::screencopy::copy(backend.renderer(), &output, &elements, 0, frames);
                     crate::screencopy::finish(backend.renderer(), readings);
                 }
-                state.capture_windows(backend.renderer());
+                let readings = state.capture_windows(backend.renderer());
+                crate::screencopy::finish(backend.renderer(), readings);
 
                 state.finish_frame(&output);
                 if submitted {

@@ -224,7 +224,8 @@ pub fn init_headless(
             crate::screencopy::finish(&mut renderer, readings);
             state.count_frame();
         }
-        state.capture_windows(&mut renderer);
+        let readings = state.capture_windows(&mut renderer);
+        crate::screencopy::finish(&mut renderer, readings);
         drop(renderer);
         // Nothing is shown here, so whatever is mapped counts as shown.
         state.finish_frame(&output);

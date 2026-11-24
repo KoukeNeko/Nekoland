@@ -99,12 +99,12 @@ impl Nekoland {
         }
     }
 
-    /// Copies each window a frame waits for, as it is now; called as the displays are drawn.
-    pub fn capture_windows(&mut self, renderer: &mut GlesRenderer) {
+    /// Draws each window a frame waits for, as it is now, and starts reading it back for
+    /// `screencopy::finish`; called as the displays are drawn.
+    #[must_use]
+    pub fn capture_windows(&mut self, renderer: &mut GlesRenderer) -> Vec<screencopy::Reading> {
+        let mut readings = Vec::new();
         let frames: Vec<WindowFrame> = std::mem::take(&mut self.window_captures);
-        if frames.is_empty() {
-            return;
-        }
         let scale = self.display_scale();
         let time = screencopy::monotonic_now();
         for pending in frames.into_iter().filter(|pending| pending.frame.is_alive()) {
@@ -134,25 +134,22 @@ impl Nekoland {
                 Scale::from(scale),
                 1.0,
             );
-            let drawn = (size, scale, Transform::Normal);
-            let clear = [0.0; 4];
-            match screencopy::copy_into(renderer, drawn, &elements, clear, Rectangle::from_size(size), &pending.buffer) {
-                Ok(()) => {
-                    if data.captured.fetch_add(1, Ordering::Relaxed) > 0 {
-                        self.note_screen_frame();
-                    }
-                    pending.frame.transform(Transform::Normal.into());
-                    pending.frame.damage(0, 0, size.w, size.h);
-                    let seconds = time.as_secs();
-                    pending.frame.presentation_time((seconds >> 32) as u32, seconds as u32, time.subsec_nanos());
-                    pending.frame.ready();
-                }
-                Err(err) => {
-                    tracing::warn!("window capture: {err}");
-                    pending.frame.failed(FailureReason::Unknown);
-                }
+            let streaming = data.captured.fetch_add(1, Ordering::Relaxed) > 0;
+            if streaming {
+                self.note_screen_frame();
             }
+            let frame = screencopy::Frame {
+                target: Target::Ext(pending.frame),
+                buffer: pending.buffer,
+                output: None,
+                region: Rectangle::from_size(size),
+                cursor: false,
+                streaming,
+            };
+            let drawn = (size, scale, Transform::Normal);
+            readings.extend(screencopy::start(renderer, drawn, &elements, [0.0; 4], frame, time));
         }
+        readings
     }
 }
 
@@ -400,7 +397,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Nekoland {
                         state.screencopy.push(screencopy::Frame {
                             target: Target::Ext(frame.clone()),
                             buffer,
-                            output: output.clone(),
+                            output: Some(output.clone()),
                             region: Rectangle::from_size(size),
                             cursor: session.cursor,
                             streaming,

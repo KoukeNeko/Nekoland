@@ -67,7 +67,8 @@ pub enum Target {
 pub struct Frame {
     pub target: Target,
     pub buffer: WlBuffer,
-    pub output: Output,
+    /// None for a window's, copied apart from any output's drawing.
+    pub output: Option<Output>,
     /// The part of the output, in its pixels.
     pub region: Rectangle<i32, Physical>,
     pub cursor: bool,
@@ -278,7 +279,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Nekoland {
         state.screencopy.push(Frame {
             target: Target::Wlr(frame.clone()),
             buffer,
-            output,
+            output: Some(output),
             region: data.region,
             cursor: data.cursor,
             streaming: with_damage,
@@ -292,7 +293,7 @@ impl Nekoland {
         let (frames, rest) = std::mem::take(&mut self.screencopy)
             .into_iter()
             .filter(Frame::is_alive)
-            .partition(|frame| frame.output == *output);
+            .partition(|frame| frame.output.as_ref() == Some(output));
         self.screencopy = rest;
         if frames.iter().any(|frame| frame.streaming) {
             self.note_screen_frame();
@@ -385,20 +386,28 @@ pub fn finish(renderer: &mut GlesRenderer, readings: Vec<Reading>) {
 }
 
 /// Draws `elements` as on a display `size` large, at `scale` and turned by `transform`, and
-/// copies `region` of it into `buffer`, which `fits` it.
-pub fn copy_into<E: RenderElement<GlesRenderer>>(
+/// starts reading it back for `frame`, the whole of it, for `finish` to copy; fails the frame
+/// if it cannot be drawn.
+#[must_use]
+pub fn start<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
-    drawn: (Size<i32, Physical>, f64, Transform),
+    (size, scale, transform): (Size<i32, Physical>, f64, Transform),
     elements: &[E],
     clear: [f32; 4],
-    region: Rectangle<i32, Physical>,
-    buffer: &WlBuffer,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mapping = read(renderer, drawn, elements, clear)?;
-    write(renderer, &mapping, drawn.0, region, buffer)
+    frame: Frame,
+    time: Duration,
+) -> Option<Reading> {
+    match read(renderer, (size, scale, transform), elements, clear) {
+        Ok(mapping) => Some(Reading { frame, mapping, size, transform, time }),
+        Err(err) => {
+            tracing::warn!("capture: {err}");
+            frame.failed();
+            None
+        }
+    }
 }
 
-/// Draws `elements` over `clear` as `copy_into` does, and starts reading the whole of it
+/// Draws `elements` over `clear` as `start` does, and starts reading the whole of it
 /// back, its alpha with it.
 fn read<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
@@ -458,7 +467,7 @@ fn write(
     Ok(())
 }
 
-/// Draws `elements` into `dmabuf`, a whole display's frame, as `copy_into` draws them, and
+/// Draws `elements` into `dmabuf`, a whole display's frame, as `start` draws them, and
 /// waits for the GPU to finish before the client reads it.
 fn draw_into<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
