@@ -260,6 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // X11 programs find XWayland through the environment, so everything else starts after it.
     x11::start(&event_loop.handle(), &mut data, move |data| {
+        let mut portal_restart = None;
         // Services D-Bus starts, such as the portal that tells programs whether to be dark,
         // have to find this display, and the screen-share picker the portal runs, Nekoland's
         // socket; a nested compositor leaves the outer session's alone.
@@ -285,9 +286,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The portal, and units such as the person's own, start in a graphical session
             // only. The menu bar's question of dark or light started the portal before it could
             // know the desktop's name, and it picks its backends once, as it starts: the file
-            // chooser would be GTK's.
-            config::spawn(&format!(
-                "systemctl --user start {SESSION_TARGET}; systemctl --user try-restart xdg-desktop-portal.service"
+            // chooser would be GTK's. GTK's backend, which answers dark or light, may have hit
+            // its start limit while the last session's display was gone, and would answer
+            // nothing until systemd let it start again.
+            portal_restart = Some(format!(
+                "systemctl --user start {SESSION_TARGET}; \
+                 systemctl --user reset-failed xdg-desktop-portal-gtk.service; \
+                 systemctl --user try-restart xdg-desktop-portal.service"
             ));
             // Sunshine, when Settings set it to stream this desktop, started with the user's
             // services, before there was a display to find; an xrdp session is not streamed.
@@ -322,18 +327,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data.lock_screen();
         }
         let config = &data.config;
-        config.autostart.iter().for_each(|command| config::spawn(command));
-        let wallpaper = config::start_wallpaper(
+        let mut apps = config.autostart.clone();
+        match &command {
+            Some(command) => apps.push(command.clone()),
+            // Something to start from, when nothing else was asked for.
+            None if config.autostart.is_empty() => apps.push(config.terminal.clone()),
+            None => {}
+        }
+        match portal_restart {
+            // A program asks the portal whether to be dark as it starts, and keeps the answer:
+            // these start once the portal is back.
+            Some(restart) => {
+                let started: String = apps.iter().map(|app| format!("(\n{app}\n) &\n")).collect();
+                config::spawn(&format!("{restart}\n{started}"));
+            }
+            None => apps.iter().for_each(|app| config::spawn(app)),
+        }
+        data.wallpaper = config::start_wallpaper(
             data.desktop_wallpaper(data.workspaces.active).as_deref(),
             config.wallpaper_mode,
         );
-        match &command {
-            Some(command) => config::spawn(command),
-            // Something to start from, when nothing else was asked for.
-            None if config.autostart.is_empty() => config::spawn(&config.terminal),
-            None => {}
-        }
-        data.wallpaper = wallpaper;
     });
 
     event_loop.run(None, &mut data, move |_| {
