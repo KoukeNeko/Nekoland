@@ -13,7 +13,7 @@ use std::{
 };
 
 const INTERFACE: &str = "org.gnome.desktop.interface";
-const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
+pub(crate) const WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
 const PREFER_DARK: &str = "prefer-dark";
 const BASE_DPI: f64 = 96.0;
 /// Xft/DPI is in 1024ths of a dot per inch.
@@ -62,7 +62,7 @@ struct Values {
     scale: f64,
 }
 
-fn gsetting(schema: &str, key: &str) -> String {
+pub(crate) fn gsetting(schema: &str, key: &str) -> String {
     Command::new("gsettings")
         .args(["get", schema, key])
         .output()

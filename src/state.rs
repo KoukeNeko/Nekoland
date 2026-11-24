@@ -109,6 +109,8 @@ pub struct Nekoland {
     /// The windows Show Desktop minimized, which it brings back when given again.
     pub desktop_shown: Vec<Window>,
     pub keyboard_frame: Option<crate::windows::KeyboardFrame>,
+    /// The window whose bar from Nekoland was last pressed, and when, to tell a double click.
+    pub title_pressed: Option<(Window, std::time::Instant)>,
     /// Whether the windows are see-through, for as long as Super+, is held.
     pub peeking: bool,
     pub switcher: Option<crate::switcher::Switcher>,
@@ -279,6 +281,7 @@ impl Nekoland {
             minimized: Vec::new(),
             desktop_shown: Vec::new(),
             keyboard_frame: None,
+            title_pressed: None,
             peeking: false,
             switcher: None,
             widgets: None,

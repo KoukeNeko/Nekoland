@@ -11,7 +11,10 @@
 //! shortcut: the bar has no hover; its buttons act as they are pressed, and the cursor does
 //! not change over a grip.
 
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    time::{Duration, Instant},
+};
 
 use smithay::{
     backend::renderer::{
@@ -29,7 +32,7 @@ use crate::{
     menubar,
     render::SceneElement,
     text::{self, Picture},
-    Nekoland,
+    xsettings, Nekoland,
 };
 
 /// As tall as GTK's header bar.
@@ -53,6 +56,8 @@ const FOREIGN: &str = "nekoland-window-";
 /// leaves black. More than this is a size not caught up with yet, not a margin.
 const TRIM_MAX: i32 = 32;
 const BUTTON_LEFT: u32 = 0x110;
+/// Two presses on a bar this close together are a double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Whether a window is one of a program's own, not a menu or a tooltip.
 pub fn is_own_window(surface: &X11Surface) -> bool {
@@ -298,17 +303,25 @@ impl Nekoland {
         match hit {
             Hit::Close => menubar::close(&window),
             Hit::Minimize => self.minimize(&window),
-            Hit::Maximize => {
-                let maximized = matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_maximized());
-                if maximized {
-                    self.restore(&window);
-                } else {
-                    self.maximize(&window);
-                }
-            }
+            Hit::Maximize => self.toggle_maximize(&window),
             Hit::Title => {
-                let grab = MoveSurfaceGrab::new(start_data, window, location);
-                pointer.set_grab(self, grab, serial, Focus::Clear);
+                let now = Instant::now();
+                let double = self
+                    .title_pressed
+                    .take()
+                    .is_some_and(|(pressed, at)| pressed == window && now.duration_since(at) < DOUBLE_CLICK);
+                if double {
+                    // What GTK does on a double click of its own title bar, as Settings sets it.
+                    match xsettings::gsetting(xsettings::WM_PREFERENCES, "action-double-click-titlebar").as_str() {
+                        "toggle-maximize" | "" => self.toggle_maximize(&window),
+                        "minimize" => self.minimize(&window),
+                        _ => {}
+                    }
+                } else {
+                    self.title_pressed = Some((window.clone(), now));
+                    let grab = MoveSurfaceGrab::new(start_data, window, location);
+                    pointer.set_grab(self, grab, serial, Focus::Clear);
+                }
             }
             Hit::Edge(edges) => {
                 let rect = Rectangle::new(location, window.geometry().size);
@@ -317,6 +330,15 @@ impl Nekoland {
             }
         }
         true
+    }
+
+    fn toggle_maximize(&mut self, window: &Window) {
+        let maximized = matches!(window.underlying_surface(), WindowSurface::X11(surface) if surface.is_maximized());
+        if maximized {
+            self.restore(window);
+        } else {
+            self.maximize(window);
+        }
     }
 
     /// The bar's picture, drawn again when its title, width, focus, the scale or the colours
