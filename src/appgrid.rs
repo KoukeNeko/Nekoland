@@ -2022,8 +2022,13 @@ impl Nekoland {
         if let Some(desktop) = desktop {
             self.switch_workspace(desktop);
         }
-        if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
-            tracing::warn!("{id}: {err}");
+        match info.id() {
+            Some(desktop_id) => crate::config::launch(&desktop_id, Vec::new()),
+            None => {
+                if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
+                    tracing::warn!("{id}: {err}");
+                }
+            }
         }
         self.dock_launching(&id);
         // From an open folder, the folder shuts first, and the view leaves after it.

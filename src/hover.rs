@@ -560,6 +560,13 @@ impl Nekoland {
         if shown.icon_waiting {
             let waits = text::icon_waits();
             shown.icon = stacks::kind_icon(&shown.item, ICON, menubar::colors(look.dark).ink);
+            // Its thumbnail too, which GIO may not have told of when the panel came.
+            if shown.icon_read.is_none() {
+                shown.icon_read = stacks::picture_path(&shown.item).map(|path| {
+                    let size = ICON * text::picture_scale();
+                    stacks::read_on_a_thread(path, Size::from((size, size)))
+                });
+            }
             shown.icon_waiting = text::icon_waits() != waits;
             shown.drawn = None;
         }

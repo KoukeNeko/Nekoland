@@ -4,7 +4,10 @@
 //! candidates come back, the candidates to be drawn by Nekoland. Keys it does not take come
 //! back too, to be handled as typed.
 
-use std::sync::mpsc;
+use std::{
+    sync::{mpsc, Mutex},
+    time::{Duration, Instant},
+};
 
 use smithay::reexports::calloop::channel::Sender;
 use zbus::{blocking::Connection, blocking::MessageIterator, zvariant::OwnedObjectPath, MatchRule};
@@ -60,8 +63,25 @@ impl Ime {
     }
 }
 
-/// Connects to Fcitx and makes an input context. None when Fcitx is not running.
+/// How long after Fcitx was not there it is not looked for again: each key asks for it, on
+/// the compositor's thread, a new connection to the bus each time.
+const FCITX_RETRY: Duration = Duration::from_secs(5);
+
+/// When Fcitx was last looked for and not there.
+static MISSED: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Connects to Fcitx and makes an input context. None when Fcitx is not running, or was not
+/// a moment ago.
 pub fn start(events: Sender<Event>) -> Option<Ime> {
+    if MISSED.lock().unwrap().is_some_and(|at| at.elapsed() < FCITX_RETRY) {
+        return None;
+    }
+    let ime = connect(events);
+    *MISSED.lock().unwrap() = ime.is_none().then(Instant::now);
+    ime
+}
+
+fn connect(events: Sender<Event>) -> Option<Ime> {
     let connection = Connection::session()
         .inspect_err(|err| tracing::warn!("input method: {err}"))
         .ok()?;

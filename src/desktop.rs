@@ -1277,24 +1277,10 @@ impl Nekoland {
     pub fn run_desktop_command(&mut self, command: DesktopCommand) {
         match command {
             DesktopCommand::Open(paths) => paths.iter().for_each(|path| open_path(path)),
-            DesktopCommand::OpenWith(app_id, paths) => {
-                let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
-                match gio::DesktopAppInfo::new(&app_id) {
-                    Some(app) => {
-                        if let Err(err) = app.launch(&files, None::<&gio::AppLaunchContext>) {
-                            tracing::warn!("{app_id}: {err}");
-                        }
-                    }
-                    None => tracing::warn!("{app_id}: no such desktop entry"),
-                }
-            }
+            DesktopCommand::OpenWith(app_id, paths) => config::launch(&app_id, paths),
             DesktopCommand::Reveal(path) => reveal_path(&path),
             DesktopCommand::Trash(paths) => {
-                for path in &paths {
-                    if let Err(err) = gio::File::for_path(path).trash(gio::Cancellable::NONE) {
-                        tracing::warn!("{}: {err}", path.display());
-                    }
-                }
+                config::trash(paths);
                 self.desktop.selected.clear();
             }
             DesktopCommand::Info(paths) => ask_file_manager("ShowItemProperties", &paths),

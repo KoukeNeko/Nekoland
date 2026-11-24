@@ -1166,7 +1166,7 @@ impl Nekoland {
 
     /// A folder's own icon, as its file manager shows it, trimmed as an application's is.
     fn folder_icon(&mut self, path: &Path, size: i32, dark: bool) -> Option<ImageSurface> {
-        let names = stacks::icon_names(path);
+        let names = stacks::icon_names(path).unwrap_or_default();
         names
             .iter()
             .chain(std::iter::once(&"folder".to_string()))
@@ -3498,7 +3498,7 @@ impl Nekoland {
             .iter()
             .take(LIST_MAX)
             .map(|item| {
-                let icon = stacks::icon_names(&item.path);
+                let icon = stacks::icon_names_now(&item.path);
                 if item.is_dir {
                     let mut children = vec![
                         Entry::item(
@@ -3516,7 +3516,7 @@ impl Nekoland {
                                     child.name.clone(),
                                     Command::Dock(DockCommand::Open(child.path.clone())),
                                 )
-                                .with_icon(stacks::icon_names(&child.path))
+                                .with_icon(stacks::icon_names_now(&child.path))
                             }),
                     );
                     Entry::submenu(item.name.clone(), children).with_icon(icon)
@@ -3793,23 +3793,9 @@ impl Nekoland {
             .and_then(|index| self.dock.tiles.get(index))
             .cloned();
         match tile {
-            Some(Tile::App { app_id, .. }) => {
-                let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
-                match gio::DesktopAppInfo::new(&format!("{app_id}.desktop")) {
-                    Some(app) => {
-                        if let Err(err) = app.launch(&files, None::<&gio::AppLaunchContext>) {
-                            tracing::warn!("{app_id}: {err}");
-                        }
-                    }
-                    None => tracing::warn!("{app_id}: no desktop entry to open files with"),
-                }
-            }
+            Some(Tile::App { app_id, .. }) => config::launch(&format!("{app_id}.desktop"), paths.to_vec()),
             Some(Tile::Trash { .. }) => {
-                for path in paths {
-                    if let Err(err) = gio::File::for_path(path).trash(gio::Cancellable::NONE) {
-                        tracing::warn!("{}: {err}", path.display());
-                    }
-                }
+                config::trash(paths.to_vec());
                 self.dock.trash = None;
             }
             // Into a kept folder, as onto a folder in a file manager.
@@ -3974,9 +3960,7 @@ pub(crate) fn open_path(path: &Path) {
 }
 
 fn open_uri(uri: &str) {
-    if let Err(err) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>) {
-        tracing::warn!("{uri}: {err}");
-    }
+    config::open_uri(uri);
 }
 
 /// The local files in a `text/uri-list`, as dragged out of a file manager.

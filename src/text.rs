@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicI32, Ordering},
-        Mutex, RwLock,
+        Arc, Mutex, RwLock,
     },
 };
 
@@ -98,8 +98,12 @@ pub fn set_icon_theme(theme: &str) {
 }
 
 /// Where icons were found, by name and the folder looked in first, until the theme changes:
-/// a theme holds thousands of files, too many to walk for each icon drawn.
-static FOUND_ICONS: Mutex<BTreeMap<(String, String), PathBuf>> = Mutex::new(BTreeMap::new());
+/// a theme holds thousands of files, too many to walk for each icon drawn. None while one is
+/// being looked for on its thread, then where it is, if anywhere.
+static FOUND_ICONS: Mutex<BTreeMap<IconName, Option<Option<PathBuf>>>> = Mutex::new(BTreeMap::new());
+
+/// An icon's name, and the folder it is looked for in first.
+type IconName = (String, String);
 
 fn icon_themes() -> Vec<String> {
     let chosen = ICON_THEME.read().unwrap().clone();
@@ -269,7 +273,7 @@ impl Apps {
     pub fn info(&mut self, app_id: &str) -> &AppInfo {
         self.known
             .entry(app_id.to_string())
-            .or_insert_with(|| lookup(app_id))
+            .or_insert_with(|| lookup(&entries(), app_id))
     }
 
     /// The icon over the name, as it sits under a window in the overview.
@@ -597,8 +601,58 @@ pub fn gio_icon_names(icon: gio::Icon) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Any icon of that name, SVG or PNG, in any size or context of the themes.
+/// Any icon of that name, SVG or PNG, in any size or context of the themes. None until it
+/// is found, as the themes' folders are walked on a thread of their own: tens of thousands
+/// of files, which would hold up the screen for a tenth of a second or more.
 fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
+    let key = (name.to_string(), extra_dir.to_string());
+    let mut found = FOUND_ICONS.lock().unwrap();
+    match found.get(&key) {
+        // Looked for again should it be gone, as when a theme is uninstalled.
+        Some(Some(Some(path))) if path.is_file() => return Some(path.clone()),
+        Some(Some(None)) => return None,
+        Some(None) => {
+            ICON_WAITS.set(ICON_WAITS.get() + 1);
+            return None;
+        }
+        _ => {}
+    }
+    let lookups = icon_lookups()?;
+    found.insert(key.clone(), None);
+    drop(found);
+    let theme = ICON_THEME.read().unwrap().clone();
+    if lookups.send((key, theme)).is_ok() {
+        ICON_WAITS.set(ICON_WAITS.get() + 1);
+    }
+    None
+}
+
+fn icon_lookups() -> Option<&'static std::sync::mpsc::Sender<(IconName, String)>> {
+    static LOOKUPS: std::sync::OnceLock<Option<std::sync::mpsc::Sender<(IconName, String)>>> =
+        std::sync::OnceLock::new();
+    LOOKUPS
+        .get_or_init(|| {
+            let (send, lookups) = std::sync::mpsc::channel::<(IconName, String)>();
+            let spawned = std::thread::Builder::new().name("nekoland-icon-find".into()).spawn(move || {
+                for ((name, extra_dir), theme) in lookups {
+                    let found = look_for_icon(&name, &extra_dir);
+                    // One looked for in a theme since replaced is looked for again.
+                    if *ICON_THEME.read().unwrap() == theme {
+                        FOUND_ICONS.lock().unwrap().insert((name, extra_dir), Some(found));
+                    }
+                    redraw_soon();
+                }
+            });
+            spawned
+                .inspect_err(|err| tracing::warn!("icons are not looked for: {err}"))
+                .ok()
+                .map(|_| send)
+        })
+        .as_ref()
+}
+
+/// Where an icon of that name is: the walk `find_named_icon` has done on its thread.
+fn look_for_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute() {
         // A path bypasses the icon theme, but the restyle of its file (snap apps give one)
@@ -607,15 +661,6 @@ fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
             data_dirs().iter().find_map(|dir| find_file(&dir.join("icons/Nekoland"), stem, 4))
         });
         return restyled.or_else(|| path.is_file().then(|| path.to_path_buf()));
-    }
-    let key = (name.to_string(), extra_dir.to_string());
-    if let Some(found) = FOUND_ICONS
-        .lock()
-        .unwrap()
-        .get(&key)
-        .filter(|found| found.is_file())
-    {
-        return Some(found.clone());
     }
     let mut roots: Vec<PathBuf> = Vec::new();
     if !extra_dir.is_empty() {
@@ -626,11 +671,7 @@ fn find_named_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
         roots.extend(themes.iter().map(|theme| dir.join("icons").join(theme)));
         roots.push(dir.join("pixmaps"));
     }
-    // shortcut: a name not found is looked for again each time, walking the theme folders;
-    // remember those too if names without icons turn out to be asked for often.
-    let found = roots.iter().find_map(|root| find_file(root, name, 4))?;
-    FOUND_ICONS.lock().unwrap().insert(key, found.clone());
-    Some(found)
+    roots.iter().find_map(|root| find_file(root, name, 4))
 }
 
 fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
@@ -715,6 +756,7 @@ pub fn watch_applications() {
                 }
             }
             seen = changed();
+            *ENTRIES.write().unwrap() = Some(Arc::new(read_entries()));
             match std::process::Command::new("nekoland-conform-icons").arg("--refresh").status() {
                 Ok(status) if status.success() => {
                     if let Err(err) = crate::ipc::send("reload") {
@@ -728,9 +770,62 @@ pub fn watch_applications() {
     });
 }
 
-fn lookup(app_id: &str) -> AppInfo {
-    let dirs = data_dirs();
-    let Some(entry) = desktop_entry(&dirs, app_id) else {
+/// The applications' desktop entries, by the lowercased names of their files and the window
+/// classes they claim, the first found of each kept.
+#[derive(Default)]
+struct Entries {
+    by_name: HashMap<String, Arc<String>>,
+    by_class: HashMap<String, Arc<String>>,
+}
+
+/// The desktop entries as last read, replaced when the applications change.
+static ENTRIES: RwLock<Option<Arc<Entries>>> = RwLock::new(None);
+
+/// The first reading of the desktop entries, begun as the compositor starts.
+static FIRST_ENTRIES: Mutex<Option<std::thread::JoinHandle<Entries>>> = Mutex::new(None);
+
+/// Reads the applications' desktop entries on a thread, for the first lookups to find read:
+/// a hundred files or more, which at login, read cold, would hold up the screen.
+pub fn read_applications() {
+    match std::thread::Builder::new().name("nekoland-apps".into()).spawn(read_entries) {
+        Ok(reading) => *FIRST_ENTRIES.lock().unwrap() = Some(reading),
+        Err(err) => tracing::warn!("desktop entries are read when first asked for: {err}"),
+    }
+}
+
+/// The desktop entries, waiting for their first reading if it is not done.
+fn entries() -> Arc<Entries> {
+    if let Some(entries) = ENTRIES.read().unwrap().clone() {
+        return entries;
+    }
+    let reading = FIRST_ENTRIES.lock().unwrap().take();
+    let read = reading.and_then(|reading| reading.join().ok()).unwrap_or_else(read_entries);
+    let read = Arc::new(read);
+    ENTRIES.write().unwrap().get_or_insert(read).clone()
+}
+
+fn read_entries() -> Entries {
+    let mut entries = Entries::default();
+    for path in applications(&data_dirs()).0 {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let text = Arc::new(text);
+        let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_lowercase();
+        entries.by_name.entry(name).or_insert_with(|| text.clone());
+        let classes = text.lines().filter_map(|line| line.strip_prefix("StartupWMClass="));
+        for class in classes {
+            entries.by_class.entry(class.trim().to_lowercase()).or_insert_with(|| text.clone());
+        }
+    }
+    entries
+}
+
+/// The desktop entry named after the application, or failing that the one that claims its
+/// window class.
+fn lookup(entries: &Entries, app_id: &str) -> AppInfo {
+    let wanted = app_id.to_lowercase();
+    let Some(entry) = entries.by_name.get(&wanted).or_else(|| entries.by_class.get(&wanted)) else {
         return AppInfo {
             // A Windows program of Wine's is named after its file, as "notepad.exe".
             name: app_id.to_lowercase().strip_suffix(".exe").map(str::to_string),
@@ -776,7 +871,6 @@ fn strip_field_codes(exec: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The desktop entry named after the application, or failing that the one that claims its window class.
 /// The desktop entries of the data folders and the folders they are in, those within
 /// `applications` too, where Wine keeps the entries of the programs it installs.
 fn applications(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
@@ -796,33 +890,6 @@ fn applications(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
     }
     (entries, folders)
-}
-
-fn desktop_entry(dirs: &[PathBuf], app_id: &str) -> Option<String> {
-    let wanted = app_id.to_lowercase();
-    let mut by_class = None;
-    for path in applications(dirs).0 {
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
-            .to_lowercase();
-        if stem == wanted {
-            return std::fs::read_to_string(path).ok();
-        }
-        if by_class.is_none() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                let claims = text
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("StartupWMClass="))
-                    .any(|class| class.trim().to_lowercase() == wanted);
-                if claims {
-                    by_class = Some(text);
-                }
-            }
-        }
-    }
-    by_class
 }
 
 #[cfg(test)]

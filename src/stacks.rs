@@ -2,10 +2,11 @@
 //! for, the pictures of its items, and the fan and grid they open as over the Dock.
 
 use std::{
+    collections::BTreeMap,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex, OnceLock},
-    time::UNIX_EPOCH,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use cairo::{Context, ImageSurface};
@@ -143,42 +144,108 @@ pub fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// What GIO tells of a file for its icon: the names its icon goes by in the themes, most
+/// specific first, and the thumbnail a file manager made of it.
+#[derive(Clone, Default)]
+struct Looks {
+    icon_names: Vec<String>,
+    thumbnail: Option<PathBuf>,
+}
+
+/// How long what GIO told of a file is taken as it is, before it is asked again, meanwhile:
+/// a file manager makes a thumbnail some time after the file is there.
+const LOOKS_FRESH: Duration = Duration::from_secs(10);
+
+/// What GIO told of each file, and when; None while it is first being asked.
+static LOOKS: Mutex<BTreeMap<PathBuf, (Instant, Option<Looks>)>> = Mutex::new(BTreeMap::new());
+
+fn ask_looks(path: &Path) -> Looks {
+    let info = gio::File::for_path(path).query_info(
+        "standard::icon,thumbnail::path",
+        gio::FileQueryInfoFlags::NONE,
+        gio::Cancellable::NONE,
+    );
+    let Ok(info) = info else {
+        return Looks::default();
+    };
+    Looks {
+        icon_names: info.icon().map(text::gio_icon_names).unwrap_or_default(),
+        thumbnail: info.attribute_byte_string("thumbnail::path").map(|path| PathBuf::from(path.as_str())),
+    }
+}
+
+/// What GIO tells of a file, asked on a thread of its own: each file is looked at, its first
+/// bytes read when its name does not say its kind, and on a network folder at the network's
+/// pace, for the Dock and the desktop at every frame they draw. None until it is first told.
+fn looks(path: &Path) -> Option<Looks> {
+    static ASKING: OnceLock<Option<mpsc::Sender<PathBuf>>> = OnceLock::new();
+    let mut known = LOOKS.lock().unwrap();
+    let told = match known.get(path) {
+        Some((_, None)) => {
+            text::picture_waited();
+            return None;
+        }
+        Some((at, Some(looks))) if at.elapsed() < LOOKS_FRESH => return Some(looks.clone()),
+        // Asked again, as it was told until then.
+        Some((_, Some(looks))) => Some(looks.clone()),
+        None => None,
+    };
+    let asking = ASKING.get_or_init(|| {
+        let (send, asked) = mpsc::channel::<PathBuf>();
+        let spawned = std::thread::Builder::new().name("nekoland-file-looks".into()).spawn(move || {
+            for path in asked {
+                let looks = ask_looks(&path);
+                LOOKS.lock().unwrap().insert(path, (Instant::now(), Some(looks)));
+                text::redraw_soon();
+            }
+        });
+        spawned
+            .inspect_err(|err| tracing::warn!("file icons are not asked for: {err}"))
+            .ok()
+            .map(|_| send)
+    });
+    let Some(asking) = asking else {
+        return Some(ask_looks(path));
+    };
+    // shortcut: forgets them all once there are many, rather than the oldest.
+    if known.len() > 4096 {
+        known.clear();
+    }
+    // Kept as told meanwhile, and not asked again until then.
+    known.insert(path.to_path_buf(), (Instant::now(), told.clone()));
+    drop(known);
+    if asking.send(path.to_path_buf()).is_err() || told.is_some() {
+        return told;
+    }
+    text::picture_waited();
+    None
+}
+
 /// The names a file's icon goes by in the themes, most specific first, as GIO knows them:
-/// a downloads folder has its own, a PDF its own.
-pub fn icon_names(path: &Path) -> Vec<String> {
-    gio::File::for_path(path)
-        .query_info(
-            "standard::icon",
-            gio::FileQueryInfoFlags::NONE,
-            gio::Cancellable::NONE,
-        )
-        .ok()
-        .and_then(|info| info.icon())
-        .map(crate::text::gio_icon_names)
-        .unwrap_or_default()
+/// a downloads folder has its own, a PDF its own. None while GIO is being asked.
+pub fn icon_names(path: &Path) -> Option<Vec<String>> {
+    looks(path).map(|looks| looks.icon_names)
+}
+
+/// The names `icon_names` gives, asked for here and waited for: for what is made once, as a
+/// menu, rather than drawn at every frame.
+pub fn icon_names_now(path: &Path) -> Vec<String> {
+    ask_looks(path).icon_names
 }
 
 /// The picture an item's icon is made from: the thumbnail a file manager made of it, or the
-/// picture itself when it is one.
+/// picture itself when it is one. None too while GIO is being asked.
 pub fn picture_path(item: &Item) -> Option<PathBuf> {
     if item.is_dir {
         return None;
     }
-    let thumbnail = gio::File::for_path(&item.path)
-        .query_info(
-            "thumbnail::path",
-            gio::FileQueryInfoFlags::NONE,
-            gio::Cancellable::NONE,
-        )
-        .ok()
-        .and_then(|info| info.attribute_byte_string("thumbnail::path"))
-        .map(|path| PathBuf::from(path.as_str()));
+    let thumbnail = looks(&item.path)?.thumbnail;
     thumbnail.or_else(|| item.kind.starts_with("image/").then(|| item.path.clone()))
 }
 
 /// The icon of an item's kind in the theme.
 pub fn kind_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
-    icon_names(&item.path)
+    icon_names(&item.path)?
         .iter()
         .find_map(|name| text::named_icon(name, "", size, tint))
 }

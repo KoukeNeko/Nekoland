@@ -312,7 +312,7 @@ impl Nekoland {
                     .is_some_and(|(pressed, at)| pressed == window && now.duration_since(at) < DOUBLE_CLICK);
                 if double {
                     // What GTK does on a double click of its own title bar, as Settings sets it.
-                    match xsettings::gsetting(xsettings::WM_PREFERENCES, "action-double-click-titlebar").as_str() {
+                    match double_click_action().as_deref().unwrap_or_default() {
                         "toggle-maximize" | "" => self.toggle_maximize(&window),
                         "minimize" => self.minimize(&window),
                         _ => {}
@@ -506,6 +506,15 @@ fn draw(drawn: &Drawn) -> Option<Picture> {
 
     drop(cr);
     text::picture(surface)
+}
+
+/// What GTK does on a double click of its own title bar, as Settings sets it: read from
+/// dconf through GIO, where `gsettings` would be started and waited for at each click.
+fn double_click_action() -> Option<String> {
+    use gio::prelude::*;
+    let schema = gio::SettingsSchemaSource::default()?.lookup(xsettings::WM_PREFERENCES, true)?;
+    let key = "action-double-click-titlebar";
+    schema.has_key(key).then(|| gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None).string(key).into())
 }
 
 #[cfg(test)]

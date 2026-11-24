@@ -7,6 +7,7 @@
 
 use std::{
     collections::HashMap,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -76,6 +77,8 @@ pub struct Stock {
     /// whether all of them have been.
     pending: Option<Vec<Wanted>>,
     warm: bool,
+    /// The applications being listed on a thread, for `pending`.
+    listing: Option<mpsc::Receiver<Vec<Wanted>>>,
 }
 
 impl Stock {
@@ -416,17 +419,25 @@ impl Nekoland {
             return;
         }
         let started = Instant::now();
-        let mut pending = self.app_stock.pending.take().unwrap_or_else(|| {
-            super::installed()
-                .into_iter()
-                .map(|app| Wanted {
-                    name: app.name,
-                    icons: vec![app.icons],
-                    folder: false,
-                    icon_key: app.icon_key,
-                })
-                .collect()
-        });
+        let mut pending = match self.app_stock.pending.take() {
+            Some(pending) => pending,
+            None => {
+                // Listed on a thread: reading every desktop entry takes a few milliseconds.
+                let listing = self.app_stock.listing.get_or_insert_with(list_on_a_thread);
+                match listing.try_recv() {
+                    Ok(wanted) => {
+                        self.app_stock.listing = None;
+                        wanted
+                    }
+                    Err(mpsc::TryRecvError::Empty) => return,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.app_stock.listing = None;
+                        self.app_stock.warm = true;
+                        return;
+                    }
+                }
+            }
+        };
         while started.elapsed() < WARM_BUDGET {
             let Some(wanted) = pending.pop() else {
                 self.app_stock.warm = true;
@@ -438,6 +449,30 @@ impl Nekoland {
         }
         self.app_stock.pending = Some(pending);
     }
+}
+
+/// The applications whose sprites `warm_stock` draws, listed on a thread of their own, which
+/// has the screen drawn again once they are.
+fn list_on_a_thread() -> mpsc::Receiver<Vec<Wanted>> {
+    let (send, listed) = mpsc::channel();
+    let spawned = std::thread::Builder::new().name("nekoland-app-list".into()).spawn(move || {
+        let wanted = super::installed()
+            .into_iter()
+            .map(|app| Wanted {
+                name: app.name,
+                icons: vec![app.icons],
+                folder: false,
+                icon_key: app.icon_key,
+            })
+            .collect();
+        if send.send(wanted).is_ok() {
+            text::redraw_soon();
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::warn!("applications are not listed: {err}");
+    }
+    listed
 }
 
 #[cfg(test)]

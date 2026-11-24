@@ -157,6 +157,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     draw_gtk_without_gl_when_gpuless();
     find_flatpak_and_snap_apps();
+    // Once the data folders are known, to be read while the rest starts.
+    text::read_applications();
 
     let mut event_loop: EventLoop<'static, Nekoland> = EventLoop::try_new()?;
 
@@ -265,40 +267,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // have to find this display, and the screen-share picker the portal runs, Nekoland's
         // socket; a nested compositor leaves the outer session's alone.
         if owns_session {
-            let renderer = std::env::var_os(GTK_RENDERER).map(|_| GTK_RENDERER);
-            let updated = std::process::Command::new("dbus-update-activation-environment")
-                .args([
-                    "--systemd",
-                    "WAYLAND_DISPLAY",
-                    "DISPLAY",
-                    "XDG_CURRENT_DESKTOP",
-                    SESSION_TYPE,
-                    "LD_PRELOAD",
-                    "FREETYPE_PROPERTIES",
-                    "NEKOLAND_SOCKET",
-                    "QT_STYLE_OVERRIDE",
-                ])
-                .args(renderer)
-                .status();
-            if !updated.as_ref().is_ok_and(|status| status.success()) {
-                tracing::warn!("D-Bus services will not find this display: {updated:?}");
-            }
+            let renderer = std::env::var_os(GTK_RENDERER).map_or("", |_| GTK_RENDERER);
+            // Told in the script that starts the portal again, rather than waited for here,
+            // where systemd, busy at login, can take a second to answer.
+            let environment = format!(
+                "dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
+                 {SESSION_TYPE} LD_PRELOAD FREETYPE_PROPERTIES NEKOLAND_SOCKET QT_STYLE_OVERRIDE {renderer} \
+                 || echo 'D-Bus services will not find this display' >&2"
+            );
             // The portal, and units such as the person's own, start in a graphical session
             // only. The menu bar's question of dark or light started the portal before it could
             // know the desktop's name, and it picks its backends once, as it starts: the file
             // chooser would be GTK's. GTK's backend, which answers dark or light, may have hit
             // its start limit while the last session's display was gone, and would answer
             // nothing until systemd let it start again.
-            portal_restart = Some(format!(
-                "systemctl --user start {SESSION_TARGET}; \
+            let restart = format!(
+                "{environment}\n\
+                 systemctl --user start {SESSION_TARGET}; \
                  systemctl --user reset-failed xdg-desktop-portal-gtk.service; \
                  systemctl --user try-restart xdg-desktop-portal.service"
-            ));
+            );
             // Sunshine, when Settings set it to stream this desktop, started with the user's
             // services, before there was a display to find; an xrdp session is not streamed.
-            if !data.remote {
-                config::spawn(&format!("systemctl --user try-restart {}", headless::DESKTOP_UNIT));
-            }
+            portal_restart = Some(if data.remote {
+                restart
+            } else {
+                format!("{restart}\nsystemctl --user try-restart {} &", headless::DESKTOP_UNIT)
+            });
         }
         if data.remote {
             // shortcut: text only, and xrdp's side is looked at twice a second; bridge the

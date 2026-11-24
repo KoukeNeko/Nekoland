@@ -1489,6 +1489,57 @@ const DICTATION: &str = "if ! command -v nerd-dictation >/dev/null || ! command 
     elif kill -0 \"$(cat \"${TMPDIR:-/tmp}/nerd-dictation.cookie\" 2>/dev/null)\" 2>/dev/null; then nerd-dictation end; \
     else exec nerd-dictation begin --simulate-input-tool=WTYPE; fi";
 
+/// Does what GIO does for a launcher or a file manager on a thread of its own: GIO forks and
+/// waits, tens of milliseconds, more for applications started over D-Bus, and a file on a
+/// network folder answers at the network's pace.
+fn gio_on_a_thread(what: String, work: impl FnOnce() -> Result<(), gio::glib::Error> + Send + 'static) {
+    let named = what.clone();
+    let spawned = std::thread::Builder::new()
+        .name("nekoland-gio".into())
+        .spawn(move || {
+            if let Err(err) = work() {
+                tracing::warn!("{named}: {err}");
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("could not start a thread for {what}: {err}");
+    }
+}
+
+/// Starts the application of a desktop entry, as `org.gnome.Calculator.desktop`, with
+/// `files` to open, if any.
+pub fn launch(desktop_id: &str, files: Vec<PathBuf>) {
+    use gio::prelude::*;
+    let id = desktop_id.to_string();
+    gio_on_a_thread(id.clone(), move || {
+        let app = gio::DesktopAppInfo::new(&id)
+            .ok_or_else(|| gio::glib::Error::new(gio::IOErrorEnum::NotFound, "no such desktop entry"))?;
+        let files: Vec<gio::File> = files.iter().map(gio::File::for_path).collect();
+        app.launch(&files, None::<&gio::AppLaunchContext>)
+    });
+}
+
+/// Opens `uri` with the application chosen for its kind.
+pub fn open_uri(uri: &str) {
+    let uri = uri.to_string();
+    gio_on_a_thread(uri.clone(), move || {
+        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+    });
+}
+
+/// Moves each of `paths` to the trash.
+pub fn trash(paths: Vec<PathBuf>) {
+    use gio::prelude::*;
+    gio_on_a_thread("trash".into(), move || {
+        for path in &paths {
+            if let Err(err) = gio::File::for_path(path).trash(gio::Cancellable::NONE) {
+                tracing::warn!("{}: {err}", path.display());
+            }
+        }
+        Ok(())
+    });
+}
+
 /// Starts a shell command as a client of this compositor.
 pub fn spawn(command: &str) {
     spawned(command);
