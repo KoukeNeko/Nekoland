@@ -1403,7 +1403,7 @@ fn windows_on_glass(
                 .to_physical_precise_round(scale);
             if let (Some(glass), Some(size)) = (glass.as_deref_mut(), output_size) {
                 let id = state.snap.id.clone();
-                if let Err(err) = glass.update_window(renderer, id, (size, scale), area, &scene) {
+                if let Err(err) = glass.update_window(renderer, id, (size, scale), &[area], &scene) {
                     tracing::warn!("glass: {err}");
                 }
                 let radius = (f64::from(MENU_RADIUS) * scale).round() as i32;
@@ -1465,14 +1465,31 @@ fn windows_on_glass(
         // leaves of its own, through which what is around the window shows as it does
         // through GTK's.
         let rim = framed.filter(|_| ![CONFIRM_APP_ID, LAUNCHER_APP_ID].contains(&app_id(window).as_str()));
-        let (area, radius) = match rim {
+        // Only what shows is blurred and drawn: the program's body covers the rest.
+        let (area, radius, covered) = match rim {
             Some((body, radius)) => {
                 let body = body.to_physical_precise_round(scale);
                 let outer = Rectangle::new(
                     body.loc - Point::from((RIM, RIM)),
                     body.size + Size::from((2 * RIM, 2 * RIM)),
                 );
-                (Some(outer), (f64::from(radius) * scale).round() as i32 + RIM)
+                let corner = (f64::from(radius) * scale).round() as i32;
+                // All of the body but its corners, the compositor cuts them; none while it fades.
+                let covered = if pose.alpha < 1.0 {
+                    Vec::new()
+                } else {
+                    vec![
+                        Rectangle::new(
+                            body.loc + Point::from((corner, 0)),
+                            body.size - Size::from((2 * corner, 0)),
+                        ),
+                        Rectangle::new(
+                            body.loc + Point::from((0, corner)),
+                            body.size - Size::from((0, 2 * corner)),
+                        ),
+                    ]
+                };
+                (Some(outer), corner + RIM, covered)
             }
             None => {
                 // An X11 program's menus and tooltips are mostly transparent shadow margin,
@@ -1483,13 +1500,15 @@ fn windows_on_glass(
                 let radius = framed.map_or(corner, |(_, radius)| radius);
                 // Nor behind one that covers all of it, which would never show.
                 let area = area.filter(|_| !hides_glass(window, *pose, radius));
-                (area, (f64::from(radius) * scale).round() as i32)
+                let covered = opaque_area(window, *pose, output_loc, scale);
+                (area, (f64::from(radius) * scale).round() as i32, covered)
             }
         };
         let area = area.filter(|area| !area.is_empty());
         if let (Some(glass), Some(area), Some(size)) = (glass.as_deref_mut(), area, output_size) {
             let id = window_glass_id(window);
-            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
+            let shown = area.subtract_rects(covered.into_iter().filter(|part| !part.is_empty()));
+            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), &shown, &scene) {
                 tracing::warn!("glass: {err}");
             }
             elements.extend(
@@ -1497,7 +1516,7 @@ fn windows_on_glass(
                     .window_pane(id.clone(), area, radius)
                     // An edge round as the corners the compositor cuts, past them all along.
                     .map(|pane| if rim.is_some() { pane.circular() } else { pane })
-                    .map(|pane| SceneElement::Glass(pane.faded(pose.alpha).reshaped(turning))),
+                    .map(|pane| SceneElement::Glass(pane.only(&shown).faded(pose.alpha).reshaped(turning))),
             );
             kept.push(id);
         }
@@ -1525,7 +1544,7 @@ fn windows_on_glass(
                 continue;
             };
             let id = window_glass_id(&genie.window);
-            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), area, &scene) {
+            if let Err(err) = glass.update_window(renderer, id.clone(), (size, scale), &[area], &scene) {
                 tracing::warn!("glass: {err}");
             }
             kept.push(id);
@@ -1541,9 +1560,6 @@ fn windows_on_glass(
 /// round, which GTK leaves out. Not while it fades, nor when it is drawn larger than it is,
 /// with corners rounder than the glass's.
 fn hides_glass(window: &Window, pose: Pose, radius: i32) -> bool {
-    let Some(toplevel) = window.toplevel() else {
-        return false;
-    };
     let (actual, shown) = (pose.actual.size, pose.shown.size);
     if pose.alpha < 1.0 || shown.w <= 0 || shown.h <= 0 {
         return false;
@@ -1565,14 +1581,44 @@ fn hides_glass(window: &Window, pose: Pose, radius: i32) -> bool {
             body.size - Size::from((0, 2 * corner_h)),
         ),
     ];
-    with_states(toplevel.wl_surface(), |states| {
-        let Some(surface) = states.data_map.get::<RendererSurfaceStateUserData>() else {
-            return false;
-        };
-        let surface = surface.lock().unwrap();
-        surface.opaque_regions().is_some_and(|opaque| {
-            Rectangle::subtract_rects_many(without_corners, opaque.iter().copied()).is_empty()
+    opaque_region(window)
+        .is_some_and(|opaque| Rectangle::subtract_rects_many(without_corners, opaque).is_empty())
+}
+
+/// Where a Wayland window drawn as `pose` says it is opaque, on the output, rounded inward;
+/// nothing while it fades or is drawn at another size than its own.
+fn opaque_area(
+    window: &Window,
+    pose: Pose,
+    output_loc: Point<i32, Logical>,
+    scale: f64,
+) -> Vec<Rectangle<i32, Physical>> {
+    if pose.alpha < 1.0 || pose.shown.size != pose.actual.size {
+        return Vec::new();
+    }
+    // Put as `pose_area` puts the surface.
+    let surface: Point<i32, Physical> =
+        (pose.shown.loc - window.geometry().loc - output_loc).to_physical_precise_round(scale);
+    opaque_region(window)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|part| {
+            let part = part.to_f64().to_physical(scale);
+            Rectangle::from_extremities(
+                surface + part.loc.to_i32_ceil(),
+                surface + (part.loc + part.size.to_point()).to_i32_floor(),
+            )
         })
+        .collect()
+}
+
+/// The opaque region a Wayland window's surface gave, in its own points.
+fn opaque_region(window: &Window) -> Option<Vec<Rectangle<i32, Logical>>> {
+    let toplevel = window.toplevel()?;
+    with_states(toplevel.wl_surface(), |states| {
+        let surface = states.data_map.get::<RendererSurfaceStateUserData>()?;
+        let surface = surface.lock().unwrap();
+        surface.opaque_regions().map(<[_]>::to_vec)
     })
 }
 

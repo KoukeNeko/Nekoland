@@ -271,16 +271,20 @@ impl Glass {
         Ok(())
     }
 
-    /// The same for what is `behind` the window named `id`, over `area` of the `output`;
-    /// `behind` goes back to front, as the scene is put together from the bottom up.
+    /// The same for what is `behind` the window named `id`, over `areas` of the `output`, the
+    /// parts of its glass that show; `behind` goes back to front, as the scene is put together
+    /// from the bottom up.
     pub fn update_window<E: RenderElement<GlesRenderer>>(
         &mut self,
         renderer: &mut GlesRenderer,
         id: Id,
         (output, scale): (Size<i32, Physical>, f64),
-        area: Rectangle<i32, Physical>,
+        areas: &[Rectangle<i32, Physical>],
         behind: &[E],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(area) = areas.iter().copied().reduce(|all, area| all.merge(area)) else {
+            return Ok(());
+        };
         let spread = spread(Tier::Menu);
         let reach = reach(spread);
         let reach = Rectangle::new(
@@ -303,7 +307,7 @@ impl Glass {
             renderer,
             (&self.down, &self.up, spread),
             (canvas, scale),
-            &[area],
+            areas,
             behind.iter().rev(),
         )
     }
@@ -509,6 +513,7 @@ impl Blur {
             alpha: 1.0,
             reshaped: false,
             circular: false,
+            parts: None,
         })
     }
 }
@@ -589,12 +594,20 @@ pub struct Pane {
     reshaped: bool,
     /// With corners round as a circle's, as a window's GTK or the compositor rounds.
     circular: bool,
+    /// The only parts drawn, from its top left, where the rest is never seen.
+    parts: Option<Vec<Rectangle<i32, Physical>>>,
 }
 
 impl Pane {
     /// The same glass, only partly there, as while it fades in.
     pub fn faded(self, alpha: f32) -> Self {
         Self { alpha, ..self }
+    }
+
+    /// The same glass, drawn only over `parts` of the output, which alone were blurred.
+    pub fn only(self, parts: &[Rectangle<i32, Physical>]) -> Self {
+        let parts = parts.iter().map(|part| Rectangle::new(part.loc - self.dst.loc, part.size)).collect();
+        Self { parts: Some(parts), ..self }
     }
 
     /// The same glass, drawn again whole each frame while `reshaped`.
@@ -655,6 +668,34 @@ impl RenderElement<GlesRenderer> for Pane {
         // part, stretched, as a window's bands are on their way into the Dock.
         let stretch = (dst.size.w as f64 / src.size.w, dst.size.h as f64 / src.size.h);
         let whole = (self.src.size.w * stretch.0, self.src.size.h * stretch.1);
+        let clipped: Vec<_>;
+        let damage = match &self.parts {
+            None => damage,
+            Some(parts) => {
+                // The parts as they are drawn here, from `dst`'s top left.
+                let factor = (whole.0 / f64::from(self.dst.size.w), whole.1 / f64::from(self.dst.size.h));
+                let origin = (
+                    (self.src.loc.x - src.loc.x) * stretch.0,
+                    (self.src.loc.y - src.loc.y) * stretch.1,
+                );
+                clipped = parts
+                    .iter()
+                    .map(|part| {
+                        Rectangle::<f64, Physical>::new(
+                            (
+                                origin.0 + f64::from(part.loc.x) * factor.0,
+                                origin.1 + f64::from(part.loc.y) * factor.1,
+                            )
+                                .into(),
+                            (f64::from(part.size.w) * factor.0, f64::from(part.size.h) * factor.1).into(),
+                        )
+                        .to_i32_up::<i32>()
+                    })
+                    .flat_map(|part| damage.iter().filter_map(move |damage| damage.intersection(part)))
+                    .collect();
+                &clipped
+            }
+        };
         frame.render_texture_from_to(
             &self.texture,
             src,
