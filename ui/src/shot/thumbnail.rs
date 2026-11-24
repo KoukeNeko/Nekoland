@@ -138,9 +138,13 @@ pub fn show(app: &adw::Application, entry: PathBuf, saved: Option<PathBuf>) {
 
     let drag = gtk::DragSource::new();
     drag.set_actions(gdk::DragAction::COPY);
+    // Where the pointer took it, which it is held by as it goes.
+    let held = Rc::new(std::cell::Cell::new((0.0, 0.0)));
     {
         let img = Rc::new(img);
-        drag.connect_prepare(move |_, _, _| {
+        let held = held.clone();
+        drag.connect_prepare(move |_, x, y| {
+            held.set((x, y));
             // The file where it was saved, for file managers and uploads, and the picture
             // itself for whatever takes pictures.
             let picture = gdk::ContentProvider::for_value(&img.texture().to_value());
@@ -154,8 +158,13 @@ pub fn show(app: &adw::Application, entry: PathBuf, saved: Option<PathBuf>) {
         });
     }
     {
-        let small = small.clone();
-        drag.connect_drag_begin(move |source, _| source.set_icon(Some(&small), 0, 0));
+        // The thumbnail as it shows, at its size in points; the texture alone would be
+        // drawn at its pixels, twice that.
+        let shown = gtk::WidgetPaintable::new(Some(&picture));
+        drag.connect_drag_begin(move |source, _| {
+            let (x, y) = held.get();
+            source.set_icon(Some(&shown), x as i32, y as i32);
+        });
     }
     {
         let window = window.clone();
