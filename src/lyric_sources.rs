@@ -102,7 +102,10 @@ impl Want {
         let long = self.duration > 0.0 && (seconds - self.duration).abs() <= MATCH;
         let artist = self.artist.to_lowercase();
         let by_artist = artist.is_empty() || by.iter().any(|by| same_artist(&artist, &by.to_lowercase()));
-        (by_artist && (named || long)) || (named && long)
+        // An artist whose name is in another script than the one asked for may be the same, as
+        // "スイ" is of "suis", but one in the same script that is not alike is another's.
+        let other_script = by.iter().any(|by| non_latin(by) != non_latin(&artist));
+        (by_artist && (named || long)) || (named && long && other_script)
     }
 
     /// The same song under another title.
@@ -135,6 +138,10 @@ impl Want {
         }
         titles
     }
+}
+
+fn non_latin(name: &str) -> bool {
+    name.chars().any(|c| c.is_alphabetic() && !c.is_ascii())
 }
 
 /// Whether two names are an artist's: one holds the other, or they start with the same word,
@@ -1046,6 +1053,8 @@ mod tests {
             ("Around The Stars", "suis from Yorushika", 201.0),
             ("Finale.", "eill", 242.0),
             ("Shape of You", "Ed Sheeran", 233.7),
+            // Nobody has this, whatever it is as long as.
+            ("夜行列車", "月台樂團", 252.0),
         ] {
             let want = Want::new(title, artist, seconds);
             let sources: [(&str, fn(&Want) -> Vec<Candidate>); 6] = [
@@ -1068,8 +1077,9 @@ mod tests {
                     .iter()
                     .map(|c| {
                         format!(
-                            "{:.0}s {} lines{} plain {}",
+                            "{:.0}s [{}] {} lines{} plain {}",
                             c.duration,
+                            c.title,
                             c.synced.len(),
                             if c.synced.iter().any(|l| l.words.is_some()) {
                                 " word-timed"
@@ -1098,5 +1108,8 @@ mod tests {
         assert!(!want.is("Around the Stars", &["Brank".to_string()], 266.0));
         // The artist in another script is the song only if its name and length also fit.
         assert!(want.is("Around The Stars (Live)", &["スイ".to_string()], 201.0));
+        // Another song of the same name by an artist in the same script is not it.
+        let want = Want::new("夜行列車", "月台樂團", 252.0);
+        assert!(!want.is("夜行列車", &["我々楽".to_string()], 254.0));
     }
 }
