@@ -8,7 +8,7 @@
 //! Option grows it from its centre, and Control sends it to the clipboard alone.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     f64::consts::TAU,
     path::Path,
     process::{Child, Command, Stdio},
@@ -22,6 +22,10 @@ use super::marks::chip;
 
 /// The window's title, by which the compositor shows and hides it at once.
 pub const TITLE: &str = "截圖範圍";
+/// How round the strip of tools is, as `.shot-strip` in shot.rs draws its outline.
+const STRIP_RADIUS: f32 = 14.0;
+/// How far the strip stays above the Dock, or the bottom of the screen.
+const STRIP_GAP: f64 = 16.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -234,6 +238,11 @@ struct State {
     space: bool,
     /// Where the pointer was when Shift was pressed in a quick drag, and the corner then.
     lock: Option<(f64, f64)>,
+    /// Where the strip of tools is, its glass drawn there; its top left once it is moved.
+    strip: Option<(f64, f64, f64, f64)>,
+    strip_moved_to: Option<(f64, f64)>,
+    /// How solid the strip's glass is, as Appearance sets it for menus.
+    glass_opacity: f64,
 }
 
 impl State {
@@ -381,6 +390,9 @@ pub fn choose(
         alt: false,
         space: false,
         lock: None,
+        strip: None,
+        strip_moved_to: None,
+        glass_opacity: if quick { 0.0 } else { f64::from(super::apps::Look::load().glass_opacity) },
     }));
     let done: Rc<RefCell<Option<Box<dyn Fn(Choice)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
     let finish = {
@@ -414,9 +426,6 @@ pub fn choose(
     take.set_visible(state.borrow().sel.is_some());
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strip.add_css_class("shot-strip");
-    strip.set_halign(gtk::Align::Center);
-    strip.set_valign(gtk::Align::End);
-    strip.set_margin_bottom(28);
     strip.set_visible(!quick);
     let mode_buttons: Rc<RefCell<Vec<(Mode, gtk::ToggleButton)>>> = Rc::default();
     let tool = |icon: &str, tip: &str| {
@@ -522,6 +531,7 @@ pub fn choose(
     overlay.set_child(Some(&area));
     overlay.add_overlay(&strip);
     window.set_child(Some(&overlay));
+    place_strip(&overlay, &strip, &area, &state);
 
     let update_take = {
         let take = take.clone();
@@ -900,6 +910,126 @@ fn clip_to(a: (f64, f64, f64, f64), size: (f64, f64)) -> (f64, f64, f64, f64) {
     (x0, y0, x1 - x0, y1 - y0)
 }
 
+/// Puts the strip of tools above the Dock, in the middle, as the Mac does, and lets it be
+/// dragged anywhere on the screen by any part of it.
+fn place_strip(overlay: &gtk::Overlay, strip: &gtk::Box, area: &impl IsA<gtk::Widget>, state: &Rc<RefCell<State>>) {
+    let usable_bottom = crate::ipc::msg("usable-area").and_then(|reply| {
+        let v: Vec<f64> = reply.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        (v.len() == 4).then(|| v[1] + v[3])
+    });
+    {
+        let state = state.clone();
+        let area = area.clone().upcast::<gtk::Widget>();
+        overlay.connect_get_child_position(move |overlay, child| {
+            let (_, size) = child.preferred_size();
+            let (w, h) = (f64::from(size.width()), f64::from(size.height()));
+            let (screen_w, screen_h) = (f64::from(overlay.width()), f64::from(overlay.height()));
+            let mut s = state.borrow_mut();
+            let (x, y) = s.strip_moved_to.unwrap_or_else(|| {
+                let bottom = usable_bottom.unwrap_or(screen_h).min(screen_h);
+                ((screen_w - w) / 2.0, bottom - h - STRIP_GAP)
+            });
+            let x = x.clamp(0.0, (screen_w - w).max(0.0));
+            let y = y.clamp(0.0, (screen_h - h).max(0.0));
+            let placed = Some((x, y, w, h));
+            if s.strip != placed {
+                s.strip = placed;
+                area.queue_draw();
+            }
+            Some(gdk::Rectangle::new(x.round() as i32, y.round() as i32, size.width(), size.height()))
+        });
+    }
+    // In the capture phase, so that a drag that starts on a button moves the strip; the
+    // button keeps a click, as the drag takes the pointer only once it goes a little way.
+    let drag = gtk::GestureDrag::new();
+    drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+    // The pointer on the screen, as the strip moves under it: where the strip was when the
+    // drag began and where the pointer was then.
+    let on_screen = {
+        let (strip, overlay) = (strip.clone(), overlay.clone());
+        move |gesture: &gtk::GestureDrag| {
+            let (x, y) = gesture.point(None)?;
+            let p = strip.compute_point(&overlay, &graphene::Point::new(x as f32, y as f32))?;
+            Some((f64::from(p.x()), f64::from(p.y())))
+        }
+    };
+    let from: Rc<Cell<Option<((f64, f64), (f64, f64))>>> = Rc::default();
+    let moving = Rc::new(Cell::new(false));
+    {
+        let state = state.clone();
+        let from = from.clone();
+        let moving = moving.clone();
+        let on_screen = on_screen.clone();
+        drag.connect_drag_begin(move |gesture, _, _| {
+            moving.set(false);
+            let strip = state.borrow().strip.map(|(x, y, _, _)| (x, y));
+            from.set(strip.zip(on_screen(gesture)));
+        });
+    }
+    {
+        let state = state.clone();
+        let overlay = overlay.clone();
+        drag.connect_drag_update(move |gesture, dx, dy| {
+            let (Some((strip, pressed)), Some(pointer)) = (from.get(), on_screen(gesture)) else {
+                return;
+            };
+            if !moving.get() {
+                if dx.hypot(dy) < 4.0 {
+                    return;
+                }
+                moving.set(true);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+            state.borrow_mut().strip_moved_to = Some((strip.0 + pointer.0 - pressed.0, strip.1 + pointer.1 - pressed.1));
+            overlay.queue_allocate();
+        });
+    }
+    strip.add_controller(drag);
+}
+
+/// Catseye glass, as the compositor draws it behind menus: what is `under` blurred and a
+/// little more saturated, the tint over it, and a line of light just inside the top edge.
+fn glass(snapshot: &gtk::Snapshot, under: &gsk::RenderNode, (x, y, w, h): (f64, f64, f64, f64), opacity: f64) {
+    const BLUR: f64 = 30.0;
+    const SATURATION: f32 = 1.4;
+    let shape = gsk::RoundedRect::from_rect(rect(x, y, w, h), STRIP_RADIUS);
+    snapshot.push_rounded_clip(&shape);
+    // As CSS's saturate(): a row for each channel in, by how bright it looks.
+    let row = |weight: f32, own: usize| {
+        let mut r = [weight * (1.0 - SATURATION); 4];
+        r[own] += SATURATION;
+        r[3] = 0.0;
+        r
+    };
+    let (red, green, blue) = (row(0.2126, 0), row(0.7152, 1), row(0.0722, 2));
+    let matrix = graphene::Matrix::from_float([
+        red[0], red[1], red[2], 0.0, green[0], green[1], green[2], 0.0, blue[0], blue[1], blue[2], 0.0, 0.0, 0.0, 0.0,
+        1.0,
+    ]);
+    snapshot.push_color_matrix(&matrix, &graphene::Vec4::zero());
+    snapshot.push_blur(BLUR);
+    // Only what the blur reaches is drawn again.
+    snapshot.push_clip(&rect(x - 2.0 * BLUR, y - 2.0 * BLUR, w + 4.0 * BLUR, h + 4.0 * BLUR));
+    snapshot.append_node(under);
+    snapshot.pop();
+    snapshot.pop();
+    snapshot.pop();
+    // The design language's sheet, dark, as the strip's white symbols need.
+    snapshot.append_color(&rgba(0.133, 0.133, 0.149, opacity), &rect(x, y, w, h));
+    // White fading out downward: faintly over all of it, and brightly in the top few pixels.
+    let light = |height: f64, alpha: f64| {
+        let stops = [
+            gsk::ColorStop::new(0.0, rgba(1.0, 1.0, 1.0, alpha)),
+            gsk::ColorStop::new(1.0, rgba(1.0, 1.0, 1.0, 0.0)),
+        ];
+        let (top, bottom) = (graphene::Point::new(x as f32, y as f32), graphene::Point::new(x as f32, (y + height) as f32));
+        snapshot.append_linear_gradient(&rect(x, y, w, height), &top, &bottom, &stops);
+    };
+    light(h, 0.04);
+    light(4.0, 0.22);
+    snapshot.pop();
+}
+
 /// The pointer over the screen: a crosshair for an area, the usual arrow for a window.
 fn cursor(mode: Mode) -> &'static str {
     if mode == Mode::Window {
@@ -939,6 +1069,18 @@ fn outline(snapshot: &gtk::Snapshot, a: (f64, f64, f64, f64), width: f64, colour
 }
 
 fn draw(snapshot: &gtk::Snapshot, w: f64, h: f64, frozen: &Frozen, s: &State) {
+    let scene = gtk::Snapshot::new();
+    draw_scene(&scene, w, h, frozen, s);
+    let Some(scene) = scene.to_node() else {
+        return;
+    };
+    snapshot.append_node(&scene);
+    if let Some(strip) = s.strip.filter(|_| !s.quick()) {
+        glass(snapshot, &scene, strip, s.glass_opacity);
+    }
+}
+
+fn draw_scene(snapshot: &gtk::Snapshot, w: f64, h: f64, frozen: &Frozen, s: &State) {
     snapshot.append_texture(&frozen.texture, &rect(0.0, 0.0, w, h));
     let blue = (0.21, 0.52, 0.89);
     let hovered = match (s.mode, s.sel) {

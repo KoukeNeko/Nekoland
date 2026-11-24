@@ -270,6 +270,15 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         }
         // Every display, one a line, the main one first: its name, its size in points, where
         // its left and top edges are, and whether it is `on` or left dark by the projection.
+        // The part of the main display the menu bar and the Dock leave free, from its top
+        // left: `X Y WIDTH HEIGHT` in points. 截圖 keeps its strip of tools above the Dock.
+        "usable-area" => {
+            let output = state.space.outputs().next()?.clone();
+            let origin = state.space.output_geometry(&output)?.loc;
+            let area = state.usable_area_on(&output)?;
+            let at = area.loc - origin;
+            return Some(format!("{} {} {} {}\n", at.x, at.y, area.size.w, area.size.h));
+        }
         // Each display's number on it for a while, as Settings numbers them.
         "identify" => state.identify_displays(),
         "displays" => {

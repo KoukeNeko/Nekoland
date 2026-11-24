@@ -17,6 +17,10 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 mod alert;
+// For the glass's look; the rest is the launcher's.
+#[allow(dead_code)]
+#[path = "launcher/apps.rs"]
+mod apps;
 #[path = "shot/editor.rs"]
 mod editor;
 #[path = "shot/img.rs"]
@@ -53,7 +57,8 @@ fn css() -> &'static str {
 .shot-strip {
   padding: 6px;
   border-radius: 14px;
-  background: alpha(#1e1e22, .82);
+  /* Its glass is drawn under it by overlay.rs, of the frozen screen. */
+  background: transparent;
   color: white;
   box-shadow: 0 0 0 1px alpha(white, .1), 0 8px 24px alpha(black, .35);
 }
