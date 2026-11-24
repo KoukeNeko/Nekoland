@@ -102,8 +102,10 @@ const CSS: &str = "
 toggle-group > separator { min-width: 0; margin: 0 4px; background: none; }
 /* The design language's gutter and gap in the toolbar, where libadwaita leaves 7px and 6px;
  * the window buttons keep 4px of their own inside the gutter. A box's border-spacing adds
- * to the 6px spacing libadwaita gives these two, so 2px more makes 8. */
-headerbar > windowhandle > box { padding-left: 12px; padding-right: 8px; }
+ * to the 6px spacing libadwaita gives these two, so 2px more makes 8. The items sit 1px
+ * lower than libadwaita's 3px over 3px: centred, the bar's dark line under them makes them
+ * look high. */
+headerbar > windowhandle > box { padding: 4px 8px 2px 12px; }
 headerbar box.start, headerbar box.end { border-spacing: 2px; }
 /* libadwaita sets an icon button's words bold; the design language sets every button's medium. */
 buttoncontent > box > label { font-weight: inherit; }
