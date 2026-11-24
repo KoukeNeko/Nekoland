@@ -88,9 +88,12 @@ button:active:backdrop {
   background-color: @nekoland_ink;
   color: @nekoland_on_ink;
 }
-button:disabled {
+button:disabled,
+button:disabled:backdrop {
   color: @nekoland_ink_3;
+  background-image: none;
   background-color: @nekoland_fill;
+  border-color: transparent;
 }
 
 headerbar,
@@ -328,4 +331,80 @@ button:visited > label {
 scrollbar slider {
   background-color: @nekoland_ink_3;
   border-radius: 999px;
+}
+
+/* Text at medium, as the GTK 4 look sets it; what names its own weight keeps it. */
+window,
+tooltip {
+  font-weight: 500;
+}
+
+/* A window's 14px corners, as the GTK 4 look's --window-radius; GTK 3 draws its own frame,
+ * so the compositor rounds none of it; a dialog is `dialog`, not `window`. Square when tiled, maximized or fullscreen. */
+decoration {
+  border-radius: 14px;
+}
+/* The title bar takes the top corners; the background, under it, only the bottom ones. */
+.csd.background {
+  border-radius: 0 0 14px 14px;
+}
+.csd > .titlebar,
+.csd > .titlebar:backdrop {
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+}
+.maximized decoration,
+.fullscreen decoration,
+.tiled decoration,
+.tiled-top decoration,
+.tiled-left decoration,
+.tiled-right decoration,
+.tiled-bottom decoration,
+.csd.background.maximized,
+.csd.background.fullscreen,
+.csd.background.tiled,
+.csd.background.tiled-top,
+.csd.background.tiled-left,
+.csd.background.tiled-right,
+.csd.background.tiled-bottom,
+.maximized > .titlebar,
+.fullscreen > .titlebar,
+.tiled > .titlebar,
+.tiled-top > .titlebar,
+.tiled-left > .titlebar,
+.tiled-right > .titlebar,
+.tiled-bottom > .titlebar {
+  border-radius: 0;
+}
+
+/* Window buttons: 24px circles of the button fill, 8px apart, the glyph in ink, grey in a
+ * window that is not active. */
+headerbar button.titlebutton,
+.titlebar button.titlebutton,
+headerbar button.titlebutton:backdrop,
+.titlebar button.titlebutton:backdrop {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0 4px;
+  border-radius: 999px;
+  background-color: @nekoland_fill;
+  color: @nekoland_ink;
+}
+headerbar button.titlebutton:hover,
+.titlebar button.titlebutton:hover {
+  background-color: mix(@nekoland_fill, @nekoland_ink, 0.1);
+}
+headerbar button.titlebutton:backdrop,
+.titlebar button.titlebutton:backdrop {
+  color: @nekoland_ink_3;
+}
+
+/* A dialog's title bar is only as tall as its close button and the 6px around it. */
+dialog > .titlebar {
+  min-height: 36px;
+}
+dialog > .titlebar .title {
+  font-size: 14px;
+  font-weight: 600;
 }
