@@ -470,14 +470,21 @@ fn decoded_icon(key: DecodeKey, svg: Option<String>) -> Option<Pixels> {
 
 type IconJob = (DecodeKey, Option<String>);
 
+/// How many icons are decoded at once.
+const ICON_DECODERS: usize = 6;
+
 fn icon_jobs() -> Option<&'static std::sync::mpsc::Sender<IconJob>> {
     static JOBS: std::sync::OnceLock<Option<std::sync::mpsc::Sender<IconJob>>> = std::sync::OnceLock::new();
     JOBS.get_or_init(|| {
         let (send, jobs) = std::sync::mpsc::channel::<IconJob>();
-        let spawned = std::thread::Builder::new()
-            .name("nekoland-icons".into())
-            .spawn(move || {
-                for (key, svg) in jobs {
+        let jobs = std::sync::Arc::new(Mutex::new(jobs));
+        let spawn = |jobs: std::sync::Arc<Mutex<std::sync::mpsc::Receiver<IconJob>>>| {
+            std::thread::Builder::new()
+                .name("nekoland-icons".into())
+                .spawn(move || loop {
+                    // Taken in a statement of its own, which lets go of the lock before decoding.
+                    let job = jobs.lock().unwrap().recv();
+                    let Ok((key, svg)) = job else { break };
                     let (path, _, pixels) = &key;
                     let read = match svg {
                         Some(svg) => gdk_pixbuf::Pixbuf::from_stream_at_scale(
@@ -495,12 +502,18 @@ fn icon_jobs() -> Option<&'static std::sync::mpsc::Sender<IconJob>> {
                         .map(|pixbuf| crate::stacks::pixbuf_pixels(&pixbuf));
                     DECODED.lock().unwrap().insert(key, Some(read));
                     redraw_soon();
-                }
-            });
-        spawned
-            .inspect_err(|err| tracing::warn!("icons are not decoded: {err}"))
-            .ok()
-            .map(|_| send)
+                })
+        };
+        // Each file is decoded by a loader process started for it, mostly waiting: several at
+        // once fill the Dock and the grid after login in a fraction of the time.
+        let spawned = (0..ICON_DECODERS)
+            .filter(|_| {
+                spawn(jobs.clone())
+                    .inspect_err(|err| tracing::warn!("icons are not decoded: {err}"))
+                    .is_ok()
+            })
+            .count();
+        (spawned > 0).then_some(send)
     })
     .as_ref()
 }
