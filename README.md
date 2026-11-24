@@ -892,3 +892,7 @@ The starting point was `smallvil`, the minimal example compositor of Smithay
 `third_party/smithay` is Smithay as of its November 2025 drag and drop between Wayland
 and X11 (commit 0d3d212), with Nekoland's fixes to it, among them handing a drag over
 an X11 window's surface to XDND.
+
+截圖's shutter, `ui/src/shot/shutter.raw`, is `camera-shutter` from the freedesktop sound
+theme, recorded by freesound user horsthorstensen (freesound.org sound 72714), played
+lower and slower; like the original, it is under CC BY-SA.
