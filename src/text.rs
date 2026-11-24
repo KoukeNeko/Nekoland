@@ -94,8 +94,20 @@ pub fn set_family(family: &str) {
 /// family, and at `TEXT_WEIGHT` if it names no weight.
 pub fn set_icon_theme(theme: &str) {
     *ICON_THEME.write().unwrap() = theme.to_string();
-    FOUND_ICONS.lock().unwrap().clear();
+    forget_found_icons();
 }
+
+/// Has every icon looked for again, in the folders as they are now.
+fn forget_found_icons() {
+    FOUND_ICONS.lock().unwrap().clear();
+    INDEXES.lock().unwrap().clear();
+}
+
+/// The icons in each folder they are looked for in, by name: each folder walked once, where
+/// looking for each icon walked tens of thousands of folders for the grid's hundred or so.
+// shortcut: an index being made as the icons are forgotten is kept, as it was; make one
+// with a count of forgettings if that matters.
+static INDEXES: Mutex<BTreeMap<PathBuf, Arc<HashMap<String, PathBuf>>>> = Mutex::new(BTreeMap::new());
 
 /// Where icons were found, by name and the folder looked in first, until the theme changes:
 /// a theme holds thousands of files, too many to walk for each icon drawn. None while one is
@@ -658,20 +670,56 @@ fn look_for_icon(name: &str, extra_dir: &str) -> Option<PathBuf> {
         // A path bypasses the icon theme, but the restyle of its file (snap apps give one)
         // is kept in ours under the file's name.
         let restyled = path.file_stem().and_then(|stem| stem.to_str()).and_then(|stem| {
-            data_dirs().iter().find_map(|dir| find_file(&dir.join("icons/Nekoland"), stem, 4))
+            data_dirs().iter().find_map(|dir| indexed(&dir.join("icons/Nekoland")).get(stem).cloned())
         });
         return restyled.or_else(|| path.is_file().then(|| path.to_path_buf()));
     }
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if !extra_dir.is_empty() {
-        roots.push(extra_dir.into());
+    // An application's own folder, as a status icon's, may have icons written to it at any
+    // time, and is small: it is walked each time.
+    if let Some(found) = Some(extra_dir).filter(|dir| !dir.is_empty()).and_then(|dir| find_file(Path::new(dir), name, 4)) {
+        return Some(found);
     }
+    let mut roots: Vec<PathBuf> = Vec::new();
     let themes = icon_themes();
     for dir in data_dirs() {
         roots.extend(themes.iter().map(|theme| dir.join("icons").join(theme)));
         roots.push(dir.join("pixmaps"));
     }
-    roots.iter().find_map(|root| find_file(root, name, 4))
+    roots.iter().find_map(|root| indexed(root).get(name).cloned())
+}
+
+/// The icons in `root` by name, the one `find_file` would find for each.
+fn indexed(root: &Path) -> Arc<HashMap<String, PathBuf>> {
+    if let Some(index) = INDEXES.lock().unwrap().get(root) {
+        return index.clone();
+    }
+    let mut index = HashMap::new();
+    index_folder(root, 4, &mut index);
+    let index = Arc::new(index);
+    INDEXES.lock().unwrap().insert(root.to_path_buf(), index.clone());
+    index
+}
+
+/// Adds the icons in `dir` and the folders in it to `index`, those not in it yet, in the
+/// order `find_file` looks in.
+fn index_folder(dir: &Path, depth: usize, index: &mut HashMap<String, PathBuf>) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let entries: Vec<PathBuf> = read.flatten().map(|entry| entry.path()).collect();
+    for ext in ["svg", "png"] {
+        for path in entries.iter().filter(|path| path.extension().and_then(|e| e.to_str()) == Some(ext)) {
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                index.entry(stem.to_string()).or_insert_with(|| path.clone());
+            }
+        }
+    }
+    if depth == 0 {
+        return;
+    }
+    for sub in subfolders_in_order(&entries) {
+        index_folder(sub, depth - 1, index);
+    }
 }
 
 fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
@@ -693,9 +741,16 @@ fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
     if found.is_some() || depth == 0 {
         return found;
     }
+    subfolders_in_order(&entries)
+        .into_iter()
+        .find_map(|sub| find_file(sub, stem, depth - 1))
+}
+
+/// The folders among `entries` in the order icons are looked for in them: scalable ones
+/// first, then the largest bitmaps, as a theme with no scalable icon of a name has it at
+/// many sizes, and the first folder read may hold the 16-pixel one.
+fn subfolders_in_order(entries: &[PathBuf]) -> Vec<&PathBuf> {
     let mut subdirs: Vec<&PathBuf> = entries.iter().filter(|path| path.is_dir()).collect();
-    // Then the largest bitmaps: a theme with no scalable icon of this name has it at many
-    // sizes, and the first folder read may hold the 16-pixel one.
     subdirs.sort_by_key(|path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         (
@@ -704,8 +759,6 @@ fn find_file(dir: &Path, stem: &str, depth: usize) -> Option<PathBuf> {
         )
     });
     subdirs
-        .into_iter()
-        .find_map(|sub| find_file(sub, stem, depth - 1))
 }
 
 /// The pixels across of the icons in a theme's folder named like `48x48` or `256x256@2x`;
@@ -758,6 +811,8 @@ pub fn watch_applications() {
             seen = changed();
             *ENTRIES.write().unwrap() = Some(Arc::new(read_entries()));
             crate::appgrid::forget_listed();
+            // Their icons, new to the themes' folders.
+            forget_found_icons();
             match std::process::Command::new("nekoland-conform-icons").arg("--refresh").status() {
                 Ok(status) if status.success() => {
                     if let Err(err) = crate::ipc::send("reload") {
@@ -897,6 +952,34 @@ fn applications(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
 mod tests {
     use super::*;
     use pango::prelude::*;
+
+    #[test]
+    fn an_index_finds_the_file_a_walk_would() {
+        let root = std::env::temp_dir().join(format!("nekoland-icon-index-{}", std::process::id()));
+        let files = [
+            "top.png",
+            "16x16/apps/top.svg",
+            "16x16/apps/small.png",
+            "256x256/apps/small.png",
+            "scalable/apps/small.svg",
+            "48x48/apps/both.png",
+            "48x48/apps/both.svg",
+            "symbolic/apps/deep.svg",
+            "a/b/c/d/e/too-deep.svg",
+        ];
+        for file in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+        }
+        let mut index = HashMap::new();
+        index_folder(&root, 4, &mut index);
+        for name in ["top", "small", "both", "deep", "too-deep", "missing"] {
+            assert_eq!(index.get(name).cloned(), find_file(&root, name, 4), "{name}");
+        }
+        assert_eq!(index["small"], root.join("scalable/apps/small.svg"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// A desktop entry's `Icon=` may be a file's path, which GIO gives as a file icon.
     #[test]
