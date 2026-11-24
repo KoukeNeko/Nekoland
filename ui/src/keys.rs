@@ -1,18 +1,16 @@
-//! Settings' 鍵盤快速鍵 page: whose shortcuts Nekoland takes, macOS's, Windows' or Linux's,
-//! and every action's keys in them, each of which can be given others, taken away or put
-//! back, as the shortcuts crate keeps them.
+//! Settings' 鍵盤快速鍵 page: every action's keys, each of which can be given others, taken
+//! away or put back, as the shortcuts crate keeps them.
 
 use std::{cell::RefCell, rc::Rc};
 
 use adw::prelude::*;
 use gtk::{gdk, glib};
-use shortcuts::{Action, AppKeys, Combo, Custom, Scheme};
+use shortcuts::{Action, AppKeys, Combo, Custom};
 
 use crate::{group, set, unset, Config};
 
-/// The scheme and the configuration's own keys, as this page last wrote them.
+/// The configuration's own keys, as this page last wrote them.
 struct Shortcuts {
-    scheme: Scheme,
     custom: Custom,
 }
 
@@ -20,9 +18,6 @@ impl Shortcuts {
     fn read(config: &Config) -> Self {
         let value = |key: &str| config.0.get(key).cloned();
         Self {
-            scheme: value("shortcut_scheme")
-                .and_then(|value| value.try_into().ok())
-                .unwrap_or_default(),
             custom: value("shortcuts")
                 .and_then(|value| {
                     value
@@ -34,18 +29,16 @@ impl Shortcuts {
         }
     }
 
-    /// Gives `id` these keys in the scheme, or the scheme's for None.
+    /// Gives `id` these keys, or its own for None.
     fn give(&mut self, id: &str, keys: Option<Vec<Combo>>) {
-        let own = self.custom.entry(self.scheme).or_default();
         match keys {
             Some(keys) => {
-                own.insert(id.to_string(), keys.iter().map(Combo::to_string).collect());
+                self.custom.insert(id.to_string(), keys.iter().map(Combo::to_string).collect());
             }
             None => {
-                own.remove(id);
+                self.custom.remove(id);
             }
         }
-        self.custom.retain(|_, own| !own.is_empty());
     }
 
     fn write(&self) {
@@ -60,56 +53,40 @@ impl Shortcuts {
     }
 
     fn keys(&self, id: &str) -> Vec<Combo> {
-        shortcuts::keys(self.scheme, &self.custom, id)
+        shortcuts::keys(&self.custom, id)
     }
 
     /// The action other than `id` that has `combo` now.
     fn holder(&self, combo: &Combo, id: &str) -> Option<&'static Action> {
-        shortcuts::bindings(self.scheme, &self.custom)
+        shortcuts::bindings(&self.custom)
             .into_iter()
             .find(|(action, keys)| action.id != id && keys.contains(combo))
             .map(|(action, _)| action)
     }
 }
 
-/// What a row shows for an action's keys: an application action without keys of the
-/// scheme's still has the keys applications take by themselves.
+/// What a row shows for an action's keys: an application action without keys of its own
+/// still has the keys applications take by themselves.
 fn keys_label(shortcuts: &Shortcuts, action: &Action) -> Option<String> {
-    let scheme = shortcuts.scheme;
     let keys = shortcuts.keys(action.id);
     if keys.is_empty() {
         let native = shortcuts::native(action, "", &AppKeys::new());
         return match native.as_slice() {
-            [only] => Some(only.label(scheme)),
+            [only] => Some(only.label()),
             _ => None,
         };
     }
     Some(
         keys.iter()
-            .map(|combo| combo.label(scheme))
+            .map(Combo::label)
             .collect::<Vec<_>>()
             .join("、"),
     )
 }
 
-/// The page, and what the row that opens it says: the scheme's name.
-pub fn shortcuts_page(config: &Config) -> (adw::PreferencesPage, impl Fn() -> String + 'static) {
+pub fn shortcuts_page(config: &Config) -> adw::PreferencesPage {
     let state = Rc::new(RefCell::new(Shortcuts::read(config)));
     let page = adw::PreferencesPage::new();
-
-    let schemes = group("");
-    let scheme_row = adw::ComboRow::builder()
-        .title("快速鍵配置")
-        .model(&gtk::StringList::new(&Scheme::ALL.map(Scheme::title)))
-        .selected(
-            Scheme::ALL
-                .iter()
-                .position(|scheme| *scheme == state.borrow().scheme)
-                .unwrap_or(0) as u32,
-        )
-        .build();
-    schemes.add(&scheme_row);
-    page.add(&schemes);
 
     let mut rows = Vec::new();
     for shown in shortcuts::Group::ALL {
@@ -155,31 +132,13 @@ pub fn shortcuts_page(config: &Config) -> (adw::PreferencesPage, impl Fn() -> St
             let shortcuts = state.borrow();
             for (action, _, keys, reset) in rows.iter() {
                 keys.set_label(&keys_label(&shortcuts, action).unwrap_or_else(|| "未設定".into()));
-                reset.set_visible(shortcuts::is_custom(
-                    shortcuts.scheme,
-                    &shortcuts.custom,
-                    action.id,
-                ));
+                reset.set_visible(shortcuts::is_custom(&shortcuts.custom, action.id));
             }
-            restore.set_visible(shortcuts.custom.contains_key(&shortcuts.scheme));
+            restore.set_visible(!shortcuts.custom.is_empty());
         }
     ));
     refresh();
 
-    scheme_row.connect_selected_notify(glib::clone!(
-        #[strong]
-        state,
-        #[strong]
-        refresh,
-        move |row| {
-            let Some(scheme) = Scheme::ALL.get(row.selected() as usize).copied() else {
-                return;
-            };
-            state.borrow_mut().scheme = scheme;
-            set(&format!("shortcut_scheme = {:?}", scheme.name()));
-            refresh();
-        }
-    ));
     for (action, row, _, reset) in rows.iter() {
         let action: &'static Action = action;
         row.connect_activated(glib::clone!(
@@ -209,11 +168,7 @@ pub fn shortcuts_page(config: &Config) -> (adw::PreferencesPage, impl Fn() -> St
         #[strong]
         refresh,
         move |row| {
-            let scheme = state.borrow().scheme;
-            let alert = adw::AlertDialog::new(
-                Some("還原所有快速鍵？"),
-                Some(&format!("{} 自訂的快速鍵會全部移除。", scheme.title())),
-            );
+            let alert = adw::AlertDialog::new(Some("還原所有快速鍵？"), Some("自訂的快速鍵會全部移除。"));
             alert.add_responses(&[("cancel", "取消"), ("restore", "還原")]);
             alert.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
             alert.set_close_response("cancel");
@@ -226,8 +181,7 @@ pub fn shortcuts_page(config: &Config) -> (adw::PreferencesPage, impl Fn() -> St
                     refresh,
                     move |_, _| {
                         let mut shortcuts = state.borrow_mut();
-                        let scheme = shortcuts.scheme;
-                        shortcuts.custom.remove(&scheme);
+                        shortcuts.custom.clear();
                         shortcuts.write();
                         drop(shortcuts);
                         refresh();
@@ -238,8 +192,7 @@ pub fn shortcuts_page(config: &Config) -> (adw::PreferencesPage, impl Fn() -> St
         }
     ));
 
-    let summary = move || state.borrow().scheme.title().to_string();
-    (page, summary)
+    page
 }
 
 /// Whether a key is a modifier, which a combination is made with rather than of.
@@ -278,7 +231,7 @@ fn record(
     let (custom, bound) = {
         let shortcuts = state.borrow();
         (
-            shortcuts::is_custom(shortcuts.scheme, &shortcuts.custom, action.id),
+            shortcuts::is_custom(&shortcuts.custom, action.id),
             !shortcuts.keys(action.id).is_empty(),
         )
     };
@@ -331,8 +284,7 @@ fn record(
                     alert.close();
                 }
                 Some(holder) => {
-                    let scheme = state.borrow().scheme;
-                    alert.set_body(&format!("{} 已用於「{}」", combo.label(scheme), holder.title));
+                    alert.set_body(&format!("{} 已用於「{}」", combo.label(), holder.title));
                     if !alert.has_response("replace") {
                         alert.add_response("replace", "取代");
                         alert.set_response_appearance("replace", adw::ResponseAppearance::Suggested);

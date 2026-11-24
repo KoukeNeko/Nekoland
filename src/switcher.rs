@@ -94,28 +94,25 @@ impl Nekoland {
         });
     }
 
-    /// The windows from the one in front back, minimized ones last; on macOS and Linux one
-    /// for each application, as their switchers show applications.
+    /// The windows from the one in front back, minimized ones last, one for each
+    /// application, as macOS's and Linux desktops' switchers show applications.
     fn switcher_entries(&mut self) -> Vec<Entry> {
-        let by_window = self.config.shortcut_scheme == shortcuts::Scheme::Windows;
         let stacked = self.space.elements().rev().filter(|window| is_managed(window)).cloned();
         let minimized = self.minimized.iter().map(|(window, _)| window.clone());
         let windows: Vec<Window> = stacked.chain(minimized).filter(|window| window.alive()).collect();
         let mut entries: Vec<Entry> = Vec::new();
         for window in windows {
-            let (title, app_id) = window_names(&window);
+            let app_id = window_names(&window).1;
             if crate::windows::UNFOCUSED_APP_IDS.contains(&app_id.as_str()) {
                 continue;
             }
-            if !by_window && entries.iter().any(|entry| window_names(&entry.window).1 == app_id) {
+            if entries.iter().any(|entry| window_names(&entry.window).1 == app_id) {
                 continue;
             }
             let info = self.apps.info(&app_id);
             let name = info.name.clone().unwrap_or_else(|| app_id.rsplit('.').next().unwrap_or(&app_id).to_string());
-            // The icon names the application already, so a title ending in its name drops it.
-            let title = crate::windows::title_without_app(&title, &name);
             entries.push(Entry {
-                label: if by_window && !title.is_empty() { title } else { name },
+                label: name,
                 icon: info.icon_name.clone(),
                 window,
             });

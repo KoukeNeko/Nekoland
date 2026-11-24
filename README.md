@@ -828,6 +828,7 @@ application draws itself.
 | Dragging a window in a half or maximized | Back to its earlier size |
 | Super+H | Minimize |
 | Super+L | Lock the screen |
+| Super+Shift+3 / 4 / 5, Print | Screenshot of the screen / an area, taken as the button comes up / with the tools; with Ctrl too, to the clipboard alone |
 | F11 | Fullscreen |
 | Alt+F4, Super+Q | Close |
 | Super+drag | Move a window |

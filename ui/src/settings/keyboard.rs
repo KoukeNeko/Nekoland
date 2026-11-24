@@ -119,8 +119,7 @@ pub(crate) fn keyboard_page(config: &Config) -> adw::PreferencesPage {
     );
     blink.bind_property("active", &blink_time, "visible").sync_create().build();
     typing.add(&blink_time);
-    let (shortcuts, scheme) = keys::shortcuts_page(config);
-    typing.add(&subpage_row("鍵盤快速鍵", scheme, shortcuts));
+    typing.add(&subpage_row("鍵盤快速鍵", String::new, keys::shortcuts_page(config)));
     page.add(&typing);
     page
 }

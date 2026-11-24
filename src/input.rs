@@ -639,8 +639,8 @@ impl Nekoland {
         let inhibited = self.shortcuts_inhibited();
         let app_id = self.focused_window().map(|window| app_id(&window));
         let found = shortcuts::find(&self.shortcut_bindings, &combo);
-        // Ctrl with a letter in a terminal is the program's, though the Mac's Emacs keys
-        // move the cursor elsewhere: tmux and readline take them as they are.
+        // Ctrl with a letter in a terminal is the program's, though an application action
+        // was given it: tmux and readline take them as they are.
         let terminal_own = |action: &shortcuts::Action| {
             action.is_app()
                 && combo.ctrl
@@ -651,16 +651,6 @@ impl Nekoland {
         let allowed = |action: &shortcuts::Action| !inhibited || action.id == "restore-shortcuts";
         if let Some((action, extended)) = found.filter(|(action, _)| allowed(action) && !terminal_own(action)) {
             self.run_action(action, extended);
-            return true;
-        }
-        // macOS: ⌘ with any other key is the application's Ctrl one.
-        let command = app_id
-            .as_deref()
-            .filter(|_| self.config.shortcut_scheme == shortcuts::Scheme::Macos && !inhibited)
-            .filter(|_| StickyKeys::modifier(sym).is_none())
-            .and_then(|app_id| shortcuts::command_key(&combo, app_id));
-        if let Some(command) = command {
-            self.send_combo(&command);
             return true;
         }
 
@@ -856,11 +846,8 @@ impl Nekoland {
             "security" => config::spawn("nekoland-security"),
             // Started again, it goes away.
             "on-screen-keyboard" => config::spawn("nekoland-keyboard"),
-            // GNOME records the whole screen at once; Windows' Snipping Tool asks for an area.
-            "record-screen" => config::spawn(match self.config.shortcut_scheme {
-                shortcuts::Scheme::Windows => "nekoland-shot record-area",
-                _ => "nekoland-shot record",
-            }),
+            // GNOME records the whole screen at once.
+            "record-screen" => config::spawn("nekoland-shot record"),
             id => {
                 let number = |prefix: &str| id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok());
                 if let Some(number) = number("workspace-") {
@@ -897,16 +884,15 @@ impl Nekoland {
     /// What a menu shows for an action's keys: the first the shortcuts give it, or else the
     /// keys applications do an application action with by themselves.
     pub fn shortcut_label(&self, id: &str) -> String {
-        let scheme = self.config.shortcut_scheme;
         let native = || {
             let action = shortcuts::action(id)?;
             shortcuts::native(action, "", &self.config.app_shortcuts).into_iter().next()
         };
-        shortcuts::keys(scheme, &self.config.shortcuts, id)
+        shortcuts::keys(&self.config.shortcuts, id)
             .into_iter()
             .next()
             .or_else(native)
-            .map(|combo| combo.label(scheme))
+            .map(|combo| combo.label())
             .unwrap_or_default()
     }
 
@@ -1079,13 +1065,11 @@ mod tests {
     }
 
     #[test]
-    fn every_key_the_schemes_give_is_one_xkb_knows() {
-        for scheme in shortcuts::Scheme::ALL {
-            for action in shortcuts::actions() {
-                for combo in action.defaults(scheme).into_iter().filter(|combo| combo.key != shortcuts::SUPER_ALONE) {
-                    let sym = xkb::keysym_from_name(&combo.key, xkb::KEYSYM_NO_FLAGS);
-                    assert_ne!(sym.raw(), 0, "{combo} of {}", action.id);
-                }
+    fn every_key_the_actions_have_is_one_xkb_knows() {
+        for action in shortcuts::actions() {
+            for combo in action.defaults().into_iter().filter(|combo| combo.key != shortcuts::SUPER_ALONE) {
+                let sym = xkb::keysym_from_name(&combo.key, xkb::KEYSYM_NO_FLAGS);
+                assert_ne!(sym.raw(), 0, "{combo} of {}", action.id);
             }
         }
     }

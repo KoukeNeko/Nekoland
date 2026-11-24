@@ -251,7 +251,7 @@ impl Nekoland {
 
         Self {
             start_time,
-            shortcut_bindings: shortcuts::bindings(config.shortcut_scheme, &config.shortcuts),
+            shortcut_bindings: shortcuts::bindings(&config.shortcuts),
             config,
             wallpaper: None,
             old_wallpaper: None,
@@ -571,7 +571,7 @@ impl Nekoland {
         let old_font = std::mem::take(&mut self.config.font);
         let old_icon_theme = std::mem::take(&mut self.config.icon_theme);
         self.config = Config::load();
-        self.shortcut_bindings = shortcuts::bindings(self.config.shortcut_scheme, &self.config.shortcuts);
+        self.shortcut_bindings = shortcuts::bindings(&self.config.shortcuts);
         self.turn_with_orientation();
         // What the bar and the Dock show may have changed with it.
         self.dock.drawn = None;
