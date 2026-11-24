@@ -50,6 +50,8 @@ mod sunshine;
 mod storage;
 #[path = "settings/devices.rs"]
 mod devices;
+#[path = "settings/stats.rs"]
+mod stats;
 // Market's: what is installed and how it is removed.
 #[allow(dead_code)]
 #[path = "store/sources.rs"]
@@ -61,6 +63,7 @@ mod removal;
 mod apps;
 
 use lock_screen::*;
+use stats::*;
 use hover::*;
 use fonts::*;
 use appearance::*;
@@ -1536,18 +1539,6 @@ fn menu_bar_page(config: &Config) -> adw::PreferencesPage {
     page
 }
 
-/// The system's readings the menu bar can show, each with its setting, as the panels title them.
-const STATS: [(&str, &str); 7] = [
-    ("CPU", "stats_cpu"),
-    ("GPU", "stats_gpu"),
-    ("記憶體", "stats_ram"),
-    ("磁碟", "stats_disk"),
-    ("網路", "stats_network"),
-    ("感應器", "stats_sensors"),
-    ("功耗", "stats_power"),
-];
-const STATS_STYLES: [&str; 6] = ["value", "chart", "bars", "ring", "gauge", "pie"];
-
 /// Whether the GPU has a busy figure to read, as the compositor reads it: amdgpu's, or
 /// nvidia-smi's.
 fn has_gpu_reading() -> bool {
@@ -1574,81 +1565,6 @@ fn has_temperatures() -> bool {
         .flatten()
         .flatten()
         .any(|chip| chip.path().join("temp1_input").exists())
-}
-
-/// 系統監控: which of the system's readings the menu bar shows, and how.
-fn stats_page(config: &Config) -> adw::PreferencesPage {
-    let shown = group("");
-    for (title, key) in STATS {
-        let readable = match key {
-            "stats_gpu" => has_gpu_reading(),
-            "stats_sensors" => has_temperatures(),
-            // RAPL's, a battery's or the GPU's, as the compositor adds them up.
-            "stats_power" => {
-                Path::new("/sys/class/powercap/intel-rapl:0").exists()
-                    || Path::new("/sys/class/power_supply/BAT0").exists()
-                    || has_gpu_reading()
-            }
-            _ => true,
-        };
-        if readable {
-            shown.add(&switch_row(config, title, key));
-        }
-    }
-    let look = group("外觀");
-    look.add(&choice_row(config, "樣式", "stats_style", &STATS_STYLES, &["數值", "折線圖", "長條圖", "圓環", "儀表", "圓餅圖"]));
-    look.add(&switch_row(config, "名稱", "stats_labels"));
-    look.add(&switch_row(config, "合併顯示", "stats_combined"));
-    look.add(&text_row(config, "自訂文字", "stats_text"));
-    let reading = group("");
-    reading.add(&integer_choice_row(
-        config,
-        "更新頻率",
-        "stats_interval",
-        (&[1, 2, 3, 5], &["每秒", "每 2 秒", "每 3 秒", "每 5 秒"]),
-        2,
-    ));
-    reading.add(&integer_choice_row(
-        config,
-        "程序數量",
-        "stats_processes",
-        (&[0, 3, 5, 8], &["不顯示", "3", "5", "8"]),
-        5,
-    ));
-    let units = adw::ComboRow::builder()
-        .title("溫度單位")
-        .model(&gtk::StringList::new(&["攝氏", "華氏"]))
-        .selected(u32::from(config.flag("stats_fahrenheit")))
-        .build();
-    units.connect_selected_notify(|row| set(&format!("stats_fahrenheit = {}", row.selected() == 1)));
-    reading.add(&units);
-    reading.add(&switch_row(config, "公用 IP", "stats_public_ip"));
-    if has_fan_control() {
-        reading.add(&switch_row(config, "風扇控制", "stats_fan_control"));
-    }
-    let alerts = group("通知");
-    alerts.add(&integer_choice_row(
-        config,
-        "使用率",
-        "stats_alert",
-        (&[0, 80, 90, 95], &["關閉", "80%", "90%", "95%"]),
-        0,
-    ));
-    alerts.add(&integer_choice_row(
-        config,
-        "溫度",
-        "stats_alert_temperature",
-        (&[0, 80, 90, 95], &["關閉", "80 °C", "90 °C", "95 °C"]),
-        0,
-    ));
-    page_of_groups(&[shown, look, reading, alerts])
-}
-
-/// The readings shown, or 無.
-fn stats_summary() -> String {
-    let config = Config::load();
-    let shown: Vec<&str> = STATS.iter().filter(|(_, key)| config.flag(key)).map(|(title, _)| *title).collect();
-    if shown.is_empty() { "無".into() } else { shown.join("・") }
 }
 
 fn menu_bar_clock_summary() -> String {

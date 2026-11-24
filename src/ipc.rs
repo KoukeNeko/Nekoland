@@ -320,6 +320,8 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
         "config" => {
             return Some(toml::to_string(&state.config).unwrap_or_else(|err| format!("# {err}\n")));
         }
+        // The system readings' names the settings choose among.
+        "stats-names" => return Some(state.menu_bar.stats.names()),
         // `set KEY = VALUE`: one setting changed, kept in the file, and put in effect.
         set if set.starts_with("set ") => {
             if let Err(err) = crate::config::set(&set["set ".len()..]) {
