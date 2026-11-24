@@ -28,6 +28,29 @@ enum Edge {
 /// bookmarks rather than into it.
 const EDGE_SHARE: f64 = 0.3;
 
+/// A bookmark being dragged, of a type only the sidebar takes: dropped on a folder, the folder
+/// itself is not moved there, and let go anywhere else, nothing takes it and it comes off.
+#[derive(Clone, glib::Boxed)]
+#[boxed_type(name = "NekolandBookmarkDrag")]
+struct BookmarkDrag(gio::File);
+
+/// What a bookmark's drag offers: on Wayland a drop is taken by what its offer names, so the
+/// drag needs a type of its own there too.
+const BOOKMARK_MIME: &str = "application/x-nekoland-bookmark";
+
+/// Lets the sidebar's drop targets take `BOOKMARK_MIME`. The drag is read from its source in
+/// this process, so nothing is ever read from another.
+pub fn register_bookmark_drag() {
+    gdk::content_register_deserializer(BOOKMARK_MIME, BookmarkDrag::static_type(), |deserializer, _: &mut Option<()>| {
+        deserializer.return_error(glib::Error::new(gio::IOErrorEnum::NotSupported, "a bookmark is moved only within Files"));
+    });
+}
+
+/// Whether a drop is a bookmark being moved.
+fn is_reorder(drop: &gdk::Drop) -> bool {
+    drop.formats().contain_mime_type(BOOKMARK_MIME)
+}
+
 #[derive(Clone)]
 enum Target {
     Go(Where),
@@ -114,7 +137,7 @@ impl Sidebar {
         }
         // Dropped on no folder of the sidebar: kept last among its bookmarks.
         let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop.set_types(&[gdk::FileList::static_type(), String::static_type()]);
+        drop.set_types(&[gdk::FileList::static_type(), BookmarkDrag::static_type()]);
         let weak = Rc::downgrade(&sidebar);
         drop.connect_drop(move |_, value, _, _| weak.upgrade().is_some_and(|s| s.place(value, None)));
         sidebar.root.add_controller(drop);
@@ -334,8 +357,7 @@ impl Sidebar {
         if let Where::Folder(folder) = to {
             if folder.path().is_some() {
                 let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY | gdk::DragAction::MOVE);
-                // Files, and a bookmark's own drag, which says only where it goes.
-                drop.set_types(&[gdk::FileList::static_type(), String::static_type()]);
+                drop.set_types(&[gdk::FileList::static_type(), BookmarkDrag::static_type()]);
                 let edge: Rc<Cell<Option<Edge>>> = Rc::default();
                 {
                     let (weak, folder, edge, row) = (Rc::downgrade(self), folder.clone(), edge.clone(), row.downgrade());
@@ -344,7 +366,7 @@ impl Sidebar {
                             return gdk::DragAction::empty();
                         };
                         let is_bookmark = sidebar.bookmarks.borrow().iter().any(|b| b.equal(&folder));
-                        let reordering = target.current_drop().is_some_and(|drop| ops::is_bookmark_drag(&drop));
+                        let reordering = target.current_drop().is_some_and(|drop| is_reorder(&drop));
                         let height = f64::from(row.height().max(1));
                         // Over a bookmark's top or bottom, or anywhere on it for a bookmark
                         // being moved, goes between bookmarks; the rest of it, into the folder.
@@ -407,7 +429,8 @@ impl Sidebar {
                         }
                     });
                 }
-                // A bookmark: dragged to another place among them.
+                // A bookmark: dragged to another place among them, or out of the sidebar to
+                // take it off, as the Finder's are.
                 let source = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
                 {
                     let (weak, folder, row) = (Rc::downgrade(self), folder.clone(), row.downgrade());
@@ -417,7 +440,23 @@ impl Sidebar {
                             return None;
                         }
                         source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), x as i32, y as i32);
-                        Some(gdk::ContentProvider::for_value(&format!("{}{}", ops::BOOKMARK_PREFIX, folder.uri()).to_value()))
+                        Some(gdk::ContentProvider::new_union(&[
+                            gdk::ContentProvider::for_value(&BookmarkDrag(folder.clone()).to_value()),
+                            gdk::ContentProvider::for_bytes(BOOKMARK_MIME, &glib::Bytes::from_static(b"")),
+                        ]))
+                    });
+                }
+                {
+                    let (win, folder) = (self.win.clone(), folder.clone());
+                    // Nothing but the sidebar takes a bookmark, so a drag let go elsewhere is
+                    // cancelled; Wayland says so as an error, never as no target.
+                    source.connect_drag_cancel(move |_, _, reason| {
+                        if reason != gdk::DragCancelReason::UserCancelled {
+                            if let Some(win) = win.upgrade() {
+                                ops::remove_bookmark(&win, &folder);
+                            }
+                        }
+                        false
                     });
                 }
                 row.add_controller(source);
@@ -465,13 +504,9 @@ impl Sidebar {
             }
             return !folders.is_empty();
         }
-        let Some(uri) = value.get::<String>().ok().and_then(|text| text.strip_prefix(ops::BOOKMARK_PREFIX).map(str::to_owned)) else {
+        let Ok(BookmarkDrag(moved)) = value.get::<BookmarkDrag>() else {
             return false;
         };
-        let moved = gio::File::for_uri(&uri);
-        if !self.bookmarks.borrow().iter().any(|b| b.equal(&moved)) {
-            return false;
-        }
         ops::place_bookmark(&win, &moved, before);
         true
     }

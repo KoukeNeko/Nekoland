@@ -637,26 +637,8 @@ pub fn prefer_move(target: &gtk::DropTarget) {
     target.connect_motion(|target, _, _| drop_action(target));
 }
 
-/// What a sidebar bookmark's drag says before where it goes: only where it goes, so that
-/// dropped on a folder, the folder itself is not moved there.
-pub const BOOKMARK_PREFIX: &str = "nekoland-bookmark:";
-
-/// Whether a drop is a sidebar bookmark being moved, which only the sidebar takes: a drag of
-/// Files' own, read as it comes. GTK would read its text as files for any other folder.
-pub fn is_bookmark_drag(drop: &gdk::Drop) -> bool {
-    drop.drag()
-        .map(|drag| drag.content())
-        .filter(|content| content.formats().contains_type(String::static_type()))
-        .and_then(|content| content.value(String::static_type()).ok())
-        .and_then(|value| value.get::<String>().ok())
-        .is_some_and(|text| text.starts_with(BOOKMARK_PREFIX))
-}
-
-/// The action `prefer_move` asks for; none for a bookmark being moved.
+/// The action `prefer_move` asks for.
 pub fn drop_action(target: &gtk::DropTarget) -> gdk::DragAction {
-    if target.current_drop().is_some_and(|drop| is_bookmark_drag(&drop)) {
-        return gdk::DragAction::empty();
-    }
     let offered = target.current_drop().map_or(gdk::DragAction::empty(), |drop| drop.actions()) & target.actions();
     [gdk::DragAction::MOVE, gdk::DragAction::COPY]
         .into_iter()

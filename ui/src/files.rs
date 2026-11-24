@@ -267,6 +267,7 @@ fn main() -> glib::ExitCode {
         serve_file_manager(app);
         serve_hover(app);
         hamasen::watch(app);
+        sidebar::register_bookmark_drag();
     });
     app.connect_activate(move |app| match app.active_window() {
         _ if mounting.replace(false) => hamasen::mount_at_login(app),

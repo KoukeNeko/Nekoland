@@ -1041,7 +1041,11 @@ impl Pane {
         let folder_of = Rc::new(folder_of);
         {
             let folder_of = folder_of.clone();
-            drop.connect_accept(move |_, _| folder_of().is_some_and(|f| f.path().is_some()));
+            // Replaces GTK's own check of what is dragged, so it is made here too.
+            drop.connect_accept(move |_, drop| {
+                drop.formats().contains_type(gdk::FileList::static_type())
+                    && folder_of().is_some_and(|f| f.path().is_some())
+            });
         }
         {
             let folder_of = folder_of.clone();
@@ -2572,9 +2576,7 @@ pub fn spring(
     let springs = {
         let drop = drop.downgrade();
         move |to: &Where| {
-            let Some(drop) = drop.upgrade().filter(|drop| {
-                drop.current_drop().is_some_and(|current| !ops::is_bookmark_drag(&current))
-            }) else {
+            let Some(drop) = drop.upgrade().filter(|drop| drop.current_drop().is_some()) else {
                 return false;
             };
             let Where::Folder(folder) = to else { return true };
