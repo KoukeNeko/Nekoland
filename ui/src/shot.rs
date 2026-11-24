@@ -1,8 +1,10 @@
 //! 截圖: takes a picture of the screen, an area of it, a window, or a page longer than the
 //! screen as it scrolls, and opens it to mark up, copy, save, pin or upload.
 //!
-//! `nekoland-shot area|window|scroll|ocr|full|repeat|clipboard|delay [N]|open FILE|edit|history|prefs|pin FILE`,
-//! and `record` or `record-area` to record the screen or an area of it, or stop recording.
+//! `nekoland-shot area|tools|window|scroll|ocr|full|repeat|clipboard|delay [N]|open FILE|edit|history|prefs|pin FILE`,
+//! `area-copy` and `full-copy` for the clipboard alone, and `record` or `record-area` to record
+//! the screen or an area of it, or stop recording. `area` and `window` are the Mac's ⇧⌘4,
+//! taken as the button comes up; `tools` is its ⇧⌘5, with the strip of tools.
 
 use std::{
     cell::{Cell, RefCell},
@@ -33,7 +35,7 @@ use editor::Ed;
 use img::Img;
 use marks::Doc;
 use output::{After, Prefs};
-use overlay::{Choice, Mode};
+use overlay::{Choice, Mode, Style};
 
 const APP_ID: &str = "io.github.koukeneko.Nekoland.Shot";
 /// The compositor keeps this program's windows in front of the others.
@@ -61,6 +63,18 @@ fn css() -> &'static str {
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().cloned().unwrap_or_else(|| "area".into());
+    // The screen as the key was pressed, taken while GTK starts.
+    if matches!(
+        command.as_str(),
+        "area" | "area-copy" | "tools" | "window" | "scroll" | "ocr" | "full" | "full-copy" | "record-area"
+    ) {
+        overlay::grab_early();
+    }
+    // GTK's Vulkan takes some 200 ms longer to start than its OpenGL, before the screen to
+    // choose from can show. A choice already made, such as Nekoland's Cairo without a GPU, is kept.
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
     let app = adw::Application::builder()
         .application_id(if command == "pin" { PIN_APP_ID } else { APP_ID })
         .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -117,16 +131,22 @@ fn run(app: &adw::Application, command: &str, rest: &[String]) {
     let hold: Hold = Rc::new(app.hold());
     let path = rest.first().map(PathBuf::from);
     match command {
-        "area" => choose(app, Mode::Area, hold),
-        "window" => choose(app, Mode::Window, hold),
-        "scroll" => choose(app, Mode::Scroll, hold),
-        "ocr" => choose(app, Mode::Ocr, hold),
+        "area" => choose(app, Mode::Area, Style::Quick { copy: false }, hold),
+        "area-copy" => choose(app, Mode::Area, Style::Quick { copy: true }, hold),
+        "tools" => choose(app, Mode::Area, Style::Tools, hold),
+        "window" => choose(app, Mode::Window, Style::Quick { copy: false }, hold),
+        "scroll" => choose(app, Mode::Scroll, Style::Tools, hold),
+        "ocr" => choose(app, Mode::Ocr, Style::Tools, hold),
         "record" | "record-area" if record::is_recording() => record::stop(),
         "record" => record::start(None),
         "record-stop" => record::stop(),
-        "record-area" => choose(app, Mode::Record, hold),
+        "record-area" => choose(app, Mode::Record, Style::Tools, hold),
         "full" => match overlay::freeze() {
             Ok(frozen) => taken(app, (*frozen.img).clone(), frozen.scale()),
+            Err(err) => failed(&err),
+        },
+        "full-copy" => match overlay::freeze() {
+            Ok(frozen) => copied((*frozen.img).clone(), frozen.scale()),
             Err(err) => failed(&err),
         },
         "repeat" => repeat(app, hold),
@@ -175,14 +195,14 @@ fn failed(err: &str) {
 }
 
 /// Freezes the screen and lets an area, a window or all of it be chosen from it.
-fn choose(app: &adw::Application, mode: Mode, hold: Hold) {
+fn choose(app: &adw::Application, mode: Mode, style: Style, hold: Hold) {
     let frozen = match overlay::freeze() {
         Ok(frozen) => Rc::new(frozen),
         Err(err) => return failed(&err),
     };
     let app2 = app.clone();
     let shown = frozen.clone();
-    overlay::choose(app.upcast_ref(), frozen, mode, move |choice| {
+    overlay::choose(app.upcast_ref(), frozen, mode, style, move |choice| {
         let app = &app2;
         match choice {
             Choice::Area(Mode::Scroll, area) => scroll(app, area, hold.clone()),
@@ -192,6 +212,7 @@ fn choose(app: &adw::Application, mode: Mode, hold: Hold) {
                 output::remember_area(area);
                 taken(app, shown.crop(area), shown.scale());
             }
+            Choice::Copied(area) => copied(shown.crop(area), shown.scale()),
             Choice::Full => taken(app, (*shown.img).clone(), shown.scale()),
             Choice::Delay(seconds) => countdown(app, seconds, hold.clone()),
             Choice::Repeat => repeat(app, hold.clone()),
@@ -211,8 +232,8 @@ pub fn capture_into(app: &gtk::Application, done: impl Fn(Option<Img>) + 'static
         }
     };
     let shown = frozen.clone();
-    overlay::choose(app, frozen, Mode::Area, move |choice| match choice {
-        Choice::Area(_, area) => done(Some(shown.crop(area))),
+    overlay::choose(app, frozen, Mode::Area, Style::Tools, move |choice| match choice {
+        Choice::Area(_, area) | Choice::Copied(area) => done(Some(shown.crop(area))),
         Choice::Full => done(Some((*shown.img).clone())),
         _ => done(None),
     });
@@ -220,7 +241,7 @@ pub fn capture_into(app: &gtk::Application, done: impl Fn(Option<Img>) + 'static
 
 fn repeat(app: &adw::Application, hold: Hold) {
     let Some(area) = output::last_area() else {
-        return choose(app, Mode::Area, hold);
+        return choose(app, Mode::Area, Style::Tools, hold);
     };
     match overlay::grab(Some(area)) {
         Ok(img) => {
@@ -253,7 +274,7 @@ fn countdown(app: &adw::Application, seconds: u32, hold: Hold) {
     );
     let app = app.clone();
     glib::timeout_add_local_once(Duration::from_secs(seconds as u64), move || {
-        choose(&app, Mode::Area, hold)
+        choose(&app, Mode::Area, Style::Tools, hold)
     });
 }
 
@@ -302,6 +323,15 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
             );
         }
         After::Nothing => output::notify(&summary, &body, Some(&flat), 3000, None),
+    }
+}
+
+/// A picture for the clipboard alone, as Control asks: not kept, saved or opened.
+fn copied(img: Img, scale: f64) {
+    let flat = output::export(&Doc::new(img, scale), &Prefs::load());
+    match output::copy_image(&flat) {
+        Ok(()) => output::notify("已複製到剪貼簿", "", Some(&flat), 3000, None),
+        Err(err) => failed(&err),
     }
 }
 

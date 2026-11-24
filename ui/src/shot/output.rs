@@ -71,9 +71,10 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
-            after: After::Editor,
+            // As the Mac's: a thumbnail, and the picture saved.
+            after: After::Thumbnail,
             auto_copy: true,
-            auto_save: false,
+            auto_save: true,
             folder: String::new(),
             template: "截圖 {年}-{月}-{日} {時}.{分}.{秒}".into(),
             format: "png".into(),
@@ -214,7 +215,7 @@ pub fn save_to(img: &Img, path: &Path) -> Result<(), String> {
 
 /// Puts a picture on the clipboard, through wl-copy, which keeps it there after 截圖 ends.
 pub fn copy_image(img: &Img) -> Result<(), String> {
-    pipe("wl-copy", &["--type", "image/png"], &img.png())
+    pipe("wl-copy", &["--type", "image/png"], &img.png_fast())
 }
 
 pub fn copy_text(text: &str) -> Result<(), String> {
@@ -279,7 +280,7 @@ pub fn new_entry(img: &Img) -> PathBuf {
         .unwrap_or_default();
     let dir = history_dir().join(id);
     if let Err(err) =
-        std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("base.png"), img.png()))
+        std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("base.png"), img.png_fast()))
     {
         eprintln!("{}: {err}", dir.display());
     }
@@ -313,9 +314,9 @@ pub fn keep(entry: &Path, doc: &Doc) {
         step_start: doc.step_start,
     };
     let write = || -> std::io::Result<()> {
-        std::fs::write(entry.join("base.png"), doc.base.png())?;
+        std::fs::write(entry.join("base.png"), doc.base.png_fast())?;
         for (name, picture) in &doc.pictures {
-            std::fs::write(entry.join(format!("picture-{name}.png")), picture.png())?;
+            std::fs::write(entry.join(format!("picture-{name}.png")), picture.png_fast())?;
         }
         let json = serde_json::to_string(&saved).map_err(std::io::Error::other)?;
         std::fs::write(entry.join("doc.json"), json)

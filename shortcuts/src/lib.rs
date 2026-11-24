@@ -1111,12 +1111,32 @@ static ACTIONS: &[Action] = &[
         ],
     ),
     system(
+        "shot-full-copy",
+        "全螢幕截圖到剪貼簿",
+        Screenshots,
+        [&["Ctrl+Shift+Super+3"], &["Ctrl+Shift+Super+3"], &[]],
+    ),
+    // Taken as the button comes up, as the Mac's ⇧⌘4.
+    system(
         "shot-area",
         "截取範圍",
         Screenshots,
+        [&["Shift+Super+4"], &["Shift+Super+4"], &[]],
+    ),
+    system(
+        "shot-area-copy",
+        "截取範圍到剪貼簿",
+        Screenshots,
+        [&["Ctrl+Shift+Super+4"], &["Ctrl+Shift+Super+4"], &[]],
+    ),
+    // The strip of tools, as the Mac's ⇧⌘5, GNOME's Print and Windows' Snipping Tool.
+    system(
+        "shot-tools",
+        "截圖與錄影選項",
+        Screenshots,
         [
-            &["Shift+Super+4", "Print"],
-            &["Shift+Super+4", "Shift+Super+5", "Print"],
+            &["Print"],
+            &["Shift+Super+5", "Print"],
             &["Shift+Super+S", "Print"],
         ],
     ),
@@ -1150,7 +1170,7 @@ static ACTIONS: &[Action] = &[
     ),
     system(
         "shot-clipboard",
-        "截圖到剪貼簿",
+        "從剪貼簿載入",
         Screenshots,
         [&["Shift+Super+V"], &["Shift+Super+V"], &[]],
     ),
