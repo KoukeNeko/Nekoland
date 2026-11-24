@@ -4,7 +4,7 @@
 //! what is read here; Settings and the dark switches say when they changed.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering},
@@ -154,6 +154,108 @@ fn merge_resources(resources: &str) {
     }
 }
 
+/// Cursors of the X cursor font that themes of today leave out, with what is drawn instead:
+/// Unity's editor orbits and zooms with them, and without them X draws its own, 16 dots across.
+const STAND_INS: [(&str, &[&str]); 2] = [
+    ("exchange", &["all-scroll", "fleur", "move", "size_all"]),
+    (
+        "sizing",
+        &["nwse-resize", "size_fdiag", "se-resize", "bottom_right_corner"],
+    ),
+];
+
+/// Where Nekoland keeps the stand-ins, as the "default" theme, which Xcursor looks in for a
+/// cursor the chosen theme does not have.
+fn stand_in_folder() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-cursors"))
+}
+
+/// Has programs started from now on look for cursors in the stand-ins first, then where
+/// Xcursor, Wayland's cursor library and Nekoland's own look when not told, which
+/// XCURSOR_PATH takes the place of.
+pub fn find_cursor_stand_ins() {
+    let Some(folder) = stand_in_folder() else {
+        return;
+    };
+    let dirs = cursor_search_path(
+        folder,
+        std::env::var_os("XCURSOR_PATH"),
+        &PathBuf::from(std::env::var_os("HOME").unwrap_or_default()),
+        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+        std::env::var("XDG_DATA_DIRS").ok(),
+    );
+    match std::env::join_paths(dirs) {
+        Ok(path) => std::env::set_var("XCURSOR_PATH", path),
+        Err(err) => tracing::warn!("XCURSOR_PATH: {err}"),
+    }
+}
+
+/// `folder` before the path already asked for, else before the folders searched without one.
+fn cursor_search_path(
+    folder: PathBuf,
+    asked: Option<std::ffi::OsString>,
+    home: &Path,
+    data_home: Option<PathBuf>,
+    data_dirs: Option<String>,
+) -> Vec<PathBuf> {
+    let mut dirs = vec![folder];
+    if let Some(asked) = asked {
+        dirs.extend(std::env::split_paths(&asked));
+        return dirs;
+    }
+    let data_dirs = data_dirs.unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.push(
+        data_home
+            .unwrap_or_else(|| home.join(".local/share"))
+            .join("icons"),
+    );
+    dirs.push(home.join(".icons"));
+    dirs.extend(
+        data_dirs
+            .split(':')
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| Path::new(dir).join("icons")),
+    );
+    dirs.extend(
+        [
+            "/usr/share/icons",
+            "/usr/share/pixmaps",
+            "/usr/share/cursors/xorg-x11",
+        ]
+        .map(PathBuf::from),
+    );
+    dirs.push(home.join(".cursors"));
+    dirs
+}
+
+/// Points the stand-ins at the nearest cursors of `theme`, for programs that ask for them.
+fn link_stand_ins(theme: &str) {
+    let Some(cursors) = stand_in_folder().map(|folder| folder.join("default/cursors")) else {
+        return;
+    };
+    if let Err(err) = std::fs::create_dir_all(&cursors) {
+        tracing::warn!("{}: {err}", cursors.display());
+        return;
+    }
+    let theme = xcursor::CursorTheme::load(if theme.is_empty() { "default" } else { theme });
+    for (missing, instead) in STAND_INS {
+        let link = cursors.join(missing);
+        match std::fs::remove_file(&link) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("{}: {err}", link.display());
+                continue;
+            }
+            _ => {}
+        }
+        let Some(target) = instead.iter().find_map(|name| theme.load_icon(name)) else {
+            continue;
+        };
+        if let Err(err) = std::os::unix::fs::symlink(&target, &link) {
+            tracing::warn!("{}: {err}", link.display());
+        }
+    }
+}
+
 /// Nekoland's own file, in the runtime folder: the person's xsettingsd, if they have one,
 /// is not touched.
 fn path() -> Option<PathBuf> {
@@ -246,6 +348,7 @@ fn write() -> Option<PathBuf> {
     if let Some(resources) = cursor_resources(&values) {
         merge_resources(&resources);
     }
+    link_stand_ins(&values.cursor);
     if let Err(err) = std::fs::write(&path, &text) {
         tracing::warn!("{}: {err}", path.display());
         return None;
@@ -385,6 +488,26 @@ mod tests {
         assert!(text.contains(&format!("Gdk/UnscaledDPI {}\n", 72 * 1024)));
         let values = Values { text_scale: 1.0, scale: 1.25, ..Default::default() };
         assert!(render(&values).contains("Gdk/WindowScalingFactor 1\n"));
+    }
+
+    #[test]
+    fn the_stand_ins_come_first_and_the_usual_folders_stay() {
+        let folder = PathBuf::from("/run/user/1000/nekoland-cursors");
+        let home = Path::new("/home/a");
+        let data_dirs = Some("/usr/share:/var/lib/flatpak/exports/share".into());
+        let dirs = cursor_search_path(folder.clone(), None, home, None, data_dirs);
+        assert_eq!(dirs[0], folder);
+        for dir in [
+            "/home/a/.local/share/icons",
+            "/home/a/.icons",
+            "/usr/share/icons",
+            "/var/lib/flatpak/exports/share/icons",
+            "/usr/share/pixmaps",
+        ] {
+            assert!(dirs.contains(&PathBuf::from(dir)), "{dir}");
+        }
+        let asked = cursor_search_path(folder.clone(), Some("/opt/cursors:/x".into()), home, None, None);
+        assert_eq!(asked, [folder, "/opt/cursors".into(), "/x".into()]);
     }
 
     #[test]

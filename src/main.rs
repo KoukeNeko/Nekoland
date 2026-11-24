@@ -214,6 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Chrome has no window buttons and its menus' shadows take glass.
         std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
         xsettings::choose_qt_style();
+        xsettings::find_cursor_stand_ins();
     }
     if headless {
         crate::headless::init_headless(&mut event_loop, &mut data)?;
@@ -272,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // where systemd, busy at login, can take a second to answer.
             let environment = format!(
                 "dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
-                 {SESSION_TYPE} LD_PRELOAD FREETYPE_PROPERTIES NEKOLAND_SOCKET QT_STYLE_OVERRIDE {renderer} \
+                 {SESSION_TYPE} LD_PRELOAD FREETYPE_PROPERTIES NEKOLAND_SOCKET QT_STYLE_OVERRIDE XCURSOR_PATH {renderer} \
                  || echo 'D-Bus services will not find this display' >&2"
             );
             // The portal, and units such as the person's own, start in a graphical session
