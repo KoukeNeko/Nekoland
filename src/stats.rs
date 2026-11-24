@@ -8,17 +8,18 @@
 //! grow to it, and a panel fades in, out, and into another's as the pointer moves along.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver},
+        Mutex,
     },
     time::{Duration, Instant},
 };
 
-use cairo::{Context, LinearGradient};
+use cairo::{Context, ImageSurface, LinearGradient};
 use smithay::{
     backend::renderer::element::Id,
     utils::{Logical, Point, Rectangle},
@@ -30,7 +31,7 @@ use crate::{
     control::{draw_chevron, draw_list_row, draw_panel, draw_slider, draw_well, ease_out, rect, show_line, to_f64, OPEN_TIME},
     fileinfo::{RED, YELLOW},
     glass::Tier,
-    menubar::{colors, font, show_text, text_size, Overlay, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS},
+    menubar::{colors, font, show_text, Colors, text_size, Overlay, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS},
     text::{self, Picture},
     Nekoland,
 };
@@ -63,6 +64,15 @@ const DETAIL_ROW: i32 = 26;
 const LIST_ROW: i32 = 30;
 const HERO_CHART: i32 = 52;
 const CORES_HEIGHT: i32 = 40;
+/// A rail's row, its track's thickness and the gap between its parts, a line under it, a row
+/// of cells, and the line's limit over it.
+const RAIL_ROW: i32 = 34;
+const RAIL: f64 = 4.0;
+const RAIL_GAP: f64 = 2.0;
+const NOTE_ROW: i32 = 16;
+const FACT_ROW: i32 = 38;
+const LIMIT_ROW: i32 = 14;
+const PROCESS_ICON: i32 = 16;
 /// The bar's line and bars, and the gap after a name stood on end beside them.
 const BAR_CHART: (f64, f64) = (32.0, 18.0);
 const BAR_LABEL_GAP: f64 = 3.0;
@@ -172,6 +182,9 @@ static WANTED: AtomicU32 = AtomicU32::new(0);
 static INTERVAL: AtomicU32 = AtomicU32::new(2);
 static PROCESSES: AtomicU32 = AtomicU32::new(5);
 static PUBLIC_IP: AtomicBool = AtomicBool::new(false);
+/// The windows' processes and their applications' IDs, which a process run under one is
+/// counted with, as the task manager counts it.
+static WINDOWS: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
 /// How long the public address is kept before it is asked for again, while the interface stays.
 const HWMON: &str = "/sys/class/hwmon";
 /// The helper that sets a fan as root, through pkexec, and how slow the panel lets a fan be
@@ -303,6 +316,8 @@ pub struct Sample {
     /// Each chip's temperature in °C, and each fan's speed in RPM.
     pub temperatures: Vec<(String, f64)>,
     pub fans: Vec<Fan>,
+    /// The temperatures a chip says must not be passed, by the names of the temperatures.
+    pub critical: Vec<(String, f64)>,
     /// The board's voltages that are known by name, in volts.
     pub voltages: Vec<(String, f64)>,
     pub power: Option<Power>,
@@ -312,6 +327,8 @@ pub struct Sample {
     pub top_ram: Vec<(String, f64)>,
     pub top_disk: Vec<(String, f64)>,
     pub top_network: Vec<(String, f64, f64)>,
+    /// Which of the busiest are applications, by their IDs, rather than processes by name.
+    pub apps: HashSet<String>,
     /// The GPUs besides the one shown, as Intel's beside a discrete one.
     pub other_gpus: Vec<Gpu>,
     /// The address the internet sees, with its country's code, when asked for.
@@ -788,9 +805,9 @@ fn voltage_name(chip: &str, board: &str, index: u32) -> Option<(&'static str, f6
     }
 }
 
-/// Each chip's first temperature, which is its package's or composite's, each fan, and the
-/// voltages known by name, of the chips in `hwmon`.
-fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64)>) {
+/// Each chip's first temperature, which is its package's or composite's, each fan, the
+/// voltages known by name, and the critical temperatures, of the chips in `hwmon`.
+fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64)>, Vec<(String, f64)>) {
     let board = read("/sys/class/dmi/id/board_name").trim().to_string();
     let mut chips: Vec<PathBuf> = std::fs::read_dir(hwmon)
         .into_iter()
@@ -802,7 +819,7 @@ fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
         (name.len(), name)
     });
-    let (mut temperatures, mut fans, mut voltages) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut temperatures, mut fans, mut voltages, mut critical) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for chip in chips {
         let chip_type = read(chip.join("name")).trim().to_string();
         let name = chip_name(&chip_type);
@@ -822,6 +839,9 @@ fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64
             if let Some(milli) = read_number(chip.join(format!("{stem}_input"))).filter(|milli| *milli > 0.0) {
                 let same = temperatures.iter().filter(|(found, _): &&(String, f64)| found.starts_with(&name)).count();
                 let shown = if same == 0 { name.clone() } else { format!("{name} {}", same + 1) };
+                if let Some(limit) = read_number(chip.join(format!("{stem}_crit"))).filter(|milli| *milli > 0.0) {
+                    critical.push((shown.clone(), limit / 1000.0));
+                }
                 temperatures.push((shown, milli / 1000.0));
             }
         }
@@ -851,7 +871,7 @@ fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64
             }
         }
     }
-    (temperatures, fans, voltages)
+    (temperatures, fans, voltages, critical)
 }
 
 /// The `count` busiest, the processes of one name, as a program's many are, taken together.
@@ -866,16 +886,22 @@ fn busiest(amounts: Vec<(String, f64)>, count: usize) -> Vec<(String, f64)> {
     amounts
 }
 
-/// The busiest processes by CPU, by memory and by disk, `count` of each. Only the user's own
-/// processes say what they read and write.
-fn read_processes(before: &mut Before, elapsed: Option<f64>, count: usize) -> [Vec<(String, f64)>; 3] {
-    let procs = proc::read_procs();
+/// The busiest processes by CPU, by memory and by disk, `count` of each, those of an
+/// application in `owners` taken together under its ID. Only the user's own processes say what
+/// they read and write.
+fn read_processes(
+    before: &mut Before,
+    elapsed: Option<f64>,
+    count: usize,
+    (procs, owners): (&[proc::Proc], &HashMap<i32, &str>),
+) -> [Vec<(String, f64)>; 3] {
+    let name = |proc: &proc::Proc| owners.get(&proc.pid).map_or_else(|| proc.name.clone(), |app| app.to_string());
     let io: HashMap<i32, u64> = procs.iter().filter_map(|proc| Some((proc.pid, proc.io?))).collect();
     let previous_io = std::mem::replace(&mut before.io, io);
     let by_disk: Vec<(String, f64)> = match elapsed {
         Some(seconds) if seconds > 0.0 => procs
             .iter()
-            .filter_map(|proc| Some((proc.name.clone(), proc.io?.saturating_sub(*previous_io.get(&proc.pid)?) as f64 / seconds)))
+            .filter_map(|proc| Some((name(proc), proc.io?.saturating_sub(*previous_io.get(&proc.pid)?) as f64 / seconds)))
             .filter(|(_, rate)| *rate > 0.0)
             .collect(),
         _ => Vec::new(),
@@ -889,12 +915,12 @@ fn read_processes(before: &mut Before, elapsed: Option<f64>, count: usize) -> [V
             .iter()
             .filter_map(|proc| {
                 let used = proc.ticks.saturating_sub(*previous.get(&proc.pid)?) as f64;
-                Some((proc.name.clone(), used / ticks_per_second / seconds * 100.0))
+                Some((name(proc), used / ticks_per_second / seconds * 100.0))
             })
             .collect(),
         _ => Vec::new(),
     };
-    let by_memory = procs.iter().filter_map(|proc| Some((proc.name.clone(), proc.memory? as f64))).collect();
+    let by_memory = procs.iter().filter_map(|proc| Some((name(proc), proc.memory? as f64))).collect();
     [busiest(by_cpu, count), busiest(by_memory, count), busiest(by_disk, count)]
 }
 
@@ -921,8 +947,9 @@ fn parse_ss(ss: &str) -> Vec<(String, String, u64, u64)> {
     sockets
 }
 
-/// The processes that send and receive the most over TCP, in and out in bytes a second.
-fn read_network_processes(before: &mut Before, elapsed: Option<f64>, count: usize) -> Vec<(String, f64, f64)> {
+/// The processes that send and receive the most over TCP, in and out in bytes a second, those
+/// named in `apps` taken together under their application's ID.
+fn read_network_processes(before: &mut Before, elapsed: Option<f64>, count: usize, apps: &HashMap<&str, &str>) -> Vec<(String, f64, f64)> {
     let Ok(output) = Command::new("ss").args(["-tinpH"]).output() else {
         return Vec::new();
     };
@@ -937,7 +964,7 @@ fn read_network_processes(before: &mut Before, elapsed: Option<f64>, count: usiz
     let mut by_name: HashMap<String, (f64, f64)> = HashMap::new();
     for (name, addresses, sent, received) in &sockets {
         if let Some((then_sent, then_received)) = previous.get(addresses) {
-            let rates = by_name.entry(name.clone()).or_default();
+            let rates = by_name.entry(apps.get(name.as_str()).map_or_else(|| name.clone(), |app| app.to_string())).or_default();
             rates.0 += received.saturating_sub(*then_received) as f64 / seconds;
             rates.1 += sent.saturating_sub(*then_sent) as f64 / seconds;
         }
@@ -982,7 +1009,7 @@ fn read_sample(before: &mut Before, wanted: u32) -> Sample {
     let wants = |module: Module| wanted & module.bit() != 0;
     let mut sample = Sample::default();
     if wants(Module::Sensors) || wants(Module::Cpu) {
-        (sample.temperatures, sample.fans, sample.voltages) = read_sensors(Path::new(HWMON));
+        (sample.temperatures, sample.fans, sample.voltages, sample.critical) = read_sensors(Path::new(HWMON));
     }
     if wants(Module::Cpu) {
         sample.cpu = read_cpu(before, &sample.temperatures);
@@ -1012,16 +1039,25 @@ fn read_sample(before: &mut Before, wanted: u32) -> Sample {
         }
     }
     let count = (PROCESSES.load(Ordering::Relaxed) as usize).min(MAX_PROCESSES);
-    if count > 0 && (wants(Module::Cpu) || wants(Module::Ram) || wants(Module::Disk)) {
-        [sample.top_cpu, sample.top_ram, sample.top_disk] = read_processes(before, elapsed, count);
-    }
-    if count > 0 && wants(Module::Network) {
-        sample.top_network = read_network_processes(before, elapsed, count);
+    let by_process = wants(Module::Cpu) || wants(Module::Ram) || wants(Module::Disk);
+    if count > 0 && (by_process || wants(Module::Network)) {
+        let procs = proc::read_procs();
+        let windows: HashMap<i32, String> = WINDOWS.lock().map(|windows| windows.iter().cloned().collect()).unwrap_or_default();
+        let owners = proc::owners(&procs, &windows);
+        sample.apps = owners.values().map(|app| app.to_string()).collect();
+        if by_process {
+            [sample.top_cpu, sample.top_ram, sample.top_disk] = read_processes(before, elapsed, count, (&procs, &owners));
+        }
+        if wants(Module::Network) {
+            let apps = procs.iter().filter_map(|proc| Some((proc.name.as_str(), *owners.get(&proc.pid)?))).collect();
+            sample.top_network = read_network_processes(before, elapsed, count, &apps);
+        }
     }
     if !wants(Module::Sensors) {
         sample.temperatures.clear();
         sample.fans.clear();
         sample.voltages.clear();
+        sample.critical.clear();
     }
     sample
 }
@@ -1145,6 +1181,66 @@ fn level_color(value: f64, ink: Rgb) -> Rgb {
 
 fn lerp(from: f64, to: f64, progress: f64) -> f64 {
     from + (to - from) * progress
+}
+
+/// The colour of a reading eased from how full it was `before` to how full it is `now`:
+/// ink, turning to yellow and to red past the thresholds over the same time.
+fn level_mix((before, now): (f64, f64), progress: f64, ink: Rgb) -> Rgb {
+    let (from, to) = (level_color(before, ink), level_color(now, ink));
+    (lerp(from.0, to.0, progress), lerp(from.1, to.1, progress), lerp(from.2, to.2, progress))
+}
+
+/// A rail at `y` across `width`: its name, what it reads, its parts filling the track, the
+/// second at half strength, and what each part is or a line of it under them.
+fn draw_rail(cr: &Context, colors: &Colors, rail: &Rail, (x, y, width): (f64, f64, f64), progress: f64) {
+    let label = font("", 10.0);
+    let strong = font("Medium", 10.0);
+    let small = font("", 9.0);
+    let color = level_mix(rail.level, progress, colors.ink);
+    let center = y + 10.0;
+    let (before, figure, after) = &rail.value;
+    let mut right = x + width;
+    for (text, font, color) in [(after, &label, colors.ink_3), (figure, &strong, color), (before, &label, colors.ink_3)] {
+        show_right(cr, text, font, (right, center), color);
+        right -= f64::from(text_size(text, font).0);
+    }
+    show_line(cr, &rail.name, &label, (x, center, right - x - 8.0), colors.ink);
+
+    let track = y + 20.0;
+    text::rounded_rectangle(cr, x, track, width, RAIL, RAIL / 2.0);
+    cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.12);
+    let _ = cr.fill();
+    let (mut at, mut room) = (x, 1.0);
+    for (index, part) in rail.parts.iter().enumerate() {
+        let part = part.clamp(0.0, room);
+        room -= part;
+        // Parts side by side are kept apart, so that two are told apart in so thin a rail.
+        let gap = if rail.parts.get(index + 1).is_some_and(|next| *next > 0.0) { RAIL_GAP } else { 0.0 };
+        let length = part * width - gap;
+        if length >= 1.0 {
+            text::rounded_rectangle(cr, at, track, length, RAIL, (RAIL / 2.0).min(length / 2.0));
+            cr.set_source_rgba(color.0, color.1, color.2, if index == 0 { 1.0 } else { 0.5 });
+            let _ = cr.fill();
+        }
+        at += part * width;
+    }
+
+    let mut below = y + f64::from(RAIL_ROW) + 4.0;
+    if !rail.legend.is_empty() {
+        let mut at = x;
+        for (index, name) in rail.legend.iter().enumerate() {
+            cr.new_sub_path();
+            cr.arc(at + 3.0, below, 3.0, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgba(color.0, color.1, color.2, if index == 0 { 1.0 } else { 0.5 });
+            let _ = cr.fill();
+            show_text(cr, name, &small, at + 10.0, below, colors.ink_3);
+            at += 10.0 + f64::from(text_size(name, &small).0) + 12.0;
+        }
+        below += f64::from(NOTE_ROW);
+    }
+    if let Some(note) = &rail.note {
+        show_line(cr, note, &small, (x, below, width), colors.ink_3);
+    }
 }
 
 // Drawing, shared by the bar and the panels.
@@ -1371,17 +1467,93 @@ pub struct Stats {
 /// Where the parts of a panel are, and what it says, measured before it is drawn.
 struct Content {
     value: String,
+    /// How full the value was before and is now, which colours it past the thresholds.
+    value_level: Option<(f64, f64)>,
     second: Option<String>,
     meta: String,
-    /// The line or the two lines of its history.
+    /// The line or the two lines of its history, and what their top stands for.
     chart: (Vec<f64>, Option<Vec<f64>>),
-    rows: Vec<(String, String)>,
+    limit: String,
+    /// The readings that have a most they may be, under the line.
+    rails: Vec<Rail>,
+    blocks: Vec<Block>,
     cores: Option<Vec<f64>>,
-    processes: Option<(&'static str, Vec<(String, String)>)>,
+    processes: Option<(&'static str, Vec<ProcessRow>)>,
     /// The fans, where one can be set, by their place among the sample's: each one's name,
     /// its speed, whether it is set by hand (none where it cannot be set), and how fast it is
     /// driven.
     fans: Vec<(usize, String, String, Option<bool>, f64, f64)>,
+}
+
+/// One of the busiest: its name, how much it uses, its share of the row's length, and its
+/// application's icon where it is one.
+struct ProcessRow {
+    name: String,
+    amount: String,
+    share: f64,
+    icon: Option<ImageSurface>,
+}
+
+/// A reading measured against the most it may be, as a rail filled by one part or two.
+#[derive(Default)]
+struct Rail {
+    name: String,
+    /// What it reads: words before, its figure, and words after, as "50" and " / 190 W".
+    value: (String, String, String),
+    /// Each part's share of the rail, eased from the reading before; how full it was before
+    /// and is now, which colours it past the thresholds.
+    parts: Vec<f64>,
+    level: (f64, f64),
+    /// What each part is, under it, or a line said of it.
+    legend: Vec<String>,
+    note: Option<String>,
+}
+
+impl Rail {
+    fn new(name: &str, value: (String, String, String)) -> Self {
+        Self { name: name.to_string(), value, ..Default::default() }
+    }
+
+    fn filled(self, part: f64, level: (f64, f64)) -> Self {
+        Self { parts: vec![part], level, ..self }
+    }
+
+    fn height(&self) -> i32 {
+        RAIL_ROW + NOTE_ROW * (i32::from(!self.legend.is_empty()) + i32::from(self.note.is_some()))
+    }
+}
+
+/// A well of rails and of the readings without a most, in cells.
+struct Block {
+    title: Option<(&'static str, &'static str)>,
+    rails: Vec<Rail>,
+    facts: Vec<(String, String)>,
+}
+
+impl Block {
+    fn facts<N: Into<String>>(title: Option<(&'static str, &'static str)>, facts: Vec<(N, String)>) -> Self {
+        Self { title, rails: Vec::new(), facts: facts.into_iter().map(|(name, value)| (name.into(), value)).collect() }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rails.is_empty() && self.facts.is_empty()
+    }
+
+    /// How many cells a row of its facts holds: three, or two where a value would not fit.
+    fn columns(&self, width: f64, value_font: &pango::FontDescription) -> usize {
+        let fits = |columns: f64| self.facts.iter().all(|(_, value)| f64::from(text_size(value, value_font).0) <= width / columns - 8.0);
+        if fits(3.0) {
+            3
+        } else {
+            2
+        }
+    }
+
+    fn height(&self, width: f64, value_font: &pango::FontDescription) -> i32 {
+        let rows = self.facts.len().div_ceil(self.columns(width, value_font)) as i32;
+        let top = if self.title.is_some() { TITLE_ROW } else { 6 };
+        top + self.rails.iter().map(Rail::height).sum::<i32>() + FACT_ROW * rows + 6
+    }
 }
 
 impl Stats {
@@ -1737,14 +1909,36 @@ impl Stats {
     fn content(&self, module: Module, fahrenheit: bool, progress: f64, address: Option<String>) -> Option<Content> {
         let sample = self.sample.as_ref()?;
         let temperature = |celsius: f64| temperature_text(celsius, fahrenheit, true);
+        // A share as it eases from the reading before to this one, and the two it eases between.
+        let eased = |read: &dyn Fn(&Sample) -> Option<f64>| {
+            let now = read(sample).unwrap_or(0.0);
+            let before = self.previous.as_ref().and_then(read).unwrap_or(now);
+            (lerp(before, now, progress), (before, now))
+        };
         let fractions = || self.history(module).iter().map(|(value, _)| *value).collect::<Vec<_>>();
+        // The two speeds' lines, and the peak their top stands for.
         let speeds = || {
-            let (first, second) = scaled(&self.history(module));
-            (first, Some(second))
+            let history = self.history(module);
+            let peak = history.iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
+            let (first, second) = scaled(&history);
+            ((first, Some(second)), format!("峰值 {}", speed_text(peak)))
         };
-        let processes = |heading: &'static str, list: &[(String, f64)], shown: fn(f64) -> String| {
-            (!list.is_empty()).then(|| (heading, list.iter().map(|(name, amount)| (name.clone(), shown(*amount))).collect()))
+        let level = || {
+            let now = sample.fraction(module).unwrap_or(0.0);
+            Some((self.previous.as_ref().and_then(|previous| previous.fraction(module)).unwrap_or(now), now))
         };
+        let processes = |heading: &'static str, list: &[(String, f64)], shown: fn(f64) -> String, whole: f64| {
+            (!list.is_empty()).then(|| {
+                let rows = list.iter().map(|(name, amount)| ProcessRow {
+                    name: name.clone(),
+                    amount: shown(*amount),
+                    share: (amount / whole).clamp(0.0, 1.0),
+                    icon: None,
+                });
+                (heading, rows.collect())
+            })
+        };
+        let of = |figure: String, rest: String| (String::new(), figure, rest);
         Some(match module {
             Module::Cpu => {
                 let cpu = sample.cpu.as_ref()?;
@@ -1753,210 +1947,269 @@ impl Stats {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join(" · ");
+                let (system, _) = eased(&|sample| Some(sample.cpu.as_ref()?.system));
+                let (user, _) = eased(&|sample| Some(sample.cpu.as_ref()?.user));
+                let mut usage = Rail::new("使用率", (format!("系統 {} · 使用者 ", percent(cpu.system)), percent(cpu.user), String::new()));
+                usage.parts = vec![system, user];
+                usage.level = level().unwrap_or_default();
+                let mut rails = vec![usage];
+                let mut facts = vec![("平均負載", format!("{:.2}", cpu.load[0]))];
+                // Its limit comes with the power's reading; without it, the power is only a number.
+                match (cpu.power, sample.power.as_ref().and_then(|power| power.parts.iter().find(|part| part.0 == "CPU")?.2)) {
+                    (Some(watts), Some(limit)) => {
+                        let (shown, levels) = eased(&|sample| Some(sample.cpu.as_ref()?.power? / limit));
+                        rails.push(Rail::new("功耗", of(format!("{watts:.0}"), format!(" / {}", watts_text(limit)))).filled(shown, levels));
+                    }
+                    (Some(watts), None) => facts.push(("功耗", watts_text(watts))),
+                    _ => {}
+                }
+                if let Some((processes, threads)) = cpu.tasks {
+                    facts.extend([("程序", processes.to_string()), ("執行緒", threads.to_string())]);
+                }
+                facts.push(("運作時間", uptime_text(cpu.uptime)));
                 Content {
-                    fans: Vec::new(),
                     value: percent(self.fraction(module, progress)),
+                    value_level: level(),
                     second: None,
                     meta,
                     chart: (fractions(), None),
-                    rows: named(
-                        [
-                            Some(("使用者", percent(cpu.user))),
-                            Some(("系統", percent(cpu.system))),
-                            Some(("閒置", percent(1.0 - cpu.usage))),
-                            cpu.power.map(|watts| ("功耗", watts_text(watts))),
-                            Some(("平均負載", cpu.load.map(|load| format!("{load:.2}")).join(" · "))),
-                            cpu.tasks.map(|(processes, _)| ("程序", processes.to_string())),
-                            cpu.tasks.map(|(_, threads)| ("執行緒", threads.to_string())),
-                            Some(("運作時間", uptime_text(cpu.uptime))),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                    ),
+                    limit: "100%".into(),
+                    rails,
+                    blocks: vec![Block::facts(None, facts)],
                     cores: Some(self.cores(progress)),
-                    processes: processes("CPU", &sample.top_cpu, |amount| format!("{amount:.1}%")),
+                    processes: processes("CPU", &sample.top_cpu, |amount| format!("{amount:.1}%"), 100.0),
+                    fans: Vec::new(),
                 }
             }
             Module::Gpu => {
                 let gpu = sample.gpu.as_ref()?;
-                let mut rows = vec![("使用率", percent(gpu.usage))];
+                let mut rails = Vec::new();
                 if let Some((used, total)) = gpu.memory {
-                    rows.push(("顯示記憶體", format!("{} / {}", size_text(used), size_text(total))));
+                    let (shown, levels) = eased(&|sample| sample.gpu.as_ref()?.memory.map(|(used, total)| used / total.max(1.0)));
+                    rails.push(Rail::new("顯示記憶體", of(size_text(used), format!(" / {}", size_text(total)))).filled(shown, levels));
                 }
-                if let Some(celsius) = gpu.temperature {
-                    rows.push(("溫度", temperature(celsius)));
-                }
-                if let Some(watts) = gpu.power {
-                    let shown = match gpu.power_limit {
-                        Some(limit) => format!("{watts:.0} / {}", watts_text(limit)),
-                        None => watts_text(watts),
-                    };
-                    rows.push(("功耗", shown));
+                let mut facts = Vec::new();
+                match (gpu.power, gpu.power_limit) {
+                    (Some(watts), Some(limit)) => {
+                        let (shown, levels) = eased(&|sample| Some(sample.gpu.as_ref()?.power? / limit));
+                        rails.push(Rail::new("功耗", of(format!("{watts:.0}"), format!(" / {}", watts_text(limit)))).filled(shown, levels));
+                    }
+                    (Some(watts), None) => facts.push(("功耗", watts_text(watts))),
+                    _ => {}
                 }
                 if let Some((core, memory)) = gpu.clocks {
-                    rows.push(("核心時脈", format!("{core:.0} MHz")));
-                    rows.push(("記憶體時脈", format!("{memory:.0} MHz")));
+                    facts.push(("核心時脈", format!("{core:.0} MHz")));
+                    facts.push(("記憶體時脈", format!("{memory:.0} MHz")));
                 }
                 if let Some(fan) = gpu.fan {
-                    rows.push(("風扇", percent(fan)));
+                    facts.push(("風扇", percent(fan)));
                 }
                 if let Some(load) = gpu.memory_load {
-                    rows.push(("記憶體控制器", percent(load)));
+                    facts.push(("記憶體控制器", percent(load)));
                 }
                 if let Some((encoder, decoder)) = gpu.video {
-                    rows.push(("編碼", percent(encoder)));
-                    rows.push(("解碼", percent(decoder)));
+                    facts.push(("編碼 · 解碼", format!("{} · {}", percent(encoder), percent(decoder))));
                 }
                 if let Some((generation, width)) = gpu.pcie {
-                    rows.push(("PCIe", format!("Gen {generation} ×{width}")));
+                    facts.push(("PCIe", format!("Gen {generation} ×{width}")));
                 }
-                let mut rows = named(rows);
-                rows.extend(sample.other_gpus.iter().map(|other| (other.name.clone(), percent(other.usage))));
+                let others = sample
+                    .other_gpus
+                    .iter()
+                    .enumerate()
+                    .map(|(index, other)| {
+                        let (shown, levels) = eased(&|sample| Some(sample.other_gpus.get(index)?.usage));
+                        Rail::new(&other.name, of(percent(other.usage), String::new())).filled(shown, levels)
+                    })
+                    .collect();
                 Content {
-                    fans: Vec::new(),
                     value: percent(self.fraction(module, progress)),
+                    value_level: level(),
                     second: None,
-                    meta: gpu.name.clone(),
+                    meta: [Some(gpu.name.clone()), gpu.temperature.map(temperature)].into_iter().flatten().collect::<Vec<_>>().join(" · "),
                     chart: (fractions(), None),
-                    rows,
+                    limit: "100%".into(),
+                    rails,
+                    blocks: vec![Block::facts(None, facts), Block { title: None, rails: others, facts: Vec::new() }],
                     cores: None,
                     processes: None,
+                    fans: Vec::new(),
                 }
             }
             Module::Ram => {
                 let ram = sample.ram.as_ref()?;
-                let mut rows = vec![
-                    ("已使用", size_text(ram.used)),
-                    ("快取", size_text(ram.cached)),
-                    ("可用", size_text(ram.total - ram.used)),
-                ];
+                let share = |read: fn(&Ram) -> f64| eased(&move |sample| sample.ram.as_ref().map(|ram| read(ram) / ram.total.max(1.0)));
+                let ((used, levels), (cached, _)) = (share(|ram| ram.used), share(|ram| ram.cached));
+                let mut made_of = Rail::new("組成", ("可用 ".into(), size_text(ram.total - ram.used), String::new()));
+                made_of.parts = vec![used, cached];
+                made_of.level = levels;
+                made_of.legend = vec![format!("已使用 {}", size_text(ram.used)), format!("快取 {}", size_text(ram.cached))];
+                let mut rails = vec![made_of];
                 if ram.swap.1 > 0.0 {
-                    rows.push(("置換空間", format!("{} / {}", size_text(ram.swap.0), size_text(ram.swap.1))));
+                    let (shown, levels) = eased(&|sample| sample.ram.as_ref().map(|ram| ram.swap.0 / ram.swap.1.max(1.0)));
+                    rails.push(Rail::new("置換空間", of(size_text(ram.swap.0), format!(" / {}", size_text(ram.swap.1)))).filled(shown, levels));
                 }
-                if let Some(pressure) = ram.pressure {
-                    rows.push(("記憶體壓力", percent(pressure)));
-                }
-                if ram.committed > 0.0 {
-                    rows.push(("已認可", size_text(ram.committed)));
-                }
+                let facts = [
+                    ram.pressure.map(|pressure| ("記憶體壓力", percent(pressure))),
+                    (ram.committed > 0.0).then(|| ("已認可", size_text(ram.committed))),
+                ];
                 Content {
-                    fans: Vec::new(),
                     value: percent(self.fraction(module, progress)),
+                    value_level: level(),
                     second: None,
                     meta: format!("{} / {}", size_text(ram.used), size_text(ram.total)),
                     chart: (fractions(), None),
-                    rows: named(rows),
+                    limit: size_text(ram.total),
+                    rails,
+                    blocks: vec![Block::facts(None, facts.into_iter().flatten().collect())],
                     cores: None,
-                    processes: processes("記憶體", &sample.top_ram, size_text),
+                    processes: processes("記憶體", &sample.top_ram, size_text, ram.total.max(1.0)),
+                    fans: Vec::new(),
                 }
             }
             Module::Disk => {
                 let disk = sample.disk.as_ref()?;
+                let (chart, limit) = speeds();
+                let (shown, levels) = eased(&|sample| sample.fraction(Module::Disk));
+                let root = Rail::new("根目錄", ("可用 ".into(), size_text(disk.free), String::new())).filled(shown, levels);
+                let smart = disk
+                    .smart
+                    .iter()
+                    .map(|smart| {
+                        let used = smart.used.unwrap_or(0.0).clamp(0.0, 1.0);
+                        let (health, level) = match (smart.passed, smart.used) {
+                            (false, _) => ("異常".to_string(), 1.0),
+                            (true, Some(_)) => (percent(1.0 - used), used),
+                            (true, None) => ("正常".to_string(), 0.0),
+                        };
+                        let mut rail = Rail::new(&smart.model, of(health, String::new())).filled(1.0 - used, (level, level));
+                        rail.note = smart.written.map(|bytes| format!("已寫入 {}", size_text(bytes)));
+                        rail
+                    })
+                    .collect();
+                let most = sample.top_disk.iter().fold(0.0_f64, |most, (_, amount)| most.max(*amount));
                 Content {
-                    fans: Vec::new(),
                     value: percent(self.fraction(module, progress)),
+                    value_level: level(),
                     second: None,
                     meta: format!("{} / {}", size_text(disk.total - disk.free), size_text(disk.total)),
-                    chart: speeds(),
-                    rows: named(vec![
-                        ("可用", size_text(disk.free)),
-                        ("讀取", speed_text(disk.read)),
-                        ("寫入", speed_text(disk.write)),
-                    ])
-                    .into_iter()
-                    .chain(disk.smart.iter().map(|smart| {
-                        let health = match (smart.passed, smart.used) {
-                            (false, _) => "異常".to_string(),
-                            (true, Some(used)) => format!("健康 {}", percent((1.0 - used).max(0.0))),
-                            (true, None) => "正常".to_string(),
-                        };
-                        let shown = match smart.written {
-                            Some(bytes) => format!("{health} · 已寫入 {}", size_text(bytes)),
-                            None => health,
-                        };
-                        (smart.model.clone(), shown)
-                    }))
-                    .collect(),
+                    chart,
+                    limit,
+                    rails: vec![root],
+                    blocks: vec![
+                        Block::facts(None, vec![("讀取", speed_text(disk.read)), ("寫入", speed_text(disk.write))]),
+                        Block { title: Some(("SMART", "健康")), rails: smart, facts: Vec::new() },
+                    ],
                     cores: None,
-                    processes: processes("讀寫", &sample.top_disk, speed_text),
+                    processes: processes("讀寫", &sample.top_disk, speed_text, most.max(1.0)),
+                    fans: Vec::new(),
                 }
             }
             Module::Network => {
                 let net = sample.network.as_ref()?;
+                let (chart, limit) = speeds();
+                let link = net.link.map(|megabits| if megabits >= 1000.0 { format!("{} Gbps", megabits / 1000.0) } else { format!("{megabits:.0} Mbps") });
+                let facts = [
+                    address.map(|address| ("本機 IP", address)),
+                    sample.public_ip.as_ref().map(|(address, country)| {
+                        ("公用 IP", if country.is_empty() { address.clone() } else { format!("{address} · {country}") })
+                    }),
+                    Some(("已下載", size_text(net.received_total))),
+                    Some(("已上傳", size_text(net.sent_total))),
+                    (!net.mac.is_empty()).then(|| ("實體位址", net.mac.clone())),
+                ];
                 Content {
-                    fans: Vec::new(),
                     value: format!("↓ {}", speed_text(net.received)),
+                    value_level: None,
                     second: Some(format!("↑ {}", speed_text(net.sent))),
-                    meta: net.interface.clone(),
-                    chart: speeds(),
-                    rows: named(
-                        [
-                            address.map(|address| ("本機 IP", address)),
-                            sample.public_ip.as_ref().map(|(address, country)| {
-                                ("公用 IP", if country.is_empty() { address.clone() } else { format!("{address} · {country}") })
-                            }),
-                            Some(("已下載", size_text(net.received_total))),
-                            Some(("已上傳", size_text(net.sent_total))),
-                            (!net.mac.is_empty()).then(|| ("實體位址", net.mac.clone())),
-                            net.link.map(|megabits| {
-                                let shown = if megabits >= 1000.0 { format!("{} Gbps", megabits / 1000.0) } else { format!("{megabits:.0} Mbps") };
-                                ("連線速度", shown)
-                            }),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                    ),
+                    meta: [Some(net.interface.clone()), link].into_iter().flatten().collect::<Vec<_>>().join(" · "),
+                    chart,
+                    limit,
+                    rails: Vec::new(),
+                    blocks: vec![Block::facts(None, facts.into_iter().flatten().collect())],
                     cores: None,
+                    // Only the way more goes, which is the one that matters.
                     processes: (!sample.top_network.is_empty()).then(|| {
                         let shown = sample
                             .top_network
                             .iter()
-                            .map(|(name, down, up)| (name.clone(), format!("↓ {} ↑ {}", speed_text(*down), speed_text(*up))))
+                            .map(|(name, down, up)| {
+                                let shown = if up > down { format!("↑ {}", speed_text(*up)) } else { format!("↓ {}", speed_text(*down)) };
+                                ProcessRow { name: name.clone(), amount: shown, share: 0.0, icon: None }
+                            })
                             .collect();
                         ("流量", shown)
                     }),
+                    fans: Vec::new(),
                 }
             }
             Module::Power => {
                 let power = sample.power.as_ref()?;
-                let rows = power
+                let whole = power.limit.unwrap_or(POWER_SCALE);
+                let share = |name: &str| eased(&|sample| Some(sample.power.as_ref()?.parts.iter().find(|part| part.0 == name)?.1 / whole));
+                // The parts that make up the sum: the packages and the GPU; the rest are in them.
+                let summed: Vec<&(String, f64, Option<f64>)> =
+                    power.parts.iter().filter(|(name, ..)| name.starts_with("CPU") && name != "CPU 核心" || name == "GPU").collect();
+                let mut sum = Rail::new("合計", ("上限 ".into(), watts_text(whole), String::new()));
+                sum.level = eased(&|sample| Some(sample.power.as_ref()?.total / whole)).1;
+                if power.whole {
+                    sum.parts = vec![eased(&|sample| Some(sample.power.as_ref()?.total / whole)).0];
+                } else {
+                    sum.parts = summed.iter().map(|(name, ..)| share(name).0).collect();
+                    sum.legend = summed.iter().map(|(name, watts, _)| format!("{name} {}", watts_text(*watts))).collect();
+                }
+                let rails = power
                     .parts
                     .iter()
-                    .map(|(name, watts, limit)| {
-                        let shown = match limit {
-                            Some(limit) => format!("{watts:.0} / {}", watts_text(*limit)),
-                            None => watts_text(*watts),
-                        };
-                        (name.clone(), shown)
+                    .filter_map(|(name, watts, limit)| {
+                        let limit = (*limit)?;
+                        let (shown, levels) = eased(&|sample| Some(sample.power.as_ref()?.parts.iter().find(|part| &part.0 == name)?.1 / limit));
+                        Some(Rail::new(name, of(format!("{watts:.0}"), format!(" / {}", watts_text(limit)))).filled(shown, levels))
                     })
                     .collect();
-                let meta = if power.whole {
-                    "整機".to_string()
-                } else {
-                    power.parts.iter().filter(|(name, ..)| name.starts_with("CPU") && name != "CPU 核心" || name == "GPU").map(|(name, ..)| name.as_str()).collect::<Vec<_>>().join(" + ")
-                };
+                let facts = power.parts.iter().filter(|(.., limit)| limit.is_none()).map(|(name, watts, _)| (name.clone(), watts_text(*watts))).collect();
+                let meta = if power.whole { "整機".to_string() } else { summed.iter().map(|(name, ..)| name.as_str()).collect::<Vec<_>>().join(" + ") };
                 Content {
-                    fans: Vec::new(),
                     value: watts_text(power.total),
+                    value_level: level(),
                     second: None,
                     meta,
                     chart: (fractions(), None),
-                    rows,
+                    limit: watts_text(whole),
+                    rails: vec![sum],
+                    blocks: vec![Block { title: None, rails, facts }],
                     cores: None,
                     processes: None,
+                    fans: Vec::new(),
                 }
             }
             Module::Sensors => {
                 let (name, hottest) = sample.hottest()?;
-                let mut rows: Vec<(String, String)> =
-                    sample.temperatures.iter().map(|(name, celsius)| (name.clone(), temperature(*celsius))).collect();
-                rows.extend(sample.voltages.iter().map(|(name, volts)| (name.clone(), format!("{volts:.3} V"))));
+                let critical = |name: &str| sample.critical.iter().find(|(found, _)| found == name).map(|(_, celsius)| *celsius);
+                // The two hottest that have a point they must not pass are measured to it.
+                let mut measured: Vec<&(String, f64)> = sample.temperatures.iter().filter(|(name, _)| critical(name).is_some()).collect();
+                measured.sort_by(|a, b| b.1.total_cmp(&a.1));
+                measured.truncate(2);
+                let rails = measured
+                    .iter()
+                    .map(|(name, celsius)| {
+                        let limit = critical(name).unwrap_or(100.0);
+                        let (shown, levels) = eased(&|sample| Some(sample.temperatures.iter().find(|(found, _)| found == name)?.1 / limit));
+                        Rail::new(name, of(temperature(*celsius), format!(" / {}", temperature(limit)))).filled(shown, levels)
+                    })
+                    .collect();
+                let others = sample
+                    .temperatures
+                    .iter()
+                    .filter(|(name, _)| !measured.iter().any(|(found, _)| found == name))
+                    .map(|(name, celsius)| (name.clone(), temperature(*celsius)))
+                    .collect();
+                let voltages = sample.voltages.iter().map(|(name, volts)| (name.clone(), format!("{volts:.3} V"))).collect();
                 let settable = self.fan_control && sample.fans.iter().any(|fan| fan.pwm.is_some());
                 let speed = |fan: &Fan| format!("{:.0} RPM", fan.rpm);
-                // With a fan that can be set, they are all kept together in the fans' well.
+                // With a fan that can be set, they are all kept together in the fans' list.
                 let mut fans = Vec::new();
+                let mut blocks = vec![Block::facts(None, others), Block::facts(Some(("電壓", "")), voltages)];
                 if settable {
                     for (index, fan) in sample.fans.iter().enumerate() {
                         fans.push(match &fan.pwm {
@@ -1969,25 +2222,24 @@ impl Stats {
                         });
                     }
                 } else {
-                    rows.extend(sample.fans.iter().map(|fan| (fan.name.clone(), speed(fan))));
+                    blocks.push(Block::facts(Some(("風扇", "")), sample.fans.iter().map(|fan| (fan.name.clone(), speed(fan))).collect()));
                 }
                 Content {
-                    fans,
                     value: temperature(*hottest),
+                    value_level: level(),
                     second: None,
                     meta: name.clone(),
                     chart: (fractions(), None),
-                    rows,
+                    limit: temperature(100.0),
+                    rails,
+                    blocks,
                     cores: None,
                     processes: None,
+                    fans,
                 }
             }
         })
     }
-}
-
-fn named(rows: Vec<(&str, String)>) -> Vec<(String, String)> {
-    rows.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
 }
 
 fn label_font() -> pango::FontDescription {
@@ -2026,16 +2278,24 @@ impl Panel {
         let small = font("", 9.0);
         let label = font("", 10.0);
         let big = font("600", 20.0);
+        let cell_width = f64::from(inner - PADDING * 2);
 
         // Measured first: each well's place.
         let mut y = PADDING;
-        let hero = rect(PADDING, y, inner, TITLE_ROW + 32 + HERO_CHART + PADDING);
+        let rails: i32 = content.rails.iter().map(Rail::height).sum();
+        let below_chart = if rails > 0 { GAP + rails + 6 } else { PADDING };
+        let hero = rect(PADDING, y, inner, TITLE_ROW + 32 + LIMIT_ROW + HERO_CHART + below_chart);
         y += hero.size.h + GAP;
-        let details = (!content.rows.is_empty()).then(|| {
-            let well = rect(PADDING, y, inner, INSET * 2 + DETAIL_ROW * content.rows.len() as i32);
-            y += well.size.h + GAP;
-            well
-        });
+        let blocks: Vec<(&Block, Rectangle<i32, Logical>)> = content
+            .blocks
+            .iter()
+            .filter(|block| !block.is_empty())
+            .map(|block| {
+                let well = rect(PADDING, y, inner, block.height(cell_width, &label));
+                y += well.size.h + GAP;
+                (block, well)
+            })
+            .collect();
         let cores = content.cores.as_ref().map(|_| {
             let well = rect(PADDING, y, inner, TITLE_ROW + CORES_HEIGHT + PADDING);
             y += well.size.h + GAP;
@@ -2067,7 +2327,7 @@ impl Panel {
             y += well.size.h + GAP;
             well
         });
-        let (footer, height) = self.footer_at(y);
+        let height = self.footer_at(y);
         let Some((surface, cr)) = draw_panel(WIDTH, height, shown.dark, &colors) else {
             return;
         };
@@ -2082,33 +2342,52 @@ impl Panel {
         draw_well(&cr, &colors, hero, 8.0);
         title(hero, module.title(), &content.meta);
         let value_center = f64::from(hero.loc.y + TITLE_ROW + 14);
-        show_text(&cr, &content.value, &big, text_left(hero), value_center, colors.ink);
+        let value_color = content.value_level.map_or(colors.ink, |level| level_mix(level, slide, colors.ink));
+        show_text(&cr, &content.value, &big, text_left(hero), value_center, value_color);
         if let Some(second) = &content.second {
             let at = text_left(hero) + f64::from(text_size(&content.value, &big).0) + 12.0;
             show_text(&cr, second, &label, at, value_center + 3.0, colors.ink_3);
         }
-        let chart = rect(hero.loc.x + PADDING, hero.loc.y + TITLE_ROW + 32, inner - PADDING * 2, HERO_CHART);
+        // The line's top is the most it may be, said over it, as the rails under it are measured.
+        let chart = rect(hero.loc.x + PADDING, hero.loc.y + TITLE_ROW + 32 + LIMIT_ROW, inner - PADDING * 2, HERO_CHART);
         let (x, cy, w, h) = to_f64(chart);
-        text::rounded_rectangle(&cr, x, cy, w, h, 6.0);
-        cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.05);
-        let _ = cr.fill();
+        show_text(&cr, &content.limit, &small, x, cy - 8.0, colors.ink_3);
+        cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.2);
+        cr.set_line_width(1.0);
+        cr.set_dash(&[2.0, 3.0], 0.0);
+        cr.move_to(x, cy + 0.5);
+        cr.line_to(x + w, cy + 0.5);
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
         let area = (x, cy + 2.0, w, h - 2.0);
         if let Some(second) = &content.chart.1 {
             draw_line(&cr, area, second, HISTORY, slide, colors.ink_3, 1.5, false);
         }
         draw_line(&cr, area, &content.chart.0, HISTORY, slide, colors.ink, 1.5, true);
+        let mut rail_y = cy + h + f64::from(GAP);
+        for rail in &content.rails {
+            draw_rail(&cr, &colors, rail, (x, rail_y, w), slide);
+            rail_y += f64::from(rail.height());
+        }
 
-        let detail = |well: Rectangle<i32, Logical>, top: i32, rows: &mut dyn Iterator<Item = (&str, &str)>| {
-            for (index, (name, value)) in rows.enumerate() {
-                let center = f64::from(well.loc.y + top + DETAIL_ROW * index as i32 + DETAIL_ROW / 2);
-                let value_width = f64::from(text_size(value, &label).0);
-                show_line(&cr, name, &label, (text_left(well), center, f64::from(inner - PADDING * 2) - value_width - 8.0), colors.ink);
-                show_right(&cr, value, &label, (text_right(well), center), colors.ink_3);
+        for (block, well) in &blocks {
+            draw_well(&cr, &colors, *well, 8.0);
+            if let Some((left, right)) = block.title {
+                title(*well, left, right);
             }
-        };
-        if let Some(well) = details {
-            draw_well(&cr, &colors, well, 8.0);
-            detail(well, INSET, &mut content.rows.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+            let mut block_y = f64::from(well.loc.y + if block.title.is_some() { TITLE_ROW } else { 6 });
+            for rail in &block.rails {
+                draw_rail(&cr, &colors, rail, (text_left(*well), block_y, cell_width), slide);
+                block_y += f64::from(rail.height());
+            }
+            let columns = block.columns(cell_width, &label);
+            let cell = cell_width / columns as f64;
+            for (index, (name, value)) in block.facts.iter().enumerate() {
+                let at = text_left(*well) + cell * (index % columns) as f64;
+                let top = block_y + f64::from(FACT_ROW) * (index / columns) as f64;
+                show_line(&cr, name, &small, (at, top + 11.0, cell - 8.0), colors.ink_3);
+                show_line(&cr, value, &label, (at, top + 27.0, cell - 8.0), colors.ink);
+            }
         }
         if let (Some(well), Some(values)) = (cores, &content.cores) {
             draw_well(&cr, &colors, well, 8.0);
@@ -2161,28 +2440,61 @@ impl Panel {
         if let (Some(well), Some((heading, rows))) = (processes, &content.processes) {
             draw_well(&cr, &colors, well, 8.0);
             title(well, "程序", heading);
-            detail(well, TITLE_ROW, &mut rows.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+            // Each one's share drawn as the row's length, as the task manager draws it.
+            for (index, row) in rows.iter().enumerate() {
+                let ProcessRow { name, amount: value, share, icon } = row;
+                let row = rect(well.loc.x + INSET, well.loc.y + TITLE_ROW + DETAIL_ROW * index as i32 + 1, inner - INSET * 2, DETAIL_ROW - 2);
+                let (x, top, w, h) = to_f64(row);
+                let length = w * share;
+                if length >= 1.0 {
+                    text::rounded_rectangle(&cr, x, top, length, h, 6.0_f64.min(length / 2.0));
+                    cr.set_source_rgba(colors.ink.0, colors.ink.1, colors.ink.2, 0.08);
+                    let _ = cr.fill();
+                }
+                let center = top + h / 2.0;
+                let icon_size = f64::from(PROCESS_ICON);
+                // An application's icon, as the Dock draws it; a process of none, a small
+                // ring, as the task manager has it.
+                match icon {
+                    Some(icon) => {
+                        cr.save().ok();
+                        cr.translate(text_left(well), center - icon_size / 2.0);
+                        crate::stacks::paint_fitted(&cr, icon, icon_size, 1.0);
+                        cr.restore().ok();
+                    }
+                    None => {
+                        cr.new_sub_path();
+                        cr.arc(text_left(well) + icon_size / 2.0, center, 2.5, 0.0, std::f64::consts::TAU);
+                        cr.set_source_rgb(colors.ink_3.0, colors.ink_3.1, colors.ink_3.2);
+                        cr.set_line_width(1.0);
+                        let _ = cr.stroke();
+                    }
+                }
+                let name_left = text_left(well) + icon_size + 8.0;
+                let value_width = f64::from(text_size(value, &label).0);
+                show_line(&cr, name, &label, (name_left, center, text_right(well) - name_left - value_width - 8.0), colors.ink);
+                show_right(&cr, value, &label, (text_right(well), center), colors.ink_3);
+            }
         }
 
-        self.draw_footer(&cr, footer, shown);
+        self.draw_footer(&cr, shown);
         drop(cr);
         self.picture = text::picture(surface);
     }
 
-    /// The footer's well at `y`, its rows put among the parts, and the panel's height with it.
-    fn footer_at(&mut self, y: i32) -> (Rectangle<i32, Logical>, i32) {
-        let inner = WIDTH - PADDING * 2;
-        let footer = rect(PADDING, y, inner, INSET * 2 + LIST_ROW * 2);
-        let row = |index: i32| rect(PADDING + INSET, y + INSET + LIST_ROW * index, inner - INSET * 2, LIST_ROW);
+    /// The footer's two actions side by side at `y`, put among the parts, and the panel's
+    /// height with them.
+    fn footer_at(&mut self, y: i32) -> i32 {
+        let half = (WIDTH - PADDING * 2) / 2;
+        let action = |index: i32| rect(PADDING + half * index, y, half, LIST_ROW);
         self.parts.retain(|(part, _)| matches!(part, Part::Row(_) | Part::FanMode(_) | Part::FanSpeed(_)));
-        self.parts.extend([(Part::Tasks, row(0)), (Part::Settings, row(1))]);
-        (footer, y + footer.size.h + PADDING)
+        self.parts.extend([(Part::Tasks, action(0)), (Part::Settings, action(1))]);
+        y + LIST_ROW + PADDING
     }
 
-    fn draw_footer(&self, cr: &Context, footer: Rectangle<i32, Logical>, shown: &Shown) {
+    fn draw_footer(&self, cr: &Context, shown: &Shown) {
         let colors = colors(shown.dark);
         let label = font("", 10.0);
-        draw_well(cr, &colors, footer, 8.0);
         for (part, area) in &self.parts {
             let text = match part {
                 Part::Tasks => "開啟工作管理員",
@@ -2190,8 +2502,8 @@ impl Panel {
                 Part::Row(_) | Part::FanMode(_) | Part::FanSpeed(_) => continue,
             };
             let color = draw_list_row(cr, &colors, *area, shown.hovered == Some(*part));
-            let center = f64::from(area.loc.y + area.size.h / 2);
-            show_text(cr, text, &label, f64::from(area.loc.x + PADDING - INSET), center, color);
+            let (x, y, w, h) = to_f64(*area);
+            show_text(cr, text, &label, x + (w - f64::from(text_size(text, &label).0)) / 2.0, y + h / 2.0, color);
         }
     }
 
@@ -2200,7 +2512,7 @@ impl Panel {
     fn draw_summary(&mut self, stats: &Stats, modules: &[Module], shown: &Shown, (progress, fahrenheit): (f64, bool)) {
         let colors = colors(shown.dark);
         let inner = WIDTH - PADDING * 2;
-        let label = font("", 10.0);
+        let value_font = font("Medium", 11.0);
         let small = font("", 9.0);
         let well = rect(PADDING, PADDING, inner, INSET * 2 + SUMMARY_ROW * modules.len() as i32);
         self.parts = modules
@@ -2210,7 +2522,7 @@ impl Panel {
                 (Part::Row(*module), rect(PADDING + INSET, PADDING + INSET + SUMMARY_ROW * index as i32, inner - INSET * 2, SUMMARY_ROW))
             })
             .collect();
-        let (footer, height) = self.footer_at(well.loc.y + well.size.h + GAP);
+        let height = self.footer_at(well.loc.y + well.size.h + GAP);
         let Some((surface, cr)) = draw_panel(WIDTH, height, shown.dark, &colors) else {
             return;
         };
@@ -2223,7 +2535,11 @@ impl Panel {
             let (x, y, w, h) = to_f64(*area);
             let center = y + h / 2.0;
             let text_x = x + f64::from(PADDING - INSET);
-            show_text(&cr, module.title(), &label, text_x, center - 8.0, color);
+            // The name over its value, which is what is looked for.
+            cr.push_group();
+            show_text(&cr, module.title(), &small, text_x, center - 9.0, color);
+            let _ = cr.pop_group_to_source();
+            let _ = cr.paint_with_alpha(0.6);
             let value = match (module, stats.sample.as_ref()) {
                 (Module::Network, Some(sample)) => sample
                     .network
@@ -2236,10 +2552,7 @@ impl Panel {
                 (Module::Power, Some(sample)) => sample.power.as_ref().map(|power| watts_text(power.total)).unwrap_or_default(),
                 _ => percent(stats.fraction(module, progress)),
             };
-            cr.push_group();
-            show_text(&cr, &value, &small, text_x, center + 9.0, color);
-            let _ = cr.pop_group_to_source();
-            let _ = cr.paint_with_alpha(0.7);
+            show_text(&cr, &value, &value_font, text_x, center + 8.0, color);
             let chevron = x + w - 14.0;
             draw_chevron(&cr, chevron, center, 0.0, color);
             let (chart_w, chart_h) = (f64::from(SUMMARY_CHART.0), f64::from(SUMMARY_CHART.1));
@@ -2260,7 +2573,7 @@ impl Panel {
                 }
             }
         }
-        self.draw_footer(&cr, footer, shown);
+        self.draw_footer(&cr, shown);
         drop(cr);
         self.picture = text::picture(surface);
     }
@@ -2292,6 +2605,17 @@ impl Nekoland {
             stats.wanted = wanted;
         }
         let found: Vec<Sample> = stats.found.as_ref().map(|found| found.try_iter().collect()).unwrap_or_default();
+        if !found.is_empty() && config.stats_processes > 0 {
+            let windows = self
+                .all_windows()
+                .filter(|window| crate::windows::is_managed(window))
+                .filter_map(|window| Some((self.window_pid(window)?, crate::windows::window_names(window).1)))
+                .collect();
+            if let Ok(mut shared) = WINDOWS.lock() {
+                *shared = windows;
+            }
+        }
+        let stats = &mut self.menu_bar.stats;
         let mut told = Vec::new();
         for sample in found {
             stats.take(sample);
@@ -2336,14 +2660,22 @@ impl Nekoland {
         };
         match panel.view {
             View::Module(module) => {
-                if let Some(content) = stats.content(module, fahrenheit, progress, address) {
+                let apps = stats.sample.as_ref().map(|sample| sample.apps.clone()).unwrap_or_default();
+                if let Some(mut content) = stats.content(module, fahrenheit, progress, address) {
+                    for row in content.processes.iter_mut().flat_map(|(_, rows)| rows).filter(|row| apps.contains(&row.name)) {
+                        let info = self.apps.info(&row.name).clone();
+                        row.icon = info.icon_name.as_deref().and_then(|icon| self.dock_icon(icon, PROCESS_ICON, dark));
+                        if let Some(name) = info.name.filter(|name| !name.is_empty()) {
+                            row.name = name;
+                        }
+                    }
                     panel.draw(module, &content, &shown, progress);
                 }
             }
             View::Summary => panel.draw_summary(stats, &modules, &shown, (progress, fahrenheit)),
         }
         panel.shown = Some(shown);
-        stats.panel = Some(panel);
+        self.menu_bar.stats.panel = Some(panel);
     }
 
     /// Opens a panel under its place in the bar, or closes it if it is open; the one open
@@ -2604,7 +2936,7 @@ mod tests {
         for (file, value) in [("name", "nct6798"), ("fan1_input", "1200"), ("pwm1", "128"), ("pwm1_enable", "5"), ("fan2_input", "800")] {
             std::fs::write(chip.join(file), format!("{value}\n")).unwrap();
         }
-        let (_, fans, _) = read_sensors(&hwmon);
+        let (_, fans, ..) = read_sensors(&hwmon);
         std::fs::remove_dir_all(&hwmon).unwrap();
         assert_eq!(fans.len(), 2);
         assert_eq!((fans[0].name.as_str(), fans[0].rpm), ("風扇 1", 1200.0));
