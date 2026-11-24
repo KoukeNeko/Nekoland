@@ -205,6 +205,7 @@ impl Nekoland {
             .map(|entry| (entry.window.clone(), entry.icon.clone(), entry.label.clone()))
             .collect();
         let colors = colors(dark);
+        let waits = text::icon_waits();
         let icons: Vec<Option<Picture>> = shown
             .iter()
             .map(|(_, icon, label)| {
@@ -259,7 +260,7 @@ impl Nekoland {
         drop(cr);
         switcher.first = first;
         switcher.picture = text::picture(surface);
-        switcher.drawn = Some((switcher.selected, dark));
+        switcher.drawn = (text::icon_waits() == waits).then_some((switcher.selected, dark));
         switcher.rect = rect;
     }
 

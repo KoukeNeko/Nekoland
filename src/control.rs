@@ -12,7 +12,7 @@ use std::{
 use cairo::{Context, ImageSurface};
 use smithay::{
     backend::renderer::element::Id,
-    utils::{Logical, Point, Rectangle},
+    utils::{Logical, Point, Rectangle, Size},
 };
 
 use crate::{
@@ -155,6 +155,8 @@ pub struct ControlCenter {
     player: Option<Player>,
     /// The cover of what plays, by the path it was read from.
     art: Option<(String, Option<ImageSurface>)>,
+    /// The cover being read, until it is.
+    art_read: Option<(String, crate::stacks::Reading)>,
     open: Option<List>,
     /// The list closing as `open` opens, and when that began.
     closing: Option<List>,
@@ -252,6 +254,7 @@ impl ControlCenter {
             microphone: None,
             player: None,
             art: None,
+            art_read: None,
             open: None,
             closing: None,
             toggled: None,
@@ -460,10 +463,18 @@ impl ControlCenter {
         let path = self.player.as_ref()?.art.clone()?;
         if self.art.as_ref().map(|(read, _)| read) != Some(&path) {
             let scale = text::picture_scale();
-            let surface = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, ART * scale, ART * scale, true)
-                .inspect_err(|err| tracing::debug!("{path}: {err}"))
-                .ok()
-                .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None))
+            let pixels = Size::from((ART * scale, ART * scale));
+            let reading = match self.art_read.take() {
+                Some((asked, reading)) if asked == path => reading,
+                _ => crate::stacks::read_on_a_thread(path.clone().into(), pixels),
+            };
+            let Some(pixels) = reading.lock().ok().and_then(|mut read| read.take()) else {
+                text::picture_waited();
+                self.art_read = Some((path, reading));
+                return None;
+            };
+            let surface = pixels
+                .and_then(crate::stacks::pixels_surface)
                 .inspect(|surface| surface.set_device_scale(f64::from(scale), f64::from(scale)));
             self.art = Some((path, surface));
         }
@@ -1023,8 +1034,9 @@ impl Nekoland {
             hovered: control.hovered,
         };
         if control.shown.as_ref() != Some(&shown) || control.picture.is_none() {
+            let waits = text::icon_waits();
             control.draw(&shown);
-            control.shown = Some(shown);
+            control.shown = (text::icon_waits() == waits).then_some(shown);
         }
     }
 

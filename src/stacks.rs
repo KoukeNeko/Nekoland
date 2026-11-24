@@ -158,17 +158,6 @@ pub fn icon_names(path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// An item's thumbnail, made by a file manager, or else its kind's icon. A picture itself is
-/// only read on a thread, with `read_on_a_thread`.
-pub fn item_icon(item: &Item, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
-    let scaled = size * text::picture_scale();
-    picture_path(item)
-        .filter(|path| *path != item.path)
-        .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_scale(path, scaled, scaled, true).ok())
-        .and_then(|pixbuf| text::pixbuf_surface(&pixbuf, None))
-        .or_else(|| kind_icon(item, size, tint))
-}
-
 /// The picture an item's icon is made from: the thumbnail a file manager made of it, or the
 /// picture itself when it is one.
 pub fn picture_path(item: &Item) -> Option<PathBuf> {
@@ -201,23 +190,21 @@ pub type Pixels = (gio::glib::Bytes, bool, i32, i32, i32);
 /// Pixels read on a thread: `None` until it is done, then what it read, if anything.
 pub type Reading = Arc<Mutex<Option<Option<Pixels>>>>;
 
-type PictureJob = (PathBuf, Size<i32, Logical>, Reading);
+type PictureJob = Box<dyn FnOnce() + Send>;
 
-/// Reads the picture at `path`, at most `pixels` big, on a thread, one picture at a time, as
-/// a folder of photos would otherwise start a thread for each.
-pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
+/// Runs `job`, which reads a picture, on a thread, one at a time, as a folder of photos would
+/// otherwise start a thread for each, and then has the screen drawn again. Without the
+/// thread it is not run, and what waits for it keeps what stands in for the picture.
+pub fn on_the_picture_thread(job: impl FnOnce() + Send + 'static) {
     static PICTURES: OnceLock<Option<mpsc::Sender<PictureJob>>> = OnceLock::new();
-    let read = Arc::new(Mutex::new(None));
     let pictures = PICTURES.get_or_init(|| {
         let (send, jobs) = mpsc::channel::<PictureJob>();
         let spawned = std::thread::Builder::new()
             .name("nekoland-pictures".into())
             .spawn(move || {
-                for (path, pixels, into) in jobs {
-                    let found = read_picture(&path, pixels);
-                    if let Ok(mut read) = into.lock() {
-                        *read = Some(found);
-                    }
+                for job in jobs {
+                    job();
+                    text::redraw_soon();
                 }
             });
         spawned
@@ -225,10 +212,21 @@ pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
             .ok()
             .map(|_| send)
     });
-    // Without the thread, the item keeps its kind's icon.
     if let Some(pictures) = pictures {
-        let _ = pictures.send((path, pixels, read.clone()));
+        let _ = pictures.send(Box::new(job));
     }
+}
+
+/// Reads the picture at `path`, at most `pixels` big, on the pictures' thread.
+pub fn read_on_a_thread(path: PathBuf, pixels: Size<i32, Logical>) -> Reading {
+    let read = Arc::new(Mutex::new(None));
+    let into = read.clone();
+    on_the_picture_thread(move || {
+        let found = read_picture(&path, pixels);
+        if let Ok(mut read) = into.lock() {
+            *read = Some(found);
+        }
+    });
     read
 }
 
@@ -241,20 +239,29 @@ fn read_picture(path: &Path, pixels: Size<i32, Logical>) -> Option<Pixels> {
             read.inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
                 .ok()
         })
-        .map(|pixbuf| {
-            let stride = pixbuf.rowstride();
-            (
-                pixbuf.read_pixel_bytes(),
-                pixbuf.has_alpha(),
-                pixbuf.width(),
-                pixbuf.height(),
-                stride,
-            )
-        })
+        .map(|pixbuf| pixbuf_pixels(&pixbuf))
+}
+
+pub fn pixbuf_pixels(pixbuf: &gdk_pixbuf::Pixbuf) -> Pixels {
+    (
+        pixbuf.read_pixel_bytes(),
+        pixbuf.has_alpha(),
+        pixbuf.width(),
+        pixbuf.height(),
+        pixbuf.rowstride(),
+    )
 }
 
 /// A picture's surface from pixels read on a thread.
-pub fn pixels_surface((bytes, alpha, width, height, stride): Pixels) -> Option<ImageSurface> {
+pub fn pixels_surface(pixels: Pixels) -> Option<ImageSurface> {
+    tinted_pixels_surface(pixels, None)
+}
+
+/// The same, all in one colour where `tint` gives one, as a symbolic icon is drawn.
+pub fn tinted_pixels_surface(
+    (bytes, alpha, width, height, stride): Pixels,
+    tint: Option<(f64, f64, f64)>,
+) -> Option<ImageSurface> {
     let pixbuf = gdk_pixbuf::Pixbuf::from_bytes(
         &bytes,
         gdk_pixbuf::Colorspace::Rgb,
@@ -264,7 +271,7 @@ pub fn pixels_surface((bytes, alpha, width, height, stride): Pixels) -> Option<I
         height,
         stride,
     );
-    text::pixbuf_surface(&pixbuf, None)
+    text::pixbuf_surface(&pixbuf, tint)
 }
 
 /// Draws `icon` fitted to a square of `size` at the origin, in the middle of it.

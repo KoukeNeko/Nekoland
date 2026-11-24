@@ -375,8 +375,11 @@ impl Nekoland {
         }
         let key = wanted.icon_key.clone();
         if !self.app_stock.icons.contains_key(&key) {
+            let waits = text::icon_waits();
             let icon = self.draw_icon(wanted);
-            self.app_stock.icons.insert(key, icon);
+            if text::icon_waits() == waits {
+                self.app_stock.icons.insert(key, icon);
+            }
         }
         if !self.app_stock.labels.contains_key(&wanted.name) {
             self.app_stock.labels.insert(wanted.name.clone(), draw_label(&wanted.name));

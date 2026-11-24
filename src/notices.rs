@@ -524,8 +524,11 @@ impl Nekoland {
                 continue;
             }
             let notification = self.notices.kept[index].notification.clone();
+            let waits = text::icon_waits();
             let icon = self.notification_icon(&notification);
-            self.notices.kept[index].icon = Some((dark, icon));
+            if text::icon_waits() == waits {
+                self.notices.kept[index].icon = Some((dark, icon));
+            }
         }
     }
 
@@ -558,10 +561,11 @@ impl Nekoland {
         let previews = self.config.notification_previews;
         for index in stale {
             let notification = self.notices.banners[index].notification.clone();
+            let waits = text::icon_waits();
             let icon = self.notification_icon(&notification);
             let banner = &mut self.notices.banners[index];
             banner.picture = draw_banner(&notification, icon, dark, previews);
-            banner.drawn_dark = Some(dark);
+            banner.drawn_dark = (text::icon_waits() == waits).then_some(dark);
         }
 
         // Each shown banner glides from where it is to where it now stands, as one above it

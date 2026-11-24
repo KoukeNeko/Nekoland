@@ -1078,8 +1078,9 @@ impl Nekoland {
             minute: panel.minute,
         };
         if panel.shown.as_ref() != Some(&shown) || panel.picture.is_none() {
+            let waits = text::icon_waits();
             panel.draw(&shown, agenda);
-            panel.shown = Some(shown);
+            panel.shown = (text::icon_waits() == waits).then_some(shown);
         }
         self.menu_bar.clock_picked = Some(panel.picked);
     }

@@ -2651,6 +2651,7 @@ impl Nekoland {
         let Some(mut panel) = stats.panel.take() else {
             return;
         };
+        let waits = text::icon_waits();
         match panel.view {
             View::Module(module) => {
                 let apps = stats.sample.as_ref().map(|sample| sample.apps.clone()).unwrap_or_default();
@@ -2667,7 +2668,7 @@ impl Nekoland {
             }
             View::Summary => panel.draw_summary(stats, &modules, &shown, (progress, fahrenheit)),
         }
-        panel.shown = Some(shown);
+        panel.shown = (text::icon_waits() == waits).then_some(shown);
         self.menu_bar.stats.panel = Some(panel);
     }
 

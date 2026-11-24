@@ -157,6 +157,9 @@ pub struct Desktop {
     /// A picture being read for Quick Look away from the compositor's thread, which a
     /// camera's largest photos would hold up for half a second.
     reading: Option<(Looked, stacks::Reading)>,
+    /// Whether Quick Look's panel was drawn while its kind's icon was still being decoded,
+    /// and is to be drawn again.
+    look_waiting: bool,
     /// Each item's icon as drawn, and the pictures being read for them on a thread, which
     /// would otherwise be read again at every click, holding the screen.
     icons: Vec<(Item, ImageSurface)>,
@@ -505,6 +508,7 @@ impl Nekoland {
         );
         if desktop.icon_reads.is_empty()
             && desktop.reading.is_none()
+            && !desktop.look_waiting
             && desktop.checked.as_ref() == Some(&checked)
         {
             return;
@@ -1427,27 +1431,35 @@ fn refresh_quick_look(desktop: &mut Desktop, item: &Item, wanted: Looked) {
         .quick_look
         .as_ref()
         .is_some_and(|(looked, _)| *looked == wanted);
-    if drawn && reading.is_none() {
+    if drawn && reading.is_none() && !desktop.look_waiting {
         return;
     }
     let (_, dark, size) = wanted.clone();
+    let waits = text::icon_waits();
     if let Some((_, read)) = reading {
         let Some(pixels) = read.lock().ok().and_then(|mut read| read.take()) else {
             return;
         };
         desktop.reading = None;
         desktop.quick_look = draw_quick_look(item, pixels, size, dark).map(|picture| (wanted, picture));
+        desktop.look_waiting = text::icon_waits() != waits;
         return;
     }
     desktop.reading = None;
-    if !item.kind.starts_with("image/") {
-        desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted, picture));
-        return;
-    }
-    // Its card, as for any file, stands in until the picture is read.
+    // Its card, as for any file, stands in until the picture is read: the picture itself,
+    // or the thumbnail a file manager made of another file, for its icon.
     desktop.quick_look = draw_quick_look(item, None, size, dark).map(|picture| (wanted.clone(), picture));
-    let room = look_room(size) * text::picture_scale();
-    desktop.reading = Some((wanted, stacks::read_on_a_thread(item.path.clone(), room)));
+    desktop.look_waiting = text::icon_waits() != waits;
+    let scale = text::picture_scale();
+    let picture = if item.kind.starts_with("image/") {
+        Some((item.path.clone(), look_room(size) * scale))
+    } else {
+        let icon = Size::from((LOOK_ICON * scale, LOOK_ICON * scale));
+        stacks::picture_path(item).map(|thumbnail| (thumbnail, icon))
+    };
+    if let Some((path, pixels)) = picture {
+        desktop.reading = Some((wanted, stacks::read_on_a_thread(path, pixels)));
+    }
 }
 
 /// Keeps an icon for each item, its kind's at first, then its picture once that is read on
@@ -1482,15 +1494,21 @@ fn refresh_icons(desktop: &mut Desktop, items: &[Item]) {
             .collect();
         items.iter().filter(|item| !known.contains(item)).collect()
     };
+    let waits = text::icon_waits();
     for item in missing {
         if let Some(icon) = stacks::kind_icon(item, ICON, (1.0, 1.0, 1.0)) {
             desktop.icons.push((item.clone(), icon));
+            desktop.drawn = None;
         }
         if let Some(path) = stacks::picture_path(item) {
             let size = ICON * text::picture_scale();
             let read = stacks::read_on_a_thread(path, Size::from((size, size)));
             desktop.icon_reads.push((item.clone(), read));
         }
+    }
+    // Looked at again until its kind's icon is decoded.
+    if text::icon_waits() != waits {
+        desktop.checked = None;
     }
 }
 
@@ -1510,7 +1528,8 @@ fn draw_quick_look(
     let colors = menubar::colors(dark);
     let room = look_room(output);
     let scale = text::picture_scale();
-    let image = pixels.and_then(stacks::pixels_surface);
+    let read = pixels.and_then(stacks::pixels_surface);
+    let (image, thumbnail) = if item.kind.starts_with("image/") { (read, None) } else { (None, read) };
     let shown = (!item.is_dir && gio::content_type_is_a(&item.kind, "text/plain"))
         .then(|| {
             let mut start = Vec::new();
@@ -1585,7 +1604,7 @@ fn draw_quick_look(
         cr.move_to(16.0, top + 12.0);
         pangocairo::functions::show_layout(&cr, &layout);
     } else {
-        if let Some(icon) = stacks::item_icon(item, LOOK_ICON, colors.ink) {
+        if let Some(icon) = thumbnail.or_else(|| stacks::kind_icon(item, LOOK_ICON, colors.ink)) {
             let _ = cr.save();
             cr.translate(20.0, top + 20.0);
             stacks::paint_fitted(&cr, &icon, f64::from(LOOK_ICON), 1.0);

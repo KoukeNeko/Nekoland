@@ -334,6 +334,7 @@ impl Nekoland {
                 }
                 top += height;
             }
+            let waits = text::icon_waits();
             let tiles: HashMap<usize, Tile> = shown
                 .into_iter()
                 .filter_map(|app| Some((app, self.grid_tile(Entry::App(app), icon(style))?)))
@@ -341,7 +342,7 @@ impl Nekoland {
             let picture = draw_list(layout, style, &lines, scroll, &tiles, hovered, focus);
             let apps = self.overview.as_mut()?.apps.as_mut()?;
             apps.list_picture = picture;
-            apps.list_drawn = Some(key);
+            apps.list_drawn = (text::icon_waits() == waits).then_some(key);
         }
         if sidebar_stale {
             let sidebar = layout.sidebar?;

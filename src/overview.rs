@@ -173,6 +173,9 @@ struct SpacesBar {
     scroll: f64,
     /// How far along it can be.
     scroll_end: f64,
+    /// Whether a desktop's own wallpaper was still being read: the bar is drawn again until
+    /// it is.
+    waiting: bool,
 }
 
 struct BarColors {
@@ -394,7 +397,12 @@ thread_local! {
 }
 
 type WallpaperTiles =
-    std::collections::HashMap<(String, i32, i32, Option<std::time::SystemTime>), Option<cairo::ImageSurface>>;
+    std::collections::HashMap<(String, i32, i32, Option<std::time::SystemTime>), WallpaperTile>;
+
+enum WallpaperTile {
+    Reading(crate::stacks::Reading),
+    Drawn(Option<cairo::ImageSurface>),
+}
 
 /// A wallpaper filling a desktop's picture `width` by `height`, cut to it as swaybg's fill
 /// mode does.
@@ -409,15 +417,30 @@ fn wallpaper_tile(path: &str, width: i32, height: i32) -> Option<cairo::ImageSur
         if tiles.len() > 32 {
             tiles.clear();
         }
-        tiles.entry(key).or_insert_with(|| draw_wallpaper_tile(path, width, height)).clone()
+        let tile = tiles.entry(key).or_insert_with(|| {
+            let path = crate::config::expand_home(path).into();
+            WallpaperTile::Reading(crate::stacks::read_on_a_thread(path, Size::from((-1, height * 2))))
+        });
+        let read = match tile {
+            WallpaperTile::Drawn(drawn) => return drawn.clone(),
+            WallpaperTile::Reading(reading) => reading.lock().ok().and_then(|mut read| read.take()),
+        };
+        let Some(pixels) = read else {
+            text::picture_waited();
+            return None;
+        };
+        let drawn = pixels.and_then(|pixels| draw_wallpaper_tile(pixels, width, height));
+        *tile = WallpaperTile::Drawn(drawn.clone());
+        drawn
     })
 }
 
-fn draw_wallpaper_tile(path: &str, width: i32, height: i32) -> Option<cairo::ImageSurface> {
-    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(crate::config::expand_home(path), -1, height * 2, true)
-        .inspect_err(|err| tracing::warn!("{path}: {err}"))
-        .ok()?;
-    let picture = text::pixbuf_surface(&pixbuf, None)?;
+fn draw_wallpaper_tile(
+    pixels: crate::stacks::Pixels,
+    width: i32,
+    height: i32,
+) -> Option<cairo::ImageSurface> {
+    let picture = crate::stacks::pixels_surface(pixels)?;
     let tile = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;
     let cr = cairo::Context::new(&tile).ok()?;
     let scale = (f64::from(width) / f64::from(picture.width())).max(f64::from(height) / f64::from(picture.height()));
@@ -783,6 +806,7 @@ impl Nekoland {
     /// marked, with the add button at the right end; and the same bar opened up, each
     /// desktop shown small as it is, the current one ringed, named under its picture.
     fn spaces_bar(&self, output: Rectangle<i32, Logical>) -> SpacesBar {
+        let waits = text::icon_waits();
         let dark = self.menu_bar_dark();
         let colors = BarColors::new(dark);
         let count = self.workspaces.count();
@@ -970,6 +994,7 @@ impl Nekoland {
             close,
             scroll,
             scroll_end,
+            waiting: text::icon_waits() != waits,
         }
     }
 
@@ -1206,6 +1231,9 @@ impl Nekoland {
 
     /// Moves the overview's animation on; called before each frame.
     pub fn tick_overview(&mut self) {
+        if self.overview.as_ref().is_some_and(|overview| overview.bar.waiting) {
+            self.refresh_overview_bar();
+        }
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
         let output = self
             .space

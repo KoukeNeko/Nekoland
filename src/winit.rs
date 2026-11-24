@@ -150,6 +150,7 @@ pub fn init_winit(
         .handle()
         .insert_source(source, move |_, _, _| pinged.borrow().window().request_redraw())
         .map_err(|err| err.error)?;
+    crate::text::redraw_on_decoded_icons(ping.clone());
     state.redraw = Some(ping);
     if state.remote {
         let covering = backend.clone();

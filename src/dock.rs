@@ -1119,9 +1119,14 @@ impl Nekoland {
             self.dock.file_icons.clear();
         }
         // Its kind's icon until its picture is read.
+        let waits = text::icon_waits();
         let icon = stacks::kind_icon(item, 64, ink(dark));
+        let picture = stacks::picture_path(item);
+        if picture.is_none() && text::icon_waits() != waits {
+            return icon;
+        }
         self.dock.file_icons.push((item.path.clone(), dark, icon.clone()));
-        if let Some(picture) = stacks::picture_path(item) {
+        if let Some(picture) = picture {
             let size = 64 * text::picture_scale();
             let read = stacks::read_on_a_thread(picture, Size::from((size, size)));
             self.dock.file_icon_reads.push((item.path.clone(), dark, read));
@@ -1414,9 +1419,12 @@ impl Nekoland {
         if self.dock.icons.len() > 400 {
             self.dock.icons.clear();
         }
+        let waits = text::icon_waits();
         let icon =
             text::named_icon(name, "", (size * 3).max(96), ink(dark)).and_then(|icon| trimmed(icon, size));
-        self.dock.icons.push((key, pixels, dark, icon.clone()));
+        if text::icon_waits() == waits {
+            self.dock.icons.push((key, pixels, dark, icon.clone()));
+        }
         icon
     }
 
@@ -1812,6 +1820,7 @@ impl Nekoland {
             return;
         };
         let tiles = self.dock.tiles.clone();
+        let waits = text::icon_waits();
         {
             let Ok(cr) = Context::new(&surface) else {
                 return;
@@ -1999,7 +2008,7 @@ impl Nekoland {
             }
         }
         self.dock.icons_picture = text::picture(surface);
-        self.dock.drawn = Some(drawn);
+        self.dock.drawn = (text::icon_waits() == waits).then_some(drawn);
         self.dock.drawn_tiles = tiles;
     }
 
@@ -2137,6 +2146,7 @@ impl Nekoland {
             .preview
             .as_ref()
             .is_none_or(|preview| preview.drawn.as_ref() != Some(&key) || preview.picture.is_none());
+        let waits = text::icon_waits();
         let picture = if stale {
             let header_icon = icon.as_deref().and_then(|icon| self.dock_icon(icon, 16, dark));
             draw_preview(
@@ -2164,7 +2174,7 @@ impl Nekoland {
             away: if candidate.is_some() { None } else { away },
             opened,
             picture,
-            drawn: Some(key),
+            drawn: (text::icon_waits() == waits).then_some(key),
         });
     }
 
@@ -2459,11 +2469,14 @@ impl Nekoland {
             }
             // A picture takes the surface's pixels, which cairo gives out only for a surface
             // nothing else holds; the cached icon is held by the cache.
+            let waits = text::icon_waits();
             let picture = icon
                 .as_deref()
                 .and_then(|icon| self.dock_icon(icon, BADGE, dark))
                 .and_then(|icon| text::picture(text::copy_of(&icon)?));
-            self.dock.badges.push((icon, dark, picture));
+            if text::icon_waits() == waits {
+                self.dock.badges.push((icon, dark, picture));
+            }
         }
     }
 
@@ -3587,6 +3600,7 @@ impl Nekoland {
                 .cloned()
                 .collect(),
         };
+        let waits = text::icon_waits();
         let mut icons: Vec<Option<ImageSurface>> = shown.iter().map(|item| self.file_icon(item, dark)).collect();
         // The fan's last line opens the folder, beside the folder's own icon.
         if let Some(folder) = fan_folder {
@@ -3595,6 +3609,9 @@ impl Nekoland {
         let Some(stack) = self.dock.stack_mut(closing) else {
             return;
         };
+        if text::icon_waits() != waits {
+            stack.drawn = None;
+        }
         stack.picture = match &stack.view {
             Opened::Fan { fan, labels, .. } => fan.draw(labels, &icons, progress, hovered, dark),
             Opened::Grid { grid, .. } => {

@@ -327,6 +327,7 @@ impl Nekoland {
                 )
             })
             .collect();
+        let waits = text::icon_waits();
         let icons: Vec<Option<cairo::ImageSurface>> = shown
             .iter()
             .map(|(_, icon, _)| icon.as_deref().and_then(|icon| self.dock_icon(icon, ICON, dark)))
@@ -408,7 +409,7 @@ impl Nekoland {
         }
         drop(cr);
         assist.picture = text::picture(surface);
-        assist.drawn = Some(key);
+        assist.drawn = (text::icon_waits() == waits).then_some(key);
         assist.rect = rect;
     }
 

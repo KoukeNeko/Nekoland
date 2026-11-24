@@ -454,6 +454,7 @@ impl Nekoland {
             return;
         }
         let dark = self.menu_bar.dark;
+        let waits = text::icon_waits();
         self.refresh_kept_icons(dark);
         let room = self.bar_size().h - (MENU_BAR_HEIGHT + GAP_BELOW_BAR) - notices::MARGIN;
         let previews = self.config.notification_previews;
@@ -482,7 +483,7 @@ impl Nekoland {
         };
         if center.shown.as_ref() != Some(&shown) || center.picture.is_none() {
             center.draw(kept, &shown);
-            center.shown = Some(shown);
+            center.shown = (text::icon_waits() == waits).then_some(shown);
         }
     }
 

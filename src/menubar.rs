@@ -387,6 +387,9 @@ pub struct MenuBar {
     /// Whether the wallpaper is dark under the bar, for the wallpaper, how it is drawn and
     /// the output's size it was found for.
     wallpaper_dark: Option<(WallpaperKey, bool)>,
+    /// The wallpaper being looked at on the pictures' thread: whether it is dark, if it
+    /// could be read, once that is done.
+    wallpaper_looked: Option<(WallpaperKey, std::sync::mpsc::Receiver<Option<bool>>)>,
     bar_id: Id,
     content_id: Id,
     menu_ids: Vec<Id>,
@@ -433,6 +436,7 @@ impl Default for MenuBar {
             followed: None,
             drawn: None,
             wallpaper_dark: None,
+            wallpaper_looked: None,
             bar_id: Id::new(),
             content_id: Id::new(),
             menu_ids: Vec::new(),
@@ -705,6 +709,7 @@ impl MenuBar {
         if let Some(icon) = self.icons.get(&cache_key) {
             return icon.clone();
         }
+        let waits = text::icon_waits();
         let icon = (!name.is_empty())
             .then(|| text::named_icon(name, theme_path, STATUS_ICON, tint))
             .flatten()
@@ -712,7 +717,9 @@ impl MenuBar {
                 let (width, height, argb) = pixmap?;
                 text::pixmap_icon(*width, *height, argb)
             });
-        self.icons.insert(cache_key, icon.clone());
+        if text::icon_waits() == waits {
+            self.icons.insert(cache_key, icon.clone());
+        }
         icon
     }
 
@@ -1160,6 +1167,7 @@ impl MenuBar {
             return;
         }
         level.drawn = Some(key);
+        let waits = text::icon_waits();
         let size: Size<i32, Logical> = level.rect.size;
         let Some((surface, cr)) = crate::control::draw_panel(size.w, size.h, dark, &colors) else {
             return;
@@ -1244,6 +1252,9 @@ impl MenuBar {
         }
         drop(cr);
         level.picture = text::picture(surface);
+        if text::icon_waits() != waits {
+            level.drawn = None;
+        }
     }
 }
 
@@ -1463,22 +1474,43 @@ impl Nekoland {
                 return *dark;
             }
         }
-        let dark = key.0.as_ref().is_none_or(|path| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            let path = path.replacen('~', &home, 1);
-            // A smaller copy is enough to tell light from dark.
-            let image = gdk_pixbuf::Pixbuf::file_info(&path).and_then(|(_, width, height)| {
-                let small = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, 512, -1, true).ok()?;
-                Some((small, (width, height)))
-            });
-            match image {
-                Some((image, original)) => strip_is_dark(&image, original, key.1, output),
-                None => {
-                    tracing::warn!("{path}: could not read the wallpaper");
-                    self.menu_bar.dark
-                }
+        // Until the wallpaper is read, the bar stays as it was.
+        let before = self.menu_bar.wallpaper_dark.as_ref().map_or(self.menu_bar.dark, |(_, dark)| *dark);
+        let Some(path) = key.0.clone() else {
+            self.menu_bar.wallpaper_dark = Some((key, true));
+            return true;
+        };
+        let looked = match self.menu_bar.wallpaper_looked.take() {
+            Some((looking, looked)) if looking == key => looked,
+            _ => {
+                let (send, looked) = std::sync::mpsc::channel();
+                let mode = key.1;
+                crate::stacks::on_the_picture_thread(move || {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let path = path.replacen('~', &home, 1);
+                    // A smaller copy is enough to tell light from dark.
+                    let image = gdk_pixbuf::Pixbuf::file_info(&path).and_then(|(_, width, height)| {
+                        let small = gdk_pixbuf::Pixbuf::from_file_at_scale(&path, 512, -1, true).ok()?;
+                        Some((small, (width, height)))
+                    });
+                    let dark = image.map(|(image, original)| strip_is_dark(&image, original, mode, output));
+                    if dark.is_none() {
+                        tracing::warn!("{path}: could not read the wallpaper");
+                    }
+                    let _ = send.send(dark);
+                });
+                looked
             }
-        });
+        };
+        let dark = match looked.try_recv() {
+            Ok(dark) => dark.unwrap_or(self.menu_bar.dark),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.menu_bar.wallpaper_looked = Some((key, looked));
+                return before;
+            }
+            // Without the pictures' thread, it is never looked at.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => before,
+        };
         self.menu_bar.wallpaper_dark = Some((key, dark));
         dark
     }
@@ -1575,6 +1607,7 @@ impl Nekoland {
             // Drawn first, as drawing the bar keeps where its titles are, and without the
             // open menu's title lit, which is the bar in use's.
             let open = self.menu_bar.open.take();
+            let waits = text::icon_waits();
             let mut others = Vec::new();
             for &width in &drawn.others {
                 if others.iter().any(|(drawn, _, _)| *drawn == width) {
@@ -1588,7 +1621,7 @@ impl Nekoland {
             self.menu_bar.other_pictures = others;
             self.menu_bar.open = open;
             self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, false), &self.config);
-            self.menu_bar.drawn = Some(Drawn {
+            self.menu_bar.drawn = (text::icon_waits() == waits).then(|| Drawn {
                 open: self.menu_bar.open.as_ref().and_then(|open| open.title),
                 ..drawn
             });

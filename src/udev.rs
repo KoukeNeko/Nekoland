@@ -323,6 +323,7 @@ pub fn init_udev(
         let loop_handle = handle.clone();
         let (ping, source) = make_ping()?;
         handle.insert_source(source, move |_, _, data| render_all(&udev, data, &loop_handle))?;
+        crate::text::redraw_on_decoded_icons(ping.clone());
         data.redraw = Some(ping);
     }
 

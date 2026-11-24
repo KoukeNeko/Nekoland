@@ -116,6 +116,8 @@ struct Shown {
     facts: Facts,
     /// The kind's icon until the picture the file is, or its thumbnail, is read.
     icon: Option<ImageSurface>,
+    /// Whether the kind's icon is still being decoded, and is to be asked for again.
+    icon_waiting: bool,
     icon_read: Option<stacks::Reading>,
     /// Where the pointer was when the panel came.
     anchor: Point<i32, Logical>,
@@ -455,8 +457,11 @@ impl Nekoland {
                     {
                         let dark = self.menu_bar_dark();
                         let ink = menubar::colors(dark).ink;
+                        let waits = text::icon_waits();
+                        let icon = stacks::kind_icon(&item, ICON, ink);
                         self.hover.shown = Some(Shown {
-                            icon: stacks::kind_icon(&item, ICON, ink),
+                            icon,
+                            icon_waiting: text::icon_waits() != waits,
                             icon_read: stacks::picture_path(&item).map(|path| {
                                 let size = ICON * text::picture_scale();
                                 stacks::read_on_a_thread(path, Size::from((size, size)))
@@ -552,11 +557,18 @@ impl Nekoland {
         let Some(shown) = hover.shown.as_mut() else {
             return;
         };
+        if shown.icon_waiting {
+            let waits = text::icon_waits();
+            shown.icon = stacks::kind_icon(&shown.item, ICON, menubar::colors(look.dark).ink);
+            shown.icon_waiting = text::icon_waits() != waits;
+            shown.drawn = None;
+        }
         let read = shown.icon_read.as_ref().and_then(|read| read.lock().ok()?.take());
         if let Some(pixels) = read {
             shown.icon_read = None;
             if let Some(icon) = pixels.and_then(stacks::pixels_surface) {
                 shown.icon = Some(icon);
+                shown.icon_waiting = false;
                 shown.drawn = None;
             }
         }
@@ -578,10 +590,11 @@ impl Nekoland {
         if shown.drawn.as_ref() == Some(&look) {
             return;
         }
+        let waits = text::icon_waits();
         let drawn = draw_panel(&shown.facts, shown.icon.as_ref(), &look);
         shown.picture = drawn.as_ref().map(|(picture, _)| picture.clone());
         shown.spots = drawn.map(|(_, spots)| spots).unwrap_or_default();
-        shown.drawn = Some(look);
+        shown.drawn = (text::icon_waits() == waits).then_some(look);
     }
 
     /// The panel on the menus' glass, and the input method's candidates for its note under

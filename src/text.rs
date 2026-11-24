@@ -10,6 +10,7 @@ use std::{
 };
 
 use cairo::{Context, Format, ImageSurface};
+use crate::stacks::Pixels;
 use gio::{glib, prelude::*};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
@@ -282,8 +283,11 @@ impl Apps {
         if self.badges.len() > 200 {
             self.badges.clear();
         }
+        let waits = icon_waits();
         let badge = self.draw_badge(app_id, fallback_name, icon_size);
-        self.badges.insert(key, badge.clone());
+        if icon_waits() == waits {
+            self.badges.insert(key, badge.clone());
+        }
         badge
     }
 
@@ -356,59 +360,149 @@ pub fn today() -> i32 {
 pub fn named_icon(name: &str, extra_dir: &str, size: i32, tint: (f64, f64, f64)) -> Option<ImageSurface> {
     let scale = picture_scale();
     if name == CALENDAR_ICON {
-        let svg = CALENDAR_TODAY.replace("{day}", &today().to_string());
-        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(svg.into_bytes()));
-        let pixbuf = gdk_pixbuf::Pixbuf::from_stream_at_scale(
-            &stream,
-            size * scale,
-            size * scale,
-            true,
-            gio::Cancellable::NONE,
-        )
-        .ok()?;
-        let surface = pixbuf_surface(&pixbuf, None)?;
+        let day = today();
+        let svg = CALENDAR_TODAY.replace("{day}", &day.to_string());
+        let key = (PathBuf::from(format!("{CALENDAR_ICON}@{day}")), None, size * scale);
+        let surface = crate::stacks::pixels_surface(decoded_icon(key, Some(svg))?)?;
         surface.set_device_scale(f64::from(scale), f64::from(scale));
         return Some(surface);
     }
     let path = find_named_icon(name, extra_dir)?;
     let symbolic = name.ends_with("-symbolic") || path.to_string_lossy().contains("symbolic");
-    let load = || {
-        let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_size(&path, size * scale, size * scale).ok()?;
-        let surface = pixbuf_surface(&pixbuf, symbolic.then_some(tint))?;
-        surface.set_device_scale(f64::from(scale), f64::from(scale));
-        Some(surface)
-    };
-    if size * scale > KEPT_ICON_PIXELS {
-        return load();
-    }
-    // A small one is kept: menus, the control center and notices ask for theirs every time
-    // they are drawn, and a file's decoding, done by a program started for it, takes tens
-    // of milliseconds. The file as it is now: a theme's change or a redrawn icon is another.
+    let pixels = size * scale;
+    // The file as it is now: a theme's change or a redrawn icon is another.
     let changed = std::fs::metadata(&path).and_then(|file| file.modified()).ok();
     let tinted = symbolic.then(|| [tint.0.to_bits(), tint.1.to_bits(), tint.2.to_bits()]);
-    let key = (path.clone(), changed, size * scale, tinted);
-    if let Some(kept) = KEPT_ICONS.with_borrow(|kept| kept.get(&key).and_then(copy_of)) {
-        return Some(kept);
-    }
-    let surface = load()?;
-    KEPT_ICONS.with_borrow_mut(|kept| {
-        // shortcut: forgets them all once there are many, rather than the oldest.
-        if kept.len() >= 512 {
-            kept.clear();
+    let kept_key = (path.clone(), changed, pixels, tinted);
+    if pixels <= KEPT_ICON_PIXELS {
+        if let Some(kept) = KEPT_ICONS.with_borrow(|kept| kept.get(&kept_key).and_then(copy_of)) {
+            return Some(kept);
         }
-        kept.extend(copy_of(&surface).map(|copy| (key, copy)));
-    });
+    }
+    let decoded = decoded_icon((path, changed, pixels), None)?;
+    let surface = crate::stacks::tinted_pixels_surface(decoded, symbolic.then_some(tint))?;
+    surface.set_device_scale(f64::from(scale), f64::from(scale));
+    // A small one is kept as drawn: menus, the control center and notices ask for theirs
+    // every time they are drawn.
+    if pixels <= KEPT_ICON_PIXELS {
+        KEPT_ICONS.with_borrow_mut(|kept| {
+            // shortcut: forgets them all once there are many, rather than the oldest.
+            if kept.len() >= 512 {
+                kept.clear();
+            }
+            kept.extend(copy_of(&surface).map(|copy| (kept_key, copy)));
+        });
+    }
     Some(surface)
 }
 
-/// The largest icon kept once decoded, in pixels across: larger ones are kept by what asks
+/// The largest icon kept once drawn, in pixels across: larger ones are kept by what asks
 /// for them, the Dock and the applications' grid, as they draw them.
 const KEPT_ICON_PIXELS: i32 = 128;
 
+/// The most the decoded icons' pixels are let take before they are all forgotten.
+const DECODED_ICON_BYTES: usize = 64 << 20;
+
 type KeptIcon = (PathBuf, Option<std::time::SystemTime>, i32, Option<[u64; 3]>);
+type DecodeKey = (PathBuf, Option<std::time::SystemTime>, i32);
 
 thread_local! {
     static KEPT_ICONS: std::cell::RefCell<HashMap<KeptIcon, ImageSurface>> = std::cell::RefCell::default();
+    static ICON_WAITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Icons decoded on their thread, by file and pixels across: `None` while one is on its
+/// way, then its pixels, if it could be decoded.
+static DECODED: Mutex<BTreeMap<DecodeKey, Option<Option<Pixels>>>> = Mutex::new(BTreeMap::new());
+
+/// What is pinged to draw the screen again once an icon is decoded.
+static REDRAW: std::sync::OnceLock<smithay::reexports::calloop::ping::Ping> = std::sync::OnceLock::new();
+
+pub fn redraw_on_decoded_icons(redraw: smithay::reexports::calloop::ping::Ping) {
+    let _ = REDRAW.set(redraw);
+}
+
+/// Has the screen drawn again, from a thread that decoded something it shows.
+pub fn redraw_soon() {
+    if let Some(redraw) = REDRAW.get() {
+        redraw.ping();
+    }
+}
+
+/// How many times an icon or picture asked for on this thread was still being decoded: what
+/// was drawn while this changed is not to be kept, as the decoding has the screen drawn again.
+pub fn icon_waits() -> u64 {
+    ICON_WAITS.get()
+}
+
+/// Counts a picture asked for that is still being read on its thread, as `icon_waits` tells.
+pub fn picture_waited() {
+    ICON_WAITS.set(ICON_WAITS.get() + 1);
+}
+
+/// An icon's pixels, decoded on a thread of their own, as a file's decoding is done by a
+/// program started for it, which takes tens of milliseconds and may never end: on the
+/// compositor's thread, it would stop the screen. None until it is done. The file's, or
+/// that of the `svg` given in its place.
+fn decoded_icon(key: DecodeKey, svg: Option<String>) -> Option<Pixels> {
+    let mut decoded = DECODED.lock().unwrap();
+    match decoded.get(&key) {
+        Some(Some(pixels)) => return pixels.clone(),
+        Some(None) => {
+            ICON_WAITS.set(ICON_WAITS.get() + 1);
+            return None;
+        }
+        None => {}
+    }
+    let jobs = icon_jobs()?;
+    let bytes: usize = decoded.values().flatten().flatten().map(|(bytes, ..)| bytes.len()).sum();
+    // shortcut: forgets them all once they take much memory, rather than the oldest.
+    if bytes > DECODED_ICON_BYTES {
+        decoded.clear();
+    }
+    decoded.insert(key.clone(), None);
+    drop(decoded);
+    if jobs.send((key, svg)).is_ok() {
+        ICON_WAITS.set(ICON_WAITS.get() + 1);
+    }
+    None
+}
+
+type IconJob = (DecodeKey, Option<String>);
+
+fn icon_jobs() -> Option<&'static std::sync::mpsc::Sender<IconJob>> {
+    static JOBS: std::sync::OnceLock<Option<std::sync::mpsc::Sender<IconJob>>> = std::sync::OnceLock::new();
+    JOBS.get_or_init(|| {
+        let (send, jobs) = std::sync::mpsc::channel::<IconJob>();
+        let spawned = std::thread::Builder::new()
+            .name("nekoland-icons".into())
+            .spawn(move || {
+                for (key, svg) in jobs {
+                    let (path, _, pixels) = &key;
+                    let read = match svg {
+                        Some(svg) => gdk_pixbuf::Pixbuf::from_stream_at_scale(
+                            &gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(svg.into_bytes())),
+                            *pixels,
+                            *pixels,
+                            true,
+                            gio::Cancellable::NONE,
+                        ),
+                        None => gdk_pixbuf::Pixbuf::from_file_at_size(path, *pixels, *pixels),
+                    };
+                    let read = read
+                        .inspect_err(|err| tracing::warn!("{}: {err}", path.display()))
+                        .ok()
+                        .map(|pixbuf| crate::stacks::pixbuf_pixels(&pixbuf));
+                    DECODED.lock().unwrap().insert(key, Some(read));
+                    redraw_soon();
+                }
+            });
+        spawned
+            .inspect_err(|err| tracing::warn!("icons are not decoded: {err}"))
+            .ok()
+            .map(|_| send)
+    })
+    .as_ref()
 }
 
 /// The same picture on a surface of its own, which whoever has it may draw on.
@@ -746,8 +840,35 @@ mod tests {
     }
 
     #[test]
+    fn icons_are_decoded_without_waiting_for_them() {
+        let dir = std::env::temp_dir().join(format!("nekoland-decoded-icon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nekoland-decoded-icon-test.png");
+        let drawn = ImageSurface::create(Format::ARgb32, 8, 8).unwrap();
+        drawn.write_to_png(&mut std::fs::File::create(&path).unwrap()).unwrap();
+        let name = path.to_str().unwrap();
+        let waits = icon_waits();
+        assert!(named_icon(name, "", 8, (0.0, 0.0, 0.0)).is_none());
+        assert_eq!(icon_waits(), waits + 1);
+        decoded(name, 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The icon once its thread has decoded it.
+    fn decoded(name: &str, size: i32) -> ImageSurface {
+        let asked = std::time::Instant::now();
+        loop {
+            if let Some(icon) = named_icon(name, "", size, (0.0, 0.0, 0.0)) {
+                return icon;
+            }
+            assert!(asked.elapsed().as_secs() < 10, "{name} was never decoded");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn the_calendar_icon_shows_the_day() {
-        let mut icon = named_icon(CALENDAR_ICON, "", 128, (0.0, 0.0, 0.0)).expect("the template draws");
+        let mut icon = decoded(CALENDAR_ICON, 128);
         let stride = icon.stride() as usize;
         let data = icon.data().unwrap();
         // Where the number sits, on the ruled page under the coils: some of it is
