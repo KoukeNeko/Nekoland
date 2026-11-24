@@ -53,6 +53,19 @@ const WINDOWS_VERSIONS: [(&str, &str); 5] = [
 const RUNNER_RELEASES: &str = "https://api.github.com/repos/Kron4ek/Wine-Builds/releases/latest";
 /// The file in a bottle that names the Wine it runs with, when that is not Ubuntu's.
 const RUNNER_FILE: &str = "nekoland-runner";
+/// LINE's bottle, and what LINE needs: Wine 10.13 or later, LINE's own packages for
+/// winetricks and for signing Wine's DLLs, and the components LINE uses.
+const LINE_BOTTLE: &str = "LINE";
+const LINE_WINE: [u32; 2] = [10, 13];
+const LINE_PACKAGES: [&str; 2] = ["winetricks", "osslsigncode"];
+const LINE_COMPONENTS: [&str; 3] = ["cjkfonts", "vcrun2022", "d3dcompiler_47"];
+/// What LINE takes Windows' own DLLs to be signed by.
+const LINE_SIGNER: &str = "/CN=Microsoft Windows";
+/// The class Wine gives the windows of LINE.exe, for the Dock to know them by.
+const LINE_WINDOW_CLASS: &str = "line.exe";
+/// The folder in a bottle with what its DLLs are signed with, which has them signed again
+/// whenever Wine writes them anew.
+const SIGNING_DIR: &str = "nekoland-signing";
 /// `nekoland-settings --wine FILE` opens a Windows program from Files in Wine's own bottle,
 /// which is given Nekoland's look first.
 pub const WINE_FLAG: &str = "--wine";
@@ -303,6 +316,7 @@ fn is_bottle_name(name: &str, taken: &[(String, PathBuf)]) -> bool {
 /// Whether a launcher, as Wine writes them, is of a program in the bottle at `prefix`.
 fn is_launcher_of(launcher: &str, prefix: &Path) -> bool {
     launcher.contains(&format!("WINEPREFIX=\"{}\"", prefix.display()))
+        || launcher.contains(&format!("{WINE_FLAG} \"{}/", prefix.display()))
 }
 
 /// Removes a bottle made here: its programs are ended, or they would write it back, and
@@ -599,9 +613,28 @@ pub fn match_all_dpi() -> glib::ExitCode {
 }
 
 /// `nekoland-settings --wine FILE`: opens a Windows program from Files in Wine's own bottle,
-/// in Nekoland's look.
+/// or in the bottle made here that it is in, in Nekoland's look. LINE's installer gets a
+/// bottle of its own made for it first.
 pub fn run(file: Option<&str>) -> glib::ExitCode {
-    let prefix = default_prefix();
+    if let Some(installer) = file.map(Path::new).filter(|file| is_line_installer(file)) {
+        return match install_line(installer) {
+            Ok(()) => glib::ExitCode::SUCCESS,
+            Err(why) => {
+                eprintln!("{WINE_FLAG}: {why}");
+                notify("無法安裝 LINE", &why);
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
+    let prefix = file
+        .and_then(|file| bottle_of(Path::new(file)))
+        .unwrap_or_else(default_prefix);
+    // A new Wine in the bottle writes its DLLs anew, unsigned.
+    if prefix.join(SIGNING_DIR).exists() {
+        if let Err(why) = sign_dlls(&prefix) {
+            eprintln!("{WINE_FLAG}: {why}");
+        }
+    }
     if let Err(why) = match_look(&prefix)
         .and_then(|()| match_dpi(&prefix))
         .and_then(|()| match_fonts(&prefix))
@@ -621,6 +654,190 @@ pub fn run(file: Option<&str>) -> glib::ExitCode {
             glib::ExitCode::FAILURE
         }
     }
+}
+
+/// The bottle made here that a file is in.
+fn bottle_of(file: &Path) -> Option<PathBuf> {
+    let name = file.strip_prefix(bottles_dir()).ok()?.components().next()?;
+    Some(bottles_dir().join(name)).filter(|prefix| prefix.is_dir())
+}
+
+/// Whether a file is LINE's installer, as LINE's site names it (and a browser names it a
+/// second time, "LineInst (1).exe").
+fn is_line_installer(file: &Path) -> bool {
+    file.file_name()
+        .and_then(OsStr::to_str)
+        .map(str::to_lowercase)
+        .is_some_and(|name| name.starts_with("lineinst") && name.ends_with(".exe"))
+}
+
+/// Makes LINE's bottle as LINE needs it, runs its installer there, and makes a launcher for
+/// what it installed.
+fn install_line(installer: &Path) -> Result<(), String> {
+    notify("正在準備 LINE 的執行環境", "");
+    let missing: Vec<&'static str> = LINE_PACKAGES
+        .into_iter()
+        .filter(|program| glib::find_program_in_path(program).is_none())
+        .collect();
+    if !missing.is_empty() {
+        let installing = crate::sudo(
+            "安裝 LINE 需要的套件",
+            &apt_install(&missing),
+            gio::SubprocessFlags::NONE,
+        )
+        .map_err(|err| err.to_string())?;
+        installing
+            .wait(gio::Cancellable::NONE)
+            .map_err(|err| err.to_string())?;
+        if !installing.is_successful() {
+            return Err(format!("無法安裝 {}", missing.join("、")));
+        }
+    }
+    let runner = match newest_runner().filter(|runner| runner_version(runner)[..] >= LINE_WINE[..]) {
+        Some(runner) => runner,
+        None => download_runner()?,
+    };
+    let prefix = bottles_dir().join(LINE_BOTTLE);
+    let failed = |err: std::io::Error| err.to_string();
+    std::fs::create_dir_all(&prefix).map_err(failed)?;
+    if runner_of(&prefix).is_none_or(|had| runner_version(&had)[..] < LINE_WINE[..]) {
+        set_runner(&prefix, Some(&runner)).map_err(failed)?;
+    }
+    said(
+        Command::new(wine_of(&prefix))
+            .args(["wineboot", "-u"])
+            .env("WINEPREFIX", &prefix)
+            .env("WINEDLLOVERRIDES", "mscoree,mshtml="),
+    )?;
+    let installed = installed_components(&prefix);
+    let verbs: Vec<&str> = std::iter::once("win10")
+        .chain(
+            LINE_COMPONENTS
+                .into_iter()
+                .filter(|verb| !installed.iter().any(|had| had == verb)),
+        )
+        .collect();
+    if let Some(why) = failure(Ok(winetricks(&prefix, &verbs))) {
+        return Err(why);
+    }
+    sign_dlls(&prefix)?;
+    // Not Nekoland's look: the installer draws its own dark text on a dark one's background.
+    if let Err(why) = match_dpi(&prefix).and_then(|()| match_fonts(&prefix)) {
+        eprintln!("wine: {why}");
+    }
+    // Waits for the installer, which has LINE in the bottle by the time it ends.
+    Command::new(wine_of(&prefix))
+        .args([
+            OsStr::new("start"),
+            OsStr::new("/wait"),
+            OsStr::new("/unix"),
+            installer.as_os_str(),
+        ])
+        .env("WINEPREFIX", &prefix)
+        .status()
+        .map_err(failed)?;
+    add_line_launcher(&prefix)
+}
+
+/// Signs the DLLs Wine has put in a bottle since they were last signed, with a certificate
+/// made on this computer for it. LINE loads none that are not signed by a signer named
+/// Microsoft Windows; the certificate is in no store of trusted ones, here or in Wine.
+fn sign_dlls(prefix: &Path) -> Result<(), String> {
+    let failed = |err: std::io::Error| err.to_string();
+    let dir = prefix.join(SIGNING_DIR);
+    let (key, cert, signed) = (dir.join("key.pem"), dir.join("cert.pem"), dir.join("signed"));
+    if !cert.exists() {
+        std::fs::create_dir_all(&dir).map_err(failed)?;
+        said(
+            Command::new("openssl")
+                .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "36500"])
+                .args(["-subj", LINE_SIGNER, "-keyout"])
+                .arg(&key)
+                .arg("-out")
+                .arg(&cert),
+        )?;
+    }
+    let since = std::fs::metadata(&signed)
+        .and_then(|signed| signed.modified())
+        .ok();
+    let mut unsigned = 0;
+    for folder in ["system32", "syswow64"] {
+        for dll in std::fs::read_dir(prefix.join("drive_c/windows").join(folder))
+            .map_err(failed)?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+            })
+        {
+            let modified = std::fs::metadata(&dll).and_then(|dll| dll.modified()).ok();
+            if since.is_some_and(|since| modified.is_some_and(|modified| modified <= since)) {
+                continue;
+            }
+            let signing = dll.with_extension("dll.signing");
+            let done = Command::new("osslsigncode")
+                .args(["sign", "-h", "sha256", "-certs"])
+                .arg(&cert)
+                .arg("-key")
+                .arg(&key)
+                .arg("-in")
+                .arg(&dll)
+                .arg("-out")
+                .arg(&signing)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(failed)?;
+            if done.success() {
+                std::fs::rename(&signing, &dll).map_err(failed)?;
+            } else {
+                // Wine's stand-ins for a few DLLs are no programs to sign; LINE loads none.
+                unsigned += 1;
+                let _ = std::fs::remove_file(&signing);
+            }
+        }
+    }
+    if unsigned > 0 {
+        eprintln!("{}: {unsigned} DLLs not signed", prefix.display());
+    }
+    std::fs::write(&signed, "").map_err(failed)
+}
+
+/// Makes a launcher for LINE as its installer left it in its bottle, opening it there with
+/// `--wine`; nothing if it is not there, the installer having been closed.
+fn add_line_launcher(prefix: &Path) -> Result<(), String> {
+    let failed = |err: std::io::Error| err.to_string();
+    let Some(line) = std::fs::read_dir(prefix.join("drive_c/users"))
+        .map_err(failed)?
+        .flatten()
+        .map(|user| user.path().join("AppData/Local/LINE/bin"))
+        .find(|bin| bin.join("LineLauncher.exe").exists())
+    else {
+        return Ok(());
+    };
+    let exe = std::env::current_exe().map_err(failed)?;
+    // LINE unpacks it as it first starts, after the installer has ended.
+    let icon = line.join("current/assets/Square310x310Logo.scale-100.png");
+    let file = glib::KeyFile::new();
+    file.set_string(ENTRY_GROUP, "Type", "Application");
+    file.set_string(ENTRY_GROUP, "Name", "LINE");
+    file.set_string(
+        ENTRY_GROUP,
+        "Exec",
+        &format!(
+            "\"{}\" {WINE_FLAG} \"{}\"",
+            exe.display(),
+            line.join("LineLauncher.exe").display()
+        ),
+    );
+    file.set_string(ENTRY_GROUP, "Icon", &icon.to_string_lossy());
+    file.set_string(ENTRY_GROUP, "Categories", "Network;InstantMessaging;");
+    file.set_string(ENTRY_GROUP, "StartupWMClass", LINE_WINDOW_CLASS);
+    let folder = glib::user_data_dir().join("applications/wine/Programs");
+    std::fs::create_dir_all(&folder).map_err(failed)?;
+    file.save_to_file(folder.join("LINE.desktop"))
+        .map_err(|err| err.to_string())
 }
 
 /// Starts a program in a bottle with the bottle's Wine, left to run by itself.
@@ -3133,6 +3350,23 @@ mod tests {
     fn wine_11_is_newer_than_wine_9() {
         assert!(runner_version("wine-11.2-amd64") > runner_version("wine-9.22-amd64"));
         assert!(runner_version("wine-11.22-amd64") > runner_version("wine-11.3-amd64"));
+    }
+
+    #[test]
+    fn line_wants_wine_10_13_or_later() {
+        assert!(runner_version("wine-11.22-amd64-wow64")[..] >= LINE_WINE[..]);
+        assert!(runner_version("wine-10.13-amd64-wow64")[..] >= LINE_WINE[..]);
+        assert!(runner_version("wine-10.9-amd64-wow64")[..] < LINE_WINE[..]);
+    }
+
+    #[test]
+    fn line_installer_is_known_by_its_name() {
+        assert!(is_line_installer(Path::new("/home/a/Downloads/LineInst.exe")));
+        assert!(is_line_installer(Path::new("/home/a/Downloads/LineInst (1).exe")));
+        assert!(!is_line_installer(Path::new(
+            "/home/a/Downloads/LineInst.exe.part"
+        )));
+        assert!(!is_line_installer(Path::new("/home/a/Downloads/setup.exe")));
     }
 
     #[test]
