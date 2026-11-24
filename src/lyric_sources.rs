@@ -29,19 +29,23 @@ const TAKES: usize = 3;
 /// kept by. KuGou is asked last, for it finds a song only by the name it has, which is often
 /// the song's own language's, so what the others call it is asked as well.
 pub fn all(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
-    let want = &Want::new(title, artist, duration);
-    let (mut first, video) = std::thread::scope(|scope| {
+    let asked = Want::new(title, artist, duration);
+    // The video's title may be in the song's own language, which the others find it by.
+    let video = youtube_video(&asked);
+    let want = &match &video {
+        Some(video) => asked.with_aliases(&video.2),
+        None => asked,
+    };
+    let mut first: Vec<Vec<Candidate>> = std::thread::scope(|scope| {
         let sources: [fn(&Want) -> Vec<Candidate>; 4] = [netease, qq, better_lyrics, bini_lyrics];
         let running: Vec<_> = sources
             .into_iter()
             .map(|source| scope.spawn(move || source(want)))
             .collect();
-        let video = scope.spawn(move || youtube_video(want));
-        let first: Vec<Vec<Candidate>> = running
+        running
             .into_iter()
             .map(|run| run.join().unwrap_or_default())
-            .collect();
-        (first, video.join().unwrap_or_default())
+            .collect()
     });
     let mut names: Vec<String> = Vec::new();
     for found in first.iter().flatten() {
@@ -76,10 +80,13 @@ pub fn all(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
 }
 
 /// The song asked for.
+#[derive(Clone)]
 struct Want {
     /// As it is, and without "(Live)" and the like.
     title: String,
     cleaned: String,
+    /// Other names the song has, as the video of it is titled in another language.
+    aliases: Vec<String>,
     artist: String,
     duration: f64,
 }
@@ -89,6 +96,7 @@ impl Want {
         Self {
             title: title.to_string(),
             cleaned: clean_title(title),
+            aliases: Vec::new(),
             artist: artist.to_string(),
             duration,
         }
@@ -97,8 +105,12 @@ impl Want {
     /// Whether a take, named `name` by `by` and `seconds` long, is this song: by this artist
     /// and either named alike or as long, or, the artist's name being in another script, both.
     fn is(&self, name: &str, by: &[String], seconds: f64) -> bool {
-        let (name, want) = (name.to_lowercase(), self.cleaned.to_lowercase());
-        let named = name.contains(&want) || want.contains(&name);
+        let name = name.to_lowercase();
+        let named = !name.is_empty()
+            && self.all_titles().any(|title| {
+                let title = title.to_lowercase();
+                name.contains(&title) || title.contains(&name)
+            });
         let long = self.duration > 0.0 && (seconds - self.duration).abs() <= MATCH;
         let artist = self.artist.to_lowercase();
         let by_artist = artist.is_empty() || by.iter().any(|by| same_artist(&artist, &by.to_lowercase()));
@@ -108,11 +120,56 @@ impl Want {
         (by_artist && (named || long)) || (named && long && other_script)
     }
 
+    /// The same song also known by the names in `name`, a title that may hold several, as
+    /// "逃亡 - Escape" does.
+    fn with_aliases(&self, name: &str) -> Self {
+        let mut aliases: Vec<String> = Vec::new();
+        let pieces = name
+            .split([' ', '(', ')', '（', '）', '/', '-', '–'])
+            .collect::<Vec<_>>();
+        // Words and the groups of them between the separators, as a title is both.
+        let mut candidates: Vec<String> = vec![name.to_string()];
+        let marked = [" - ", " – ", " / ", "(", ")", "（", "）"]
+            .iter()
+            .fold(name.to_string(), |marked, separator| {
+                marked.replace(separator, "\u{1}")
+            });
+        for part in marked.split('\u{1}') {
+            candidates.push(part.trim().to_string());
+        }
+        candidates.extend(
+            pieces
+                .iter()
+                .filter(|word| !word.is_empty())
+                .map(|word| word.to_string()),
+        );
+        for candidate in candidates {
+            let lower = candidate.to_lowercase();
+            let known = [&self.title, &self.cleaned]
+                .into_iter()
+                .chain(aliases.iter())
+                .any(|known| known.to_lowercase() == lower);
+            if candidate.chars().count() >= 2 && !known {
+                aliases.push(candidate);
+            }
+        }
+        Self {
+            aliases,
+            ..self.clone()
+        }
+    }
+
+    /// Every title the song is asked for by.
+    fn all_titles(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.cleaned).chain(self.aliases.iter())
+    }
+
     /// The same song under another title.
     fn clone_for(&self, title: &str) -> Self {
         Self {
             title: title.to_string(),
             cleaned: clean_title(title),
+            aliases: Vec::new(),
             artist: self.artist.clone(),
             duration: self.duration,
         }
@@ -123,9 +180,14 @@ impl Want {
     /// service's, the title and the artist's first word.
     fn searches(&self) -> Vec<String> {
         let first = self.artist.split_whitespace().next().unwrap_or_default();
-        let mut searches = vec![format!("{} {}", self.cleaned, self.artist).trim().to_string()];
-        if !first.is_empty() && first != self.artist {
-            searches.push(format!("{} {first}", self.cleaned));
+        let mut searches: Vec<String> = Vec::new();
+        for title in self.all_titles() {
+            for artist in [self.artist.as_str(), first] {
+                let search = format!("{title} {artist}").trim().to_string();
+                if !searches.contains(&search) {
+                    searches.push(search);
+                }
+            }
         }
         searches
     }
@@ -241,69 +303,69 @@ fn netease(want: &Want) -> Vec<Candidate> {
 /// QQ Music: the takes of this song, timed by line.
 fn qq(want: &Want) -> Vec<Candidate> {
     let referer = Some("https://y.qq.com/");
-    let search = get_from(
-        &format!("{QQ}/soso/fcgi-bin/client_search_cp"),
-        &[
-            ("w", format!("{} {}", want.cleaned, want.artist)),
-            ("format", "json".into()),
-            ("n", "10".into()),
-        ],
-        referer,
-    );
-    let songs = search
+    let mut found: Vec<Candidate> = Vec::new();
+    for search in want.searches() {
+        if !found.is_empty() {
+            break;
+        }
+        let songs = get_from(
+            &format!("{QQ}/soso/fcgi-bin/client_search_cp"),
+            &[("w", search), ("format", "json".into()), ("n", "10".into())],
+            referer,
+        )
         .ok()
         .flatten()
         .and_then(|found| found.pointer("/data/song/list")?.as_array().cloned())
         .unwrap_or_default();
-    let mut found: Vec<Candidate> = Vec::new();
-    for song in &songs {
-        if found.len() >= TAKES {
-            break;
-        }
-        let (Some(mid), Some(seconds)) = (
-            song.get("songmid").and_then(|m| m.as_str()),
-            song.get("interval").and_then(|i| i.as_f64()),
-        ) else {
-            continue;
-        };
-        if !want.is(
-            &text_of(song, "songname"),
-            &names(song, "singer", "name"),
-            seconds,
-        ) || found.iter().any(|c| (c.duration - seconds).abs() < 1.0)
-        {
-            continue;
-        }
-        let lyric = get_from(
-            &format!("{QQ}/lyric/fcgi-bin/fcg_query_lyric_new.fcg"),
-            &[
-                ("songmid", mid.to_string()),
-                ("format", "json".into()),
-                ("nobase64", "1".into()),
-            ],
-            referer,
-        );
-        // Timed to the word where QQ Music has them, which is Portato, else by line.
-        let (synced, source) = match qrc_lyrics(song.get("songid").and_then(|id| id.as_i64())) {
-            Some(words) => (words, "Better Lyrics Portato"),
-            None => (
-                lyric
-                    .ok()
-                    .flatten()
-                    .and_then(|lyric| Some(parse_lrc(lyric.get("lyric")?.as_str()?)))
-                    .unwrap_or_default(),
-                "QQ 音樂",
-            ),
-        };
-        if !synced.is_empty() {
-            found.push(Candidate {
-                source: source.into(),
-                title: text_of(song, "songname"),
-                album: text_of(song, "albumname"),
-                duration: seconds,
-                synced,
-                plain: vec![],
-            });
+        for song in &songs {
+            if found.len() >= TAKES {
+                break;
+            }
+            let (Some(mid), Some(seconds)) = (
+                song.get("songmid").and_then(|m| m.as_str()),
+                song.get("interval").and_then(|i| i.as_f64()),
+            ) else {
+                continue;
+            };
+            if !want.is(
+                &text_of(song, "songname"),
+                &names(song, "singer", "name"),
+                seconds,
+            ) || found.iter().any(|c| (c.duration - seconds).abs() < 1.0)
+            {
+                continue;
+            }
+            let lyric = get_from(
+                &format!("{QQ}/lyric/fcgi-bin/fcg_query_lyric_new.fcg"),
+                &[
+                    ("songmid", mid.to_string()),
+                    ("format", "json".into()),
+                    ("nobase64", "1".into()),
+                ],
+                referer,
+            );
+            // Timed to the word where QQ Music has them, which is Portato, else by line.
+            let (synced, source) = match qrc_lyrics(song.get("songid").and_then(|id| id.as_i64())) {
+                Some(words) => (words, "Better Lyrics Portato"),
+                None => (
+                    lyric
+                        .ok()
+                        .flatten()
+                        .and_then(|lyric| Some(parse_lrc(lyric.get("lyric")?.as_str()?)))
+                        .unwrap_or_default(),
+                    "QQ 音樂",
+                ),
+            };
+            if !synced.is_empty() {
+                found.push(Candidate {
+                    source: source.into(),
+                    title: text_of(song, "songname"),
+                    album: text_of(song, "albumname"),
+                    duration: seconds,
+                    synced,
+                    plain: vec![],
+                });
+            }
         }
     }
     found
@@ -360,7 +422,12 @@ fn better_lyrics(want: &Want) -> Vec<Candidate> {
 /// has no search for both together.
 fn bini_lyrics(want: &Want) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = Vec::new();
-    for query in [want.cleaned.as_str(), want.artist.as_str()] {
+    let queries: Vec<&str> = want
+        .all_titles()
+        .map(String::as_str)
+        .chain([want.artist.as_str()])
+        .collect();
+    for query in queries {
         if query.is_empty() || !found.is_empty() {
             continue;
         }
@@ -1053,6 +1120,7 @@ mod tests {
             ("Around The Stars", "suis from Yorushika", 201.0),
             ("Finale.", "eill", 242.0),
             ("Shape of You", "Ed Sheeran", 233.7),
+            ("Escape", "Yorushika", 287.0),
             // Nobody has this, whatever it is as long as.
             ("夜行列車", "月台樂團", 252.0),
         ] {
