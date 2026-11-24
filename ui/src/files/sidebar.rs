@@ -320,6 +320,7 @@ impl Sidebar {
                     gdk::FileList::static_type(),
                     gdk::DragAction::COPY | gdk::DragAction::MOVE,
                 );
+                ops::prefer_move(&drop);
                 let into = folder.clone();
                 drop.connect_drop(move |target, value, _, _| {
                     let Ok(list) = value.get::<gdk::FileList>() else {

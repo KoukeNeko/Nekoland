@@ -286,12 +286,14 @@ impl Pane {
             .enable_rubberband(true)
             .css_classes(["nf-list"])
             .build();
+        rubberband_from_space(column_view.upcast_ref());
         let grid = gtk::GridView::builder()
             .min_columns(2)
             .max_columns(24)
             .enable_rubberband(true)
             .css_classes(["nf-grid"])
             .build();
+        rubberband_from_space(grid.upcast_ref());
         let columns_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         // On the view's colour past the last column too, as the other views are.
         let columns_scroller = gtk::ScrolledWindow::builder()
@@ -1027,6 +1029,7 @@ impl Pane {
             gdk::FileList::static_type(),
             gdk::DragAction::COPY | gdk::DragAction::MOVE,
         );
+        ops::prefer_move(&drop);
         let folder_of = {
             let item = item.clone();
             move || {
@@ -1165,12 +1168,7 @@ impl Pane {
                     return;
                 };
                 // On an item, the item's own menu opens; this one is for the space around them.
-                let on_item = widget.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|picked| {
-                    std::iter::successors(Some(picked), |w| w.parent())
-                        .take_while(|w| w != &widget)
-                        .any(|w| matches!(w.css_name().as_str(), "child" | "row"))
-                });
-                if on_item {
+                if on_item(&widget, x, y) {
                     return;
                 }
                 pane.unselect_all();
@@ -1181,6 +1179,7 @@ impl Pane {
             let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY | gdk::DragAction::MOVE);
             // Files first; a picture with no file to it, as from a web page, is kept as one.
             drop.set_types(&[gdk::FileList::static_type(), gdk::Texture::static_type()]);
+            ops::prefer_move(&drop);
             let weak = Rc::downgrade(self);
             drop.connect_drop(move |target, value, _, _| {
                 let Some(pane) = weak.upgrade() else { return false };
@@ -1886,6 +1885,7 @@ impl Pane {
                     gdk::FileList::static_type(),
                     gdk::DragAction::COPY | gdk::DragAction::MOVE,
                 );
+                ops::prefer_move(&drop);
                 let folder = folder.clone();
                 let into = folder.clone();
                 drop.connect_drop(move |target, value, _, _| {
@@ -2026,6 +2026,7 @@ impl Pane {
             .enable_rubberband(true)
             .css_classes(["nf-column"])
             .build();
+        rubberband_from_space(view.upcast_ref());
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(COLUMN_WIDTH)
@@ -2515,6 +2516,45 @@ impl Pane {
     }
 }
 
+/// Whether (`x`, `y`) of a view is on one of its items rather than the space around them.
+fn on_item(view: &gtk::Widget, x: f64, y: f64) -> bool {
+    view.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|picked| {
+        std::iter::successors(Some(picked), |w| w.parent())
+            .take_while(|w| w != view)
+            .any(|w| matches!(w.css_name().as_str(), "child" | "row"))
+    })
+}
+
+/// Has a view rubberband only from the space around its items, as the Finder does: pressed
+/// on an item, GTK's rubberband would start before the item's drag is let start, 100 ms in,
+/// and take any quick drag over. The rubberband is GTK's own drag gesture on the list,
+/// within a column view too, refused for a press on an item as it begins.
+fn rubberband_from_space(view: &gtk::Widget) {
+    fn lists_in(widget: &gtk::Widget, lists: &mut Vec<gtk::Widget>) {
+        if widget.is::<gtk::ListView>() || widget.is::<gtk::GridView>() {
+            lists.push(widget.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            lists_in(&widget, lists);
+            child = widget.next_sibling();
+        }
+    }
+    let mut lists = Vec::new();
+    lists_in(view, &mut lists);
+    for list in lists {
+        let controllers = list.observe_controllers();
+        for controller in (0..controllers.n_items()).filter_map(|i| controllers.item(i)) {
+            let Ok(drag) = controller.downcast::<gtk::GestureDrag>() else { continue };
+            drag.connect_drag_begin(|drag, x, y| {
+                if drag.widget().is_some_and(|list| on_item(&list, x, y)) {
+                    drag.set_state(gtk::EventSequenceState::Denied);
+                }
+            });
+        }
+    }
+}
+
 /// Opens what a drag waits over, a folder in a view or a place in the sidebar: after a
 /// moment it blinks twice and `go` goes there.
 pub fn spring(
@@ -2525,16 +2565,35 @@ pub fn spring(
 ) {
     let timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
     let (target, go) = (Rc::new(target), Rc::new(go));
+    // What is dragged, read as it comes over: a folder is not opened by dragging it, which held
+    // still on itself as the drag starts it would be.
+    drop.set_preload(true);
+    // Only while the drag is still over it: let go before the moment is up, it stays.
+    let springs = {
+        let drop = drop.downgrade();
+        move |to: &Where| {
+            let Some(drop) = drop.upgrade().filter(|drop| drop.current_drop().is_some()) else {
+                return false;
+            };
+            let Where::Folder(folder) = to else { return true };
+            !drop
+                .value()
+                .and_then(|value| value.get::<gdk::FileList>().ok())
+                .is_some_and(|list| list.files().iter().any(|file| file.equal(folder)))
+        }
+    };
+    let springs = Rc::new(springs);
     {
         let (timer, widget) = (timer.clone(), widget.downgrade());
         drop.connect_enter(move |_, _, _| {
             let (timer_in, widget, target, go) = (timer.clone(), widget.clone(), target.clone(), go.clone());
+            let springs = springs.clone();
             if let Some(old) = timer.borrow_mut().take() {
                 old.remove();
             }
             *timer.borrow_mut() = Some(glib::timeout_add_local_once(SPRING, move || {
                 timer_in.borrow_mut().take();
-                let (Some(widget), Some(to)) = (widget.upgrade(), target()) else {
+                let (Some(widget), Some(to)) = (widget.upgrade(), target().filter(|to| springs(to))) else {
                     return;
                 };
                 widget.add_css_class("nf-spring");

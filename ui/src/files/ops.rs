@@ -630,6 +630,22 @@ fn transferred(
 
 /// What is dropped on a folder: moved when it is on the same drive, copied when it is not
 /// or Ctrl is held, as the Finder decides.
+/// Has a drop target ask for a move of what the source lets go of, and a copy only of what
+/// it does not: GTK would ask for a copy first, and on Wayland a drop says then only the
+/// action asked for, so `drop_into` would copy everything.
+pub fn prefer_move(target: &gtk::DropTarget) {
+    target.connect_motion(|target, _, _| drop_action(target));
+}
+
+/// The action `prefer_move` asks for.
+pub fn drop_action(target: &gtk::DropTarget) -> gdk::DragAction {
+    let offered = target.current_drop().map_or(gdk::DragAction::empty(), |drop| drop.actions()) & target.actions();
+    [gdk::DragAction::MOVE, gdk::DragAction::COPY]
+        .into_iter()
+        .find(|action| offered.contains(*action))
+        .unwrap_or(gdk::DragAction::empty())
+}
+
 pub fn drop_into(files: &[gio::File], folder: &gio::File, target: &gtk::DropTarget) {
     let Some(folder) = folder.path() else { return };
     let modifiers = target.current_event_state();
