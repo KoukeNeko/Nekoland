@@ -340,11 +340,12 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
     }
 }
 
-/// A picture for the clipboard alone, as Control asks: not kept, saved or shown, as the Mac's.
+/// A picture for the clipboard alone, as Control asks: not kept or saved.
 fn copied(img: Img, scale: f64) {
     let flat = output::export(&Doc::new(img, scale), &Prefs::load());
-    if let Err(err) = output::copy_image(&flat) {
-        failed(&err);
+    match output::copy_image(&flat) {
+        Ok(()) => output::notify("已複製到剪貼簿", "", Some(&flat), 3000, None),
+        Err(err) => failed(&err),
     }
 }
 
