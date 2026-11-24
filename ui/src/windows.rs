@@ -616,6 +616,18 @@ pub fn match_all_dpi() -> glib::ExitCode {
 /// or in the bottle made here that it is in, in Nekoland's look. LINE's installer gets a
 /// bottle of its own made for it first.
 pub fn run(file: Option<&str>) -> glib::ExitCode {
+    // Files opens Windows programs with this even without Wine, which is asked for first.
+    if file.is_some() && wine_version().is_none() {
+        if !wine_wanted() {
+            return glib::ExitCode::FAILURE;
+        }
+        notify("正在安裝 Wine", "");
+        if let Err(why) = install_packages("安裝 Wine", &WINE_PACKAGES) {
+            eprintln!("{WINE_FLAG}: {why}");
+            notify("無法安裝 Wine", &why);
+            return glib::ExitCode::FAILURE;
+        }
+    }
     if let Some(installer) = file.map(Path::new).filter(|file| is_line_installer(file)) {
         return match install_line(installer) {
             Ok(()) => glib::ExitCode::SUCCESS,
@@ -656,6 +668,49 @@ pub fn run(file: Option<&str>) -> glib::ExitCode {
     }
 }
 
+/// Asks whether to install Wine, in an alert of its own, there being no window to put it in.
+fn wine_wanted() -> bool {
+    let wanted = Rc::new(Cell::new(false));
+    // Not unique: Settings may be open, and this is no window of it.
+    let app = adw::Application::builder()
+        .application_id("io.github.koukeneko.Nekoland.Wine")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.connect_activate(glib::clone!(
+        #[strong]
+        wanted,
+        move |app| {
+            let alert = adw::AlertDialog::new(Some("安裝 Wine？"), Some("Windows 程式需要 Wine 才能執行。"));
+            alert.add_responses(&[("cancel", "取消"), ("install", "安裝")]);
+            alert.set_response_appearance("install", adw::ResponseAppearance::Suggested);
+            alert.set_default_response(Some("install"));
+            alert.set_close_response("cancel");
+            let wanted = wanted.clone();
+            alert.connect_response(None, move |_, response| wanted.set(response == "install"));
+            // Shown without a parent, the alert is a window the application does not count.
+            let running = RefCell::new(Some(app.hold()));
+            alert.connect_closed(move |_| drop(running.take()));
+            alert.present(None::<&gtk::Widget>);
+        }
+    ));
+    app.run_with_args::<&str>(&[]);
+    wanted.get()
+}
+
+/// Installs packages as root, asking for the password with `reason`, and waits for apt.
+fn install_packages(reason: &str, packages: &[&'static str]) -> Result<(), String> {
+    let installing = crate::sudo(reason, &apt_install(packages), gio::SubprocessFlags::NONE)
+        .map_err(|err| err.to_string())?;
+    installing
+        .wait(gio::Cancellable::NONE)
+        .map_err(|err| err.to_string())?;
+    if installing.is_successful() {
+        Ok(())
+    } else {
+        Err(format!("無法安裝 {}", packages.join("、")))
+    }
+}
+
 /// The bottle made here that a file is in.
 fn bottle_of(file: &Path) -> Option<PathBuf> {
     let name = file.strip_prefix(bottles_dir()).ok()?.components().next()?;
@@ -680,18 +735,7 @@ fn install_line(installer: &Path) -> Result<(), String> {
         .filter(|program| glib::find_program_in_path(program).is_none())
         .collect();
     if !missing.is_empty() {
-        let installing = crate::sudo(
-            "安裝 LINE 需要的套件",
-            &apt_install(&missing),
-            gio::SubprocessFlags::NONE,
-        )
-        .map_err(|err| err.to_string())?;
-        installing
-            .wait(gio::Cancellable::NONE)
-            .map_err(|err| err.to_string())?;
-        if !installing.is_successful() {
-            return Err(format!("無法安裝 {}", missing.join("、")));
-        }
+        install_packages("安裝 LINE 需要的套件", &missing)?;
     }
     let runner = match newest_runner().filter(|runner| runner_version(runner)[..] >= LINE_WINE[..]) {
         Some(runner) => runner,

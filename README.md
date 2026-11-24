@@ -284,8 +284,9 @@ The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
   apart, so that each is its own application in the Dock under Nekoland's title bar.
   Microsoft Store and what is installed from it are among the programs listed, known by
   their names there (`shell:AppsFolder\…`) rather than by paths that change as they update.
-  A `.exe` or `.msi` opened in Files runs with Wine, in the bottle it is in if it is in one
-  made there. LINE's installer (`LineInst.exe`) gets a bottle named LINE made for it first:
+  A `.exe` or `.msi` opened in Files runs with Wine, which is asked to be installed first
+  when it is not, in the bottle it is in if it is in one made there. LINE's installer
+  (`LineInst.exe`) gets a bottle named LINE made for it first:
   Kron4ek's Wine 10.13 or later, Windows 10, CJK fonts, Visual C++ 2015–2022 and
   `d3dcompiler_47`, and Wine's DLLs there signed with a self-signed certificate named
   "Microsoft Windows", made on the computer and trusted nowhere, as LINE loads no DLL not
