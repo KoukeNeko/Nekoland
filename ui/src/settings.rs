@@ -533,7 +533,7 @@ fn build(app: &adw::Application) {
             eprintln!("GTK look: {err}");
         }
         set_gtk3_theme(true);
-        share_gtk_look_with_flatpaks();
+        share_look_with_flatpaks();
     }
     let autostart = Rc::new(RefCell::new(config.autostart()));
     // GTK reads its user stylesheet as an application starts: other applications take the

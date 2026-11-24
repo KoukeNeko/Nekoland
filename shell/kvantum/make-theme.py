@@ -207,7 +207,13 @@ def draw(c):
     s.frame("common-normal", NONE, 0, 1, c["line"])
     s.frame("common-focused", NONE, 0, 1, c["line"])
     s.frame("group-normal", NONE, 8, 8, c["line"])
-    s.frame("focus-normal", NONE, 8, 8, alpha(c["ink"], 0.5), 2)
+    # Keyboard focus: a ring on the control's own corners, drawn over its frame; others
+    # take the generic one, which Kvantum names without a state and draws at most 2px.
+    focus = alpha(c["ink"], 0.5)
+    for element in ("button", "combo", "tbutton", "group"):
+        s.frame(f"{element}-focus", NONE, 8, 8, focus, 2)
+    s.frame("tab-focus", NONE, 6, 6, focus, 2)
+    s.frame("focus", NONE, 2, 2, focus, 1)
     # Tabs: the chosen one filled, on the paper of the page under them.
     s.frame("tabframe-normal", c["paper"], 8, 8, c["line"])
     for state, fill in zip(STATES, (NONE, tint, tint_press, c["fill"], NONE)):
@@ -465,6 +471,7 @@ text.margin.right=4
 text.iconspacing=6
 min_width=+3font
 frame.expansion=0
+focusFrame=true
 
 [PanelButtonTool]
 inherits=PanelButtonCommand
@@ -543,10 +550,10 @@ inherits=PanelButtonCommand
 frame=true
 interior=false
 frame.element=focus
-frame.top=8
-frame.bottom=8
-frame.left=8
-frame.right=8
+frame.top=2
+frame.bottom=2
+frame.left=2
+frame.right=2
 
 [GenericFrame]
 inherits=PanelButtonCommand

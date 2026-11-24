@@ -48,7 +48,9 @@ pub(crate) fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> a
         }
         set_gtk3_theme(on);
         if on {
-            share_gtk_look_with_flatpaks();
+            share_look_with_flatpaks();
+        } else {
+            withdraw_kvantum_theme();
         }
         let display = row.display();
         if on {
@@ -372,19 +374,95 @@ pub(crate) fn set_gtk3_theme(on: bool) {
     }
 }
 
-/// Flatpak applications read GTK 4's user stylesheet from a folder of their own: they are
-/// let read the person's, where the look is, as the applications outside read it. It stays
-/// when the look is turned off, as the stylesheet then has no look in it.
-pub(crate) fn share_gtk_look_with_flatpaks() {
-    let overrides = glib::user_data_dir().join("flatpak/overrides/global");
-    let shared = std::fs::read_to_string(overrides).is_ok_and(|text| {
-        text.lines().any(|line| line.starts_with("filesystems=") && line.contains(FLATPAK_GTK4))
-    });
-    if !shared && glib::find_program_in_path("flatpak").is_some() {
-        run("flatpak", &["override", "--user", &format!("--filesystem={FLATPAK_GTK4}")]);
+/// Flatpak applications read GTK 4's user stylesheet, and Kvantum's choice of theme for Qt,
+/// from folders of their own: they are let read the person's, as the applications outside
+/// read them, and given the look's Kvantum theme there, as /usr/share is not theirs. What
+/// they are let read stays when the look is turned off, as there is no look in it then.
+pub(crate) fn share_look_with_flatpaks() {
+    if glib::find_program_in_path("flatpak").is_none() {
+        return;
+    }
+    let overrides = std::fs::read_to_string(glib::user_data_dir().join("flatpak/overrides/global"));
+    let overrides = overrides.unwrap_or_default();
+    let granted = overrides.lines().find_map(|line| line.strip_prefix("filesystems=")).unwrap_or_default();
+    let missing: Vec<String> = FLATPAK_FOLDERS
+        .iter()
+        .filter(|folder| !granted.split(';').any(|granted| granted == **folder))
+        .map(|folder| format!("--filesystem={folder}"))
+        .collect();
+    if !missing.is_empty() {
+        let mut args = vec!["override", "--user"];
+        args.extend(missing.iter().map(String::as_str));
+        run("flatpak", &args);
+    }
+    if let Err(err) = copy_kvantum_theme() {
+        eprintln!("Kvantum theme: {err}");
+    }
+    std::thread::spawn(install_kvantum_styles);
+}
+
+const FLATPAK_FOLDERS: [&str; 2] = ["xdg-config/gtk-4.0:ro", "xdg-config/Kvantum:ro"];
+/// Where install.sh puts the look's Kvantum theme, for Qt programs outside Flatpak.
+const KVANTUM_THEME: &str = "/usr/share/Kvantum/Nekoland";
+
+fn kvantum_theme_copy() -> std::path::PathBuf {
+    glib::user_config_dir().join("Kvantum/Nekoland")
+}
+
+/// Copies the look's Kvantum theme to the person's Kvantum folder, which Flatpak's Qt
+/// applications can read, when it is not there as it is.
+fn copy_kvantum_theme() -> std::io::Result<()> {
+    let files = match std::fs::read_dir(KVANTUM_THEME) {
+        Ok(files) => files,
+        // Not installed: Qt applications keep their own style.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let copy = kvantum_theme_copy();
+    std::fs::create_dir_all(&copy)?;
+    for file in files {
+        let file = file?.path();
+        let to = copy.join(file.file_name().expect("a file in a folder"));
+        let text = std::fs::read(&file)?;
+        if std::fs::read(&to).ok().as_ref() != Some(&text) {
+            std::fs::write(&to, text)?;
+        }
+    }
+    Ok(())
+}
+
+/// Takes the copy of the look's Kvantum theme back, with the look.
+pub(crate) fn withdraw_kvantum_theme() {
+    match std::fs::remove_dir_all(kvantum_theme_copy()) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => eprintln!("Kvantum theme: {err}"),
+        _ => {}
     }
 }
 
-const FLATPAK_GTK4: &str = "xdg-config/gtk-4.0:ro";
+/// Installs Kvantum's style for each KDE runtime Flatpak applications run on, from Flathub,
+/// which has it for some versions only; on the rest they keep their own style.
+fn install_kvantum_styles() {
+    let Some(runtimes) = output("flatpak", &["list", "--runtime", "--columns=application,branch"]) else {
+        return;
+    };
+    let installed: Vec<(&str, &str)> = runtimes.lines().filter_map(|line| line.split_once('\t')).collect();
+    let user_flathub = output("flatpak", &["remotes", "--user", "--columns=name"])
+        .is_some_and(|remotes| remotes.lines().any(|remote| remote.trim() == "flathub"));
+    let installation = if user_flathub { "--user" } else { "--system" };
+    for (_, branch) in installed.iter().filter(|(runtime, _)| *runtime == "org.kde.Platform") {
+        if installed.contains(&(KVANTUM_STYLE, branch)) {
+            continue;
+        }
+        let style = format!("{KVANTUM_STYLE}//{branch}");
+        let args = ["install", installation, "--noninteractive", "-y", "flathub", &style];
+        match Command::new("flatpak").args(args).output() {
+            Ok(done) if done.status.success() => {}
+            Ok(done) => eprintln!("{style}: {}", String::from_utf8_lossy(&done.stderr).trim()),
+            Err(err) => eprintln!("flatpak: {err}"),
+        }
+    }
+}
+
+const KVANTUM_STYLE: &str = "org.kde.KStyle.Kvantum";
 
 pub(crate) const GTK3_THEME: &str = "Nekoland";
