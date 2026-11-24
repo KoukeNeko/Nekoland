@@ -47,6 +47,9 @@ pub(crate) fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> a
             return;
         }
         set_gtk3_theme(on);
+        if on {
+            share_gtk_look_with_flatpaks();
+        }
         let display = row.display();
         if on {
             gtk::style_context_add_provider_for_display(
@@ -368,5 +371,20 @@ pub(crate) fn set_gtk3_theme(on: bool) {
         run("gsettings", &["reset", INTERFACE, "gtk-theme"]);
     }
 }
+
+/// Flatpak applications read GTK 4's user stylesheet from a folder of their own: they are
+/// let read the person's, where the look is, as the applications outside read it. It stays
+/// when the look is turned off, as the stylesheet then has no look in it.
+pub(crate) fn share_gtk_look_with_flatpaks() {
+    let overrides = glib::user_data_dir().join("flatpak/overrides/global");
+    let shared = std::fs::read_to_string(overrides).is_ok_and(|text| {
+        text.lines().any(|line| line.starts_with("filesystems=") && line.contains(FLATPAK_GTK4))
+    });
+    if !shared && glib::find_program_in_path("flatpak").is_some() {
+        run("flatpak", &["override", "--user", &format!("--filesystem={FLATPAK_GTK4}")]);
+    }
+}
+
+const FLATPAK_GTK4: &str = "xdg-config/gtk-4.0:ro";
 
 pub(crate) const GTK3_THEME: &str = "Nekoland";
