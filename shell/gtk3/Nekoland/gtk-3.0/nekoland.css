@@ -292,31 +292,73 @@ scale slider:backdrop {
   border-radius: 999px;
 }
 
-notebook > header {
+/* Tabs as the GTK 4 look's tab bar: the open tab on a fill of 8px corners, the others only
+ * their grey words. The pages lie on the window's paper, without a frame, as a GTK 4
+ * window's content does. */
+notebook,
+notebook.frame,
+notebook > stack:not(:only-child),
+notebook > stack:not(:only-child):backdrop {
+  border: none;
   background-color: @nekoland_paper;
-  border-color: @nekoland_line;
 }
-notebook > header.top > tabs > tab:checked,
-notebook > header.top > tabs > tab:checked:backdrop {
-  box-shadow: inset 0 -2px @nekoland_ink;
+notebook > header,
+notebook > header:backdrop,
+notebook > header.top,
+notebook > header.bottom,
+notebook > header.left,
+notebook > header.right {
+  padding: 6px;
+  border: none;
+  background-color: @nekoland_paper;
+  box-shadow: none;
 }
-notebook > header.bottom > tabs > tab:checked,
-notebook > header.bottom > tabs > tab:checked:backdrop {
-  box-shadow: inset 0 2px @nekoland_ink;
+notebook > header > tabs,
+notebook > header.top > tabs,
+notebook > header.bottom > tabs,
+notebook > header.left > tabs,
+notebook > header.right > tabs {
+  margin: 0;
 }
-notebook > header.left > tabs > tab:checked,
-notebook > header.left > tabs > tab:checked:backdrop {
-  box-shadow: inset -2px 0 @nekoland_ink;
-}
-notebook > header.right > tabs > tab:checked,
-notebook > header.right > tabs > tab:checked:backdrop {
-  box-shadow: inset 2px 0 @nekoland_ink;
-}
+notebook > header tab,
+notebook > header tab:hover,
+notebook > header tab:backdrop,
 notebook > header.top > tabs > tab:hover,
 notebook > header.bottom > tabs > tab:hover,
 notebook > header.left > tabs > tab:hover,
 notebook > header.right > tabs > tab:hover {
+  min-height: 0;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 8px;
+  background-color: transparent;
   box-shadow: none;
+  color: @nekoland_ink_2;
+  font-weight: 400;
+}
+notebook > header tab:hover {
+  color: @nekoland_ink;
+}
+notebook > header tab:checked,
+notebook > header tab:checked:hover,
+notebook > header tab:checked:backdrop,
+notebook > header.top > tabs > tab:checked,
+notebook > header.bottom > tabs > tab:checked,
+notebook > header.left > tabs > tab:checked,
+notebook > header.right > tabs > tab:checked,
+notebook > header.top > tabs > tab:checked:backdrop,
+notebook > header.bottom > tabs > tab:checked:backdrop,
+notebook > header.left > tabs > tab:checked:backdrop,
+notebook > header.right > tabs > tab:checked:backdrop {
+  min-height: 0;
+  padding: 7px 14px;
+  border: none;
+  background-color: @nekoland_fill;
+  box-shadow: none;
+  color: @nekoland_ink;
+}
+notebook > header tab label {
+  color: inherit;
 }
 
 *:link,
@@ -407,4 +449,121 @@ dialog > .titlebar {
 dialog > .titlebar .title {
   font-size: 14px;
   font-weight: 600;
+}
+
+/* A list in a frame is a GTK 4 card: sheet on 12px corners, with no line around it. GTK 3
+ * does not clip a child to its parent's corners, so what is inside draws no ground. */
+scrolledwindow.frame {
+  border: none;
+  border-radius: 12px;
+  background-color: @nekoland_sheet;
+}
+scrolledwindow.frame > viewport,
+scrolledwindow.frame > treeview.view,
+scrolledwindow.frame > textview text,
+scrolledwindow.frame list,
+scrolledwindow.frame list row {
+  background-color: transparent;
+}
+/* A column's title: grey words over a line, as a GTK 4 column view's. */
+treeview.view header button,
+treeview.view header button:hover,
+treeview.view header button:active,
+treeview.view header button:backdrop {
+  padding: 4px 12px;
+  border-style: none none solid none;
+  border-width: 1px;
+  border-color: @nekoland_line;
+  border-radius: 0;
+  background-image: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: @nekoland_ink_2;
+  font-weight: 600;
+}
+/* What is chosen in a list is a light wash of ink, as in GTK 4; menus keep solid ink. */
+treeview.view:selected,
+treeview.view:selected:focus,
+treeview.view:selected:backdrop,
+list row:selected,
+list row:selected:backdrop {
+  background-color: alpha(@nekoland_ink, 0.14);
+  color: @nekoland_ink;
+}
+
+/* A number field is one field: its buttons draw only their signs. */
+spinbutton:not(.vertical) button,
+spinbutton:not(.vertical) button:hover,
+spinbutton:not(.vertical) button:active,
+spinbutton:not(.vertical) button:backdrop,
+spinbutton:not(.vertical) button:disabled,
+spinbutton:not(.vertical) button:backdrop:disabled {
+  border: none;
+  border-radius: 8px;
+  background-image: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: @nekoland_ink;
+}
+spinbutton:not(.vertical) button:hover {
+  background-color: alpha(@nekoland_ink, 0.08);
+}
+spinbutton:not(.vertical) button:disabled,
+spinbutton:not(.vertical) button:backdrop:disabled {
+  color: alpha(@nekoland_ink_3, 0.5);
+}
+entry:disabled,
+entry:backdrop:disabled,
+spinbutton:disabled:not(.vertical),
+spinbutton:backdrop:disabled:not(.vertical) {
+  border-color: transparent;
+  background-image: none;
+  background-color: @nekoland_fill;
+  box-shadow: none;
+  color: @nekoland_ink_3;
+}
+
+/* A checkbox or radio button that cannot be changed is grey, chosen or not. */
+check:disabled,
+radio:disabled {
+  border-color: @nekoland_line;
+}
+check:checked:disabled,
+check:indeterminate:disabled,
+radio:checked:disabled,
+radio:indeterminate:disabled {
+  background-color: @nekoland_ink_3;
+  border-color: @nekoland_ink_3;
+  color: @nekoland_on_ink;
+}
+
+/* An alert as the GTK 4 look's: a sheet on 14px corners, its buttons filled on 8px
+ * corners, 8px apart, 20px in from the sheet's sides and bottom. */
+messagedialog.csd decoration {
+  border-radius: 14px;
+}
+messagedialog .titlebar,
+messagedialog .titlebar:backdrop {
+  background-color: @nekoland_sheet;
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+}
+messagedialog.background,
+messagedialog.csd.background {
+  background-color: @nekoland_sheet;
+  border-bottom-left-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+messagedialog .dialog-action-box {
+  margin: 0 16px 20px;
+}
+messagedialog.csd .dialog-action-area button,
+messagedialog.csd .dialog-action-area button:first-child,
+messagedialog.csd .dialog-action-area button:last-child {
+  min-height: 32px;
+  margin: 0 4px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  -gtk-outline-radius: 8px;
 }
