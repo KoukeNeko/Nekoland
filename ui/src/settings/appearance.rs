@@ -49,8 +49,10 @@ pub(crate) fn appearance_page(config: &Config, provider: &gtk::CssProvider) -> a
         set_gtk3_theme(on);
         if on {
             share_look_with_flatpaks();
+            copy_gtk3_theme_to_snaps();
         } else {
             withdraw_kvantum_theme();
+            withdraw_gtk3_theme_from_snaps();
         }
         let display = row.display();
         if on {
@@ -412,23 +414,73 @@ fn kvantum_theme_copy() -> std::path::PathBuf {
 /// Copies the look's Kvantum theme to the person's Kvantum folder, which Flatpak's Qt
 /// applications can read, when it is not there as it is.
 fn copy_kvantum_theme() -> std::io::Result<()> {
-    let files = match std::fs::read_dir(KVANTUM_THEME) {
-        Ok(files) => files,
-        // Not installed: Qt applications keep their own style.
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    let copy = kvantum_theme_copy();
-    std::fs::create_dir_all(&copy)?;
+    let theme = std::path::Path::new(KVANTUM_THEME);
+    // Not installed: Qt applications keep their own style.
+    if !theme.is_dir() {
+        return Ok(());
+    }
+    copy_folder(theme, &kvantum_theme_copy())
+}
+
+/// Copies `from` and what is in it to `to`, leaving alone the files already the same.
+fn copy_folder(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let files = std::fs::read_dir(from)?;
+    std::fs::create_dir_all(to)?;
     for file in files {
-        let file = file?.path();
-        let to = copy.join(file.file_name().expect("a file in a folder"));
-        let text = std::fs::read(&file)?;
-        if std::fs::read(&to).ok().as_ref() != Some(&text) {
-            std::fs::write(&to, text)?;
+        let file = file?;
+        let copy = to.join(file.file_name());
+        if file.file_type()?.is_dir() {
+            copy_folder(&file.path(), &copy)?;
+            continue;
+        }
+        let text = std::fs::read(file.path())?;
+        if std::fs::read(&copy).ok().as_ref() != Some(&text) {
+            std::fs::write(&copy, text)?;
         }
     }
     Ok(())
+}
+
+/// Where install.sh puts the look's GTK 3 theme.
+const GTK3_THEME_DIR: &str = "/usr/local/share/themes/Nekoland";
+
+/// The copy of the GTK 3 theme in each snap's own data folder, one of those GTK in the snap
+/// looks for themes in: a snap sees neither /usr/local nor the person's own folders, and
+/// draws in Adwaita without it. Its ~/.themes is a link the snap makes to its own themes.
+fn snap_theme_copies() -> Vec<std::path::PathBuf> {
+    let Ok(snaps) = std::fs::read_dir(glib::home_dir().join("snap")) else {
+        return Vec::new();
+    };
+    snaps
+        .filter_map(Result::ok)
+        .map(|snap| snap.path().join("current"))
+        .filter(|home| home.is_dir())
+        .map(|home| home.join("themes").join(GTK3_THEME))
+        .collect()
+}
+
+/// Gives each snap the look's GTK 3 theme, as the programs outside have it.
+pub(crate) fn copy_gtk3_theme_to_snaps() {
+    if !std::path::Path::new(GTK3_THEME_DIR).is_dir() {
+        return;
+    }
+    for copy in snap_theme_copies() {
+        if let Err(err) = copy_folder(std::path::Path::new(GTK3_THEME_DIR), &copy) {
+            eprintln!("GTK 3 theme for {}: {err}", copy.display());
+        }
+    }
+}
+
+/// Takes the snaps' copies of the GTK 3 theme back, with the look.
+pub(crate) fn withdraw_gtk3_theme_from_snaps() {
+    for copy in snap_theme_copies() {
+        match std::fs::remove_dir_all(&copy) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("GTK 3 theme for {}: {err}", copy.display())
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Takes the copy of the look's Kvantum theme back, with the look.
@@ -466,3 +518,21 @@ fn install_kvantum_styles() {
 const KVANTUM_STYLE: &str = "org.kde.KStyle.Kvantum";
 
 pub(crate) const GTK3_THEME: &str = "Nekoland";
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_theme_is_copied_with_its_subfolders() {
+        let dir = std::env::temp_dir().join(format!("nekoland-appearance-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (from, to) = (dir.join("Nekoland"), dir.join("snap/themes/Nekoland"));
+        std::fs::create_dir_all(from.join("gtk-3.0")).unwrap();
+        std::fs::write(from.join("index.theme"), "[Desktop Entry]").unwrap();
+        std::fs::write(from.join("gtk-3.0/gtk.css"), "window {}").unwrap();
+
+        super::copy_folder(&from, &to).unwrap();
+        assert_eq!(std::fs::read_to_string(to.join("index.theme")).unwrap(), "[Desktop Entry]");
+        assert_eq!(std::fs::read_to_string(to.join("gtk-3.0/gtk.css")).unwrap(), "window {}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
