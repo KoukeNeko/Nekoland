@@ -46,6 +46,8 @@ const LINE_IN_AFTER: f64 = 0.12;
 const LINE_FONT: f64 = 16.0;
 const LINE_FONT_MIN: f64 = 13.0;
 const PAUSED_COVER: f64 = 0.88;
+/// How long the tile stays when no player is found, as between two songs.
+const KEEP_WHILE_GONE: Duration = Duration::from_secs(10);
 const PRESSED: f64 = 0.84;
 
 /// Springs as stiffness and damping, for `motion::swing`'s rate and damping ratio.
@@ -362,6 +364,8 @@ pub struct NowPlaying {
     swap: Option<Swap>,
     last_row: Option<usize>,
     cover_scale: (f64, f64),
+    /// Since when no player has been found, while the one before it is still shown.
+    lost: Option<Instant>,
     /// Counts the changes to the lyrics kept, which the card is told of when they come.
     pub revision: u64,
     /// When another song came, and from which way: -1 after going back to the previous.
@@ -409,6 +413,7 @@ impl NowPlaying {
             cover_scale: (1.0, 0.0),
             arrived: None,
             went_back: false,
+            lost: None,
             revision: 0,
             press: None,
             since: Instant::now(),
@@ -432,6 +437,23 @@ impl NowPlaying {
 
     pub fn refresh(&mut self, now: Instant) {
         if let Some((player, reported)) = self.found.try_iter().last() {
+            // Between songs a player may show nothing for a moment: what was playing stays, as
+            // paused, rather than the tile closing and opening again.
+            if player.is_none() && self.player.is_some() {
+                let lost = *self.lost.get_or_insert(now);
+                if now.duration_since(lost) < KEEP_WHILE_GONE {
+                    if self.player.as_ref().is_some_and(|held| held.playing) {
+                        self.clock = self.position(now).map(|at| (at, now));
+                        if let Some(held) = self.player.as_mut() {
+                            held.playing = false;
+                        }
+                    }
+                    self.ask_for_lyrics(now);
+                    return;
+                }
+            } else {
+                self.lost = None;
+            }
             let estimate = self.position(now);
             match (&self.player, &player) {
                 (Some(was), Some(is)) if song_key(was) == song_key(is) => {
