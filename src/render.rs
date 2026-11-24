@@ -1004,7 +1004,7 @@ fn floating_elements(
             popups
                 .iter()
                 .filter_map(|(popup, origin)| popup_glass_area(popup, *origin))
-                .map(|area| (Tier::Menu, area.to_physical_precise_round(scale))),
+                .map(|(area, _)| (Tier::Menu, area.to_physical_precise_round(scale))),
         )
         .collect();
     if let (Some(glass), Some(mode)) = (glass.as_deref_mut(), output.current_mode()) {
@@ -1154,7 +1154,7 @@ fn floating_elements(
             }
             None => elements.extend(surfaces.into_iter().map(SceneElement::Surface)),
         }
-        if let Some(area) = popup_glass_area(popup, *origin) {
+        if let Some((area, radius)) = popup_glass_area(popup, *origin) {
             let area = pop.map_or(area, |(factor, _)| motion::scaled_about(area, pivot, factor));
             elements.extend(
                 glass
@@ -1164,7 +1164,7 @@ fn floating_elements(
                             popup.wl_surface(),
                             Tier::Menu,
                             area.to_physical_precise_round(scale),
-                            pixels(POPUP_RADIUS),
+                            pixels(radius),
                         )
                     })
                     .map(|pane| SceneElement::Glass(pane.faded(alpha))),
@@ -1311,9 +1311,16 @@ const POPUP_RADIUS: i32 = 12;
 const GTK_TAIL_HEIGHT: i32 = 12;
 
 /// The part of the output a menu's glass covers: its window geometry, less a GTK arrow's band.
-fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<Rectangle<i32, Logical>> {
-    let PopupKind::Xdg(xdg) = popup else {
-        return None;
+/// Where a popup's glass goes, and the radius of its corners: a menu's, or the blur an input
+/// method asked for through ext-background-effect.
+fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<(Rectangle<i32, Logical>, i32)> {
+    let xdg = match popup {
+        PopupKind::Xdg(xdg) => xdg,
+        PopupKind::InputMethod(_) => {
+            let blur = crate::handlers::background_effect::blur_of(popup.wl_surface())?;
+            let area = Rectangle::new(blur.area.loc + origin - popup.geometry().loc, blur.area.size);
+            return Some((area, blur.radius));
+        }
     };
     let mut area = Rectangle::new(origin, popup.geometry().size);
     // shortcut: a popover with an arrow is known by GTK's input region, which is the arrow and
@@ -1341,7 +1348,7 @@ fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<Re
             area.size.w -= GTK_TAIL_HEIGHT;
         }
     }
-    (!area.is_empty()).then_some(area)
+    (!area.is_empty()).then_some((area, POPUP_RADIUS))
 }
 
 /// Where a menu was put and what it was opened from, both from where its parent's window

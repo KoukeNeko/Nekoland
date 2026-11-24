@@ -211,6 +211,7 @@ impl Nekoland {
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh);
         crate::handlers::appmenu::create_globals(&dh);
+        crate::handlers::background_effect::create_global(&dh);
         crate::screencopy::create_global(&dh);
         crate::image_capture::create_globals(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);

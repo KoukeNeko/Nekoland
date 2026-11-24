@@ -469,6 +469,8 @@ translucent for the glass to show; the styles in `shell/` are. Nekoland's own su
 take a tint, the same light and dark. The menu bar and the Dock have a tint and blur of
 their own; all other glass, GTK's menus and sidebars among it, shares one, and Settings'
 外觀 page sets both. Glass behind a bar that spans the whole output has square corners.
+An input method's candidates that ask for a blur through `ext-background-effect-v1`, as
+Project Key's do, get the same glass, with the corners its region gives.
 
 Behind every window is glass of what is under it, blurred, as Windows' Acrylic is: what a
 window leaves see-through, as sidebars and menus in Nekoland's GTK look, shows the windows

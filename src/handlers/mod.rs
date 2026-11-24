@@ -1,4 +1,5 @@
 pub mod appmenu;
+pub mod background_effect;
 mod compositor;
 pub mod foreign_toplevel;
 mod layer_shell;
