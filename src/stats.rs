@@ -73,7 +73,7 @@ const NOTE_ROW: i32 = 16;
 const FACT_ROW: i32 = 38;
 const LIMIT_ROW: i32 = 14;
 const PROCESS_ICON: i32 = 16;
-const PROCESS_SYMBOL: &str = "application-x-executable-symbolic";
+const PROCESS_SYMBOL: &str = "nekoland-process-symbolic";
 /// The bar's line and bars, and the gap after a name stood on end beside them.
 const BAR_CHART: (f64, f64) = (32.0, 18.0);
 const BAR_LABEL_GAP: f64 = 3.0;
