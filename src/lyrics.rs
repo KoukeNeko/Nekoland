@@ -9,14 +9,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 const LRCLIB: &str = "https://lrclib.net/api";
-const NETEASE: &str = "https://music.163.com/api";
-const QQ: &str = "https://c.y.qq.com";
 /// How many sources a song's lyrics were asked of; a song kept from fewer is asked again.
-pub const SOURCES: u8 = 3;
-/// The most takes of a song read from NetEase, each being a request.
-const NETEASE_TAKES: usize = 3;
-/// The most takes of a song read from QQ Music.
-const QQ_TAKES: usize = 2;
+pub const SOURCES: u8 = 4;
 /// Seconds: lyrics this close to the track's length are of the same recording.
 pub const MATCH: f64 = 2.0;
 /// Playback seconds per lyric second a live take can plausibly run at.
@@ -44,6 +38,9 @@ pub enum Kind {
 pub struct Candidate {
     #[serde(default = "lrclib_name")]
     pub source: String,
+    /// What the source calls the song, which another source may know it by.
+    #[serde(default)]
+    pub title: String,
     pub album: String,
     /// The length of the recording these lyrics were timed to.
     pub duration: f64,
@@ -148,7 +145,9 @@ pub fn choose(duration: f64, found: &[Candidate]) -> Option<(usize, bool)> {
             } else {
                 ra.1.cmp(&rb.1)
             };
-            ra.0.cmp(&rb.0).then(words).then_with(|| {
+            // Lyrics with no times are for when there are none with, however near in length.
+            let plain = a.1.synced.is_empty().cmp(&b.1.synced.is_empty());
+            ra.0.cmp(&rb.0).then(words).then(plain).then_with(|| {
                 (a.1.duration - duration)
                     .abs()
                     .total_cmp(&(b.1.duration - duration).abs())
@@ -339,21 +338,37 @@ pub enum Missing {
     Unreachable,
 }
 
-/// Every set of lyrics LRCLIB, NetEase and QQ Music have for this song: LRCLIB's first, the one
-/// for this length at the head of them, then NetEase's, which are often timed word by word,
-/// then QQ Music's. One of the last two being down does not stop the rest.
+/// Every set of lyrics the services have for this song: LRCLIB's first, the one for this length
+/// at the head of them, then the others' (`lyric_sources`), which are often timed word by word.
+/// The others being down does not stop LRCLIB's, and LRCLIB being down is told, as the rest do
+/// not say whether there are none.
 pub fn fetch(title: &str, artist: &str, album: &str, duration: f64) -> Result<Vec<Candidate>, Missing> {
-    let from_lrclib = fetch_lrclib(title, artist, album, duration);
-    let mut others = fetch_netease(title, artist, duration);
-    others.extend(fetch_qq(title, artist, duration));
-    match from_lrclib {
-        Ok(mut found) => {
-            found.extend(others);
-            Ok(found)
+    let (from_lrclib, others) = std::thread::scope(|scope| {
+        let others = scope.spawn(|| crate::lyric_sources::all(title, artist, duration));
+        let from_lrclib = fetch_lrclib(title, artist, album, duration);
+        (from_lrclib, others.join().unwrap_or_default())
+    });
+    let mut found = match from_lrclib {
+        Ok(found) => found,
+        Err(Missing::NotFound) if !others.is_empty() => Vec::new(),
+        Err(missing) => return Err(missing),
+    };
+    found.extend(others);
+    // LRCLIB lists some of its takes more than once.
+    let mut kept: Vec<(String, i64, usize, usize)> = Vec::new();
+    found.retain(|c| {
+        let key = (
+            c.source.clone(),
+            c.duration.round() as i64,
+            c.synced.len(),
+            c.plain.len(),
+        );
+        !kept.contains(&key) && {
+            kept.push(key);
+            true
         }
-        Err(Missing::NotFound) if !others.is_empty() => Ok(others),
-        Err(missing) => Err(missing),
-    }
+    });
+    Ok(found)
 }
 
 fn fetch_lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result<Vec<Candidate>, Missing> {
@@ -392,7 +407,7 @@ fn fetch_lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result
 }
 
 /// "(Live)", "- Live at …" and the like do not name the song.
-fn clean_title(title: &str) -> String {
+pub(crate) fn clean_title(title: &str) -> String {
     let mut out = String::new();
     let mut depth = 0;
     for c in title.chars() {
@@ -407,295 +422,82 @@ fn clean_title(title: &str) -> String {
 }
 
 /// GETs JSON; Ok(None) when the service says there is nothing.
-fn get(url: &str, query: &[(&str, String)]) -> Result<Option<serde_json::Value>, Missing> {
+pub(crate) fn get(url: &str, query: &[(&str, String)]) -> Result<Option<serde_json::Value>, Missing> {
     get_from(url, query, None)
 }
 
 /// As `get`, for a service that asks where the request is from.
-fn get_from(
+pub(crate) fn get_from(
     url: &str,
     query: &[(&str, String)],
     referer: Option<&str>,
 ) -> Result<Option<serde_json::Value>, Missing> {
-    let agent = concat!("Nekoland/", env!("CARGO_PKG_VERSION"));
-    let mut args = vec![
-        "-s".to_string(),
-        "-A".into(),
-        agent.into(),
-        "--max-time".into(),
-        "6".into(),
-        "-G".into(),
-        "-w".into(),
-        "\n%{http_code}".into(),
-        url.to_string(),
-    ];
+    Ok(get_text(url, query, referer)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
+/// What a GET answers, or Ok(None) when the service says there is nothing.
+pub(crate) fn get_text(
+    url: &str,
+    query: &[(&str, String)],
+    referer: Option<&str>,
+) -> Result<Option<String>, Missing> {
+    let mut args = vec!["-G".to_string(), url.to_string()];
     if let Some(referer) = referer {
-        args.splice(0..0, ["-e".to_string(), referer.to_string()]);
+        args.extend(["-e".to_string(), referer.to_string()]);
     }
     for (key, value) in query {
         args.push("--data-urlencode".into());
         args.push(format!("{key}={value}"));
     }
+    curl(args)
+}
+
+/// POSTs JSON, and reads JSON back.
+pub(crate) fn post_json(url: &str, body: &str) -> Result<Option<serde_json::Value>, Missing> {
+    let args = [
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        body,
+        url,
+    ]
+    .map(String::from)
+    .to_vec();
+    Ok(curl(args)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
+fn curl(mut args: Vec<String>) -> Result<Option<String>, Missing> {
+    let agent = concat!("Nekoland/", env!("CARGO_PKG_VERSION"));
+    let mut all = vec![
+        "-s".to_string(),
+        "-A".into(),
+        agent.into(),
+        "--max-time".into(),
+        "6".into(),
+        "-w".into(),
+        "\n%{http_code}".into(),
+    ];
+    all.append(&mut args);
     let output = Command::new("curl")
-        .args(&args)
+        .args(&all)
         .output()
         .map_err(|_| Missing::Unreachable)?;
     let body = String::from_utf8_lossy(&output.stdout);
-    let (json, code) = body.rsplit_once('\n').ok_or(Missing::Unreachable)?;
+    let (text, code) = body.rsplit_once('\n').ok_or(Missing::Unreachable)?;
     match code.trim() {
-        "200" => Ok(serde_json::from_str(json).ok()),
+        "200" => Ok(Some(text.to_string())),
         "404" => Ok(None),
         _ => Err(Missing::Unreachable),
     }
-}
-
-/// The takes of this song NetEase has lyrics for, with each word's time where it has them.
-fn fetch_netease(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
-    let title = clean_title(title);
-    let search = get(
-        &format!("{NETEASE}/search/get"),
-        &[
-            ("s", format!("{title} {artist}")),
-            ("type", "1".into()),
-            ("limit", "10".into()),
-        ],
-    );
-    let songs = search
-        .ok()
-        .flatten()
-        .and_then(|found| found.pointer("/result/songs")?.as_array().cloned())
-        .unwrap_or_default();
-    let lower = |text: &str| text.to_lowercase();
-    let (want_title, want_artist) = (lower(&title), lower(artist));
-    let mut found: Vec<Candidate> = Vec::new();
-    for song in &songs {
-        if found.len() >= NETEASE_TAKES {
-            break;
-        }
-        let name = lower(song.get("name").and_then(|n| n.as_str()).unwrap_or_default());
-        let by: Vec<String> = song
-            .get("artists")
-            .and_then(|a| a.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some(lower(a.get("name")?.as_str()?)))
-            .collect();
-        let (Some(id), Some(ms)) = (
-            song.get("id").and_then(|id| id.as_i64()),
-            song.get("duration").and_then(|d| d.as_f64()),
-        ) else {
-            continue;
-        };
-        // The same song by the same artist, not another that shares a word of either; a title
-        // in another language is the same song when it is as long as this recording.
-        let same_title = name.contains(&want_title)
-            || want_title.contains(&name)
-            || (duration > 0.0 && (ms / 1000.0 - duration).abs() <= MATCH);
-        let same_artist = want_artist.is_empty()
-            || by
-                .iter()
-                .any(|by| by.contains(&want_artist) || want_artist.contains(by.as_str()));
-        if !same_title || !same_artist || found.iter().any(|c| (c.duration - ms / 1000.0).abs() < 1.0) {
-            continue;
-        }
-        let album = song
-            .pointer("/album/name")
-            .and_then(|a| a.as_str())
-            .unwrap_or_default();
-        let lyric = get(
-            &format!("{NETEASE}/song/lyric"),
-            &[("id", id.to_string()), ("lv", "1".into()), ("yv", "1".into())],
-        );
-        let Some(lyric) = lyric.ok().flatten() else {
-            continue;
-        };
-        let text = |pointer: &str| {
-            lyric
-                .pointer(pointer)
-                .and_then(|t| t.as_str())
-                .unwrap_or_default()
-                .to_string()
-        };
-        let mut synced = parse_yrc(&text("/yrc/lyric"));
-        if synced.is_empty() {
-            synced = parse_lrc(&text("/lrc/lyric"));
-        }
-        if !synced.is_empty() {
-            found.push(Candidate {
-                source: "網易雲音樂".into(),
-                album: album.to_string(),
-                duration: ms / 1000.0,
-                synced,
-                plain: vec![],
-            });
-        }
-    }
-    found
-}
-
-/// The takes of this song QQ Music has lyrics for. They are timed by line.
-fn fetch_qq(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
-    let title = clean_title(title);
-    let search = get_from(
-        &format!("{QQ}/soso/fcgi-bin/client_search_cp"),
-        &[
-            ("w", format!("{title} {artist}")),
-            ("format", "json".into()),
-            ("n", "10".into()),
-        ],
-        Some("https://y.qq.com/"),
-    );
-    let songs = search
-        .ok()
-        .flatten()
-        .and_then(|found| found.pointer("/data/song/list")?.as_array().cloned())
-        .unwrap_or_default();
-    let (want_title, want_artist) = (title.to_lowercase(), artist.to_lowercase());
-    let mut found: Vec<Candidate> = Vec::new();
-    for song in &songs {
-        if found.len() >= QQ_TAKES {
-            break;
-        }
-        let name = song
-            .get("songname")
-            .and_then(|n| n.as_str())
-            .unwrap_or_default()
-            .to_lowercase();
-        let by: Vec<String> = song
-            .get("singer")
-            .and_then(|a| a.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some(a.get("name")?.as_str()?.to_lowercase()))
-            .collect();
-        let (Some(mid), Some(seconds)) = (
-            song.get("songmid").and_then(|m| m.as_str()),
-            song.get("interval").and_then(|i| i.as_f64()),
-        ) else {
-            continue;
-        };
-        let same_title = name.contains(&want_title)
-            || want_title.contains(&name)
-            || (duration > 0.0 && (seconds - duration).abs() <= MATCH);
-        let same_artist = want_artist.is_empty()
-            || by
-                .iter()
-                .any(|by| by.contains(&want_artist) || want_artist.contains(by.as_str()));
-        if !same_title || !same_artist || found.iter().any(|c| (c.duration - seconds).abs() < 1.0) {
-            continue;
-        }
-        let lyric = get_from(
-            &format!("{QQ}/lyric/fcgi-bin/fcg_query_lyric_new.fcg"),
-            &[
-                ("songmid", mid.to_string()),
-                ("format", "json".into()),
-                ("nobase64", "1".into()),
-            ],
-            Some("https://y.qq.com/"),
-        );
-        let synced = lyric
-            .ok()
-            .flatten()
-            .and_then(|lyric| Some(parse_lrc(lyric.get("lyric")?.as_str()?)))
-            .unwrap_or_default();
-        if !synced.is_empty() {
-            found.push(Candidate {
-                source: "QQ 音樂".into(),
-                album: song
-                    .get("albumname")
-                    .and_then(|a| a.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                duration: seconds,
-                synced,
-                plain: vec![],
-            });
-        }
-    }
-    found
-}
-
-/// A word's characters, each starting its share of the word's length after the word's start.
-fn spread(words: &mut Vec<(f64, String)>, word: Option<(f64, f64, String)>) {
-    let Some((at, length, said)) = word else {
-        return;
-    };
-    let count = said.chars().count().max(1) as f64;
-    for (index, c) in said.chars().enumerate() {
-        words.push(((at + length * index as f64 / count) / 1000.0, c.to_string()));
-    }
-}
-
-/// NetEase's word-timed lyrics: `[start,length](start,length,0)word…` a line, in milliseconds,
-/// each word's time spread over its characters, as the rest of the lyrics keep them.
-pub fn parse_yrc(text: &str) -> Vec<Line> {
-    let mut lines = Vec::new();
-    for raw in text.lines() {
-        let Some(rest) = raw.strip_prefix('[') else {
-            continue;
-        };
-        let Some((head, body)) = rest.split_once(']') else {
-            continue;
-        };
-        let Some(start) = head.split(',').next().and_then(|n| n.parse::<f64>().ok()) else {
-            continue;
-        };
-        let mut words: Vec<(f64, String)> = Vec::new();
-        // The word being read: its start, its length and what it says so far.
-        let mut word: Option<(f64, f64, String)> = None;
-        let chars: Vec<char> = body.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '(' {
-                if let Some(close) = chars[i..].iter().position(|&c| c == ')') {
-                    let inner: String = chars[i + 1..i + close].iter().collect();
-                    let stamp: Vec<&str> = inner.split(',').collect();
-                    if stamp.len() == 3 && stamp.iter().all(|n| n.parse::<u32>().is_ok()) {
-                        spread(&mut words, word.take());
-                        word = Some((
-                            stamp[0].parse().unwrap_or(0.0),
-                            stamp[1].parse().unwrap_or(0.0),
-                            String::new(),
-                        ));
-                        i += close + 1;
-                        continue;
-                    }
-                }
-            }
-            if let Some((_, _, said)) = word.as_mut() {
-                said.push(chars[i]);
-            }
-            i += 1;
-        }
-        spread(&mut words, word);
-        // The text is what is sung, so leading spaces are not part of it, nor of the timing.
-        let skip = words.iter().take_while(|(_, c)| c.trim().is_empty()).count();
-        words.drain(..skip);
-        while words.last().is_some_and(|(_, c)| c.trim().is_empty()) {
-            words.pop();
-        }
-        let text: String = words.iter().map(|(_, c)| c.as_str()).collect();
-        if !text.is_empty() {
-            lines.push(Line {
-                time: start / 1000.0,
-                text,
-                words: Some(words),
-            });
-        }
-    }
-    // The credits NetEase puts in the first lines ("作词 : …") are not sung.
-    let credits = lines
-        .iter()
-        .take_while(|line| line.text.contains(" : ") || line.text.contains('：'))
-        .count();
-    lines.drain(..credits);
-    lines
 }
 
 fn candidate(item: &serde_json::Value) -> Option<Candidate> {
     let text = |key: &str| item.get(key).and_then(|v| v.as_str()).unwrap_or_default();
     let c = Candidate {
         source: lrclib_name(),
+        title: String::new(),
         album: text("albumName").to_string(),
         duration: item.get("duration")?.as_f64()?,
         synced: parse_lrc(text("syncedLyrics")),
@@ -714,20 +516,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_word_timed_lyrics() {
-        let yrc = "[0,1000](0,1000,0) 作词 : someone\n[12040,3000](12040,800,0)Hel(12840,400,0)lo (13240,600,0)世界";
-        let lines = parse_yrc(yrc);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].text, "Hello 世界");
-        assert!((lines[0].time - 12.04).abs() < 1e-9);
-        let words = lines[0].words.as_ref().unwrap();
-        assert_eq!(words.len(), 8);
-        // "Hel" takes 0.8 s over three characters, the next word starting where it ends.
-        assert!((words[1].0 - (12.04 + 0.8 / 3.0)).abs() < 1e-9);
-        assert!((words[3].0 - 12.84).abs() < 1e-9);
-    }
-
-    #[test]
     fn words_break_a_tie_between_takes_of_one_recording() {
         let mut plain = cand("A", 200.0);
         let mut timed = cand("B", 201.0);
@@ -742,6 +530,7 @@ mod tests {
     fn cand(album: &str, duration: f64) -> Candidate {
         Candidate {
             source: "LRCLIB".into(),
+            title: String::new(),
             album: album.into(),
             duration,
             synced: parse_lrc("[00:12.00]a"),

@@ -26,6 +26,7 @@ mod grabs;
 mod input;
 mod ipc;
 mod lock;
+mod lyric_sources;
 mod lyrics;
 mod media;
 mod menubar;

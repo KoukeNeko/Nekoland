@@ -1310,7 +1310,26 @@ pub fn menu(lyrics: &Lyrics, player: &Player) -> (Option<String>, Vec<Entry>) {
         action,
         apart,
     };
-    let mut entries: Vec<Entry> = (lyrics.found.iter().enumerate())
+    // Each source's takes together, in the order the sources are in, its best first: as long
+    // as the recording, timed by word where it can be, and nearest in length.
+    let mut shown: Vec<usize> = (0..lyrics.found.len()).collect();
+    let source_at = |index: usize| {
+        let source = &lyrics.found[index].source;
+        lyrics.found.iter().position(|c| &c.source == source)
+    };
+    shown.sort_by_key(|&index| {
+        let c = &lyrics.found[index];
+        (
+            source_at(index),
+            !c.matches(lyrics.length),
+            c.synced.is_empty(),
+            !c.has_words(),
+            ((c.duration - lyrics.length).abs() * 10.0) as i64,
+        )
+    });
+    let mut entries: Vec<Entry> = shown
+        .into_iter()
+        .map(|index| (index, &lyrics.found[index]))
         .map(|(index, candidate)| {
             let off = candidate.duration - lyrics.length;
             let fit = if candidate.matches(lyrics.length) {
@@ -1383,7 +1402,9 @@ pub fn menu(lyrics: &Lyrics, player: &Player) -> (Option<String>, Vec<Entry>) {
     (why, entries)
 }
 
-const MENU_ROW: f64 = 30.0;
+/// The most versions of the lyrics the menu shows at once; there are scrolled to.
+const MENU_VIEW_ROWS: usize = 6;
+const MENU_ROW: f64 = 28.0;
 const MENU_WHY: f64 = 28.0;
 const MENU_PAD: f64 = 6.0;
 
@@ -1532,7 +1553,11 @@ impl Card {
     }
 
     pub fn wheel(&mut self, amount: f64) {
-        self.events.push(Event::Wheel(amount));
+        self.events.push(if self.menu.is_some() {
+            Event::MenuWheel(amount)
+        } else {
+            Event::Wheel(amount)
+        });
     }
 
     /// The row a point on the output is on, or the control.
@@ -1686,6 +1711,7 @@ struct Job {
 /// What the user did to the lyrics, which the drawing's own measures decide the effect of.
 enum Event {
     Wheel(f64),
+    MenuWheel(f64),
     ShowRow(usize),
 }
 
@@ -1800,6 +1826,10 @@ struct Painter {
     layouts: Vec<Option<pango::Layout>>,
     jumps: u32,
     drawn: Vec<i64>,
+    /// How far the menu's versions are scrolled, and the entry the keyboard was on when it was
+    /// drawn last, which it is scrolled to when it changes.
+    menu_scroll: f64,
+    menu_was_on: Option<usize>,
     menu_drawn: Option<((f64, f64, f64, f64), Vec<(f64, Entry)>)>,
     active: Option<usize>,
     cover: Option<(ImageSurface, [Rgb; 3])>,
@@ -1821,6 +1851,8 @@ impl Painter {
             layouts: Vec::new(),
             jumps: 0,
             drawn: Vec::new(),
+            menu_scroll: 0.0,
+            menu_was_on: None,
             menu_drawn: None,
             active: None,
             cover: None,
@@ -1858,6 +1890,7 @@ impl Painter {
                     self.free += amount.signum() * WHEEL_STEP;
                     self.free_at = Some(job.now);
                 }
+                Event::MenuWheel(amount) => self.menu_scroll += amount.signum() * MENU_ROW,
                 Event::ShowRow(row) => {
                     let Some((_, tops, heights)) = &self.metrics else {
                         continue;
@@ -2427,12 +2460,38 @@ impl Painter {
 
         // The menu of versions, on a solid ground over the lyrics, over where they are from.
         self.menu_drawn = None;
+        if job.menu.is_none() {
+            self.menu_scroll = 0.0;
+            self.menu_was_on = None;
+        }
         if let (Some(focused), Some(lyrics), Some(source)) = (job.menu, &lyrics, places.source) {
             let (why, entries) = menu(lyrics, &player);
+            // The versions are scrolled in a view of a few rows, between the line that says what
+            // the recording is and the actions, which stay.
+            let versions = entries
+                .iter()
+                .take_while(|entry| matches!(entry.action, MenuAction::Choose(_)))
+                .count();
+            let view = versions.min(MENU_VIEW_ROWS) as f64 * MENU_ROW;
+            let most = (versions as f64 * MENU_ROW - view).max(0.0);
+            // The entry the keyboard moved to, or the one in use as the menu opens, is shown.
+            if self.menu_was_on != Some(focused) {
+                if focused < versions {
+                    let at = focused as f64 * MENU_ROW;
+                    if at < self.menu_scroll {
+                        self.menu_scroll = at;
+                    } else if at + MENU_ROW > self.menu_scroll + view {
+                        self.menu_scroll = at + MENU_ROW - view;
+                    }
+                }
+                self.menu_was_on = Some(focused);
+            }
+            self.menu_scroll = self.menu_scroll.clamp(0.0, most);
             let rules = entries.iter().filter(|entry| entry.apart).count() as f64;
             let height = MENU_PAD * 2.0
                 + why.as_ref().map_or(0.0, |_| MENU_WHY)
-                + entries.len() as f64 * MENU_ROW
+                + view
+                + (entries.len() - versions) as f64 * MENU_ROW
                 + rules * 9.0;
             let (x, w) = (PAD - 6.0, room + 12.0);
             let y = (source - 6.0 - height).max(PAD);
@@ -2460,34 +2519,68 @@ impl Painter {
             let label = face(pango::Weight::Normal, 13.0);
             let small = face(pango::Weight::Normal, 12.0);
             let mut placed = Vec::new();
+            let view_top = top;
+            let _ = cr.save();
+            cr.rectangle(x, view_top, w, view);
+            cr.clip();
             for (index, entry) in entries.into_iter().enumerate() {
+                if index == versions {
+                    let _ = cr.restore();
+                    top = view_top + view;
+                }
                 if entry.apart {
                     cr.set_source_rgba(ink.0, ink.1, ink.2, 0.12);
                     cr.rectangle(x + 10.0, top + 4.0, w - 20.0, 1.0);
                     let _ = cr.fill();
                     top += 9.0;
                 }
+                let row = if index < versions {
+                    view_top + index as f64 * MENU_ROW - self.menu_scroll
+                } else {
+                    top
+                };
                 if index == focused {
                     cr.set_source_rgba(ink.0, ink.1, ink.2, 0.1);
-                    text::rounded_rectangle(&cr, x + 4.0, top, w - 8.0, MENU_ROW, 6.0);
+                    text::rounded_rectangle(&cr, x + 4.0, row, w - 8.0, MENU_ROW, 6.0);
                     let _ = cr.fill();
                 }
                 let alpha = if entry.enabled { 1.0 } else { 0.4 };
                 cr.set_source_rgba(ink.0, ink.1, ink.2, alpha);
                 if entry.checked {
-                    show_cut(&cr, "✓", &label, x + 10.0, top + 6.0, 16.0);
+                    show_cut(&cr, "✓", &label, x + 10.0, row + 6.0, 16.0);
                 }
-                show_cut(&cr, &entry.label, &label, x + 30.0, top + 6.0, w - 150.0);
+                show_cut(&cr, &entry.label, &label, x + 30.0, row + 6.0, w - 150.0);
                 if !entry.detail.is_empty() {
                     let detail = layout_line(&cr, &entry.detail, &small);
                     cr.set_source_rgba(ink_3.0, ink_3.1, ink_3.2, alpha);
-                    cr.move_to(x + w - 12.0 - f64::from(detail.pixel_size().0), top + 7.0);
+                    cr.move_to(x + w - 12.0 - f64::from(detail.pixel_size().0), row + 7.0);
                     pangocairo::functions::show_layout(&cr, &detail);
                 }
-                placed.push((top, entry));
-                top += MENU_ROW;
+                // A version only part in view cannot be pointed at.
+                let seen = index >= versions || (view_top..view_top + view).contains(&(row + MENU_ROW / 2.0));
+                placed.push((if seen { row } else { f64::NEG_INFINITY }, entry));
+                if index >= versions {
+                    top += MENU_ROW;
+                }
             }
-            key.extend([focused as i64, placed.len() as i64, y as i64]);
+            if versions == placed.len() {
+                let _ = cr.restore();
+            }
+            if most > 0.0 {
+                // A bar for how far the versions are scrolled.
+                let all = versions as f64 * MENU_ROW;
+                let thumb = (view * view / all).max(16.0);
+                let at = view_top + (view - thumb) * self.menu_scroll / most;
+                cr.set_source_rgba(ink.0, ink.1, ink.2, 0.3);
+                text::rounded_rectangle(&cr, x + w - 7.0, at, 3.0, thumb, 1.5);
+                let _ = cr.fill();
+            }
+            key.extend([
+                focused as i64,
+                placed.len() as i64,
+                y as i64,
+                self.menu_scroll as i64,
+            ]);
             self.menu_drawn = Some(((x, y, w, height), placed));
         }
         drop(cr);
