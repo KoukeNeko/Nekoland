@@ -293,7 +293,8 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
             );
         }
         // The output as Settings shows it: `current` and `preferred` modes as WIDTHxHEIGHT@HZ,
-        // the `scale` drawn with and the `density_scale` used when the settings name none.
+        // the `scale` drawn with and the `density_scale` used when the settings name none,
+        // then whether it can take `ten_bit` colour and `variable_refresh`.
         display if argument(display, "display").is_some() => {
             let output = display_named(state, argument(display, "display")?)?;
             let name = |mode: smithay::output::Mode| {
@@ -307,11 +308,14 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                 size_mm.w.max(0) as u32,
                 size_mm.h.max(0) as u32,
             );
+            let abilities = output.user_data().get::<crate::udev::Abilities>().copied();
             return Some(format!(
-                "current {}\npreferred {}\nscale {}\ndensity_scale {density}\n",
+                "current {}\npreferred {}\nscale {}\ndensity_scale {density}\nten_bit {}\nvariable_refresh {}\n",
                 output.current_mode().map(name).unwrap_or_default(),
                 name(preferred),
                 output.current_scale().fractional_scale(),
+                abilities.is_some_and(|abilities| abilities.ten_bit),
+                abilities.is_some_and(|abilities| abilities.variable_refresh),
             ));
         }
         // Today's sunset and sunrise where the time zone is, for Night Shift's schedule.

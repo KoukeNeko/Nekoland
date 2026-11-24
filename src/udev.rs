@@ -21,7 +21,7 @@ use smithay::{
             compositor::{FrameFlags, PrimaryPlaneElement, RenderFrameResult},
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, Framebuffer, NodeType,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, Framebuffer, NodeType, VrrSupport,
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -130,6 +130,17 @@ struct Udev {
 
 type SharedUdev = Rc<RefCell<Udev>>;
 
+/// The framebuffer formats tried, in order, for 8 bits a colour and for 10.
+const EIGHT_BIT: [Fourcc; 2] = [Fourcc::Abgr8888, Fourcc::Argb8888];
+const TEN_BIT: [Fourcc; 2] = [Fourcc::Abgr2101010, Fourcc::Argb2101010];
+
+/// What a display and the card can do beyond a mode, for Settings to offer: kept on its output.
+#[derive(Clone, Copy, Debug)]
+pub struct Abilities {
+    pub ten_bit: bool,
+    pub variable_refresh: bool,
+}
+
 pub fn init_udev(
     event_loop: &mut EventLoop<'static, Nekoland>,
     data: &mut Nekoland,
@@ -165,7 +176,7 @@ pub fn init_udev(
         GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT),
         GbmFramebufferExporter::new(gbm.clone(), NodeFilter::None),
         Some(gbm),
-        [Fourcc::Abgr8888, Fourcc::Argb8888],
+        EIGHT_BIT,
         render_formats,
     );
 
@@ -633,9 +644,92 @@ fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, c
         }
         Err(err) => warn!("no glass: {err}"),
     }
+    let render_formats = udev.renderer.egl_context().dmabuf_render_formats();
+    let ten_bit = surface.with_compositor(|compositor| {
+        compositor.surface().planes().primary.iter().any(|plane| {
+            TEN_BIT.iter().any(|code| {
+                plane.formats.iter().any(|format| format.code == *code)
+                    && render_formats.iter().any(|format| format.code == *code)
+            })
+        })
+    });
+    let variable_refresh = surface
+        .with_compositor(|compositor| compositor.vrr_supported(connector.handle()))
+        .is_ok_and(|support| support != VrrSupport::NotSupported);
+    output.user_data().insert_if_missing(|| Abilities { ten_bit, variable_refresh });
     udev.surfaces.insert(crtc, (surface, output));
     udev.displays.insert(crtc, (connector.handle(), modes.to_vec(), (width_mm, height_mm)));
+    apply_colour_depth_and_refresh(udev, &state.config, crtc);
     Ok(())
+}
+
+/// Sends a display its colours at the depth the settings ask for, and lets its refresh follow
+/// the frames if they ask for it and it can; a depth the display or the card cannot take is
+/// left as it was.
+fn apply_colour_depth_and_refresh(udev: &mut Udev, config: &Config, crtc: crtc::Handle) {
+    let (Some((surface, output)), Some((connector, _, _))) = (udev.surfaces.get(&crtc), udev.displays.get(&crtc)) else {
+        return;
+    };
+    let name = output.name();
+    let depth = config.color_depth_of(&name);
+    let wanted = if depth >= 10 { TEN_BIT } else { EIGHT_BIT };
+    let render_formats = udev.renderer.egl_context().dmabuf_render_formats();
+    let allocator = udev.manager.allocator().clone();
+    let variable_refresh = config.variable_refresh_of(&name);
+    surface.with_compositor(|compositor| {
+        if !wanted.contains(&compositor.format()) {
+            let set = wanted.iter().find_map(|code| {
+                let modifiers = render_formats.iter().filter(|format| format.code == *code).map(|format| format.modifier);
+                compositor
+                    .set_format(allocator.clone(), *code, modifiers)
+                    .inspect_err(|err| warn!("{name}: no {code} framebuffer: {err}"))
+                    .ok()
+                    .map(|()| *code)
+            });
+            match set {
+                Some(code) => info!("{name}: {depth}-bit colour ({code})"),
+                None => warn!("{name}: kept {} for {depth}-bit colour", compositor.format()),
+            }
+        }
+        let supported = compositor.vrr_supported(*connector).is_ok_and(|support| support != VrrSupport::NotSupported);
+        if supported && compositor.vrr_enabled() != variable_refresh {
+            if let Err(err) = compositor.use_vrr(variable_refresh) {
+                warn!("{name}: could not set variable refresh: {err}");
+            }
+        }
+    });
+    // Intel's and AMD's links carry no more bits than this lets them, whatever the framebuffer
+    // holds; NVIDIA's has no such property and follows the framebuffer.
+    if let Err(err) = set_max_bpc(udev.manager.device(), *connector, depth) {
+        tracing::debug!("{name}: max bpc: {err}");
+    }
+}
+
+/// Sets a connector's `max bpc`, held to the range it takes; an error for one that has none.
+fn set_max_bpc(
+    device: &impl smithay::reexports::drm::control::Device,
+    connector: connector::Handle,
+    depth: u32,
+) -> Result<(), String> {
+    use smithay::reexports::drm::control::property::ValueType;
+    let properties = device.get_properties(connector).map_err(|err| err.to_string())?;
+    let (handles, values) = properties.as_props_and_values();
+    let (handle, info, current) = handles
+        .iter()
+        .zip(values)
+        .find_map(|(handle, value)| {
+            let info = device.get_property(*handle).ok()?;
+            (info.name().to_bytes() == b"max bpc").then_some((*handle, info, *value))
+        })
+        .ok_or("no max bpc property")?;
+    let wanted = match info.value_type() {
+        ValueType::UnsignedRange(least, most) => u64::from(depth).clamp(least, most),
+        _ => u64::from(depth),
+    };
+    if wanted == current {
+        return Ok(());
+    }
+    device.set_property(connector, handle, wanted).map_err(|err| err.to_string())
 }
 
 /// Lets go of an unplugged display; its windows are fitted to the displays left.
@@ -806,6 +900,10 @@ struct DisplaySettings {
     display_scales: BTreeMap<String, f64>,
     rotation: Rotation,
     display_rotations: BTreeMap<String, Rotation>,
+    color_depth: u32,
+    display_color_depths: BTreeMap<String, u32>,
+    variable_refresh: bool,
+    display_variable_refresh: BTreeMap<String, bool>,
     display_positions: BTreeMap<String, [i32; 2]>,
     display_order: Vec<String>,
     projection: Projection,
@@ -821,6 +919,10 @@ impl DisplaySettings {
             display_scales: config.display_scales.clone(),
             rotation: config.rotation,
             display_rotations: config.display_rotations.clone(),
+            color_depth: config.color_depth,
+            display_color_depths: config.display_color_depths.clone(),
+            variable_refresh: config.variable_refresh,
+            display_variable_refresh: config.display_variable_refresh.clone(),
             display_positions: config.display_positions.clone(),
             display_order: config.display_order.clone(),
             projection: config.projection(),
@@ -836,6 +938,10 @@ impl DisplaySettings {
             && self.display_scales == config.display_scales
             && self.rotation == config.rotation
             && self.display_rotations == config.display_rotations
+            && self.color_depth == config.color_depth
+            && self.display_color_depths == config.display_color_depths
+            && self.variable_refresh == config.variable_refresh
+            && self.display_variable_refresh == config.display_variable_refresh
             && self.display_positions == config.display_positions
             && self.display_order == config.display_order
             && self.projection == config.projection()
@@ -958,6 +1064,10 @@ fn apply_display_settings(udev: &mut Udev, state: &mut Nekoland) {
             None,
         );
         smithay::desktop::layer_map_for_output(output).arrange();
+    }
+    let crtcs: Vec<crtc::Handle> = udev.surfaces.keys().copied().collect();
+    for crtc in crtcs {
+        apply_colour_depth_and_refresh(udev, &state.config, crtc);
     }
     lay_out_outputs(udev, state);
     state.tell_surfaces_the_scale();

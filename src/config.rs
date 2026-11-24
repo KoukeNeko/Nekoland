@@ -20,6 +20,15 @@ pub struct Config {
     pub rotation: Rotation,
     /// The rotation of single displays, by name, in place of `rotation` for those.
     pub display_rotations: std::collections::BTreeMap<String, Rotation>,
+    /// How many bits each colour is sent to the displays with, 8 or 10; a display or card
+    /// that cannot take 10 keeps 8.
+    pub color_depth: u32,
+    /// The colour depth of single displays, by name, in place of `color_depth` for those.
+    pub display_color_depths: std::collections::BTreeMap<String, u32>,
+    /// Whether the displays that can follow the frames drawn with their refresh do.
+    pub variable_refresh: bool,
+    /// Variable refresh of single displays, by name, in place of `variable_refresh` for those.
+    pub display_variable_refresh: std::collections::BTreeMap<String, bool>,
     /// Where single displays' top left corners are, in points, by name; one without a place
     /// goes to the right of the others.
     pub display_positions: std::collections::BTreeMap<String, [i32; 2]>,
@@ -920,6 +929,10 @@ impl Default for Config {
             display_scales: Default::default(),
             rotation: Rotation::default(),
             display_rotations: Default::default(),
+            color_depth: 8,
+            display_color_depths: Default::default(),
+            variable_refresh: false,
+            display_variable_refresh: Default::default(),
             display_positions: Default::default(),
             projection: Projection::default(),
             display_order: Vec::new(),
@@ -1234,6 +1247,14 @@ impl Config {
     /// The keyboard's layout, variant and options, as XKB is given them.
     pub fn rotation_of(&self, display: &str) -> Rotation {
         self.display_rotations.get(display).copied().unwrap_or(self.rotation)
+    }
+
+    pub fn color_depth_of(&self, display: &str) -> u32 {
+        self.display_color_depths.get(display).copied().unwrap_or(self.color_depth)
+    }
+
+    pub fn variable_refresh_of(&self, display: &str) -> bool {
+        self.display_variable_refresh.get(display).copied().unwrap_or(self.variable_refresh)
     }
 
     /// Which displays show the desktop, `mirror_displays` read as duplicating.

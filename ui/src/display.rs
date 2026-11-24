@@ -26,6 +26,7 @@ const ROTATIONS: [(&str, i64); 4] = [("標準", 0), ("90°", 90), ("180°", 180)
 /// How long, in seconds, a new rotation waits to be kept before it is turned back, as on the
 /// Mac, for a picture turned so that it cannot be read.
 const KEEP_ROTATION_WITHIN: u32 = 15;
+const COLOR_DEPTHS: [(&str, i64); 2] = [("8 位元", 8), ("10 位元", 10)];
 const NIGHT_SHIFT: [&str; 4] = ["off", "on", "sunset", "scheduled"];
 const NIGHT_SHIFT_LABELS: [&str; 4] = ["關閉", "開啟", "日落到日出", "自訂"];
 const SUNSET: &str = "sunset";
@@ -87,6 +88,8 @@ impl Target {
 const MODE: (&str, &str) = ("mode", "display_modes");
 const SCALE: (&str, &str) = ("scale", "display_scales");
 const ROTATION: (&str, &str) = ("rotation", "display_rotations");
+const COLOR_DEPTH: (&str, &str) = ("color_depth", "display_color_depths");
+const VARIABLE_REFRESH: (&str, &str) = ("variable_refresh", "display_variable_refresh");
 
 /// Sets one display's entry of a setting kept by display name, or takes it out.
 fn set_display_entry(table: &str, name: &str, value: Option<&str>) {
@@ -159,6 +162,9 @@ struct Display {
     scale: f64,
     /// The scale it is drawn at when the settings name none.
     density_scale: f64,
+    /// Whether the display and the card can take 10 bits a colour.
+    ten_bit: bool,
+    variable_refresh: bool,
 }
 
 fn parse_display(text: &str) -> Option<Display> {
@@ -168,6 +174,8 @@ fn parse_display(text: &str) -> Option<Display> {
         preferred: parse_mode(fields.get("preferred")?)?.0,
         scale: fields.get("scale")?.parse().ok()?,
         density_scale: fields.get("density_scale")?.parse().ok()?,
+        ten_bit: fields.get("ten_bit") == Some(&"true"),
+        variable_refresh: fields.get("variable_refresh") == Some(&"true"),
     })
 }
 
@@ -302,10 +310,16 @@ fn looks(display: &Display) -> Vec<(Choice, &'static str)> {
 /// A look drawn small: a window with its buttons and lines of text, as large as the look
 /// makes them, and the one in use with a line of ink around it.
 fn look_picture(scale: f64, chosen: bool) -> gtk::DrawingArea {
+    // Narrow at least, then as wide as its share of the row: five at full size would hold the
+    // page wider than the others.
+    // As wide as its share of the row, and narrow at least: five at a fixed width would hold
+    // the page wider than the others.
     let area = gtk::DrawingArea::builder()
-        .content_width(88)
+        .content_width(36)
         .content_height(60)
-        .halign(gtk::Align::Center)
+        .margin_start(12)
+        .margin_end(12)
+        .hexpand(true)
         .build();
     area.set_draw_func(move |area, cr, width, height| {
         let (width, height) = (f64::from(width), f64::from(height));
@@ -420,7 +434,7 @@ impl Resolution {
             scales,
             rows: RefCell::default(),
             looks_row: card_row(),
-            looks: gtk::Box::builder().spacing(12).homogeneous(true).margin_top(12).margin_bottom(12).margin_start(12).margin_end(12).build(),
+            looks: gtk::Box::builder().spacing(8).homogeneous(true).margin_top(12).margin_bottom(12).margin_start(12).margin_end(12).build(),
             all: adw::ExpanderRow::builder().title("所有解析度").build(),
             rate: adw::ComboRow::builder().title("更新頻率").build(),
             filling_rates: Cell::new(false),
@@ -457,13 +471,14 @@ impl Resolution {
         for (choice, label) in looks {
             let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
             content.append(&look_picture(choice.scale, choice.is(current)));
-            let name = gtk::Label::new(Some(label));
+            // The text ellipsizes rather than holding the page wider at a large font.
+            let name = gtk::Label::builder().label(label).ellipsize(gtk::pango::EllipsizeMode::End).build();
             names.add_widget(&name);
             content.append(&name);
             // The size it looks like, under its name: the pictures alone do not tell two
             // near sizes apart.
             let size = choice.looks_like().label();
-            content.append(&gtk::Label::builder().label(&size).css_classes(["dim-label", "caption"]).build());
+            content.append(&gtk::Label::builder().label(&size).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["dim-label", "caption"]).build());
             let button = gtk::ToggleButton::builder()
                 .child(&content)
                 .css_classes(["flat", "nk-look"])
@@ -1085,6 +1100,13 @@ impl DisplayPage {
             display.add(&resolution.looks_row);
             display.add(&resolution.all);
             display.add(&resolution.rate);
+            let abilities = resolution.display.borrow().clone();
+            if abilities.ten_bit {
+                display.add(&colour_depth_row(&config, &target));
+            }
+            if abilities.variable_refresh {
+                display.add(&variable_refresh_row(&config, &target));
+            }
         }
         display.add(&rotation_row(&config, &target));
         // The backlight is the built-in panel's.
@@ -1187,6 +1209,39 @@ fn rotation_row(config: &Config, target: &Target) -> adw::ComboRow {
         if let Some(&(_, degrees)) = ROTATIONS.get(index as usize) {
             apply_rotation(&target, degrees);
         }
+    });
+    row
+}
+
+/// The bits each colour is sent with; a new depth, which a display may show as nothing, is
+/// turned back unless it is kept in time.
+fn colour_depth_row(config: &Config, target: &Target) -> adw::ComboRow {
+    let current = target.value(config, COLOR_DEPTH).and_then(|value| value.as_integer()).unwrap_or(8);
+    let labels: Vec<&str> = COLOR_DEPTHS.iter().map(|(label, _)| *label).collect();
+    let selected = COLOR_DEPTHS.iter().position(|(_, depth)| *depth == current).unwrap_or(0) as u32;
+    let row = adw::ComboRow::builder()
+        .title("色彩深度")
+        .model(&gtk::StringList::new(&labels))
+        .selected(selected)
+        .build();
+    let target = target.clone();
+    keep_or_revert(&row, "保留這個色彩深度？", move |index| {
+        match COLOR_DEPTHS.get(index as usize) {
+            Some(&(_, 8)) if target == Target::All => target.unset(COLOR_DEPTH),
+            Some(&(_, depth)) => target.set(COLOR_DEPTH, &depth.to_string()),
+            None => {}
+        }
+    });
+    row
+}
+
+fn variable_refresh_row(config: &Config, target: &Target) -> adw::SwitchRow {
+    let on = target.value(config, VARIABLE_REFRESH).and_then(|value| value.as_bool()).unwrap_or(false);
+    let row = adw::SwitchRow::builder().title("可變更新頻率").active(on).build();
+    let target = target.clone();
+    row.connect_active_notify(move |row| match row.is_active() {
+        false if target == Target::All => target.unset(VARIABLE_REFRESH),
+        on => target.set(VARIABLE_REFRESH, &on.to_string()),
     });
     row
 }
@@ -1445,6 +1500,9 @@ mod tests {
         assert_eq!(display.current, (Size { width: 3840, height: 2160 }, 60));
         assert_eq!(display.preferred, Size { width: 3840, height: 2160 });
         assert_eq!((display.scale, display.density_scale), (1.5, 2.0));
+        assert!(!display.ten_bit && !display.variable_refresh);
+        let able = parse_display("current 3840x2160@60\npreferred 3840x2160@60\nscale 1.5\ndensity_scale 2\nten_bit true\nvariable_refresh true\n").unwrap();
+        assert!(able.ten_bit && able.variable_refresh);
         assert_eq!(parse_display("current 3840x2160@60\n"), None);
     }
 
@@ -1496,6 +1554,8 @@ mod tests {
             preferred: Size { width: 1024, height: 768 },
             scale: 1.0,
             density_scale: 1.0,
+            ten_bit: false,
+            variable_refresh: false,
         };
         let four_k = Size { width: 3840, height: 2160 };
         let modes = mode_rates("x\n3840x2160@60\n1024x768@60\n");
@@ -1536,6 +1596,8 @@ mod tests {
             preferred: Size { width: 1366, height: 768 },
             scale: 1.0,
             density_scale: 1.0,
+            ten_bit: false,
+            variable_refresh: false,
         };
         let heights: Vec<i32> = resolution_choices(&display, &[], &[], false)
             .iter()
