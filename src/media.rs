@@ -359,6 +359,8 @@ pub struct NowPlaying {
     swap: Option<Swap>,
     last_row: Option<usize>,
     cover_scale: (f64, f64),
+    /// Counts the changes to the lyrics kept, which the card is told of when they come.
+    pub revision: u64,
     /// When another song came, and from which way: -1 after going back to the previous.
     arrived: Option<(Instant, f64)>,
     went_back: bool,
@@ -402,6 +404,7 @@ impl NowPlaying {
             cover_scale: (1.0, 0.0),
             arrived: None,
             went_back: false,
+            revision: 0,
             press: None,
             since: Instant::now(),
             pieces: None,
@@ -469,10 +472,14 @@ impl NowPlaying {
             match answer.try_recv() {
                 Ok(Ok((found, live))) => {
                     self.songs.insert(asked.clone(), song(Some(found), live));
+                    self.revision += 1;
                     self.save();
                 }
                 Ok(Err(Missing::NotFound)) => {
-                    self.songs.insert(asked.clone(), song(None, None));
+                    // Asked again for a new source, what was kept stays.
+                    let (found, live) = (kept.found.clone(), kept.release_live);
+                    self.songs.insert(asked.clone(), song(found, live));
+                    self.revision += 1;
                     self.save();
                 }
                 Ok(Err(Missing::Unreachable)) | Err(mpsc::TryRecvError::Disconnected) => {
@@ -552,6 +559,7 @@ impl NowPlaying {
         };
         if let Some(song) = self.songs.get_mut(&key) {
             change(&mut song.alignment, &mut song.choice);
+            self.revision += 1;
             self.save();
         }
     }
@@ -1197,6 +1205,11 @@ const LAG_LINES: usize = 6;
 /// The next line lights up this long before it is sung.
 const HANDOFF: f64 = 0.4;
 const CLOSE_TIME: f64 = 0.24;
+/// How often the cover's glows are drawn again as they drift: this many times for each
+/// radian of their way round, which they go at about half of each second.
+const DRIFT_STEPS: f64 = 16.0;
+/// The glows are drawn this many times smaller than the card and scaled up.
+const GLOW_SHRINK: f64 = 3.0;
 const REDUCED_TIME: f64 = 0.15;
 pub const CARD_RADIUS: i32 = 14;
 
@@ -1383,53 +1396,77 @@ pub struct Card {
     pub rect: Rectangle<i32, Logical>,
     /// Where the tile's cover is, which the card grows out of and goes back into.
     pub from: Point<i32, Logical>,
-    scroll: f64,
-    speed: f64,
-    trail: VecDeque<(Instant, f64)>,
-    free: f64,
-    free_at: Option<Instant>,
-    emphasis: Vec<f64>,
-    metrics: Option<(String, Vec<f64>, Vec<f64>)>,
     pub aligning: bool,
-    jumps: u32,
     pub hover_bar: bool,
     pub scrub: Option<f64>,
     pub picture: Option<Picture>,
-    drawn: Vec<i64>,
     /// The entry of the open menu the keyboard is on, and where its entries were drawn.
     pub menu: Option<usize>,
-    menu_drawn: Option<((f64, f64, f64, f64), Vec<(f64, Entry)>)>,
     /// The line the keyboard is on, and the line sung now or, unaligned, the one guessed.
     pub focus: Option<usize>,
     pub active: Option<usize>,
+    /// Where the drawing, on its thread, put things, as of its last picture.
+    menu_drawn: Option<((f64, f64, f64, f64), Vec<(f64, Entry)>)>,
+    tops: Vec<f64>,
+    heights: Vec<f64>,
+    scrolled: f64,
+    jobs: mpsc::Sender<Job>,
+    results: Receiver<Output>,
+    /// Whether a picture is being drawn, which is waited for before another is asked.
+    asked: bool,
+    /// What the drawing has been told of the cover and the lyrics, which are told only when
+    /// they change.
+    sent_cover: Option<String>,
+    sent_lyrics: Option<(String, u64)>,
+    /// What the user did since, for the drawing to apply.
+    events: Vec<Event>,
 }
 
 impl Card {
     pub fn new(song: String, rect: Rectangle<i32, Logical>, from: Point<i32, Logical>) -> Self {
+        let opened = Instant::now();
+        let (jobs, asked) = mpsc::channel::<Job>();
+        let (sent, results) = mpsc::channel();
+        let named = song.clone();
+        // It ends with the card, whose senders it is waiting on. What it draws with stays on it.
+        let started = std::thread::Builder::new()
+            .name("nekoland-card".into())
+            .spawn(move || {
+                let mut painter = Painter::new(named, opened);
+                while let Ok(job) = asked.recv() {
+                    if sent.send(painter.paint(job)).is_err() {
+                        break;
+                    }
+                    text::redraw_soon();
+                }
+            });
+        if let Err(err) = started {
+            tracing::warn!("card: {err}");
+        }
         Self {
             song,
-            opened: Instant::now(),
+            opened,
             closing: None,
             open: (0.0, 0.0),
             rect,
             from,
-            scroll: f64::NAN,
-            speed: 0.0,
-            trail: VecDeque::new(),
-            free: 0.0,
-            free_at: None,
-            emphasis: Vec::new(),
-            metrics: None,
             aligning: false,
-            jumps: 0,
             hover_bar: false,
             scrub: None,
             picture: None,
-            drawn: Vec::new(),
             menu: None,
-            menu_drawn: None,
             focus: None,
             active: None,
+            menu_drawn: None,
+            tops: Vec::new(),
+            heights: Vec::new(),
+            scrolled: 0.0,
+            jobs,
+            results,
+            asked: false,
+            sent_cover: None,
+            sent_lyrics: None,
+            events: Vec::new(),
         }
     }
 
@@ -1476,22 +1513,12 @@ impl Card {
 
     /// Where the rows are, from the top of the lyrics, as last measured.
     pub fn row_count(&self) -> usize {
-        self.metrics.as_ref().map_or(0, |(_, tops, _)| tops.len())
+        self.tops.len()
     }
 
     /// Scrolls so that row `row` shows, as the keyboard moves onto it.
     pub fn show_row(&mut self, row: usize) {
-        let Some((_, tops, heights)) = &self.metrics else {
-            return;
-        };
-        let (Some(top), Some(height)) = (tops.get(row), heights.get(row)) else {
-            return;
-        };
-        let shown = self.scroll + self.free;
-        if *top < shown + FADE_EDGE || top + height > shown + LYRICS_HEIGHT - FADE_EDGE {
-            self.free = top - LYRICS_HEIGHT * UNALIGNED_AT - self.scroll;
-        }
-        self.free_at = Some(Instant::now());
+        self.events.push(Event::ShowRow(row));
     }
 
     pub fn song(&self) -> &str {
@@ -1505,8 +1532,7 @@ impl Card {
     }
 
     pub fn wheel(&mut self, amount: f64) {
-        self.free += amount.signum() * WHEEL_STEP;
-        self.free_at = Some(Instant::now());
+        self.events.push(Event::Wheel(amount));
     }
 
     /// The row a point on the output is on, or the control.
@@ -1553,14 +1579,14 @@ impl Card {
         if !(top..top + LYRICS_HEIGHT).contains(&local.y) {
             return None;
         }
-        let (_, tops, heights) = self.metrics.as_ref()?;
-        let y = local.y - top + self.scroll + self.free;
+        let (tops, heights) = (&self.tops, &self.heights);
+        let y = local.y - top + self.scrolled;
         (0..tops.len())
             .find(|&row| (tops[row] - LINE_GAP / 2.0..tops[row] + heights[row] + LINE_GAP / 2.0).contains(&y))
             .map(CardPart::Row)
     }
 
-    /// Moves the card on by `dt` and draws it again where anything it shows changed.
+    /// Moves the card on by `dt` and has it drawn again where anything it shows changed.
     pub fn refresh(&mut self, playing: &mut NowPlaying, now: Instant, dt: f64, dark: bool, animations: bool) {
         let (rate, ratio) = spring(260.0, 24.0);
         if self.closing.is_none() {
@@ -1569,26 +1595,311 @@ impl Card {
                 self.open = (1.0, 0.0);
             }
         }
-        let position = self
-            .scrub
-            .and_then(|scrub| Some(scrub * playing.player.as_ref()?.length?))
-            .or(playing.position(now))
-            .unwrap_or(0.0);
-        let cover = playing.cover(64 * text::picture_scale()).cloned();
+        // What was drawn since, which is as of the frame it was asked for.
+        while let Ok(output) = self.results.try_recv() {
+            self.asked = false;
+            if output.picture.is_some() {
+                self.picture = output.picture;
+            }
+            self.tops = output.tops;
+            self.heights = output.heights;
+            self.scrolled = output.scrolled;
+            self.menu_drawn = output.menu_drawn;
+            self.active = output.active;
+            self.focus = self.focus.filter(|&focus| focus < self.tops.len());
+        }
+        if self.asked {
+            return;
+        }
         let Some(player) = playing.player.clone() else {
             return;
         };
-        let jumps = playing.jumps;
-        let Ok(surface) = text::canvas(CARD_WIDTH, self.rect.size.h) else {
-            return;
+        let position = self
+            .scrub
+            .and_then(|scrub| Some(scrub * player.length?))
+            .or(playing.position(now))
+            .unwrap_or(0.0);
+        let cover = playing.cover(64 * text::picture_scale()).cloned();
+        let cover_id = cover.as_ref().and_then(|_| player.art.clone());
+        let cover = (cover_id != self.sent_cover)
+            .then(|| cover.and_then(|(surface, colors)| CoverData::of(&surface, colors)));
+        self.sent_cover = if cover.as_ref().is_some_and(Option::is_none) {
+            None
+        } else {
+            cover_id
         };
-        let lyrics = playing.lyrics();
+        let lyrics_key = (song_key(&player), playing.revision);
+        let lyrics = (self.sent_lyrics.as_ref() != Some(&lyrics_key))
+            .then(|| playing.lyrics().as_ref().map(LyricsData::of));
+        if lyrics.is_some() {
+            self.sent_lyrics = Some(lyrics_key);
+        }
+        let job = Job {
+            now,
+            dt,
+            dark,
+            animations,
+            height: self.rect.size.h,
+            jumps: playing.jumps,
+            player,
+            position,
+            aligning: self.aligning,
+            scrub: self.scrub,
+            hover_bar: self.hover_bar,
+            focus: self.focus,
+            menu: self.menu,
+            events: std::mem::take(&mut self.events),
+            cover,
+            lyrics,
+        };
+        if self.jobs.send(job).is_ok() {
+            self.asked = true;
+        }
+    }
+}
+
+/// What the card shows is drawn on a thread of its own: its text is set out and painted over
+/// a surface the size of the card, which takes longer than a frame of the compositor's thread
+/// can spare. The thread keeps what the drawing moves with, and the card asks it for a picture
+/// and what the card needs to know of it.
+struct Job {
+    now: Instant,
+    dt: f64,
+    dark: bool,
+    animations: bool,
+    height: i32,
+    player: Player,
+    position: f64,
+    jumps: u32,
+    aligning: bool,
+    scrub: Option<f64>,
+    hover_bar: bool,
+    focus: Option<usize>,
+    menu: Option<usize>,
+    events: Vec<Event>,
+    /// Some when the cover is another, with None for no cover.
+    cover: Option<Option<CoverData>>,
+    /// Some when the lyrics are others, with None for none.
+    lyrics: Option<Option<LyricsData>>,
+}
+
+/// What the user did to the lyrics, which the drawing's own measures decide the effect of.
+enum Event {
+    Wheel(f64),
+    ShowRow(usize),
+}
+
+/// A cover's pixels, which a surface cannot carry to another thread.
+struct CoverData {
+    pixels: Vec<u8>,
+    size: (i32, i32),
+    stride: i32,
+    scale: (f64, f64),
+    colors: [Rgb; 3],
+}
+
+impl CoverData {
+    fn of(surface: &ImageSurface, colors: [Rgb; 3]) -> Option<Self> {
+        // Its pixels can be had of a surface only when nothing else holds it, which the
+        // cover's is, so they are drawn onto one of their own.
+        let size = (surface.width(), surface.height());
+        let scale = surface.device_scale();
+        let mut copy = ImageSurface::create(cairo::Format::ARgb32, size.0, size.1).ok()?;
+        copy.set_device_scale(scale.0, scale.1);
+        let cr = Context::new(&copy).ok()?;
+        cr.set_source_surface(surface, 0.0, 0.0).ok()?;
+        cr.paint().ok()?;
+        drop(cr);
+        copy.flush();
+        let stride = copy.stride();
+        let pixels = copy.data().ok()?.to_vec();
+        Some(Self {
+            pixels,
+            size,
+            stride,
+            scale,
+            colors,
+        })
+    }
+
+    fn surface(self) -> Option<(ImageSurface, [Rgb; 3])> {
+        let surface = ImageSurface::create_for_data(
+            self.pixels,
+            cairo::Format::ARgb32,
+            self.size.0,
+            self.size.1,
+            self.stride,
+        )
+        .ok()?;
+        surface.set_device_scale(self.scale.0, self.scale.1);
+        Some((surface, self.colors))
+    }
+}
+
+/// `Lyrics`, owned.
+struct LyricsData {
+    found: Vec<Candidate>,
+    chosen: usize,
+    matched: bool,
+    alignment: Option<Alignment>,
+    length: f64,
+    plain: bool,
+    release_live: Option<bool>,
+}
+
+impl LyricsData {
+    fn of(lyrics: &Lyrics) -> Self {
+        Self {
+            found: lyrics.found.to_vec(),
+            chosen: lyrics.chosen,
+            matched: lyrics.matched,
+            alignment: lyrics.alignment.cloned(),
+            length: lyrics.length,
+            plain: lyrics.plain,
+            release_live: lyrics.release_live,
+        }
+    }
+
+    fn view(&self) -> Lyrics<'_> {
+        Lyrics {
+            found: &self.found,
+            chosen: self.chosen,
+            matched: self.matched,
+            alignment: self.alignment.as_ref(),
+            length: self.length,
+            plain: self.plain,
+            release_live: self.release_live,
+        }
+    }
+}
+
+/// What the drawing tells the card: the picture when it changed, and where things are.
+struct Output {
+    picture: Option<Picture>,
+    tops: Vec<f64>,
+    heights: Vec<f64>,
+    /// How far the lyrics are scrolled, by the line sung and by the user together.
+    scrolled: f64,
+    menu_drawn: Option<((f64, f64, f64, f64), Vec<(f64, Entry)>)>,
+    active: Option<usize>,
+}
+
+/// The drawing's side of the card, on its thread.
+struct Painter {
+    song: String,
+    opened: Instant,
+    scroll: f64,
+    speed: f64,
+    trail: VecDeque<(Instant, f64)>,
+    free: f64,
+    free_at: Option<Instant>,
+    emphasis: Vec<f64>,
+    metrics: Option<(String, Vec<f64>, Vec<f64>)>,
+    /// Each row's text laid out, kept with the measures: setting a line out costs more than
+    /// painting it.
+    layouts: Vec<Option<pango::Layout>>,
+    jumps: u32,
+    drawn: Vec<i64>,
+    menu_drawn: Option<((f64, f64, f64, f64), Vec<(f64, Entry)>)>,
+    active: Option<usize>,
+    cover: Option<(ImageSurface, [Rgb; 3])>,
+    lyrics: Option<LyricsData>,
+}
+
+impl Painter {
+    fn new(song: String, opened: Instant) -> Self {
+        Self {
+            song,
+            opened,
+            scroll: f64::NAN,
+            speed: 0.0,
+            trail: VecDeque::new(),
+            free: 0.0,
+            free_at: None,
+            emphasis: Vec::new(),
+            metrics: None,
+            layouts: Vec::new(),
+            jumps: 0,
+            drawn: Vec::new(),
+            menu_drawn: None,
+            active: None,
+            cover: None,
+            lyrics: None,
+        }
+    }
+
+    fn output(&self, picture: Option<Picture>) -> Output {
+        let (tops, heights) = self
+            .metrics
+            .as_ref()
+            .map(|(_, tops, heights)| (tops.clone(), heights.clone()))
+            .unwrap_or_default();
+        Output {
+            picture,
+            tops,
+            heights,
+            scrolled: self.scroll + self.free,
+            menu_drawn: self.menu_drawn.clone(),
+            active: self.active,
+        }
+    }
+
+    /// Draws what `job` asks, as the card is drawn again where anything it shows changed.
+    fn paint(&mut self, mut job: Job) -> Output {
+        if let Some(cover) = job.cover.take() {
+            self.cover = cover.and_then(CoverData::surface);
+        }
+        if let Some(lyrics) = job.lyrics.take() {
+            self.lyrics = lyrics;
+        }
+        for event in &job.events {
+            match *event {
+                Event::Wheel(amount) => {
+                    self.free += amount.signum() * WHEEL_STEP;
+                    self.free_at = Some(job.now);
+                }
+                Event::ShowRow(row) => {
+                    let Some((_, tops, heights)) = &self.metrics else {
+                        continue;
+                    };
+                    let (Some(top), Some(height)) = (tops.get(row), heights.get(row)) else {
+                        continue;
+                    };
+                    let shown = self.scroll + self.free;
+                    if *top < shown + FADE_EDGE || top + height > shown + LYRICS_HEIGHT - FADE_EDGE {
+                        self.free = top - LYRICS_HEIGHT * UNALIGNED_AT - self.scroll;
+                    }
+                    self.free_at = Some(job.now);
+                }
+            }
+        }
+        // They are lent to the drawing, which also changes the rest of what is kept.
+        let lyrics = self.lyrics.take();
+        let cover = self.cover.take();
+        let output = self.draw(&job, lyrics.as_ref().map(LyricsData::view), cover.as_ref());
+        self.lyrics = lyrics;
+        self.cover = cover;
+        output
+    }
+
+    fn draw(
+        &mut self,
+        job: &Job,
+        lyrics: Option<Lyrics<'_>>,
+        cover: Option<&(ImageSurface, [Rgb; 3])>,
+    ) -> Output {
+        let (now, dt, dark, animations) = (job.now, job.dt, job.dark, job.animations);
+        let (player, position, jumps) = (&job.player, job.position, job.jumps);
+        let waits = text::icon_waits();
+        let Ok(surface) = text::canvas(CARD_WIDTH, job.height) else {
+            return self.output(None);
+        };
         let mode = lyrics.as_ref().map(Lyrics::mode);
         let places = places(mode);
         let width = f64::from(CARD_WIDTH);
         let room = width - 2.0 * PAD;
         let Ok(cr) = Context::new(&surface) else {
-            return;
+            return self.output(None);
         };
         // The glass under it is rounded; the cover's colours over it are too.
         text::rounded_rectangle(&cr, 0.0, 0.0, width, places.height, f64::from(CARD_RADIUS));
@@ -1605,19 +1916,36 @@ impl Card {
         let colors = cover.as_ref().map(|(_, colors)| *colors);
         let drift = now.duration_since(self.opened).as_secs_f64() / 11.0 * std::f64::consts::TAU;
         if let Some([base, one, two]) = colors {
-            key.push((drift * 40.0) as i64);
+            key.push((drift * DRIFT_STEPS) as i64);
             let strength = if dark { 0.6 } else { 0.3 };
             cr.set_source_rgba(base.0, base.1, base.2, strength);
             let _ = cr.paint();
+            // Soft as they are, the two glows are drawn small and scaled up: over the whole
+            // card they cost most of what drawing it did.
             let height = places.height;
-            for (color, phase) in [(one, 0.0), (two, 2.1)] {
-                let x = width * (0.5 + 0.28 * (drift + phase).sin());
-                let y = height * (0.45 + 0.3 * (drift * 0.8 + phase).cos());
-                let blob = cairo::RadialGradient::new(x, y, 0.0, x, y, width * 1.1);
-                blob.add_color_stop_rgba(0.0, color.0, color.1, color.2, strength);
-                blob.add_color_stop_rgba(1.0, color.0, color.1, color.2, 0.0);
-                let _ = cr.set_source(&blob);
+            let small = (
+                (width / GLOW_SHRINK).ceil() as i32,
+                (height / GLOW_SHRINK).ceil() as i32,
+            );
+            if let Ok(glow) = cairo::ImageSurface::create(cairo::Format::ARgb32, small.0, small.1) {
+                if let Ok(small_cr) = Context::new(&glow) {
+                    small_cr.scale(1.0 / GLOW_SHRINK, 1.0 / GLOW_SHRINK);
+                    for (color, phase) in [(one, 0.0), (two, 2.1)] {
+                        let x = width * (0.5 + 0.28 * (drift + phase).sin());
+                        let y = height * (0.45 + 0.3 * (drift * 0.8 + phase).cos());
+                        let blob = cairo::RadialGradient::new(x, y, 0.0, x, y, width * 1.1);
+                        blob.add_color_stop_rgba(0.0, color.0, color.1, color.2, strength);
+                        blob.add_color_stop_rgba(1.0, color.0, color.1, color.2, 0.0);
+                        let _ = small_cr.set_source(&blob);
+                        let _ = small_cr.paint();
+                    }
+                }
+                let _ = cr.save();
+                cr.scale(GLOW_SHRINK, GLOW_SHRINK);
+                let _ = cr.set_source_surface(&glow, 0.0, 0.0);
+                cr.source().set_filter(cairo::Filter::Bilinear);
                 let _ = cr.paint();
+                let _ = cr.restore();
             }
             let veil = if dark {
                 (0.0, 0.0, 0.0, 0.25)
@@ -1627,7 +1955,6 @@ impl Card {
             cr.set_source_rgba(veil.0, veil.1, veil.2, veil.3);
             let _ = cr.paint();
         }
-
         // What it shows comes in after the card, a part at a time.
         let entered = now.duration_since(self.opened).as_secs_f64();
         if animations && entered < 0.5 {
@@ -1731,6 +2058,7 @@ impl Card {
             if self.metrics.as_ref().map(|(was, ..)| was) != Some(&measured) {
                 let mut tops = Vec::with_capacity(rows.len());
                 let mut heights = Vec::with_capacity(rows.len());
+                self.layouts.clear();
                 let mut y = 0.0;
                 for row in &rows {
                     let height = match lyrics.text(row) {
@@ -1738,9 +2066,14 @@ impl Card {
                             let layout = layout_line(&cr, line, &font);
                             layout.set_width((room * f64::from(pango::SCALE)) as i32);
                             layout.set_wrap(pango::WrapMode::WordChar);
-                            f64::from(layout.pixel_size().1)
+                            let height = f64::from(layout.pixel_size().1);
+                            self.layouts.push(Some(layout));
+                            height
                         }
-                        None => 26.0,
+                        None => {
+                            self.layouts.push(None);
+                            26.0
+                        }
                     };
                     tops.push(y);
                     heights.push(height);
@@ -1758,8 +2091,8 @@ impl Card {
                 Mode::Unaligned => rows.iter().rposition(|row| row.start <= lyrics.guess(position)),
                 Mode::Plain => None,
             };
-            self.focus = self.focus.filter(|&focus| focus < rows.len());
-            key.push(self.focus.map_or(-1, |focus| focus as i64));
+            let focus = job.focus.filter(|&focus| focus < rows.len());
+            key.push(focus.map_or(-1, |focus| focus as i64));
             let goal = match (mode, active) {
                 (Mode::Synced | Mode::Aligned, _) => {
                     tops.get(active.unwrap_or(0)).copied().unwrap_or(0.0) - LYRICS_HEIGHT * HELD_AT
@@ -1808,7 +2141,7 @@ impl Card {
             key.extend([
                 (self.scroll * 2.0) as i64,
                 (self.free * 2.0) as i64,
-                self.aligning as i64,
+                job.aligning as i64,
             ]);
 
             let at_lag = |lag: f64| -> f64 {
@@ -1874,7 +2207,7 @@ impl Card {
                 } else {
                     1.0
                 };
-                if self.focus == Some(index) {
+                if focus == Some(index) {
                     cr.set_source_rgb(ink.0, ink.1, ink.2);
                     cr.set_line_width(2.0);
                     text::rounded_rectangle(&cr, PAD - 8.0, y - 5.0, room + 16.0, heights[index] + 10.0, 8.0);
@@ -1885,9 +2218,18 @@ impl Card {
                 cr.scale(scale, scale);
                 match lyrics.text(row) {
                     Some(line) => {
-                        let layout = layout_line(&cr, line, &font);
-                        layout.set_width((room * f64::from(pango::SCALE)) as i32);
-                        layout.set_wrap(pango::WrapMode::WordChar);
+                        let layout = match self.layouts.get(index).cloned().flatten() {
+                            Some(layout) => {
+                                pangocairo::functions::update_layout(&cr, &layout);
+                                layout
+                            }
+                            None => {
+                                let layout = layout_line(&cr, line, &font);
+                                layout.set_width((room * f64::from(pango::SCALE)) as i32);
+                                layout.set_wrap(pango::WrapMode::WordChar);
+                                layout
+                            }
+                        };
                         let words = (Some(index) == active && mode == Mode::Synced)
                             .then(|| lyrics.candidate().synced[row.line?].words.clone())
                             .flatten();
@@ -1968,7 +2310,7 @@ impl Card {
             let small = face(pango::Weight::Normal, 12.0);
             let button = face(pango::Weight::Semibold, 12.0);
             if let Some(hint) = places.hint {
-                if mode == Mode::Unaligned || self.aligning {
+                if mode == Mode::Unaligned || job.aligning {
                     cr.set_source_rgb(ink.0, ink.1, ink.2);
                     show_cut(
                         &cr,
@@ -1979,7 +2321,7 @@ impl Card {
                         room - 60.0,
                     );
                 }
-                if self.aligning {
+                if job.aligning {
                     draw_pill(&cr, "取消", &button, width - PAD, hint, ink);
                 }
             }
@@ -2029,7 +2371,7 @@ impl Card {
                         room,
                     );
                 }
-                if mode == Mode::Aligned && !self.aligning {
+                if mode == Mode::Aligned && !job.aligning {
                     draw_pill(&cr, "重新對齊", &button, width - PAD, source, ink);
                 }
             }
@@ -2044,7 +2386,7 @@ impl Card {
         } else {
             0.0
         };
-        let thick = if self.hover_bar || self.scrub.is_some() {
+        let thick = if job.hover_bar || job.scrub.is_some() {
             10.0
         } else {
             BAR
@@ -2053,7 +2395,7 @@ impl Card {
             (through * room * 2.0) as i64,
             thick as i64,
             (position as i64),
-            self.scrub.is_some() as i64,
+            job.scrub.is_some() as i64,
         ]);
         let bar_y = places.bar + BAR / 2.0 - thick / 2.0;
         cr.set_source_rgba(ink.0, ink.1, ink.2, 0.16);
@@ -2062,8 +2404,8 @@ impl Card {
         cr.set_source_rgba(ink.0, ink.1, ink.2, 0.85);
         text::rounded_rectangle(&cr, PAD, bar_y, (room * through).max(thick), thick, thick / 2.0);
         let _ = cr.fill();
-        if self.hover_bar || self.scrub.is_some() {
-            let radius = if self.scrub.is_some() { 7.5 } else { 6.0 };
+        if job.hover_bar || job.scrub.is_some() {
+            let radius = if job.scrub.is_some() { 7.5 } else { 6.0 };
             cr.set_source_rgb(ink.0, ink.1, ink.2);
             cr.arc(
                 PAD + room * through,
@@ -2085,7 +2427,7 @@ impl Card {
 
         // The menu of versions, on a solid ground over the lyrics, over where they are from.
         self.menu_drawn = None;
-        if let (Some(focused), Some(lyrics), Some(source)) = (self.menu, &lyrics, places.source) {
+        if let (Some(focused), Some(lyrics), Some(source)) = (job.menu, &lyrics, places.source) {
             let (why, entries) = menu(lyrics, &player);
             let rules = entries.iter().filter(|entry| entry.apart).count() as f64;
             let height = MENU_PAD * 2.0
@@ -2149,11 +2491,14 @@ impl Card {
             self.menu_drawn = Some(((x, y, w, height), placed));
         }
         drop(cr);
-
-        if key != self.drawn || self.picture.is_none() {
-            self.picture = text::picture(surface);
-            self.drawn = key;
+        let waited = text::icon_waits() != waits;
+        let mut picture = None;
+        if key != self.drawn {
+            picture = text::picture(surface);
+            // What was drawn while an icon was still being read is drawn again.
+            self.drawn = if waited { Vec::new() } else { key };
         }
+        self.output(picture)
     }
 }
 
