@@ -605,7 +605,10 @@ impl Nekoland {
             return true;
         }
 
-        if sym == Keysym::Escape && self.close_dock_stack() {
+        if sym == Keysym::Escape && (self.close_dock_stack() || self.media_card_escape()) {
+            return true;
+        }
+        if self.media_card_key(sym) {
             return true;
         }
         if self.dock_key(sym) {

@@ -41,6 +41,7 @@ use crate::{
     control::ease_out,
     dbus::LauncherUpdate,
     glass::Tier,
+    media::{self, Card, CardPart, NowPlaying},
     menubar::{close, text_size, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
@@ -295,6 +296,8 @@ enum Tile {
     Trash {
         full: bool,
     },
+    /// What plays, with its line of lyrics and the buttons to play.
+    Media(media::Face),
 }
 
 /// What stays the same of a tile from frame to frame, for its animation.
@@ -306,6 +309,7 @@ enum Key {
     Window(Window),
     Stack(PathBuf),
     Trash,
+    Media,
 }
 
 impl Tile {
@@ -317,14 +321,16 @@ impl Tile {
             Tile::Window { window, .. } => Key::Window(window.clone()),
             Tile::Stack { path, .. } => Key::Stack(path.clone()),
             Tile::Trash { .. } => Key::Trash,
+            Tile::Media(_) => Key::Media,
         }
     }
 
     fn width(&self, art: i32) -> i32 {
-        if matches!(self, Tile::Separator(_)) {
-            1
-        } else {
-            art
+        match self {
+            Tile::Separator(_) => 1,
+            Tile::Media(face) if face.side => art,
+            Tile::Media(_) => (f64::from(media::TILE * art) / f64::from(ART)).round() as i32,
+            _ => art,
         }
     }
 
@@ -335,7 +341,7 @@ impl Tile {
             Tile::Window { title, .. } => Some(title),
             Tile::Stack { name, .. } => Some(name),
             Tile::Trash { .. } => Some("垃圾桶"),
-            Tile::Separator(_) => None,
+            Tile::Separator(_) | Tile::Media(_) => None,
         }
     }
 }
@@ -541,6 +547,7 @@ struct Ids {
     closing: Id,
     held: Id,
     tag: Id,
+    card: Id,
 }
 
 /// What an application said its Dock icon shows, from the bus name it said it from.
@@ -674,6 +681,14 @@ pub struct Dock {
     /// dragged out as a file.
     /// An item of the open folder pressed: where, and the middle of its icon there.
     stack_press: Option<(PathBuf, Point<f64, Logical>, Serial, Point<f64, Logical>)>,
+    /// What plays, read from when the Dock is first drawn at the bottom, and what its tile
+    /// shows now.
+    media: Option<NowPlaying>,
+    media_tried: bool,
+    media_face: Option<media::Face>,
+    /// The lyrics opened from it, and what on them was pressed.
+    card: Option<Card>,
+    card_press: Option<CardPart>,
 }
 
 type Rgb = (f64, f64, f64);
@@ -686,7 +701,7 @@ pub(crate) fn ink(dark: bool) -> Rgb {
     }
 }
 
-fn ink_2(dark: bool) -> Rgb {
+pub(crate) fn ink_2(dark: bool) -> Rgb {
     if dark {
         (0.663, 0.655, 0.671)
     } else {
@@ -1043,6 +1058,11 @@ impl Nekoland {
         tiles.push(Tile::Trash {
             full: self.trash_full(),
         });
+        // What plays, at the far end.
+        if let Some(face) = self.dock.media_face.clone() {
+            tiles.push(Tile::Separator("media"));
+            tiles.push(Tile::Media(face));
+        }
         tiles
     }
 
@@ -1462,6 +1482,7 @@ impl Nekoland {
             .map(|(pos, frame)| frame.point(pos));
         let dark = self.menu_bar_dark();
         let menu_open = self.menu_bar.open.is_some();
+        self.refresh_media(now, dt);
 
         let mut tiles = self.dock_tiles();
         let running = |tiles: &[Tile], app_id: &str| {
@@ -1596,6 +1617,7 @@ impl Nekoland {
         // While a menu or a stack opened from the Dock is open, its icons stay as they were,
         // as on the Mac.
         let held = self.dock.stack.is_some()
+            || self.dock.card.as_ref().is_some_and(|card| card.closing.is_none())
             || self
                 .menu_bar
                 .open
@@ -1613,12 +1635,14 @@ impl Nekoland {
             .map(|(tile, (target, tile_width))| {
                 let key = tile.key();
                 // Magnified icons grow instead of lifting.
-                let lift_to = if Some(&key) == hovered_key.as_ref() && magnify <= 1.0 {
+                // What plays is not an icon: it neither lifts nor grows.
+                let icon = !matches!(tile, Tile::Media(_));
+                let lift_to = if Some(&key) == hovered_key.as_ref() && magnify <= 1.0 && icon {
                     1.0
                 } else {
                     0.0
                 };
-                let zoom_to = zoom_to(*target, *tile_width);
+                let zoom_to = if icon { zoom_to(*target, *tile_width) } else { 1.0 };
                 let dot_to = match tile {
                     Tile::App { active: true, .. } => ACTIVE_DOT,
                     _ => DOT,
@@ -1663,7 +1687,9 @@ impl Nekoland {
 
         if menu_open || !self.dock_shown() {
             self.close_dock_stack();
+            self.close_media_card();
         }
+        self.refresh_card(dark, now, dt);
         self.refresh_preview(pointer, dark, menu_open, now);
         self.refresh_stack(pointer, dark, false);
         self.refresh_stack(None, dark, true);
@@ -1971,6 +1997,17 @@ impl Nekoland {
                         }
                         let _ = cr.restore();
                     }
+                    Tile::Media(face) => {
+                        let cover = self.dock.media.as_mut().and_then(|media| {
+                            media
+                                .cover(64 * text::picture_scale())
+                                .map(|(cover, _)| cover.clone())
+                        });
+                        let _ = cr.save();
+                        stand_upright(&cr, side, x + art / 2.0, y + art / 2.0);
+                        media::draw_tile(&cr, (x, y, art), face, cover.as_ref(), dark);
+                        let _ = cr.restore();
+                    }
                     Tile::Trash { full } => {
                         let name = if *full { "user-trash-full" } else { "user-trash" };
                         if let Some(icon) = self.dock_icon(name, big, dark) {
@@ -2271,6 +2308,22 @@ impl Nekoland {
         };
         let rect = frame.rect_i32(turned);
         let mut overlays = Vec::new();
+        if let Some((card, picture)) = self
+            .dock
+            .card
+            .as_ref()
+            .and_then(|card| Some((card, card.picture.as_ref()?)))
+        {
+            let (shown, _, fade) = card.shown(self.config.animations);
+            overlays.push(Overlay {
+                fade,
+                id: &ids.card,
+                rect: shown,
+                glass: Some((Tier::Menu, media::CARD_RADIUS)),
+                alpha: 1.0,
+                picture,
+            });
+        }
         for (stack, picture, id) in [(&self.dock.closing, &ids.closing), (&self.dock.stack, &ids.stack)]
             .into_iter()
             .filter_map(|(stack, id)| Some((stack.as_ref()?, stack.as_ref()?.picture.as_ref()?, id)))
@@ -2523,6 +2576,7 @@ impl Nekoland {
                 closing: Id::new(),
                 held: Id::new(),
                 tag: Id::new(),
+                card: Id::new(),
             });
         }
     }
@@ -2548,7 +2602,12 @@ impl Nekoland {
                     .dock
                     .stack
                     .as_ref()
-                    .is_some_and(|stack| stack.rect.to_f64().contains(pos)))
+                    .is_some_and(|stack| stack.rect.to_f64().contains(pos))
+                || self
+                    .dock
+                    .card
+                    .as_ref()
+                    .is_some_and(|card| card.closing.is_none() && card.rect.to_f64().contains(pos)))
     }
 
     /// The Dock with the icons grown out of the top of it, in the turned output.
@@ -2593,6 +2652,19 @@ impl Nekoland {
     /// a drag.
     pub fn dock_motion(&mut self, pos: Point<f64, Logical>) {
         self.dock.pointer = Some(pos);
+        if let Some(card) = self.dock.card.as_mut() {
+            let on_bar = self
+                .dock
+                .media
+                .as_ref()
+                .and_then(|media| card.part_at(pos, media))
+                .is_some_and(|part| matches!(part, CardPart::Bar(_)));
+            card.hover_bar = on_bar && card.rect.to_f64().contains(pos);
+            if card.scrub.is_some() {
+                card.scrub = Some(card.through_at(pos));
+                return;
+            }
+        }
         if let Some((_, from, ..)) = &self.dock.stack_press {
             if (pos.x - from.x).hypot(pos.y - from.y) > DRAG_THRESHOLD {
                 self.drag_out_of_stack();
@@ -2680,6 +2752,28 @@ impl Nekoland {
         self.dock.keyboard = None;
         if !self.dock_shown() {
             return false;
+        }
+        // The lyrics: a line, the bar or a button on them; anywhere else only closes them.
+        if let Some(card) = self.dock.card.as_mut().filter(|card| card.closing.is_none()) {
+            if card.rect.to_f64().contains(pos) {
+                if !right {
+                    let part = self
+                        .dock
+                        .media
+                        .as_ref()
+                        .and_then(|media| card.part_at(pos, media));
+                    if let Some(CardPart::Bar(through)) = part {
+                        card.scrub = Some(through);
+                    }
+                    self.dock.card_press = part;
+                }
+                return true;
+            }
+            let own = self.media_part_at(pos) == Some(media::Part::Cover);
+            self.close_media_card();
+            if own || !self.dock_covers(pos) {
+                return true;
+            }
         }
         // An open folder: an item opens, or is dragged out, and the folder closes; anywhere
         // else only closes it.
@@ -2819,6 +2913,12 @@ impl Nekoland {
             self.open_menu_of_tile(index);
             return true;
         }
+        if matches!(tile, Tile::Media(_)) {
+            let part = self.media_part_at(pos);
+            if let Some(media) = self.dock.media.as_mut() {
+                media.press = part.map(|part| (part, Instant::now()));
+            }
+        }
         self.dock.press = Some(Press {
             key: tile.key(),
             tile,
@@ -2905,7 +3005,7 @@ impl Nekoland {
                 Entry::separator(),
                 Entry::item("清空垃圾桶", Command::Dock(DockCommand::EmptyTrash)).enabled(*full),
             ],
-            Tile::Apps | Tile::Window { .. } | Tile::Separator(_) => return,
+            Tile::Apps | Tile::Window { .. } | Tile::Separator(_) | Tile::Media(_) => return,
         };
         self.open_tile_menu(index, entries);
     }
@@ -2971,9 +3071,30 @@ impl Nekoland {
             }
             return;
         }
+        if let Some(part) = self.dock.card_press.take() {
+            self.press_card(part, pos);
+            return;
+        }
+        let pressed = self.dock.media.as_mut().and_then(|media| media.press.take());
         let Some(press) = self.dock.press.take() else {
             return;
         };
+        if let Tile::Media(_) = press.tile {
+            // Let go on what it was pressed on: the cover opens the lyrics, a button plays.
+            match pressed
+                .map(|(part, _)| part)
+                .filter(|part| self.media_part_at(pos) == Some(*part))
+            {
+                Some(media::Part::Cover) => self.toggle_media_card(),
+                Some(part) => {
+                    if let Some(media) = self.dock.media.as_mut() {
+                        media.command(part);
+                    }
+                }
+                None => {}
+            }
+            return;
+        }
         let here = self
             .dock_tile_at(pos)
             .and_then(|index| self.dock.tiles.get(index))
@@ -3103,6 +3224,7 @@ impl Nekoland {
             Tile::Window { window, .. } => self.restore_from_dock(&window),
             Tile::Stack { index, .. } => self.open_stack(index),
             Tile::Trash { .. } => open_uri("trash:///"),
+            Tile::Media(_) => self.toggle_media_card(),
             Tile::Separator(_) => {}
         }
     }
@@ -3633,6 +3755,15 @@ impl Nekoland {
     /// The wheel over an open grid turns its pages, a row at a time. Returns whether it
     /// was taken.
     pub fn dock_scroll(&mut self, pos: Point<f64, Logical>, amount: f64) -> bool {
+        if let Some(card) = self
+            .dock
+            .card
+            .as_mut()
+            .filter(|card| card.rect.to_f64().contains(pos))
+        {
+            card.wheel(amount);
+            return true;
+        }
         let Some(stack) = self
             .dock
             .stack
@@ -3653,6 +3784,304 @@ impl Nekoland {
             };
         }
         true
+    }
+
+    /// Where on the media tile a position is.
+    fn media_part_at(&self, pos: Point<f64, Logical>) -> Option<media::Part> {
+        let index = self.dock_tile_at(pos)?;
+        let Tile::Media(face) = self.dock.tiles.get(index)? else {
+            return None;
+        };
+        if face.side {
+            return Some(media::Part::Cover);
+        }
+        let rect = self.turned_tile_rect(index)?;
+        let pos = self.dock_frame()?.point(pos);
+        media::part_at(pos.x - f64::from(rect.loc.x), f64::from(self.dock_sizes().art))
+    }
+
+    /// Reads what plays, from the first time the Dock is shown.
+    fn refresh_media(&mut self, now: Instant, dt: f64) {
+        if !self.dock.media_tried {
+            self.dock.media_tried = true;
+            self.dock.media = NowPlaying::start();
+        }
+        let animations = self.config.animations;
+        self.dock.media_face = self.dock.media.as_mut().and_then(|media| {
+            media.refresh(now);
+            media.face(now, animations, dt)
+        });
+        if let Some(face) = self.dock.media_face.as_mut() {
+            face.side = self.config.dock_position != DockPosition::Bottom;
+        }
+    }
+
+    /// The card over the media tile, its cover in the middle of what of the tile shows.
+    fn card_place(&self) -> Option<(Rectangle<i32, Logical>, Point<i32, Logical>)> {
+        let index = self
+            .dock
+            .tiles
+            .iter()
+            .position(|tile| matches!(tile, Tile::Media(_)))?;
+        let mode = self.dock.media.as_ref()?.lyrics().map(|lyrics| lyrics.mode());
+        let size = Card::size(mode);
+        let loc = self.popup_loc(index, false, size)?;
+        let tile = self.tile_rect(index)?;
+        let art = self.dock_sizes().art;
+        let cover = tile.loc + Point::from((art / 2, art / 2));
+        Some((Rectangle::new(loc, size), cover))
+    }
+
+    fn toggle_media_card(&mut self) {
+        if self.dock.card.as_ref().is_some_and(|card| card.closing.is_none()) {
+            self.close_media_card();
+            return;
+        }
+        let Some(song) = self
+            .dock
+            .media
+            .as_ref()
+            .and_then(|media| media.player.as_ref())
+            .map(media::song_key)
+        else {
+            return;
+        };
+        if let Some((rect, cover)) = self.card_place() {
+            self.dock.card = Some(Card::new(song, rect, cover));
+        }
+    }
+
+    /// Puts the lyrics away into the cover. Returns whether they were open.
+    pub fn close_media_card(&mut self) -> bool {
+        let Some(card) = self.dock.card.as_mut().filter(|card| card.closing.is_none()) else {
+            return false;
+        };
+        card.closing = Some(Instant::now());
+        card.scrub = None;
+        self.dock.card_press = None;
+        true
+    }
+
+    /// Escape: leaves aligning the lyrics first, then puts them away.
+    pub fn media_card_escape(&mut self) -> bool {
+        if let Some(card) = self.dock.card.as_mut().filter(|card| card.closing.is_none()) {
+            if card.menu.take().is_some() {
+                return true;
+            }
+            if card.aligning {
+                card.aligning = false;
+                return true;
+            }
+        }
+        self.close_media_card()
+    }
+
+    fn refresh_card(&mut self, dark: bool, now: Instant, dt: f64) {
+        let animations = self.config.animations;
+        let place = self.card_place();
+        let (Some(card), Some(media)) = (self.dock.card.as_mut(), self.dock.media.as_mut()) else {
+            return;
+        };
+        if card.openness(animations).1 {
+            self.dock.card = None;
+            return;
+        }
+        // Another song, or none: the card is put away.
+        let same = media.player.as_ref().map(media::song_key);
+        match place {
+            Some((rect, cover)) if card.closing.is_none() => {
+                if same.as_deref() != Some(card.song()) {
+                    card.closing = Some(now);
+                }
+                card.rect = rect;
+                card.from = cover;
+            }
+            None if card.closing.is_none() => card.closing = Some(now),
+            _ => {}
+        }
+        card.refresh(media, now, dt, dark, animations);
+    }
+
+    /// Lets go of a press on the lyrics: a line is played from, or tapped while sung to align
+    /// them; the bar plays from where it was let go.
+    fn press_card(&mut self, part: CardPart, pos: Point<f64, Logical>) {
+        let (Some(card), Some(media)) = (self.dock.card.as_mut(), self.dock.media.as_mut()) else {
+            return;
+        };
+        match part {
+            CardPart::Bar(_) => {
+                let through = card.scrub.take().unwrap_or_else(|| card.through_at(pos));
+                if let Some(length) = media.player.as_ref().and_then(|player| player.length) {
+                    media.seek(through * length);
+                }
+            }
+            CardPart::Cancel => card.aligning = false,
+            CardPart::Realign => card.aligning = true,
+            CardPart::Away => card.menu = None,
+            CardPart::Source => {
+                // It opens on the version chosen.
+                let checked = media.lyrics().and_then(|lyrics| {
+                    let player = media.player.as_ref()?;
+                    media::menu(&lyrics, player)
+                        .1
+                        .iter()
+                        .position(|entry| entry.checked)
+                });
+                card.menu = if card.menu.is_some() {
+                    None
+                } else {
+                    Some(checked.unwrap_or(0))
+                };
+            }
+            CardPart::Menu(action) => self.choose_in_card_menu(action),
+            CardPart::Row(row) => {
+                if card.part_at(pos, media) == Some(part) {
+                    self.activate_card_row(row);
+                }
+            }
+        }
+    }
+
+    fn choose_in_card_menu(&mut self, action: media::MenuAction) {
+        let (Some(card), Some(media)) = (self.dock.card.as_mut(), self.dock.media.as_mut()) else {
+            return;
+        };
+        card.menu = None;
+        match action {
+            media::MenuAction::Choose(index) => {
+                media.set(|_, choice| *choice = Some(media::Choice::Candidate(index)))
+            }
+            media::MenuAction::Plain => media.set(|_, choice| *choice = Some(media::Choice::Plain)),
+            media::MenuAction::Align => {
+                media.set(|_, choice| {
+                    if *choice == Some(media::Choice::Plain) {
+                        *choice = None;
+                    }
+                });
+                card.aligning = true;
+            }
+            media::MenuAction::ResetAlignment => {
+                media.set(|alignment, _| alignment.anchors.clear());
+                card.aligning = false;
+            }
+            media::MenuAction::Earlier => media.set(|alignment, _| alignment.offset -= 0.5),
+            media::MenuAction::Later => media.set(|alignment, _| alignment.offset += 0.5),
+        }
+    }
+
+    /// A line of the lyrics chosen: played from, or, while aligning or unaligned, the line
+    /// heard now.
+    fn activate_card_row(&mut self, row: usize) {
+        let (Some(card), Some(media)) = (self.dock.card.as_mut(), self.dock.media.as_mut()) else {
+            return;
+        };
+        let Some(lyrics) = media.lyrics() else {
+            return;
+        };
+        let mode = lyrics.mode();
+        let Some(start) = lyrics.rows().get(row).map(|row| row.start) else {
+            return;
+        };
+        if mode == media::Mode::Plain {
+            return;
+        }
+        if card.aligning || mode == media::Mode::Unaligned {
+            let Some(position) = media.position(Instant::now()) else {
+                return;
+            };
+            media.set(|alignment, _| alignment.tap(start, position));
+            card.aligning = false;
+        } else {
+            let to = lyrics.playback_time(start);
+            media.seek(to);
+        }
+    }
+
+    /// Keys while the lyrics are open: up and down along the lines or the menu, Return to
+    /// choose, left and right 5 seconds, Page Up and Page Down 30, Home and End.
+    pub fn media_card_key(&mut self, sym: Keysym) -> bool {
+        let Some(card) = self.dock.card.as_mut().filter(|card| card.closing.is_none()) else {
+            return false;
+        };
+        if let Some(focused) = card.menu {
+            let entries = card.menu_entries();
+            let step = |from: usize, by: isize| {
+                let mut at = from as isize;
+                loop {
+                    at += by;
+                    match entries.get(usize::try_from(at).ok()?) {
+                        Some(entry) if entry.enabled => return Some(at as usize),
+                        Some(_) => {}
+                        None => return None,
+                    }
+                }
+            };
+            match sym {
+                Keysym::Up => card.menu = Some(step(focused, -1).unwrap_or(focused)),
+                Keysym::Down => card.menu = Some(step(focused, 1).unwrap_or(focused)),
+                Keysym::Tab => card.menu = None,
+                Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                    if let Some(entry) = entries.get(focused).filter(|entry| entry.enabled) {
+                        let action = entry.action;
+                        self.choose_in_card_menu(action);
+                    }
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        let rows = card.row_count();
+        let from = card.focus.or(card.active);
+        let by = match sym {
+            Keysym::Up => Some(-1),
+            Keysym::Down => Some(1),
+            _ => None,
+        };
+        if let Some(by) = by {
+            if rows > 0 {
+                let row = match from {
+                    Some(from) if card.focus.is_some() => from.saturating_add_signed(by).min(rows - 1),
+                    Some(from) => from,
+                    None => 0,
+                };
+                card.focus = Some(row);
+                card.show_row(row);
+            }
+            return true;
+        }
+        let Some(media) = self.dock.media.as_mut() else {
+            return false;
+        };
+        let position = media.position(Instant::now()).unwrap_or(0.0);
+        let length = media
+            .player
+            .as_ref()
+            .and_then(|player| player.length)
+            .unwrap_or(0.0);
+        let to = match sym {
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                if let Some(row) = card.focus {
+                    self.activate_card_row(row);
+                }
+                return true;
+            }
+            Keysym::Left => position - 5.0,
+            Keysym::Right => position + 5.0,
+            Keysym::Page_Up => position - 30.0,
+            Keysym::Page_Down => position + 30.0,
+            Keysym::Home => 0.0,
+            Keysym::End => length,
+            _ => return false,
+        };
+        media.seek(to.clamp(0.0, length.max(0.0)));
+        true
+    }
+
+    /// How large the lyrics are drawn while they grow out of the cover and back into it.
+    pub fn dock_zoom_of(&self, id: &Id) -> Option<f64> {
+        let card = self.dock.card.as_ref()?;
+        let ids = self.dock.ids.as_ref()?;
+        (ids.card == *id && self.config.animations).then(|| card.shown(true).1)
     }
 
     /// Closes an open folder, which goes back into its tile. Returns whether one was open.

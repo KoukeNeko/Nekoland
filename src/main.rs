@@ -26,6 +26,8 @@ mod grabs;
 mod input;
 mod ipc;
 mod lock;
+mod lyrics;
+mod media;
 mod menubar;
 mod motion;
 mod nautilus;
