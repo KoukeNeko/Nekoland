@@ -93,11 +93,13 @@ pub enum Module {
     Disk,
     Network,
     Sensors,
+    Power,
 }
 
 impl Module {
     /// Left to right, as Stats puts them.
-    pub const ALL: [Module; 6] = [Module::Cpu, Module::Gpu, Module::Ram, Module::Disk, Module::Network, Module::Sensors];
+    pub const ALL: [Module; 7] =
+        [Module::Cpu, Module::Gpu, Module::Ram, Module::Disk, Module::Network, Module::Sensors, Module::Power];
 
     fn bit(self) -> u32 {
         1 << self as u32
@@ -111,6 +113,7 @@ impl Module {
             Module::Disk => config.stats_disk,
             Module::Network => config.stats_network,
             Module::Sensors => config.stats_sensors,
+            Module::Power => config.stats_power,
         }
     }
 
@@ -123,6 +126,7 @@ impl Module {
             Module::Disk => "stats:disk",
             Module::Network => "stats:network",
             Module::Sensors => "stats:sensors",
+            Module::Power => "stats:power",
         }
     }
 
@@ -135,6 +139,7 @@ impl Module {
             Module::Disk => "SSD",
             Module::Network => "NET",
             Module::Sensors => "TMP",
+            Module::Power => "PWR",
         }
     }
 
@@ -145,7 +150,7 @@ impl Module {
             Module::Gpu => "GPU 使用率",
             Module::Ram => "記憶體使用量",
             Module::Disk => "磁碟使用量",
-            Module::Network | Module::Sensors => "",
+            Module::Network | Module::Sensors | Module::Power => "",
         }
     }
 
@@ -157,6 +162,7 @@ impl Module {
             Module::Disk => "磁碟",
             Module::Network => "網路",
             Module::Sensors => "感應器",
+            Module::Power => "功耗",
         }
     }
 }
@@ -177,6 +183,12 @@ const FAN_KNOB: i32 = 7;
 /// The `pwm_enable` the chip drives a fan itself with, unless it had another.
 const FAN_AUTOMATIC: u8 = 2;
 const PUBLIC_IP_EVERY: Duration = Duration::from_secs(600);
+/// What nekoland-sensors.service publishes as root: RAPL's power, a second's average, and the
+/// disks' SMART.
+const SENSORS: &str = "/run/nekoland-sensors";
+const RAPL: &str = "/sys/class/powercap/intel-rapl:0";
+/// What the power is taken as a share of where no limit is read.
+const POWER_SCALE: f64 = 500.0;
 const PUBLIC_IP_SERVICE: &str = "https://ip.mac-stats.com";
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -190,6 +202,9 @@ pub struct Cpu {
     pub uptime: u64,
     pub mhz: Option<f64>,
     pub temperature: Option<f64>,
+    /// Its package's power in watts, and how many processes and threads there are.
+    pub power: Option<f64>,
+    pub tasks: Option<(usize, usize)>,
 }
 
 /// A fan's speed in RPM, and, when it can be set, its `pwm` file, how fast it is driven from
@@ -209,6 +224,15 @@ pub struct Gpu {
     pub memory: Option<(f64, f64)>,
     pub temperature: Option<f64>,
     pub power: Option<f64>,
+    /// What NVIDIA's says besides: the most power it may draw, its core's and memory's clocks
+    /// in MHz, its fan, its memory controller's use, its encoder's and decoder's, and its
+    /// PCIe link's generation and width.
+    pub power_limit: Option<f64>,
+    pub clocks: Option<(f64, f64)>,
+    pub fan: Option<f64>,
+    pub memory_load: Option<f64>,
+    pub video: Option<(f64, f64)>,
+    pub pcie: Option<(u32, u32)>,
 }
 
 /// In bytes, and the pressure: how much of the last ten seconds something waited for memory.
@@ -219,6 +243,9 @@ pub struct Ram {
     pub cached: f64,
     pub swap: (f64, f64),
     pub pressure: Option<f64>,
+    /// What programs were promised. Linux promises more than it has unless told not to, so the
+    /// limit it gives is not one.
+    pub committed: f64,
 }
 
 /// The root filesystem's room in bytes, and the disks' reading and writing in bytes a second.
@@ -228,6 +255,28 @@ pub struct Disk {
     pub free: f64,
     pub read: f64,
     pub write: f64,
+    pub smart: Vec<Smart>,
+}
+
+/// A disk's SMART, as smartctl gives it: its model, whether it passes, and on NVMe how much of
+/// its endurance is used and how many bytes were written.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Smart {
+    pub model: String,
+    pub passed: bool,
+    pub used: Option<f64>,
+    pub written: Option<f64>,
+}
+
+/// The power drawn in watts: the whole machine's where the platform's RAPL domain or a battery
+/// running it says, else the CPU's and the discrete GPU's added; each part, with the most it
+/// may draw where that is known; and the most they may draw together.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Power {
+    pub total: f64,
+    pub whole: bool,
+    pub parts: Vec<(String, f64, Option<f64>)>,
+    pub limit: Option<f64>,
 }
 
 /// The interface of the default route, in bytes a second and in all since it came up.
@@ -238,6 +287,9 @@ pub struct Net {
     pub sent: f64,
     pub received_total: f64,
     pub sent_total: f64,
+    /// Its hardware address, and its link's speed in megabits a second.
+    pub mac: String,
+    pub link: Option<f64>,
 }
 
 /// What one reading found; a module not asked for, or with nothing to read, is None.
@@ -251,6 +303,9 @@ pub struct Sample {
     /// Each chip's temperature in °C, and each fan's speed in RPM.
     pub temperatures: Vec<(String, f64)>,
     pub fans: Vec<Fan>,
+    /// The board's voltages that are known by name, in volts.
+    pub voltages: Vec<(String, f64)>,
+    pub power: Option<Power>,
     /// The busiest processes: by CPU, in percent of one core, and by memory, in bytes; by
     /// disk, read and written, and by network, in and out, in bytes a second.
     pub top_cpu: Vec<(String, f64)>,
@@ -272,6 +327,7 @@ impl Sample {
             Module::Ram => self.ram.as_ref().map(|ram| ram.used / ram.total.max(1.0)),
             Module::Disk => self.disk.as_ref().map(|disk| 1.0 - disk.free / disk.total.max(1.0)),
             Module::Sensors => self.hottest().map(|(_, celsius)| celsius / 100.0),
+            Module::Power => self.power.as_ref().map(|power| power.total / power.limit.unwrap_or(POWER_SCALE)),
             Module::Network => None,
         }
         .map(|value| value.clamp(0.0, 1.0))
@@ -364,7 +420,17 @@ fn read_cpu(before: &mut Before, temperatures: &[(String, f64)]) -> Option<Cpu> 
         .flatten()
         .filter_map(|policy| read_number(policy.path().join("scaling_cur_freq")))
         .collect();
+    let threads = read("/proc/loadavg").split_whitespace().nth(3).and_then(|running| running.split_once('/')?.1.parse().ok());
+    let processes = std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit())))
+        .count();
+    let power = parse_rapl(&read(Path::new(SENSORS).join("power"))).into_iter().find(|(name, _)| name.starts_with("package")).map(|(_, watts)| watts);
     Some(Cpu {
+        power,
+        tasks: threads.map(|threads| (processes, threads)),
         usage,
         user,
         system,
@@ -405,6 +471,7 @@ fn read_ram() -> Option<Ram> {
         cached: bytes("Cached") + bytes("Buffers") + bytes("SReclaimable"),
         swap: (bytes("SwapTotal") - bytes("SwapFree"), bytes("SwapTotal")),
         pressure,
+        committed: bytes("Committed_AS"),
     })
 }
 
@@ -442,7 +509,91 @@ fn read_disk(before: &mut Before, elapsed: Option<f64>) -> Option<Disk> {
         .disk
         .replace(sectors)
         .map_or((0.0, 0.0), |(read, written)| (rate(sectors.0, read), rate(sectors.1, written)));
-    Some(Disk { total, free, read: read_rate, write: write_rate })
+    Some(Disk { total, free, read: read_rate, write: write_rate, smart: read_smart(Path::new(SENSORS)) })
+}
+
+/// smartctl's JSON for one disk, where it has an answer of the disk's.
+fn parse_smart(json: &str) -> Option<Smart> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let passed = value.get("smart_status")?.get("passed")?.as_bool()?;
+    let health = value.get("nvme_smart_health_information_log");
+    let number = |key: &str| health.and_then(|health| health.get(key)?.as_f64());
+    Some(Smart {
+        model: value.get("model_name").and_then(|model| model.as_str()).unwrap_or_default().trim().to_string(),
+        passed,
+        used: number("percentage_used").map(|percent| percent / 100.0),
+        // NVMe counts in thousands of 512-byte units.
+        written: number("data_units_written").map(|units| units * 512_000.0),
+    })
+}
+
+fn read_smart(directory: &Path) -> Vec<Smart> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("smart-") && name.ends_with(".json")))
+        .collect();
+    files.sort();
+    files.iter().filter_map(|file| parse_smart(&read(file))).collect()
+}
+
+/// nekoland-sensors' `power`: each RAPL domain's name and watts, from its milliwatts.
+fn parse_rapl(published: &str) -> Vec<(String, f64)> {
+    published
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().skip(1);
+            let name = fields.next()?.to_string();
+            Some((name, fields.next()?.parse::<f64>().ok()? / 1000.0))
+        })
+        .collect()
+}
+
+/// A battery's power in watts while the machine runs on it, which is the whole machine's.
+fn battery_power() -> Option<f64> {
+    std::fs::read_dir("/sys/class/power_supply").ok()?.flatten().find_map(|supply| {
+        let path = supply.path();
+        if read(path.join("type")).trim() != "Battery" || read(path.join("status")).trim() != "Discharging" {
+            return None;
+        }
+        let micro = read_number(path.join("power_now"))
+            .or_else(|| Some(read_number(path.join("current_now"))? * read_number(path.join("voltage_now"))? / 1e6))?;
+        Some(micro / 1e6)
+    })
+}
+
+/// The power from RAPL's domains, a battery and the discrete GPU, as `Power` takes them.
+fn power_of(rapl: &[(String, f64)], battery: Option<f64>, cpu_limit: Option<f64>, gpu: Option<&Gpu>) -> Option<Power> {
+    let mut parts: Vec<(String, f64, Option<f64>)> = Vec::new();
+    let packages = rapl.iter().filter(|(name, _)| name.starts_with("package")).count();
+    for (name, watts) in rapl {
+        let shown = match name.as_str() {
+            "core" => "CPU 核心".to_string(),
+            "uncore" => "內顯".to_string(),
+            "dram" => "記憶體".to_string(),
+            "psys" => continue,
+            package if packages > 1 => format!("CPU {}", package.trim_start_matches("package-")),
+            _ => "CPU".to_string(),
+        };
+        let limit = (shown == "CPU").then_some(cpu_limit).flatten();
+        parts.push((shown, *watts, limit));
+    }
+    let gpu_power = gpu.and_then(|gpu| Some((gpu.power?, gpu.power_limit)));
+    if let Some((watts, limit)) = gpu_power {
+        parts.push(("GPU".into(), watts, limit));
+    }
+    let measured: f64 = rapl.iter().filter(|(name, _)| name.starts_with("package")).map(|(_, watts)| watts).sum::<f64>()
+        + gpu_power.map_or(0.0, |(watts, _)| watts);
+    let platform = rapl.iter().find(|(name, _)| name == "psys").map(|(_, watts)| *watts);
+    let (total, whole) = match platform.or(battery) {
+        Some(watts) => (watts, true),
+        None if !parts.is_empty() => (measured, false),
+        None => return None,
+    };
+    let limit = cpu_limit.zip(gpu_power.map_or(Some(0.0), |(_, limit)| limit)).map(|(cpu, gpu)| cpu + gpu);
+    Some(Power { total, whole, parts, limit: limit.filter(|limit| *limit > 0.0) })
 }
 
 /// The interface the default route goes out of, from /proc/net/route.
@@ -468,7 +619,12 @@ fn read_network(before: &mut Before, elapsed: Option<f64>) -> Option<Net> {
         Some((was, then_received, then_sent)) if was == interface => (rate(received, then_received), rate(sent, then_sent)),
         _ => (0.0, 0.0),
     };
+    let device = PathBuf::from("/sys/class/net").join(&interface);
+    let mac = read(device.join("address")).trim().to_string();
+    let link = read_number(device.join("speed")).filter(|megabits| *megabits > 0.0);
     Some(Net {
+        mac,
+        link,
         interface,
         received: received_rate,
         sent: sent_rate,
@@ -477,7 +633,7 @@ fn read_network(before: &mut Before, elapsed: Option<f64>) -> Option<Net> {
     })
 }
 
-/// `nvidia-smi`'s line for the name, use, memory in MiB, temperature and power.
+/// `nvidia-smi`'s line for `NVIDIA_QUERY`.
 fn parse_nvidia(line: &str) -> Option<Gpu> {
     let fields: Vec<&str> = line.split(',').map(str::trim).collect();
     let number = |index: usize| fields.get(index).and_then(|field| field.parse::<f64>().ok());
@@ -488,8 +644,18 @@ fn parse_nvidia(line: &str) -> Option<Gpu> {
         memory: number(2).zip(number(3)).map(|(used, total)| (used * MIB, total * MIB)),
         temperature: number(4),
         power: number(5),
+        power_limit: number(6),
+        clocks: number(7).zip(number(8)),
+        fan: number(9).map(|percent| percent / 100.0),
+        memory_load: number(10).map(|percent| percent / 100.0),
+        video: number(11).zip(number(12)).map(|(encoder, decoder)| (encoder / 100.0, decoder / 100.0)),
+        pcie: number(13).zip(number(14)).map(|(generation, width)| (generation as u32, width as u32)),
     })
 }
+
+const NVIDIA_QUERY: &str = "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,\
+    power.limit,clocks.gr,clocks.mem,fan.speed,utilization.memory,utilization.encoder,utilization.decoder,\
+    pcie.link.gen.current,pcie.link.width.current";
 
 /// An i915 client's fdinfo: its client ID and each engine's busy time in nanoseconds, over
 /// how many of that engine there are.
@@ -577,16 +743,13 @@ fn read_discrete() -> Option<Gpu> {
             .flatten()
             .find_map(|hwmon| read_number(hwmon.path().join("temp1_input")))
             .map(|milli| milli / 1000.0);
-        Some(Gpu { name: "AMD Radeon".into(), usage, memory, temperature, power: None })
+        Some(Gpu { name: "AMD Radeon".into(), usage, memory, temperature, ..Default::default() })
     });
     amd.or_else(|| {
         // shortcut: one nvidia-smi a reading costs it a start each time; stream it with
         // `-lms` if that shows in the CPU's own use.
         let output = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-                "--format=csv,noheader,nounits",
-            ])
+            .args([NVIDIA_QUERY, "--format=csv,noheader,nounits"])
             .output()
             .ok()
             .filter(|output| output.status.success())?;
@@ -606,9 +769,29 @@ fn chip_name(name: &str) -> String {
     }
 }
 
-/// Each chip's first temperature, which is its package's or composite's, and each fan, of the
-/// chips in `hwmon`.
-fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>) {
+/// The name and the divider of a voltage a chip does not label: the pins Nuvoton's NCT6796D
+/// to NCT6799D give one use, and, on a board whose dividers are known, the others it adds.
+// shortcut: only the PRIME B760M-A's dividers are known, as LibreHardwareMonitor gives its
+// siblings' and as its own readings bear out; another board's need its table's entry.
+fn voltage_name(chip: &str, board: &str, index: u32) -> Option<(&'static str, f64)> {
+    if !chip.starts_with("nct679") {
+        return None;
+    }
+    match (index, board) {
+        (2, _) => Some(("AVSB", 1.0)),
+        (3, _) => Some(("+3.3V", 1.0)),
+        (7, _) => Some(("+3.3V 待機", 1.0)),
+        (8, _) => Some(("CMOS 電池", 1.0)),
+        (1, "PRIME B760M-A") => Some(("+5V", 5.0)),
+        (4, "PRIME B760M-A") => Some(("+12V", 12.0)),
+        _ => None,
+    }
+}
+
+/// Each chip's first temperature, which is its package's or composite's, each fan, and the
+/// voltages known by name, of the chips in `hwmon`.
+fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>, Vec<(String, f64)>) {
+    let board = read("/sys/class/dmi/id/board_name").trim().to_string();
     let mut chips: Vec<PathBuf> = std::fs::read_dir(hwmon)
         .into_iter()
         .flatten()
@@ -619,9 +802,10 @@ fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>) {
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
         (name.len(), name)
     });
-    let (mut temperatures, mut fans) = (Vec::new(), Vec::new());
+    let (mut temperatures, mut fans, mut voltages) = (Vec::new(), Vec::new(), Vec::new());
     for chip in chips {
-        let name = chip_name(read(chip.join("name")).trim());
+        let chip_type = read(chip.join("name")).trim().to_string();
+        let name = chip_name(&chip_type);
         let mut inputs: Vec<(u32, String)> = std::fs::read_dir(&chip)
             .into_iter()
             .flatten()
@@ -655,8 +839,19 @@ fn read_sensors(hwmon: &Path) -> (Vec<(String, f64)>, Vec<Fan>) {
                 });
             }
         }
+        for (index, stem) in inputs.iter().filter(|(_, stem)| stem.starts_with("in")) {
+            let Some(milli) = read_number(chip.join(format!("{stem}_input"))) else {
+                continue;
+            };
+            let label = read(chip.join(format!("{stem}_label"))).trim().to_string();
+            let named = if label.is_empty() { voltage_name(&chip_type, &board, *index) } else { Some(("", 1.0)) };
+            if let Some((known, divider)) = named {
+                let shown = if label.is_empty() { known.to_string() } else { label };
+                voltages.push((shown, milli / 1000.0 * divider));
+            }
+        }
     }
-    (temperatures, fans)
+    (temperatures, fans, voltages)
 }
 
 /// The `count` busiest, the processes of one name, as a program's many are, taken together.
@@ -787,7 +982,7 @@ fn read_sample(before: &mut Before, wanted: u32) -> Sample {
     let wants = |module: Module| wanted & module.bit() != 0;
     let mut sample = Sample::default();
     if wants(Module::Sensors) || wants(Module::Cpu) {
-        (sample.temperatures, sample.fans) = read_sensors(Path::new(HWMON));
+        (sample.temperatures, sample.fans, sample.voltages) = read_sensors(Path::new(HWMON));
     }
     if wants(Module::Cpu) {
         sample.cpu = read_cpu(before, &sample.temperatures);
@@ -796,6 +991,13 @@ fn read_sample(before: &mut Before, wanted: u32) -> Sample {
         let mut gpus = read_gpus(before, elapsed).into_iter();
         sample.gpu = gpus.next();
         sample.other_gpus = gpus.collect();
+    }
+    if wants(Module::Power) {
+        // The GPU's own reading where it is shown, else one for its power alone.
+        let discrete = if wants(Module::Gpu) { None } else { read_discrete() };
+        let gpu = sample.gpu.as_ref().or(discrete.as_ref());
+        let cpu_limit = read_number(Path::new(RAPL).join("constraint_0_power_limit_uw")).map(|micro| micro / 1e6);
+        sample.power = power_of(&parse_rapl(&read(Path::new(SENSORS).join("power"))), battery_power(), cpu_limit, gpu);
     }
     if wants(Module::Ram) {
         sample.ram = read_ram();
@@ -819,6 +1021,7 @@ fn read_sample(before: &mut Before, wanted: u32) -> Sample {
     if !wants(Module::Sensors) {
         sample.temperatures.clear();
         sample.fans.clear();
+        sample.voltages.clear();
     }
     sample
 }
@@ -899,9 +1102,14 @@ fn fill_text(template: &str, sample: &Sample, fahrenheit: bool) -> String {
         ("$temp", sample.hottest().map(|(_, celsius)| temperature_text(*celsius, fahrenheit, false))),
         ("$down", net.map(|net| speed_text(net.received))),
         ("$up", net.map(|net| speed_text(net.sent))),
+        ("$power", sample.power.as_ref().map(|power| watts_text(power.total))),
     ]
     .into_iter()
     .fold(template.to_string(), |text, (name, value)| text.replace(name, value.as_deref().unwrap_or("–")))
+}
+
+fn watts_text(watts: f64) -> String {
+    format!("{watts:.0} W")
 }
 
 fn temperature_text(celsius: f64, fahrenheit: bool, unit: bool) -> String {
@@ -1201,7 +1409,7 @@ impl Stats {
                 continue;
             }
             let limit = f64::from(config.stats_alert) / 100.0;
-            let value = sample.fraction(module).filter(|_| enabled && limit > 0.0 && module != Module::Network);
+            let value = sample.fraction(module).filter(|_| enabled && limit > 0.0 && !matches!(module, Module::Network | Module::Power));
             if self.alerts.check(module, value.map(|value| value >= limit)) {
                 if let Some(value) = value {
                     told.push((format!("{} {}", module.usage_name(), percent(value)), format!("超過 {}", percent(limit))));
@@ -1357,7 +1565,11 @@ impl Stats {
             StatsStyle::Gauge => (label_column + GAUGE.0) as i32,
             StatsStyle::Value if module == Module::Network => text_size("↓ 999 KB/s", &font("Medium", 8.0)).0,
             StatsStyle::Value => {
-                let widest = if module == Module::Sensors { "100°" } else { "100%" };
+                let widest = match module {
+                    Module::Sensors => "100°",
+                    Module::Power => "999W",
+                    _ => "100%",
+                };
                 let value = text_size(widest, &value_font).0;
                 if labelled { value.max(text_size(module.label(), &label_font()).0) } else { value }
             }
@@ -1387,6 +1599,7 @@ impl Stats {
         let fraction = self.fraction(module, progress);
         let value_text = match module {
             Module::Sensors => sample.hottest().map(|(_, celsius)| temperature_text(*celsius, config.stats_fahrenheit, false)).unwrap_or_default(),
+            Module::Power => sample.power.as_ref().map(|power| format!("{:.0}W", power.total)).unwrap_or_default(),
             _ => percent(fraction),
         };
         let style = Self::style(module, config);
@@ -1397,7 +1610,7 @@ impl Stats {
                 show_text(cr, &format!("↓ {}", speed_text(net.received)), &small, x, center + 5.5, ink);
                 return;
             }
-            let color = if module == Module::Sensors { ink } else { level_color(fraction, ink) };
+            let color = if matches!(module, Module::Sensors | Module::Power) { ink } else { level_color(fraction, ink) };
             if config.stats_labels {
                 let label = label_font();
                 show_text(cr, module.label(), &label, x, center - 6.0, ink);
@@ -1546,13 +1759,21 @@ impl Stats {
                     second: None,
                     meta,
                     chart: (fractions(), None),
-                    rows: named(vec![
-                        ("使用者", percent(cpu.user)),
-                        ("系統", percent(cpu.system)),
-                        ("閒置", percent(1.0 - cpu.usage)),
-                        ("平均負載", cpu.load.map(|load| format!("{load:.2}")).join(" · ")),
-                        ("運作時間", uptime_text(cpu.uptime)),
-                    ]),
+                    rows: named(
+                        [
+                            Some(("使用者", percent(cpu.user))),
+                            Some(("系統", percent(cpu.system))),
+                            Some(("閒置", percent(1.0 - cpu.usage))),
+                            cpu.power.map(|watts| ("功耗", watts_text(watts))),
+                            Some(("平均負載", cpu.load.map(|load| format!("{load:.2}")).join(" · "))),
+                            cpu.tasks.map(|(processes, _)| ("程序", processes.to_string())),
+                            cpu.tasks.map(|(_, threads)| ("執行緒", threads.to_string())),
+                            Some(("運作時間", uptime_text(cpu.uptime))),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                    ),
                     cores: Some(self.cores(progress)),
                     processes: processes("CPU", &sample.top_cpu, |amount| format!("{amount:.1}%")),
                 }
@@ -1567,7 +1788,28 @@ impl Stats {
                     rows.push(("溫度", temperature(celsius)));
                 }
                 if let Some(watts) = gpu.power {
-                    rows.push(("功耗", format!("{watts:.0} W")));
+                    let shown = match gpu.power_limit {
+                        Some(limit) => format!("{watts:.0} / {}", watts_text(limit)),
+                        None => watts_text(watts),
+                    };
+                    rows.push(("功耗", shown));
+                }
+                if let Some((core, memory)) = gpu.clocks {
+                    rows.push(("核心時脈", format!("{core:.0} MHz")));
+                    rows.push(("記憶體時脈", format!("{memory:.0} MHz")));
+                }
+                if let Some(fan) = gpu.fan {
+                    rows.push(("風扇", percent(fan)));
+                }
+                if let Some(load) = gpu.memory_load {
+                    rows.push(("記憶體控制器", percent(load)));
+                }
+                if let Some((encoder, decoder)) = gpu.video {
+                    rows.push(("編碼", percent(encoder)));
+                    rows.push(("解碼", percent(decoder)));
+                }
+                if let Some((generation, width)) = gpu.pcie {
+                    rows.push(("PCIe", format!("Gen {generation} ×{width}")));
                 }
                 let mut rows = named(rows);
                 rows.extend(sample.other_gpus.iter().map(|other| (other.name.clone(), percent(other.usage))));
@@ -1595,6 +1837,9 @@ impl Stats {
                 if let Some(pressure) = ram.pressure {
                     rows.push(("記憶體壓力", percent(pressure)));
                 }
+                if ram.committed > 0.0 {
+                    rows.push(("已認可", size_text(ram.committed)));
+                }
                 Content {
                     fans: Vec::new(),
                     value: percent(self.fraction(module, progress)),
@@ -1618,7 +1863,21 @@ impl Stats {
                         ("可用", size_text(disk.free)),
                         ("讀取", speed_text(disk.read)),
                         ("寫入", speed_text(disk.write)),
-                    ]),
+                    ])
+                    .into_iter()
+                    .chain(disk.smart.iter().map(|smart| {
+                        let health = match (smart.passed, smart.used) {
+                            (false, _) => "異常".to_string(),
+                            (true, Some(used)) => format!("健康 {}", percent((1.0 - used).max(0.0))),
+                            (true, None) => "正常".to_string(),
+                        };
+                        let shown = match smart.written {
+                            Some(bytes) => format!("{health} · 已寫入 {}", size_text(bytes)),
+                            None => health,
+                        };
+                        (smart.model.clone(), shown)
+                    }))
+                    .collect(),
                     cores: None,
                     processes: processes("讀寫", &sample.top_disk, speed_text),
                 }
@@ -1639,6 +1898,11 @@ impl Stats {
                             }),
                             Some(("已下載", size_text(net.received_total))),
                             Some(("已上傳", size_text(net.sent_total))),
+                            (!net.mac.is_empty()).then(|| ("實體位址", net.mac.clone())),
+                            net.link.map(|megabits| {
+                                let shown = if megabits >= 1000.0 { format!("{} Gbps", megabits / 1000.0) } else { format!("{megabits:.0} Mbps") };
+                                ("連線速度", shown)
+                            }),
                         ]
                         .into_iter()
                         .flatten()
@@ -1655,10 +1919,40 @@ impl Stats {
                     }),
                 }
             }
+            Module::Power => {
+                let power = sample.power.as_ref()?;
+                let rows = power
+                    .parts
+                    .iter()
+                    .map(|(name, watts, limit)| {
+                        let shown = match limit {
+                            Some(limit) => format!("{watts:.0} / {}", watts_text(*limit)),
+                            None => watts_text(*watts),
+                        };
+                        (name.clone(), shown)
+                    })
+                    .collect();
+                let meta = if power.whole {
+                    "整機".to_string()
+                } else {
+                    power.parts.iter().filter(|(name, ..)| name.starts_with("CPU") && name != "CPU 核心" || name == "GPU").map(|(name, ..)| name.as_str()).collect::<Vec<_>>().join(" + ")
+                };
+                Content {
+                    fans: Vec::new(),
+                    value: watts_text(power.total),
+                    second: None,
+                    meta,
+                    chart: (fractions(), None),
+                    rows,
+                    cores: None,
+                    processes: None,
+                }
+            }
             Module::Sensors => {
                 let (name, hottest) = sample.hottest()?;
                 let mut rows: Vec<(String, String)> =
                     sample.temperatures.iter().map(|(name, celsius)| (name.clone(), temperature(*celsius))).collect();
+                rows.extend(sample.voltages.iter().map(|(name, volts)| (name.clone(), format!("{volts:.3} V"))));
                 let settable = self.fan_control && sample.fans.iter().any(|fan| fan.pwm.is_some());
                 let speed = |fan: &Fan| format!("{:.0} RPM", fan.rpm);
                 // With a fan that can be set, they are all kept together in the fans' well.
@@ -1939,6 +2233,7 @@ impl Panel {
                 (Module::Sensors, Some(sample)) => {
                     sample.hottest().map(|(_, celsius)| temperature_text(*celsius, fahrenheit, true)).unwrap_or_default()
                 }
+                (Module::Power, Some(sample)) => sample.power.as_ref().map(|power| watts_text(power.total)).unwrap_or_default(),
                 _ => percent(stats.fraction(module, progress)),
             };
             cr.push_group();
@@ -2239,11 +2534,13 @@ mod tests {
 
     #[test]
     fn nvidia_smi_line_is_read() {
-        let gpu = parse_nvidia("NVIDIA GeForce RTX 3060, 37, 1024, 12288, 51, 35.20").unwrap();
+        let gpu = parse_nvidia("NVIDIA GeForce RTX 3060, 37, 1024, 12288, 51, 35.20, 285.00, 1155, 5001, 30, 13, 0, 4, 4, 16").unwrap();
         assert_eq!(gpu.name, "NVIDIA GeForce RTX 3060");
         assert!((gpu.usage - 0.37).abs() < 1e-9);
         assert_eq!(gpu.memory, Some((1024.0 * 1048576.0, 12288.0 * 1048576.0)));
-        assert_eq!((gpu.temperature, gpu.power), (Some(51.0), Some(35.2)));
+        assert_eq!((gpu.temperature, gpu.power, gpu.power_limit), (Some(51.0), Some(35.2), Some(285.0)));
+        assert_eq!((gpu.clocks, gpu.fan, gpu.pcie), (Some((1155.0, 5001.0)), Some(0.3), Some((4, 16))));
+        assert_eq!(gpu.video, Some((0.0, 0.04)));
         // Without a power reading, as on some cards.
         assert_eq!(parse_nvidia("Tesla, 5, 1, 2, 40, [N/A]").unwrap().power, None);
         assert!(parse_nvidia("").is_none());
@@ -2307,13 +2604,51 @@ mod tests {
         for (file, value) in [("name", "nct6798"), ("fan1_input", "1200"), ("pwm1", "128"), ("pwm1_enable", "5"), ("fan2_input", "800")] {
             std::fs::write(chip.join(file), format!("{value}\n")).unwrap();
         }
-        let (_, fans) = read_sensors(&hwmon);
+        let (_, fans, _) = read_sensors(&hwmon);
         std::fs::remove_dir_all(&hwmon).unwrap();
         assert_eq!(fans.len(), 2);
         assert_eq!((fans[0].name.as_str(), fans[0].rpm), ("風扇 1", 1200.0));
         assert_eq!(fans[0].pwm, Some((chip.join("pwm1"), 128.0 / 255.0, 5)));
         assert_eq!(fans[1].pwm, None);
         assert_eq!(fan_command("speed", "/sys/class/hwmon/hwmon3/pwm1", 128), format!("pkexec {FAN_HELPER} speed /sys/class/hwmon/hwmon3/pwm1 128"));
+    }
+
+    #[test]
+    fn power_is_the_whole_machines_where_it_is_measured() {
+        let rapl = parse_rapl("intel-rapl:0 package-0 31438\nintel-rapl:0:0 core 21078\nintel-rapl:0:1 uncore 0\n");
+        assert_eq!(rapl[0], ("package-0".to_string(), 31.438));
+        let gpu = Gpu { power: Some(38.0), power_limit: Some(285.0), ..Default::default() };
+        let desktop = power_of(&rapl, None, Some(190.0), Some(&gpu)).unwrap();
+        assert!(!desktop.whole);
+        assert!((desktop.total - 69.438).abs() < 1e-9);
+        assert_eq!(desktop.limit, Some(475.0));
+        assert_eq!(desktop.parts[0], ("CPU".to_string(), 31.438, Some(190.0)));
+        assert_eq!(desktop.parts.last().unwrap(), &("GPU".to_string(), 38.0, Some(285.0)));
+        // Intel's platform domain, or a battery running the machine, is all of it.
+        let mut laptop = rapl.clone();
+        laptop.push(("psys".into(), 12.5));
+        assert_eq!(power_of(&laptop, Some(9.0), None, None).map(|power| (power.total, power.whole)), Some((12.5, true)));
+        assert_eq!(power_of(&[], Some(9.0), None, None).map(|power| (power.total, power.whole)), Some((9.0, true)));
+        assert_eq!(power_of(&[], None, None, None), None);
+    }
+
+    #[test]
+    fn smart_is_read_where_the_disk_answered() {
+        let nvme = r#"{"model_name":"CT1000T500SSD8","smart_status":{"passed":true},
+            "nvme_smart_health_information_log":{"percentage_used":5,"data_units_written":1000}}"#;
+        let smart = parse_smart(nvme).unwrap();
+        assert_eq!((smart.model.as_str(), smart.passed, smart.used, smart.written), ("CT1000T500SSD8", true, Some(0.05), Some(512_000_000.0)));
+        // A USB bridge smartctl could not ask has no status.
+        assert_eq!(parse_smart(r#"{"smartctl":{"exit_status":1}}"#), None);
+    }
+
+    #[test]
+    fn a_boards_voltages_are_named_only_where_known() {
+        assert_eq!(voltage_name("nct6798", "PRIME B760M-A", 4), Some(("+12V", 12.0)));
+        assert_eq!(voltage_name("nct6798", "OTHER BOARD", 4), None);
+        assert_eq!(voltage_name("nct6798", "OTHER BOARD", 3), Some(("+3.3V", 1.0)));
+        assert_eq!(voltage_name("nct6798", "PRIME B760M-A", 0), None);
+        assert_eq!(voltage_name("it8689", "PRIME B760M-A", 3), None);
     }
 
     #[test]

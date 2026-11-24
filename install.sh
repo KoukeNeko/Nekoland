@@ -210,6 +210,14 @@ if modinfo ntsync >/dev/null 2>&1; then
     sudo modprobe ntsync
 fi
 
+# What the menu bar's power and disk readings need root for, published for all to read.
+say "Starting the sensor readings"
+sudo install -Dm 755 "$src/shell/nekoland-sensors.sh" /usr/local/libexec/nekoland-sensors
+sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-sensors.service"
+sudo systemctl daemon-reload
+sudo systemctl enable nekoland-sensors.service
+sudo systemctl restart nekoland-sensors.service
+
 # The fans of boards whose Super I/O chip nct6775 drives, for the sensors' panel to set; Linux
 # leaves it unloaded until asked, and it declines a board without one.
 if sudo modprobe -q nct6775 2>/dev/null; then

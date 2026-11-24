@@ -1536,13 +1536,14 @@ fn menu_bar_page(config: &Config) -> adw::PreferencesPage {
 }
 
 /// The system's readings the menu bar can show, each with its setting, as the panels title them.
-const STATS: [(&str, &str); 6] = [
+const STATS: [(&str, &str); 7] = [
     ("CPU", "stats_cpu"),
     ("GPU", "stats_gpu"),
     ("記憶體", "stats_ram"),
     ("磁碟", "stats_disk"),
     ("網路", "stats_network"),
     ("感應器", "stats_sensors"),
+    ("功耗", "stats_power"),
 ];
 const STATS_STYLES: [&str; 6] = ["value", "chart", "bars", "ring", "gauge", "pie"];
 
@@ -1581,6 +1582,12 @@ fn stats_page(config: &Config) -> adw::PreferencesPage {
         let readable = match key {
             "stats_gpu" => has_gpu_reading(),
             "stats_sensors" => has_temperatures(),
+            // RAPL's, a battery's or the GPU's, as the compositor adds them up.
+            "stats_power" => {
+                Path::new("/sys/class/powercap/intel-rapl:0").exists()
+                    || Path::new("/sys/class/power_supply/BAT0").exists()
+                    || has_gpu_reading()
+            }
             _ => true,
         };
         if readable {

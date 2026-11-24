@@ -226,13 +226,14 @@ pub struct Config {
     /// The room between the menu bar's icons on its right, in pixels; up to 32.
     pub menu_bar_spacing: u32,
     /// Which of the system's readings the menu bar shows, each opening its panel: the CPU, the
-    /// GPU, the memory, the disk, the network's speed and the sensors' temperatures.
+    /// GPU, the memory, the disk, the network's speed, the sensors' temperatures and the power.
     pub stats_cpu: bool,
     pub stats_gpu: bool,
     pub stats_ram: bool,
     pub stats_disk: bool,
     pub stats_network: bool,
     pub stats_sensors: bool,
+    pub stats_power: bool,
     /// How the readings look in the bar, whether each has its name beside it, how many
     /// seconds apart they are read (1 to 10), how many of the busiest processes their panels
     /// list, and whether temperatures are in Fahrenheit.
@@ -249,7 +250,7 @@ pub struct Config {
     pub stats_alert_temperature: u32,
     pub stats_public_ip: bool,
     /// Text the readings show as one item in place of their own looks, `$cpu`, `$gpu`, `$ram`,
-    /// `$disk`, `$temp`, `$down` and `$up` in it replaced by theirs; none unless set.
+    /// `$disk`, `$temp`, `$down`, `$up` and `$power` in it replaced by theirs; none unless set.
     pub stats_text: String,
     /// Whether the sensors' panel sets the speed of the fans that can be set, through
     /// `nekoland-fan` as root.
@@ -908,6 +909,7 @@ impl Default for Config {
             stats_disk: false,
             stats_network: false,
             stats_sensors: false,
+            stats_power: false,
             stats_style: StatsStyle::Value,
             stats_labels: true,
             stats_interval: 2,
