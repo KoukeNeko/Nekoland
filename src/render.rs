@@ -1390,7 +1390,7 @@ fn popup_pivot(popup: &PopupKind, rect: Rectangle<i32, Logical>) -> Point<i32, L
 }
 
 /// The corners GTK's windows have in Nekoland's look, as its `--window-radius` says.
-const WINDOW_RADIUS: i32 = 14;
+pub const WINDOW_RADIUS: i32 = 14;
 /// How far past a window not GTK's its glass shows, in physical pixels, as GTK's shows at its
 /// edge at any scale.
 const RIM: i32 = 1;

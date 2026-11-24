@@ -181,7 +181,7 @@ impl Nekoland {
     }
 
     /// The room above the window that its bar takes, in the places it goes.
-    fn title_room(&self, window: &Window) -> i32 {
+    pub fn title_room(&self, window: &Window) -> i32 {
         match window.underlying_surface() {
             WindowSurface::X11(surface) => title_room(surface),
             WindowSurface::Wayland(_) => 0,

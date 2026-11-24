@@ -300,6 +300,31 @@ impl Img {
         }
     }
 
+    /// Clears what is outside a rectangle with corners `radius` round: `rect` in this
+    /// picture's pixels, past its edges where the picture was cut from a larger one.
+    pub fn round_corners(&mut self, rect: (f64, f64, f64, f64), radius: f64) {
+        if radius <= 0.0 {
+            return;
+        }
+        let (left, top) = (rect.0 + radius, rect.1 + radius);
+        let (right, bottom) = (rect.0 + rect.2 - radius, rect.1 + rect.3 - radius);
+        for y in 0..self.h {
+            let py = y as f64 + 0.5;
+            let cy = if py < top { top } else if py > bottom { bottom } else { continue };
+            for x in 0..self.w {
+                let px = x as f64 + 0.5;
+                let cx = if px < left { left } else if px > right { right } else { continue };
+                // How much of the pixel is inside the curve, for an edge without steps.
+                let inside = (radius - (px - cx).hypot(py - cy) + 0.5).clamp(0.0, 1.0);
+                let i = ((y * self.w + x) * 4) as usize;
+                // Premultiplied: every channel goes with the alpha.
+                for c in &mut self.px[i..i + 4] {
+                    *c = (*c as f64 * inside).round() as u8;
+                }
+            }
+        }
+    }
+
     /// Pastes another picture over this one, its top left corner at `x`, `y`.
     pub fn paste(&mut self, other: &Img, x: i32, y: i32) {
         for row in 0..other.h {
@@ -808,6 +833,21 @@ mod tests {
         assert_eq!((turned.w, turned.h), (2, 3));
         assert_eq!(turned.rgba(0, 2), [10, 20, 30, 255]);
         assert_eq!(img.turned(4).px, img.px);
+    }
+
+    #[test]
+    fn round_corners_clear_only_the_corners_inside_the_picture() {
+        let mut img = Img::new(40, 20, [255, 255, 255, 255]);
+        // The window runs past the picture's right edge: only its left corners are here.
+        img.round_corners((0.0, 0.0, 60.0, 20.0), 8.0);
+        assert_eq!(img.rgba(0, 0)[3], 0);
+        assert_eq!(img.rgba(0, 19)[3], 0);
+        assert_eq!(img.rgba(39, 0)[3], 255);
+        assert_eq!(img.rgba(8, 0)[3], 255);
+        assert_eq!(img.rgba(20, 10)[3], 255);
+        let mut square = Img::new(4, 4, [255, 255, 255, 255]);
+        square.round_corners((0.0, 0.0, 4.0, 4.0), 0.0);
+        assert_eq!(square.rgba(0, 0)[3], 255);
     }
 
     #[test]

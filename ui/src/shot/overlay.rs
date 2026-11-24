@@ -39,6 +39,8 @@ pub enum Choice {
     Area(Mode, (f64, f64, f64, f64)),
     /// An area to put on the clipboard alone, in points.
     Copied((f64, f64, f64, f64)),
+    /// A window, by its place in [`Frozen::windows`], and whether for the clipboard alone.
+    Window(usize, bool),
     Full,
     Delay(u32),
     Repeat,
@@ -53,8 +55,19 @@ pub struct Frozen {
     pub texture: gdk::Texture,
     /// The display's size in points.
     pub size: (f64, f64),
-    /// Each window, the topmost first, in points, and its title.
-    pub windows: Vec<((f64, f64, f64, f64), String)>,
+    /// Each window, the topmost first.
+    pub windows: Vec<Shown>,
+}
+
+/// A window on the frozen screen.
+pub struct Shown {
+    /// In points.
+    pub area: (f64, f64, f64, f64),
+    /// How round the compositor cuts its corners, in points; 0 where its program draws them.
+    pub radius: f64,
+    pub title: String,
+    /// The name to take a picture of it alone by, when that picture is all of it.
+    pub name: String,
 }
 
 impl Frozen {
@@ -71,6 +84,31 @@ impl Frozen {
             (area.2 * k).round() as i32,
             (area.3 * k).round() as i32,
         ))
+    }
+
+    /// A window as the Mac takes one: all of it, what is behind it left out. Its program's
+    /// own picture, corners as it draws them, round or square; otherwise as it was on the
+    /// screen, what is outside the corners the compositor cuts cleared.
+    pub fn window(&self, index: usize) -> Img {
+        let window = &self.windows[index];
+        if !window.name.is_empty() {
+            match picture_of(grim_window(&window.name)) {
+                Ok(img) => return img,
+                Err(err) => eprintln!("nekoland-shot: the window alone: {err}"),
+            }
+        }
+        let shown = self.window_area(index);
+        let k = self.scale();
+        let mut img = self.crop(shown);
+        let area = window.area;
+        let whole = ((area.0 - shown.0) * k, (area.1 - shown.1) * k, area.2 * k, area.3 * k);
+        img.round_corners(whole, window.radius * k);
+        img
+    }
+
+    /// A window's area on the screen, in points.
+    pub fn window_area(&self, index: usize) -> (f64, f64, f64, f64) {
+        clip_to(self.windows[index].area, self.size)
     }
 }
 
@@ -97,6 +135,15 @@ fn grim(geometry: Option<(f64, f64, f64, f64)>) -> std::io::Result<Child> {
     }
     command
         .args(["-t", "ppm", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+/// Takes a picture of one window alone, through grim: PNG, which keeps what is clear.
+fn grim_window(name: &str) -> std::io::Result<Child> {
+    Command::new("grim")
+        .args(["-T", name, "-t", "png", "-l", "0", "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -147,9 +194,14 @@ pub fn freeze() -> Result<Frozen, String> {
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
-            let (area, title) = line.split_once('\t').unwrap_or((line, ""));
-            let v: Vec<f64> = area.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-            (v.len() == 4 && v[2] > 0.0 && v[3] > 0.0).then(|| ((v[0], v[1], v[2], v[3]), title.to_string()))
+            let mut fields = line.split('\t');
+            let v: Vec<f64> = fields.next()?.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            (v.len() >= 4 && v[2] > 0.0 && v[3] > 0.0).then(|| Shown {
+                area: (v[0], v[1], v[2], v[3]),
+                radius: v.get(4).copied().unwrap_or(0.0),
+                title: fields.next().unwrap_or_default().to_string(),
+                name: fields.next().unwrap_or_default().to_string(),
+            })
         })
         .collect();
     let texture = img.texture();
@@ -212,9 +264,9 @@ fn inside(s: (f64, f64, f64, f64), p: (f64, f64)) -> bool {
     p.0 >= s.0 && p.0 <= s.0 + s.2 && p.1 >= s.1 && p.1 <= s.1 + s.3
 }
 
-/// The window under a point, in points, and its title.
-fn window_at(frozen: &Frozen, p: (f64, f64)) -> Option<&((f64, f64, f64, f64), String)> {
-    frozen.windows.iter().find(|(area, _)| inside(*area, p))
+/// The window under a point, by its place in [`Frozen::windows`].
+fn window_at(frozen: &Frozen, p: (f64, f64)) -> Option<usize> {
+    frozen.windows.iter().position(|window| inside(window.area, p))
 }
 
 /// The area after A: shrunk to where its content starts.
@@ -614,14 +666,19 @@ pub fn choose(
                         .contains(gdk::ModifierType::CONTROL_MASK);
                 let mode = s.mode;
                 let p = s.pressed_at;
-                let chosen = match mode {
-                    Mode::Window if clicked => window_at(&frozen, p).map(|(a, _)| clip_to(*a, frozen.size)),
-                    Mode::Window => None,
-                    _ => s
-                        .sel
-                        .map(|sel| clip_to(sel, frozen.size))
-                        .filter(|a| a.2 >= 1.0 && a.3 >= 1.0),
-                };
+                if mode == Mode::Window {
+                    s.drag = Drag::None;
+                    drop(s);
+                    match window_at(&frozen, p).filter(|_| clicked) {
+                        Some(index) => finish(Choice::Window(index, copy)),
+                        None => area_widget.queue_draw(),
+                    }
+                    return;
+                }
+                let chosen = s
+                    .sel
+                    .map(|sel| clip_to(sel, frozen.size))
+                    .filter(|a| a.2 >= 1.0 && a.3 >= 1.0);
                 s.drag = Drag::None;
                 s.sel = None;
                 drop(s);
@@ -634,16 +691,14 @@ pub fn choose(
             }
             if let (true, Drag::New(p)) = (clicked, s.drag) {
                 // A click: the window under it, or in 全螢幕 terms, nothing yet.
-                if let Some((area, _)) = window_at(&frozen, p) {
-                    let mode = if s.mode == Mode::Window {
-                        Mode::Area
-                    } else {
-                        s.mode
-                    };
-                    let area = *area;
+                if let Some(index) = window_at(&frozen, p) {
+                    let mode = s.mode;
                     s.drag = Drag::None;
                     drop(s);
-                    finish(Choice::Area(mode, clip_to(area, frozen.size)));
+                    finish(match mode {
+                        Mode::Area | Mode::Window => Choice::Window(index, false),
+                        _ => Choice::Area(mode, frozen.window_area(index)),
+                    });
                     return;
                 }
             }
@@ -887,7 +942,7 @@ fn draw(snapshot: &gtk::Snapshot, w: f64, h: f64, frozen: &Frozen, s: &State) {
     snapshot.append_texture(&frozen.texture, &rect(0.0, 0.0, w, h));
     let blue = (0.21, 0.52, 0.89);
     let hovered = match (s.mode, s.sel) {
-        (Mode::Window, None) => window_at(frozen, s.pointer).map(|(a, t)| (clip_to(*a, frozen.size), t)),
+        (Mode::Window, None) => window_at(frozen, s.pointer).map(|i| (frozen.window_area(i), &frozen.windows[i].title)),
         _ => None,
     };
 

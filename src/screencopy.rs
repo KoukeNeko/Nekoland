@@ -122,10 +122,11 @@ fn fits_dmabuf(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
     })
 }
 
-/// Whether `buffer` is shared memory in the one format frames are copied in, `size` large.
+/// Whether `buffer` is shared memory in the format frames are copied in, `size` large: its
+/// alpha kept or not, the bytes the same.
 pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
     with_buffer_contents_mut(buffer, |_, len, shm| {
-        shm.format == wl_shm::Format::Xrgb8888
+        matches!(shm.format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888)
             && shm.width == size.w
             && shm.height == size.h
             && shm.stride >= size.w * BYTES_PER_PIXEL
@@ -346,7 +347,7 @@ pub fn copy<E: RenderElement<GlesRenderer>>(
                 Err("the display changed size since the frame was asked for".into())
             }
         } else if Rectangle::from_size(size).contains_rect(frame.region) {
-            match read(renderer, drawn, elements) {
+            match read(renderer, drawn, elements, CLEAR_COLOR) {
                 Ok(mapping) => {
                     readings.push(Reading { frame, mapping, size, transform, time });
                     continue;
@@ -389,18 +390,21 @@ pub fn copy_into<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     drawn: (Size<i32, Physical>, f64, Transform),
     elements: &[E],
+    clear: [f32; 4],
     region: Rectangle<i32, Physical>,
     buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mapping = read(renderer, drawn, elements)?;
+    let mapping = read(renderer, drawn, elements, clear)?;
     write(renderer, &mapping, drawn.0, region, buffer)
 }
 
-/// Draws `elements` as `copy_into` does, and starts reading the whole of it back.
+/// Draws `elements` over `clear` as `copy_into` does, and starts reading the whole of it
+/// back, its alpha with it.
 fn read<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     (size, scale, transform): (Size<i32, Physical>, f64, Transform),
     elements: &[E],
+    clear: [f32; 4],
 ) -> Result<GlesMapping, Box<dyn std::error::Error>> {
     let mut texture = Offscreen::<GlesTexture>::create_buffer(
         renderer,
@@ -414,12 +418,12 @@ fn read<E: RenderElement<GlesRenderer>>(
         &mut target,
         0,
         elements,
-        CLEAR_COLOR,
+        clear,
     )?;
     // The whole output is read, and the region cut from it in `write`, whichever way up it
     // comes.
     let whole = Rectangle::from_size((size.w, size.h).into());
-    let mapping = renderer.copy_framebuffer(&target, whole, Fourcc::Xrgb8888)?;
+    let mapping = renderer.copy_framebuffer(&target, whole, Fourcc::Argb8888)?;
     // Sent to the GPU now, to be done by the time it is mapped.
     renderer.with_context(|gl| unsafe { gl.Flush() })?;
     Ok(mapping)

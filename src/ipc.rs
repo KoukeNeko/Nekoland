@@ -385,8 +385,10 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                 }
             }
         }
-        // The windows on screen, the topmost first: `X Y WIDTH HEIGHT` in points, a tab and
-        // the title. 截圖 takes a window by these.
+        // The windows on screen, the topmost first, for 截圖 to take one by: `X Y WIDTH HEIGHT
+        // RADIUS` in points, the title, and the name ext-foreign-toplevel-list gives it, tab
+        // between. The name is left out of one the compositor draws the corners or bar of,
+        // which a picture of the window alone lacks; RADIUS is those corners', or 0.
         "window-areas" => {
             return Some(
                 state
@@ -397,7 +399,20 @@ fn run(state: &mut crate::Nekoland, message: &str) -> Option<String> {
                     .filter_map(|window| {
                         let area = state.space.element_geometry(window)?;
                         let title = window_names(window).0.replace(['\t', '\n'], " ");
-                        Some(format!("{} {} {} {}\t{title}\n", area.loc.x, area.loc.y, area.size.w, area.size.h))
+                        let drawn_here = state.cuts_corners(window) || state.title_room(window) > 0;
+                        let radius = if state.cuts_corners(window) {
+                            f64::from(crate::render::WINDOW_RADIUS) * crate::windows::roundness(window).0
+                        } else {
+                            0.0
+                        };
+                        let name = (!drawn_here)
+                            .then(|| state.foreign_toplevels.identifier(window))
+                            .flatten()
+                            .unwrap_or_default();
+                        Some(format!(
+                            "{} {} {} {} {radius:.1}\t{title}\t{name}\n",
+                            area.loc.x, area.loc.y, area.size.w, area.size.h
+                        ))
                     })
                     .collect(),
             );

@@ -135,7 +135,8 @@ impl Nekoland {
                 1.0,
             );
             let drawn = (size, scale, Transform::Normal);
-            match screencopy::copy_into(renderer, drawn, &elements, Rectangle::from_size(size), &pending.buffer) {
+            let clear = [0.0; 4];
+            match screencopy::copy_into(renderer, drawn, &elements, clear, Rectangle::from_size(size), &pending.buffer) {
                 Ok(()) => {
                     if data.captured.fetch_add(1, Ordering::Relaxed) > 0 {
                         self.note_screen_frame();
@@ -163,6 +164,10 @@ fn session_data(session: &ExtImageCopyCaptureSessionV1) -> &SessionData {
 fn announce(session: &ExtImageCopyCaptureSessionV1, data: &SessionData, size: Size<i32, Physical>) {
     *data.size.lock().unwrap() = size;
     session.buffer_size(size.w as u32, size.h as u32);
+    // A window's corners and what is round them are clear, for 截圖 to leave out.
+    if matches!(data.source, Source::Window(_)) {
+        session.shm_format(wl_shm::Format::Argb8888);
+    }
     session.shm_format(wl_shm::Format::Xrgb8888);
     session.done();
 }

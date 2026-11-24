@@ -233,6 +233,11 @@ fn choose(app: &adw::Application, mode: Mode, style: Style, hold: Hold) {
                 taken(app, shown.crop(area), shown.scale());
             }
             Choice::Copied(area) => copied(shown.crop(area), shown.scale()),
+            Choice::Window(index, true) => copied(shown.window(index), shown.scale()),
+            Choice::Window(index, false) => {
+                output::remember_area(shown.window_area(index));
+                taken(app, shown.window(index), shown.scale());
+            }
             Choice::Full => taken(app, (*shown.img).clone(), shown.scale()),
             Choice::Delay(seconds) => countdown(app, seconds, hold.clone()),
             Choice::Repeat => repeat(app, hold.clone()),
@@ -259,6 +264,7 @@ pub fn capture_into(app: &gtk::Application, done: impl Fn(Option<Img>) + 'static
         Style::Tools,
         move |choice| match choice {
             Choice::Area(_, area) | Choice::Copied(area) => done(Some(shown.crop(area))),
+            Choice::Window(index, _) => done(Some(shown.window(index))),
             Choice::Full => done(Some((*shown.img).clone())),
             _ => done(None),
         },
@@ -1109,9 +1115,9 @@ mod tests {
                         .unwrap_or_default()
                         .lines()
                         .find_map(|line| {
-                            let (a, title) = line.split_once('\t')?;
-                            let v: Vec<f64> = a.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-                            (title == TITLE && v.len() == 4)
+                            let mut fields = line.split('\t');
+                            let v: Vec<f64> = fields.next()?.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+                            (fields.next() == Some(TITLE) && v.len() >= 4)
                                 .then(|| (v[0] + 4.0, v[1] + 4.0, v[2] - 8.0, v[3] - 8.0))
                         });
                     if area.is_some() {
