@@ -435,6 +435,25 @@ pub(crate) fn get_from(
     Ok(get_text(url, query, referer)?.and_then(|text| serde_json::from_str(&text).ok()))
 }
 
+/// As `get`, with a header the service asks for.
+pub(crate) fn get_headed(
+    url: &str,
+    query: &[(&str, String)],
+    header: &str,
+) -> Result<Option<serde_json::Value>, Missing> {
+    let mut args = vec![
+        "-G".to_string(),
+        url.to_string(),
+        "-H".to_string(),
+        header.to_string(),
+    ];
+    for (key, value) in query {
+        args.push("--data-urlencode".into());
+        args.push(format!("{key}={value}"));
+    }
+    Ok(curl(args)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
 /// What a GET answers, or Ok(None) when the service says there is nothing.
 pub(crate) fn get_text(
     url: &str,
@@ -449,6 +468,14 @@ pub(crate) fn get_text(
         args.push("--data-urlencode".into());
         args.push(format!("{key}={value}"));
     }
+    curl(args)
+}
+
+/// POSTs a form, and what it answers.
+pub(crate) fn post_form(url: &str, form: &str, referer: &str) -> Result<Option<String>, Missing> {
+    let args = ["-e", referer, "-X", "POST", "-d", form, url]
+        .map(String::from)
+        .to_vec();
     curl(args)
 }
 

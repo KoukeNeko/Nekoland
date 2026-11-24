@@ -28,6 +28,7 @@ mod ipc;
 mod lock;
 mod lyric_sources;
 mod lyrics;
+mod qrc;
 mod media;
 mod menubar;
 mod motion;

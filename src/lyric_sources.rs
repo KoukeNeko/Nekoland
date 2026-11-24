@@ -10,7 +10,9 @@ use std::io::Read;
 
 use base64::Engine;
 
-use crate::lyrics::{clean_title, get, get_from, get_text, parse_lrc, post_json, Candidate, Line, MATCH};
+use crate::lyrics::{
+    clean_title, get, get_from, get_headed, get_text, parse_lrc, post_form, post_json, Candidate, Line, MATCH,
+};
 
 const NETEASE: &str = "https://music.163.com/api";
 const QQ: &str = "https://c.y.qq.com";
@@ -19,6 +21,7 @@ const BINI_LYRICS: &str = "https://lrc.red";
 const KUGOU_SONGS: &str = "https://mobileservice.kugou.com/api/v3/search/song";
 const KUGOU_LYRICS: &str = "https://lyrics.kugou.com";
 const YOUTUBE_MUSIC: &str = "https://music.youtube.com/youtubei/v1";
+const UNISON: &str = "https://unison.betterlyrics.org/lyrics";
 /// The most takes of a song read from each service, each being a request or more.
 const TAKES: usize = 3;
 
@@ -27,18 +30,18 @@ const TAKES: usize = 3;
 /// the song's own language's, so what the others call it is asked as well.
 pub fn all(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
     let want = &Want::new(title, artist, duration);
-    let (mut first, youtube) = std::thread::scope(|scope| {
+    let (mut first, video) = std::thread::scope(|scope| {
         let sources: [fn(&Want) -> Vec<Candidate>; 4] = [netease, qq, better_lyrics, bini_lyrics];
         let running: Vec<_> = sources
             .into_iter()
             .map(|source| scope.spawn(move || source(want)))
             .collect();
-        let youtube = scope.spawn(move || youtube(want));
+        let video = scope.spawn(move || youtube_video(want));
         let first: Vec<Vec<Candidate>> = running
             .into_iter()
             .map(|run| run.join().unwrap_or_default())
             .collect();
-        (first, youtube.join().unwrap_or_default())
+        (first, video.join().unwrap_or_default())
     });
     let mut names: Vec<String> = Vec::new();
     for found in first.iter().flatten() {
@@ -52,10 +55,22 @@ pub fn all(title: &str, artist: &str, duration: f64) -> Vec<Candidate> {
             names.push(found.title.clone());
         }
     }
-    let kugou = legato(want, &names);
-    // Netease, QQ, Better Lyrics, BiniLyrics, then Legato, then YouTube.
+    let names = &names;
+    let video = &video;
+    let (kugou, unison, youtube) = std::thread::scope(|scope| {
+        let kugou = scope.spawn(move || legato(want, names));
+        let unison = scope.spawn(move || video.as_ref().map(|video| unison(video)).unwrap_or_default());
+        let youtube = scope.spawn(move || video.as_ref().map(|video| youtube(video)).unwrap_or_default());
+        (
+            kugou.join().unwrap_or_default(),
+            unison.join().unwrap_or_default(),
+            youtube.join().unwrap_or_default(),
+        )
+    });
+    // Netease, QQ, Better Lyrics, BiniLyrics, then Legato, then Unison and YouTube.
     let mut all: Vec<Candidate> = first.drain(..).flatten().collect();
     all.extend(kugou);
+    all.extend(unison);
     all.extend(youtube);
     all
 }
@@ -261,14 +276,21 @@ fn qq(want: &Want) -> Vec<Candidate> {
             ],
             referer,
         );
-        let synced = lyric
-            .ok()
-            .flatten()
-            .and_then(|lyric| Some(parse_lrc(lyric.get("lyric")?.as_str()?)))
-            .unwrap_or_default();
+        // Timed to the word where QQ Music has them, which is Portato, else by line.
+        let (synced, source) = match qrc_lyrics(song.get("songid").and_then(|id| id.as_i64())) {
+            Some(words) => (words, "Better Lyrics Portato"),
+            None => (
+                lyric
+                    .ok()
+                    .flatten()
+                    .and_then(|lyric| Some(parse_lrc(lyric.get("lyric")?.as_str()?)))
+                    .unwrap_or_default(),
+                "QQ 音樂",
+            ),
+        };
         if !synced.is_empty() {
             found.push(Candidate {
-                source: "QQ 音樂".into(),
+                source: source.into(),
                 title: text_of(song, "songname"),
                 album: text_of(song, "albumname"),
                 duration: seconds,
@@ -278,6 +300,19 @@ fn qq(want: &Want) -> Vec<Candidate> {
         }
     }
     found
+}
+
+/// A song's QRC from QQ Music, timed to the word.
+fn qrc_lyrics(id: Option<i64>) -> Option<Vec<Line>> {
+    let answer = post_form(
+        &format!("{QQ}/qqmusic/fcgi-bin/lyric_download.fcg"),
+        &format!("version=15&miniversion=82&lrctype=4&musicid={}", id?),
+        "https://y.qq.com/",
+    )
+    .ok()??;
+    let hex = answer.split("<![CDATA[").nth(1)?.split("]]>").next()?;
+    let lines = crate::qrc::parse(&crate::qrc::decode(hex)?);
+    (!lines.is_empty()).then_some(lines)
 }
 
 /// Better Lyrics: what it has kept of this song, a take of Apple Music's, timed to the word
@@ -523,43 +558,91 @@ fn parse_krc(text: &str) -> Vec<Line> {
     without_credits(lines)
 }
 
-/// YouTube Music's lyrics of this song, as plain lines: found by what it lists for the title
-/// and artist, which is of the recording it shows, so that its length is this one's.
-fn youtube(want: &Want) -> Vec<Candidate> {
-    let context =
-        r#""context":{"client":{"clientName":"WEB_REMIX","clientVersion":"1.20250101.01.00","hl":"en"}}"#;
-    let json = |value: &str| serde_json::to_string(value).unwrap_or_default();
+/// A song's video on YouTube Music: its id, length and title there.
+type Video = (String, f64, String);
+
+const YOUTUBE_CONTEXT: &str =
+    r#""context":{"client":{"clientName":"WEB_REMIX","clientVersion":"1.20250101.01.00","hl":"en"}}"#;
+
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+/// The video YouTube Music lists for the title and artist that is of this song, which is of
+/// the recording it shows, so that its length is this one's.
+fn youtube_video(want: &Want) -> Option<Video> {
     let found = post_json(
         &format!("{YOUTUBE_MUSIC}/search?prettyPrint=false"),
         &format!(
-            r#"{{{context},"query":{},"params":"EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"}}"#,
-            json(&format!("{} {}", want.cleaned, want.artist))
+            r#"{{{YOUTUBE_CONTEXT},"query":{},"params":"EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"}}"#,
+            json_string(&format!("{} {}", want.cleaned, want.artist))
         ),
     );
-    let Some(video) = found.ok().flatten().and_then(|found| listed_video(&found, want)) else {
+    found.ok().flatten().and_then(|found| listed_video(&found, want))
+}
+
+/// Unison's, a library its users made and vote on, found by the video: any of the three kinds
+/// of lyrics it keeps.
+fn unison(video: &Video) -> Vec<Candidate> {
+    let answer = get_headed(
+        UNISON,
+        &[("v", video.0.clone())],
+        &format!("x-key-id: nekoland-{}", env!("CARGO_PKG_VERSION")),
+    );
+    let Some(data) = answer
+        .ok()
+        .flatten()
+        .and_then(|answer| answer.get("data").cloned())
+    else {
         return Vec::new();
     };
+    let lyrics = text_of(&data, "lyrics");
+    let (synced, plain) = match text_of(&data, "format").as_str() {
+        "ttml" => (parse_ttml(&lyrics).0, Vec::new()),
+        "lrc" => (parse_lrc(&lyrics), Vec::new()),
+        _ => (Vec::new(), plain_lines(&lyrics)),
+    };
+    if synced.is_empty() && plain.is_empty() {
+        return Vec::new();
+    }
+    vec![Candidate {
+        source: "Unison".into(),
+        title: video.2.clone(),
+        album: String::new(),
+        duration: video.1,
+        synced,
+        plain,
+    }]
+}
+
+fn plain_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// YouTube Music's lyrics of a video, as plain lines.
+fn youtube(video: &Video) -> Vec<Candidate> {
     let next = post_json(
         &format!("{YOUTUBE_MUSIC}/next?prettyPrint=false"),
-        &format!(r#"{{{context},"videoId":{}}}"#, json(&video.0)),
+        &format!(r#"{{{YOUTUBE_CONTEXT},"videoId":{}}}"#, json_string(&video.0)),
     );
     let Some(browse) = next.ok().flatten().and_then(|next| lyrics_page(&next)) else {
         return Vec::new();
     };
     let page = post_json(
         &format!("{YOUTUBE_MUSIC}/browse?prettyPrint=false"),
-        &format!(r#"{{{context},"browseId":{}}}"#, json(&browse)),
+        &format!(r#"{{{YOUTUBE_CONTEXT},"browseId":{}}}"#, json_string(&browse)),
     );
-    let plain: Vec<String> = page
-        .ok()
-        .flatten()
-        .and_then(|page| shelf_text(&page))
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(String::from)
-        .collect();
+    let plain = plain_lines(
+        &page
+            .ok()
+            .flatten()
+            .and_then(|page| shelf_text(&page))
+            .unwrap_or_default(),
+    );
     if plain.is_empty() {
         return Vec::new();
     }
@@ -973,7 +1056,11 @@ mod tests {
                 ("legato", |want| {
                     legato(want, &["フィナーレ。".to_string(), "星めぐる詩".to_string()])
                 }),
-                ("youtube", youtube),
+                ("youtube", |want| {
+                    youtube_video(want)
+                        .map(|video| youtube(&video))
+                        .unwrap_or_default()
+                }),
             ];
             for (name, source) in sources {
                 let found = source(&want);
