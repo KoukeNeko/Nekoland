@@ -280,8 +280,11 @@ pub enum Choice {
 /// What is kept of a song between sessions: its lyrics, and how the user set them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Song {
-    /// None where LRCLIB has none.
+    /// None where no source has any.
     found: Option<Vec<Candidate>>,
+    /// How many sources were asked, as `lyrics::SOURCES` counted them then.
+    #[serde(default)]
+    sources: u8,
     #[serde(default)]
     release_live: Option<bool>,
     /// When they were asked for, in seconds since 1970.
@@ -452,11 +455,16 @@ impl NowPlaying {
 
     fn ask_for_lyrics(&mut self, now: Instant) {
         if let Some((asked, answer)) = &self.asking {
+            // Asked again for a source it was not asked of, the user's choices are kept: the new
+            // takes come after the ones they point at.
+            let kept = self.songs.get(asked).cloned().unwrap_or_default();
             let song = |found, release_live| Song {
                 found,
                 release_live,
+                sources: lyrics::SOURCES,
                 asked: seconds_now(),
-                ..Song::default()
+                alignment: kept.alignment.clone(),
+                choice: kept.choice.clone(),
             };
             match answer.try_recv() {
                 Ok(Ok((found, live))) => {
@@ -483,7 +491,8 @@ impl NowPlaying {
             .as_ref()
             .is_some_and(|(failed, at)| *failed == key && now.duration_since(*at) < RETRY);
         let known = self.songs.get(&key).is_some_and(|song| {
-            song.found.is_some() || seconds_now().saturating_sub(song.asked) < NOT_FOUND_FOR
+            song.sources >= lyrics::SOURCES
+                && (song.found.is_some() || seconds_now().saturating_sub(song.asked) < NOT_FOUND_FOR)
         });
         if known || failed {
             return;
@@ -1301,8 +1310,9 @@ pub fn menu(lyrics: &Lyrics, player: &Player) -> (Option<String>, Vec<Entry>) {
             } else {
                 ""
             };
+            let words = if candidate.has_words() { " · 逐字" } else { "" };
             entry(
-                format!("{} · LRCLIB{text}", version(candidate)),
+                format!("{} · {}{words}{text}", version(candidate), candidate.source),
                 format!("{} · {fit}", clock(candidate.duration)),
                 index == lyrics.chosen && !lyrics.plain && mode != Mode::Aligned,
                 true,
@@ -1991,7 +2001,15 @@ impl Card {
                     String::new()
                 };
                 cr.set_source_rgb(ink_3.0, ink_3.1, ink_3.2);
-                let shown = format!("歌詞來源：LRCLIB · {version}{state}{offset}");
+                let words = if mode != Mode::Plain && lyrics.candidate().has_words() {
+                    " · 逐字"
+                } else {
+                    ""
+                };
+                let shown = format!(
+                    "歌詞來源：{} · {version}{words}{state}{offset}",
+                    lyrics.candidate().source
+                );
                 let used = show_cut(&cr, &shown, &small, PAD, source + 2.0, room - 100.0);
                 // It opens the menu of versions.
                 if let Some(icon) = text::named_icon("pan-down-symbolic", "", 12, ink_3) {
