@@ -75,6 +75,9 @@ pub fn start(
                     data.scale_x11();
                     std::env::set_var("DISPLAY", format!(":{display_number}"));
                     crate::xsettings::start();
+                    if let Some(events) = data.events.clone() {
+                        crate::xtray::start(display_number, events, data.display_scale());
+                    }
                 }
                 Err(err) => tracing::warn!("could not manage X11 windows: {err}"),
             },
@@ -185,12 +188,18 @@ impl XwmHandler for Nekoland {
 
     // Menus and tooltips place themselves, and never take the keyboard through us.
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        // A tray icon is shown in the menu bar instead.
+        if crate::xtray::holds(surface.window_id()) {
+            return;
+        }
+        crate::xtray::popup_shown(surface.window_id(), surface.geometry());
         let location = surface.geometry().loc;
         self.space
             .map_element(Window::new_x11_window(surface), location, true);
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::xtray::popup_gone(surface.window_id());
         if let Some(window) = self.x11_window(&surface) {
             self.forget_window(&window);
         }

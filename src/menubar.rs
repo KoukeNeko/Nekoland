@@ -2447,8 +2447,8 @@ impl Nekoland {
         }
     }
 
-    /// A button went down. Returns whether the bar took it.
-    pub fn menu_bar_press(&mut self, pos: Point<f64, Logical>) -> bool {
+    /// A button went down, `secondary` for the right one. Returns whether the bar took it.
+    pub fn menu_bar_press(&mut self, pos: Point<f64, Logical>, secondary: bool) -> bool {
         if !self.menu_bar_covers(pos) {
             return false;
         }
@@ -2475,6 +2475,22 @@ impl Nekoland {
                 });
                 self.menu_bar.slid = Instant::now();
                 return true;
+            }
+            if let Source::Status(key) = &self.menu_bar.titles[title].source {
+                if crate::xtray::is_icon(key) {
+                    let key = key.clone();
+                    let rect = self.menu_bar.titles[title].rect;
+                    let Some(area) = self.bar_area() else {
+                        return true;
+                    };
+                    self.close_menu();
+                    let under = Point::from((
+                        f64::from(area.loc.x + rect.loc.x) + f64::from(rect.size.w) / 2.0,
+                        f64::from(area.loc.y + MENU_BAR_HEIGHT),
+                    ));
+                    crate::xtray::click(&key, if secondary { 3 } else { 1 }, under, self.display_scale());
+                    return true;
+                }
             }
             let panel_open = self.menu_bar.titles.get(title).is_some_and(|title| match title.source {
                 Source::Control => self.menu_bar.control.is_some(),

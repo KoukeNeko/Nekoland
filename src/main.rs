@@ -59,6 +59,7 @@ mod winit;
 mod workspaces;
 mod x11;
 mod xsettings;
+mod xtray;
 
 use smithay::reexports::{
     calloop::EventLoop,

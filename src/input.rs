@@ -480,6 +480,15 @@ impl Nekoland {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
+        // A menu or its submenu is an X11 popup; anywhere else closes a menu from the tray.
+        let on_popup = self
+            .space
+            .element_under(pos)
+            .and_then(|(window, _)| window.x11_surface().map(|surface| surface.is_override_redirect()))
+            .unwrap_or(false);
+        if !on_popup {
+            crate::xtray::close_menu(pos, self.display_scale());
+        }
         if self.hover_press(pos) {
             return;
         }
@@ -493,7 +502,7 @@ impl Nekoland {
         self.close_launcher_unless(clicked.as_ref());
         self.desktop_pointer_pressed(pos);
         self.menu_bar_claim(pos);
-        if self.menu_bar_press(pos) {
+        if self.menu_bar_press(pos, button == BUTTON_RIGHT) {
             return;
         }
         let left_or_right = button == BUTTON_LEFT || button == BUTTON_RIGHT;
