@@ -22,7 +22,9 @@ use smithay::{
     desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager, Window},
     output::Output,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     wayland::{
+        alpha_modifier::AlphaModifierSurfaceCachedState,
         compositor::{with_states, SurfaceAttributes},
         shell::wlr_layer::Layer,
     },
@@ -1167,7 +1169,7 @@ fn floating_elements(
                             pixels(radius),
                         )
                     })
-                    .map(|pane| SceneElement::Glass(pane.faded(alpha))),
+                    .map(|pane| SceneElement::Glass(pane.faded(alpha * surface_alpha(popup.wl_surface())))),
             );
         }
     }
@@ -1311,6 +1313,19 @@ const POPUP_RADIUS: i32 = 12;
 const GTK_TAIL_HEIGHT: i32 = 12;
 
 /// The part of the output a menu's glass covers: its window geometry, less a GTK arrow's band.
+/// How much a surface's program fades it through wp_alpha_modifier, which smithay applies to
+/// what the surface draws; its glass goes with it.
+fn surface_alpha(surface: &WlSurface) -> f32 {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<AlphaModifierSurfaceCachedState>()
+            .current()
+            .multiplier_f32()
+            .unwrap_or(1.0)
+    })
+}
+
 /// Where a popup's glass goes, and the radius of its corners: a menu's, or the blur an input
 /// method asked for through ext-background-effect.
 fn popup_glass_area(popup: &PopupKind, origin: Point<i32, Logical>) -> Option<(Rectangle<i32, Logical>, i32)> {

@@ -1,7 +1,7 @@
 //! The smaller protocols clients expect from a desktop, each with little to decide.
 
 use smithay::{
-    delegate_data_control, delegate_fractional_scale, delegate_input_method_manager,
+    delegate_alpha_modifier, delegate_data_control, delegate_fractional_scale, delegate_input_method_manager,
     delegate_primary_selection, delegate_single_pixel_buffer, delegate_text_input_manager,
     delegate_keyboard_shortcuts_inhibit, delegate_viewporter, delegate_virtual_keyboard_manager,
     delegate_pointer_constraints, delegate_relative_pointer, delegate_xdg_activation,
@@ -14,6 +14,7 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle},
     wayland::{
+        alpha_modifier::AlphaModifierState,
         compositor::with_states,
         fractional_scale::{with_fractional_scale, FractionalScaleHandler, FractionalScaleManagerState},
         idle_inhibit::IdleInhibitManagerState,
@@ -56,6 +57,8 @@ pub struct Protocols {
     _xdg_decoration: XdgDecorationState,
     _fractional_scale: FractionalScaleManagerState,
     _viewporter: ViewporterState,
+    // What fades a whole surface, an input method's candidates with the glass behind them.
+    _alpha_modifier: AlphaModifierState,
     _single_pixel_buffer: SinglePixelBufferState,
     _security_context: SecurityContextState,
     pub session_lock: SessionLockManagerState,
@@ -81,6 +84,7 @@ impl Protocols {
             _xdg_decoration: XdgDecorationState::new::<Nekoland>(dh),
             _fractional_scale: FractionalScaleManagerState::new::<Nekoland>(dh),
             _viewporter: ViewporterState::new::<Nekoland>(dh),
+            _alpha_modifier: AlphaModifierState::new::<Nekoland>(dh),
             _single_pixel_buffer: SinglePixelBufferState::new::<Nekoland>(dh),
             // A sandbox inside a sandbox would shed the outer one's limits.
             _security_context: SecurityContextState::new::<Nekoland, _>(dh, unsandboxed),
@@ -181,6 +185,7 @@ impl Nekoland {
     }
 }
 delegate_fractional_scale!(Nekoland);
+delegate_alpha_modifier!(Nekoland);
 
 impl InputMethodHandler for Nekoland {
     fn new_popup(&mut self, surface: ImePopupSurface) {
