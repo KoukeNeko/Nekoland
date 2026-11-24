@@ -74,6 +74,11 @@ pub fn start(
                     data.xwm = Some(wm);
                     data.scale_x11();
                     std::env::set_var("DISPLAY", format!(":{display_number}"));
+                    // X11 programs, Wine's among them, find Fcitx 5 only when told its name;
+                    // without it they type with no input method at all.
+                    if std::env::var_os("XMODIFIERS").is_none() {
+                        std::env::set_var("XMODIFIERS", "@im=fcitx");
+                    }
                     crate::xsettings::start();
                     if let Some(events) = data.events.clone() {
                         crate::xtray::start(display_number, events, data.display_scale());

@@ -166,7 +166,9 @@ wallpaper and an input method. Every key is optional:
 The Settings application changes most of these while Nekoland runs (see below);
 `nekoland msg reload` reads a file changed by hand.
 
-The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods.
+The example's wallpaper is swaybg's; it also starts Fcitx5 for input methods. X11
+programs, Wine's among them, are pointed at it with `XMODIFIERS=@im=fcitx` unless
+`XMODIFIERS` is already set.
 
 ## Dock, notifications and launcher
 
