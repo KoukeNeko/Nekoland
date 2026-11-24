@@ -30,6 +30,8 @@ mod output;
 mod overlay;
 #[path = "shot/record.rs"]
 mod record;
+#[path = "shot/thumbnail.rs"]
+mod thumbnail;
 
 use editor::Ed;
 use img::Img;
@@ -56,6 +58,11 @@ fn css() -> &'static str {
 .shot-strip separator { background: alpha(white, .15); margin: 4px 4px; }
 .shot-strip button.flat:checked { background: alpha(white, .18); }
 .shot-pin { background: transparent; }
+.shot-thumbnail { background: transparent; }
+.shot-thumbnail-picture {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px alpha(black, .25), 0 6px 18px alpha(black, .35);
+}
 .shot-pin picture { box-shadow: 0 0 0 1px alpha(black, .25); }
 "
 }
@@ -76,7 +83,11 @@ fn main() -> glib::ExitCode {
         std::env::set_var("GSK_RENDERER", "gl");
     }
     let app = adw::Application::builder()
-        .application_id(if command == "pin" { PIN_APP_ID } else { APP_ID })
+        .application_id(match command.as_str() {
+            "pin" => PIN_APP_ID,
+            "thumbnail" => thumbnail::APP_ID,
+            _ => APP_ID,
+        })
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_startup(|app| {
@@ -170,9 +181,16 @@ fn run(app: &adw::Application, command: &str, rest: &[String]) {
             Some(Err(err)) => failed(&err),
             None => failed("沒有指定檔案"),
         },
-        "edit" => match output::history().first() {
-            Some((entry, _)) => open_entry(app, entry),
+        "edit" => match path
+            .as_deref()
+            .or(output::history().first().map(|(entry, _)| entry.as_path()))
+        {
+            Some(entry) => open_entry(app, entry),
             None => history_window(app),
+        },
+        "thumbnail" => match path {
+            Some(entry) => thumbnail::show(app, entry, rest.get(1).map(PathBuf::from)),
+            None => failed("沒有指定截圖"),
         },
         "history" => history_window(app),
         "prefs" => {
@@ -232,11 +250,17 @@ pub fn capture_into(app: &gtk::Application, done: impl Fn(Option<Img>) + 'static
         }
     };
     let shown = frozen.clone();
-    overlay::choose(app, frozen, Mode::Area, Style::Tools, move |choice| match choice {
-        Choice::Area(_, area) | Choice::Copied(area) => done(Some(shown.crop(area))),
-        Choice::Full => done(Some((*shown.img).clone())),
-        _ => done(None),
-    });
+    overlay::choose(
+        app,
+        frozen,
+        Mode::Area,
+        Style::Tools,
+        move |choice| match choice {
+            Choice::Area(_, area) | Choice::Copied(area) => done(Some(shown.crop(area))),
+            Choice::Full => done(Some((*shown.img).clone())),
+            _ => done(None),
+        },
+    );
 }
 
 fn repeat(app: &adw::Application, hold: Hold) {
@@ -286,6 +310,7 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
     output::keep(&entry, &doc);
     let flat = output::export(&doc, &prefs);
     let mut done = Vec::new();
+    let mut saved = None;
     if prefs.auto_copy {
         match output::copy_image(&flat) {
             Ok(()) => done.push("已複製到剪貼簿".to_string()),
@@ -294,10 +319,13 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
     }
     if prefs.auto_save {
         match output::save(&flat, &prefs) {
-            Ok(path) => done.push(format!(
-                "已儲存 {}",
-                path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
-            )),
+            Ok(path) => {
+                done.push(format!(
+                    "已儲存 {}",
+                    path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                ));
+                saved = Some(path);
+            }
             Err(err) => output::notify("無法儲存", &err, None, 5000, None),
         }
     }
@@ -307,31 +335,16 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
         After::Editor => {
             Ed::open(app, doc, entry, "截圖");
         }
-        After::Thumbnail => {
-            let app = app.clone();
-            let opened = Cell::new(false);
-            output::notify(
-                &summary,
-                &body,
-                Some(&flat),
-                6000,
-                Some(Box::new(move || {
-                    if !opened.replace(true) {
-                        open_entry(&app, &entry);
-                    }
-                })),
-            );
-        }
+        After::Thumbnail => thumbnail::open(&entry, saved.as_deref()),
         After::Nothing => output::notify(&summary, &body, Some(&flat), 3000, None),
     }
 }
 
-/// A picture for the clipboard alone, as Control asks: not kept, saved or opened.
+/// A picture for the clipboard alone, as Control asks: not kept, saved or shown, as the Mac's.
 fn copied(img: Img, scale: f64) {
     let flat = output::export(&Doc::new(img, scale), &Prefs::load());
-    match output::copy_image(&flat) {
-        Ok(()) => output::notify("已複製到剪貼簿", "", Some(&flat), 3000, None),
-        Err(err) => failed(&err),
+    if let Err(err) = output::copy_image(&flat) {
+        failed(&err);
     }
 }
 

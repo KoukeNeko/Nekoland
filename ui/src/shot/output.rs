@@ -71,9 +71,9 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
-            // As the Mac's: a thumbnail, and the picture saved.
+            // As the Mac's: a thumbnail, and the picture saved; the clipboard only with Control.
             after: After::Thumbnail,
-            auto_copy: true,
+            auto_copy: false,
             auto_save: true,
             folder: String::new(),
             template: "截圖 {年}-{月}-{日} {時}.{分}.{秒}".into(),

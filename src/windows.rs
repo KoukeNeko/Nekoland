@@ -50,6 +50,12 @@ pub const ALERT_APP_IDS: [&str; 5] = [
 pub const SHOT_OVERLAY_TITLE: &str = "截圖範圍";
 /// The application ID of the on-screen keyboard, kept in front and never given the keyboard.
 pub const KEYBOARD_APP_ID: &str = "io.github.koukeneko.Nekoland.Keyboard";
+/// The application ID of the thumbnail 截圖 shows of a picture just taken, in the bottom
+/// right corner as the Mac's: like the on-screen keyboard, kept in front and never given the
+/// keyboard, so that the window being worked in keeps it.
+pub const SHOT_THUMBNAIL_APP_ID: &str = "io.github.koukeneko.Nekoland.ShotThumbnail";
+/// The windows that never take the keyboard.
+pub const UNFOCUSED_APP_IDS: [&str; 2] = [KEYBOARD_APP_ID, SHOT_THUMBNAIL_APP_ID];
 /// A window's title without the application's name it ends in, for where the application is
 /// already shown: "Cargo.toml - Text Editor" under Text Editor's icon or in its menu.
 pub fn title_without_app(title: &str, app: &str) -> String {
@@ -62,6 +68,8 @@ pub fn title_without_app(title: &str, app: &str) -> String {
 
 /// Between the on-screen keyboard and the Dock under it.
 const KEYBOARD_GAP: i32 = 12;
+/// Between 截圖's thumbnail and the corner of the free part of the display.
+const SHOT_THUMBNAIL_GAP: i32 = 16;
 /// The application ID of a picture 截圖 pinned to the screen, kept in front of the windows.
 pub const PIN_APP_ID: &str = "io.github.koukeneko.Nekoland.ShotPin";
 
@@ -372,7 +380,7 @@ impl Nekoland {
             root = parent;
         }
         if let Some(window) = self.window_for_surface(&root).filter(is_managed) {
-            if self.focused_window().as_ref() != Some(&window) && app_id(&window) != KEYBOARD_APP_ID {
+            if self.focused_window().as_ref() != Some(&window) && !UNFOCUSED_APP_IDS.contains(&app_id(&window).as_str()) {
                 self.set_keyboard_focus(Some(key_focus_of(&window)));
             }
         }
@@ -409,6 +417,18 @@ impl Nekoland {
             .elements()
             .find(|window| key_focus_of(window) == focus)
             .cloned()
+    }
+
+    /// Closes 截圖's thumbnail, which saves its picture, before another is taken: the
+    /// screen is taken as it is drawn, and the thumbnail would be in it.
+    pub fn close_shot_thumbnails(&self) {
+        for window in self.space.elements() {
+            if app_id(window) == SHOT_THUMBNAIL_APP_ID {
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.send_close();
+                }
+            }
+        }
     }
 
     /// Gives the keyboard to a window or a surface, or to nothing, and tells every
@@ -481,7 +501,7 @@ impl Nekoland {
         self.raise_pins();
         // The on-screen keyboard types into the window that has the keyboard, so it never
         // takes it, whatever asks: a click, its own activation, the switcher.
-        if app_id(window) != KEYBOARD_APP_ID {
+        if !UNFOCUSED_APP_IDS.contains(&app_id(window).as_str()) {
             self.set_keyboard_focus(Some(key_focus_of(window)));
         }
     }
@@ -494,7 +514,8 @@ impl Nekoland {
             .elements()
             .filter(|window| {
                 let app_id = app_id(window);
-                [PIN_APP_ID, KEYBOARD_APP_ID].contains(&app_id.as_str()) || ALERT_APP_IDS.contains(&app_id.as_str())
+                [PIN_APP_ID, KEYBOARD_APP_ID, SHOT_THUMBNAIL_APP_ID].contains(&app_id.as_str())
+                    || ALERT_APP_IDS.contains(&app_id.as_str())
             })
             .cloned()
             .collect();
@@ -510,7 +531,9 @@ impl Nekoland {
             .space
             .elements()
             .rev()
-            .find(|window| window.alive() && is_managed(window) && app_id(window) != KEYBOARD_APP_ID)
+            .find(|window| {
+                window.alive() && is_managed(window) && !UNFOCUSED_APP_IDS.contains(&app_id(window).as_str())
+            })
             .cloned();
         match top {
             Some(window) => self.focus_window(&window),
@@ -530,14 +553,20 @@ impl Nekoland {
         // One that asked to be fullscreen or maximized before it was shown is in place already.
         let free = matches!(placement_of(window), Placement::Free | Placement::Arranged);
         if let Some(area) = self.usable_area().filter(|_| free) {
-            let x = area.loc.x + (area.size.w - size.w).max(0) / 2;
             let app_id = app_id(window);
+            let x = if app_id == SHOT_THUMBNAIL_APP_ID {
+                area.loc.x + (area.size.w - size.w - SHOT_THUMBNAIL_GAP).max(0)
+            } else {
+                area.loc.x + (area.size.w - size.w).max(0) / 2
+            };
             // The launcher opens down from a fifth of the way, as its results come; the
             // on-screen keyboard sits at the bottom, over the Dock.
             let y = if app_id == LAUNCHER_APP_ID {
                 area.loc.y + area.size.h / 5
             } else if app_id == KEYBOARD_APP_ID {
                 area.loc.y + (area.size.h - size.h - KEYBOARD_GAP).max(0)
+            } else if app_id == SHOT_THUMBNAIL_APP_ID {
+                area.loc.y + (area.size.h - size.h - SHOT_THUMBNAIL_GAP).max(0)
             } else {
                 area.loc.y + (area.size.h - size.h).max(0) / 2
             };

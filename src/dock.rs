@@ -44,7 +44,7 @@ use crate::{
     menubar::{close, text_size, Command, Entry, Overlay, MENU_BAR_HEIGHT},
     stacks::{self, Fan, Grid, Item},
     text::{self, Picture},
-    windows::{is_managed, window_names, CONFIRM_APP_ID, KEYBOARD_APP_ID, LAUNCHER_APP_ID},
+    windows::{is_managed, window_names, CONFIRM_APP_ID, KEYBOARD_APP_ID, LAUNCHER_APP_ID, SHOT_THUMBNAIL_APP_ID},
     Nekoland,
 };
 
@@ -894,7 +894,8 @@ impl Nekoland {
             for window in windows.filter(|window| is_managed(window)) {
                 let app_id = window_names(window).1;
                 // Nekoland's own launcher and dialogs are part of the desktop, not applications.
-                let own = [LAUNCHER_APP_ID, CONFIRM_APP_ID, KEYBOARD_APP_ID].contains(&app_id.as_str());
+                let own = [LAUNCHER_APP_ID, CONFIRM_APP_ID, KEYBOARD_APP_ID, SHOT_THUMBNAIL_APP_ID]
+                    .contains(&app_id.as_str());
                 if !app_id.is_empty() && !own && !apps.contains(&app_id) {
                     apps.push(app_id);
                 }

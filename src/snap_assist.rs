@@ -19,7 +19,7 @@ use crate::{
     glass::Tier,
     menubar::{colors, font, Overlay, MENU_RADIUS},
     text::{self, Picture},
-    windows::{app_id, is_managed, window_names, ALERT_APP_IDS, KEYBOARD_APP_ID},
+    windows::{app_id, is_managed, window_names, ALERT_APP_IDS, UNFOCUSED_APP_IDS},
     Nekoland,
 };
 
@@ -156,7 +156,7 @@ impl Nekoland {
         let mut candidates = Vec::new();
         for window in windows {
             let (title, app_id) = window_names(&window);
-            if app_id == KEYBOARD_APP_ID || ALERT_APP_IDS.contains(&app_id.as_str()) {
+            if UNFOCUSED_APP_IDS.contains(&app_id.as_str()) || ALERT_APP_IDS.contains(&app_id.as_str()) {
                 continue;
             }
             let info = self.apps.info(&app_id);

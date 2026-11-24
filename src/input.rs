@@ -876,6 +876,7 @@ impl Nekoland {
                 } else if let Some(command) = id.strip_prefix("arrange-") {
                     self.window_command(command);
                 } else if let Some(kind) = id.strip_prefix("shot-") {
+                    self.close_shot_thumbnails();
                     config::spawn(&format!("nekoland-shot {kind}"));
                 } else {
                     tracing::warn!("no way to do the action {id}");

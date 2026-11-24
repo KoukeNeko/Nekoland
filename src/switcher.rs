@@ -104,7 +104,7 @@ impl Nekoland {
         let mut entries: Vec<Entry> = Vec::new();
         for window in windows {
             let (title, app_id) = window_names(&window);
-            if app_id == crate::windows::KEYBOARD_APP_ID {
+            if crate::windows::UNFOCUSED_APP_IDS.contains(&app_id.as_str()) {
                 continue;
             }
             if !by_window && entries.iter().any(|entry| window_names(&entry.window).1 == app_id) {
