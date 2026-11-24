@@ -139,6 +139,9 @@ sudo install -Dm 644 -t /usr/local/share/themes/Nekoland/gtk-3.0 "$src"/shell/gt
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network
+# The sensors' panel sets the fans through it as root, polkit asking for the password.
+sudo install -Dm 755 "$src/shell/nekoland-fan.sh" /usr/local/libexec/nekoland-fan
+sudo install -Dm 644 -t /usr/share/polkit-1/actions "$src/shell/io.github.koukeneko.Nekoland.fan.policy"
 # The keyring's prompters too, ahead of gcr-prompter's in /usr/share.
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
@@ -205,6 +208,21 @@ if modinfo ntsync >/dev/null 2>&1; then
     say "Loading ntsync for Wine at boot"
     echo ntsync | sudo tee /etc/modules-load.d/nekoland-ntsync.conf >/dev/null
     sudo modprobe ntsync
+fi
+
+# What the menu bar's power and disk readings need root for, published for all to read.
+say "Starting the sensor readings"
+sudo install -Dm 755 "$src/shell/nekoland-sensors.sh" /usr/local/libexec/nekoland-sensors
+sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-sensors.service"
+sudo systemctl daemon-reload
+sudo systemctl enable nekoland-sensors.service
+sudo systemctl restart nekoland-sensors.service
+
+# The fans of boards whose Super I/O chip nct6775 drives, for the sensors' panel to set; Linux
+# leaves it unloaded until asked, and it declines a board without one.
+if sudo modprobe -q nct6775 2>/dev/null; then
+    say "Loading nct6775 for the fans at boot"
+    echo nct6775 | sudo tee /etc/modules-load.d/nekoland-fan.conf >/dev/null
 fi
 
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.

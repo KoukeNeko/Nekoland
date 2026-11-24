@@ -50,6 +50,7 @@ mod vpn;
 mod widgets;
 mod stacks;
 mod state;
+mod stats;
 mod system;
 mod text;
 mod udev;

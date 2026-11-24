@@ -906,7 +906,7 @@ fn value_width() -> i32 {
 /// A track, filled in ink as far as `level`, with its knob there. `x` and `width` are where
 /// the knob's centre travels; the line runs a knob further each way, out to its far side,
 /// as Settings' sliders do.
-fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f64, f64, f64), level: f64) {
+pub(crate) fn draw_slider(cr: &Context, colors: &Colors, dark: bool, (x, center, width): (f64, f64, f64), level: f64) {
     let at = x + width * level;
     let knob = f64::from(KNOB);
     let x = x - knob;
@@ -963,6 +963,7 @@ impl Nekoland {
     /// Opens the control center under its icon in the bar, or closes it.
     pub(crate) fn toggle_control_center(&mut self, anchor: Rectangle<i32, Logical>) {
         self.menu_bar.open = None;
+        self.dismiss_stats_panel();
         self.menu_bar.notification_center = None;
         self.menu_bar.control = match self.menu_bar.control {
             Some(_) => None,
