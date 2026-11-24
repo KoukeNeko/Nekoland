@@ -440,6 +440,7 @@ impl Nekoland {
     /// Opens the Notification Center under the clock, or closes it.
     pub(crate) fn toggle_notification_center(&mut self) {
         self.menu_bar.open = None;
+        self.dismiss_stats_panel();
         self.menu_bar.control = None;
         self.menu_bar.notification_center = match self.menu_bar.notification_center {
             Some(_) => None,

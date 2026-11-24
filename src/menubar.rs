@@ -48,6 +48,7 @@ use crate::{
     dock::DockCommand,
     glass::Tier,
     notification_center::NotificationCenter,
+    stats::View,
     system::{Battery, Network, Volume},
     text::{self, Picture},
     windows::{is_managed, window_names, LAUNCHER_APP_ID},
@@ -273,6 +274,8 @@ enum Source {
     /// The bell, which opens the Notification Center.
     Notifications,
     Clock,
+    /// One of the system's readings, or them all as one item, which opens its panel.
+    Stats(View),
 }
 
 impl Source {
@@ -328,6 +331,8 @@ pub(crate) struct Drawn {
     control: bool,
     notification_center: bool,
     clock_panel: bool,
+    /// How many readings of the system came, how far the last has come in, and whose panel is open.
+    stats: (u64, u32, Option<View>),
     dark: bool,
     background: bool,
     minute: i64,
@@ -367,6 +372,7 @@ pub struct MenuBar {
     pub(crate) clock_picked: Option<calendar_data::Date>,
     pub(crate) agenda: crate::agenda::Agenda,
     pub(crate) clock_bar: crate::clockbar::ClockBar,
+    pub(crate) stats: crate::stats::Stats,
     /// What the bar shows, without its tint, which stays put as this slides with the desktops.
     picture: Option<Picture>,
     /// The bar's tint over its glass, for the width, darkness and opacity it was made for.
@@ -419,6 +425,7 @@ impl Default for MenuBar {
             clock_picked: None,
             agenda: Default::default(),
             clock_bar: Default::default(),
+            stats: Default::default(),
             picture: None,
             tint: None,
             other_pictures: Vec::new(),
@@ -882,6 +889,16 @@ impl MenuBar {
                 None,
             ));
         }
+        // Placed from the right, so the first reading ends up leftmost, as Stats has them.
+        let modules = self.stats.shown(config);
+        let views: Vec<View> = if (config.stats_combined || !config.stats_text.is_empty()) && !modules.is_empty() {
+            vec![View::Summary]
+        } else {
+            modules.into_iter().map(View::Module).collect()
+        };
+        for view in views.into_iter().rev() {
+            icons.push((Source::Stats(view), view.order_name().into(), String::new(), String::new(), None));
+        }
         let items: Vec<StatusItem> = self.items.iter().filter(|item| !item.passive).cloned().collect();
         icons.extend(items.into_iter().map(|item| {
             (
@@ -915,7 +932,11 @@ impl MenuBar {
                 .battery
                 .filter(|_| icon.0 == Source::Battery && config.menu_bar_battery_percent)
                 .map(|battery| format!("{}%", battery.percent));
-            let label_width = percent.as_ref().map_or(0, |percent| text_size(percent, &clock_font).0 + 4);
+            let label_width = match &icon.0 {
+                Source::Stats(View::Module(module)) => self.stats.item_width(*module, config) - STATUS_ICON,
+                Source::Stats(View::Summary) => self.stats.combined_width(config) - STATUS_ICON,
+                _ => percent.as_ref().map_or(0, |percent| text_size(percent, &clock_font).0 + 4),
+            };
             let rect = Rectangle::new(
                 (right - slot - label_width, 0).into(),
                 (slot + label_width, MENU_BAR_HEIGHT).into(),
@@ -947,7 +968,9 @@ impl MenuBar {
             cr.save().ok();
             cr.translate(shift, 0.0);
             let base = slot;
-            let lit = open == Some(first + index) || (source == Source::Control && self.control.is_some());
+            let lit = open == Some(first + index)
+                || (source == Source::Control && self.control.is_some())
+                || matches!(source, Source::Stats(view) if self.stats.panel_view().is_some_and(|open| view.owns(open)));
             if lit {
                 highlight(&cr, rect);
             }
@@ -959,6 +982,10 @@ impl MenuBar {
             let (icon_x, icon_y) = (f64::from(rect.loc.x) + icon_at(rect.size.w), icon_at(MENU_BAR_HEIGHT));
             if source == Source::Control {
                 control::draw_bar_icon(&cr, icon_x, icon_y, f64::from(STATUS_ICON), tint);
+            } else if let Source::Stats(View::Module(module)) = source {
+                self.stats.draw_item(&cr, module, rect, tint, config);
+            } else if source == Source::Stats(View::Summary) {
+                self.stats.draw_combined(&cr, rect, tint, config);
             } else if let Some(icon) = self.icon(&key, &name, &theme_path, pixmap.as_ref(), tint) {
                 let (w, h) = text::points(&icon);
                 let scale = f64::from(STATUS_ICON) / w.max(h).max(1.0);
@@ -989,6 +1016,7 @@ impl MenuBar {
             Source::Network => "network".into(),
             Source::Vpn => "vpn".into(),
             Source::Sound => "sound".into(),
+            Source::Stats(view) => view.order_name().into(),
             // Its key names it only while the program runs.
             Source::Status(key) => match self.items.iter().find(|item| item.key == *key && !item.id.is_empty()) {
                 Some(item) => format!("item:{}", item.id),
@@ -1357,9 +1385,11 @@ impl Nekoland {
                     || pos.y < f64::from(output.loc.y + MENU_BAR_HEIGHT)))
     }
 
-    /// Whether the control center or the Notification Center is open.
+    /// Whether the control center, the Notification Center or a reading's panel is open.
     pub(crate) fn menu_bar_panel_open(&self) -> bool {
-        self.menu_bar.control.is_some() || self.menu_bar.notification_center.is_some()
+        self.menu_bar.control.is_some()
+            || self.menu_bar.notification_center.is_some()
+            || self.stats_panel_view().is_some()
     }
 
     /// Opens the clock's panel when the pointer comes to the clock, if the settings ask for it.
@@ -1500,6 +1530,7 @@ impl Nekoland {
             }
         }
 
+        self.refresh_stats();
         let clock = self.clock_face();
         let background = self.config.menu_bar_background;
         let dark = if background {
@@ -1515,6 +1546,11 @@ impl Nekoland {
             control: self.menu_bar.control.is_some(),
             notification_center: self.menu_bar.notification_center.is_some(),
             clock_panel: self.menu_bar.clock_panel.is_some(),
+            stats: (
+                self.menu_bar.stats.count,
+                self.menu_bar.stats.settling(self.config.animations),
+                self.stats_panel_view(),
+            ),
             dark,
             background,
             minute: clock.key,
@@ -1621,6 +1657,7 @@ impl Nekoland {
             return overlays;
         }
         overlays.extend(self.control_center_overlay());
+        overlays.extend(self.stats_overlays());
         overlays.extend(self.notification_center_overlay());
         overlays.extend(self.clock_panel_overlay());
         // An alert is over everything, so it is first.
@@ -1842,6 +1879,7 @@ impl Nekoland {
         self.menu_bar.control = None;
         self.menu_bar.notification_center = None;
         self.menu_bar.clock_panel = None;
+        self.dismiss_stats_panel();
     }
 
     /// The main display's size.
@@ -1868,7 +1906,14 @@ impl Nekoland {
         self.menu_bar.control = None;
         self.menu_bar.notification_center = None;
         self.menu_bar.clock_panel = None;
+        if !matches!(source, Source::Stats(_)) {
+            self.dismiss_stats_panel();
+        }
         match source {
+            Source::Stats(view) => {
+                self.toggle_stats_panel(view, self.menu_bar.titles[title].rect);
+                return;
+            }
             Source::Control => {
                 self.toggle_control_center(self.menu_bar.titles[title].rect);
                 return;
@@ -2359,7 +2404,9 @@ impl Nekoland {
                 Entry::separator(),
                 Entry::item("停止分享", Command::Spawn("nekoland-screenshare stop".into())),
             ],
-            Source::Control | Source::Notifications | Source::Clock | Source::Recording => Vec::new(),
+            Source::Control | Source::Notifications | Source::Clock | Source::Recording | Source::Stats(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -2396,6 +2443,7 @@ impl Nekoland {
                 Source::Control => self.menu_bar.control.is_some(),
                 Source::Notifications => self.menu_bar.notification_center.is_some(),
                 Source::Clock => self.menu_bar.clock_panel.is_some(),
+                Source::Stats(view) => self.stats_panel_view().is_some_and(|open| view.owns(open)),
                 _ => false,
             });
             if panel_open
@@ -2413,6 +2461,12 @@ impl Nekoland {
         }
         if self.menu_bar.control.is_some() {
             if !self.control_press(local) {
+                self.close_menu();
+            }
+            return true;
+        }
+        if self.stats_panel_view().is_some() {
+            if !self.stats_press(local) {
                 self.close_menu();
             }
             return true;
@@ -2458,6 +2512,18 @@ impl Nekoland {
                 }
                 _ if self.menu_bar.control.is_some() => self.control_motion(local),
                 _ => self.clock_panel_motion(local),
+            }
+            return;
+        }
+        if let Some(open) = self.stats_panel_view().filter(|_| self.menu_bar_shown()) {
+            let Some(local) = self.local(pos) else {
+                return;
+            };
+            match self.title_at(local) {
+                Some(title) if !matches!(self.menu_bar.titles[title].source, Source::Stats(view) if view.owns(open)) => {
+                    self.open_menu(title, false)
+                }
+                _ => self.stats_motion(local),
             }
             return;
         }
@@ -2539,6 +2605,12 @@ impl Nekoland {
         if self.menu_bar.control.is_some() {
             if let Some(local) = self.local(pos) {
                 self.control_release(local);
+            }
+            return;
+        }
+        if self.stats_panel_view().is_some() {
+            if let Some(local) = self.local(pos) {
+                self.stats_release(local);
             }
             return;
         }

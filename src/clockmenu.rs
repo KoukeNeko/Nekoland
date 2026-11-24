@@ -268,7 +268,7 @@ fn show_centered(cr: &Context, text: &str, font: &pango::FontDescription, center
     show_text(cr, text, font, center.0 - width / 2.0, center.1, color);
 }
 
-fn show_right(cr: &Context, text: &str, font: &pango::FontDescription, (right, center): (f64, f64), color: Rgb) {
+pub(crate) fn show_right(cr: &Context, text: &str, font: &pango::FontDescription, (right, center): (f64, f64), color: Rgb) {
     let width = text_width(cr, text, font);
     show_text(cr, text, font, right - width, center, color);
 }
@@ -1018,6 +1018,7 @@ impl Nekoland {
     /// Opens the clock's panel under the clock in the bar, or closes it.
     pub(crate) fn toggle_clock_panel(&mut self, anchor: Rectangle<i32, Logical>) {
         self.menu_bar.open = None;
+        self.dismiss_stats_panel();
         self.menu_bar.control = None;
         if self.menu_bar.clock_panel.take().is_some() {
             return;

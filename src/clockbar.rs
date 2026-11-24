@@ -186,13 +186,14 @@ pub(crate) fn draw_glyph(cr: &Context, x: f64, center: f64, day: u32, color: (f6
     show_text(cr, &day.to_string(), &digits, x + (width - layout_width) / 2.0, center + GLYPH_BAND / 2.0 + 0.5, color);
 }
 
-fn notify(title: &str, body: &str) {
+/// Posts a notification as `app`, with the theme's icon `icon`, for `NOTIFICATION_TIMEOUT_MS`.
+pub(crate) fn notify(app: &str, icon: &str, title: &str, body: &str) {
     let spawned = Command::new("gdbus")
         .args(["call", "--session", "--dest", "org.freedesktop.Notifications"])
         .args(["--object-path", "/org/freedesktop/Notifications"])
         .args(["--method", "org.freedesktop.Notifications.Notify"])
-        .arg(NOTIFICATION_APP.to_variant().print(false))
-        .args(["0", NOTIFICATION_ICON])
+        .arg(app.to_variant().print(false))
+        .args(["0", icon])
         .arg(title.to_variant().print(false))
         .arg(body.to_variant().print(false))
         .args(["[]", "{}", &NOTIFICATION_TIMEOUT_MS.to_string()])
@@ -260,7 +261,7 @@ impl Nekoland {
                 continue;
             }
             remember(&mut self.menu_bar.clock_bar.notified, key);
-            notify(&title, &detail);
+            notify(NOTIFICATION_APP, NOTIFICATION_ICON, &title, &detail);
             if self.config.clock_attention_sound {
                 config::spawn(SOUND_COMMAND);
             }

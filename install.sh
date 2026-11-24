@@ -139,6 +139,9 @@ sudo install -Dm 644 -t /usr/local/share/themes/Nekoland/gtk-3.0 "$src"/shell/gt
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network
+# The sensors' panel sets the fans through it as root, polkit asking for the password.
+sudo install -Dm 755 "$src/shell/nekoland-fan.sh" /usr/local/libexec/nekoland-fan
+sudo install -Dm 644 -t /usr/share/polkit-1/actions "$src/shell/io.github.koukeneko.Nekoland.fan.policy"
 # The keyring's prompters too, ahead of gcr-prompter's in /usr/share.
 sudo install -Dm 644 -t /usr/local/share/dbus-1/services \
     "$src/shell/org.freedesktop.impl.portal.desktop.nekoland.service" \
