@@ -52,9 +52,8 @@ label:backdrop {
 }
 
 separator,
-.sidebar {
+separator.sidebar {
   background-color: @nekoland_line;
-  border-color: @nekoland_line;
 }
 frame > border,
 scrolledwindow > overshoot,
@@ -122,8 +121,14 @@ headerbar button:hover {
 headerbar button:checked,
 headerbar button:active,
 headerbar button:checked:backdrop,
-headerbar button:active:backdrop {
+headerbar button:active:backdrop,
+headerbar button.toggle:checked,
+headerbar button.toggle:checked:backdrop,
+headerbar stackswitcher button:checked,
+headerbar stackswitcher button:checked:backdrop {
+  background-image: none;
   background-color: @nekoland_ink;
+  border-color: transparent;
   color: @nekoland_on_ink;
 }
 
@@ -244,7 +249,7 @@ modelbutton:hover {
 }
 
 menu,
-.popup,
+window.popup,
 popover.background,
 popover > .background {
   background-color: @nekoland_sheet;
@@ -566,4 +571,122 @@ messagedialog.csd .dialog-action-area button:last-child {
   border: none;
   border-radius: 8px;
   -gtk-outline-radius: 8px;
+}
+
+/* A sidebar as the GTK 4 look's: the window's own paper, a line on its inner side, and
+ * the row chosen a solid ink pill on 6px corners. It draws no ground of its own, so it
+ * leaves the window's rounded corner as it is. */
+.sidebar:not(separator),
+.sidebar:not(separator):backdrop,
+.sidebar list,
+.sidebar list row,
+.sidebar viewport,
+placessidebar > viewport.frame {
+  background-color: transparent;
+  border-color: @nekoland_line;
+}
+.sidebar row,
+placessidebar row {
+  margin: 1px 6px;
+  border-radius: 6px;
+}
+.sidebar row:hover,
+placessidebar row:hover {
+  background-color: alpha(@nekoland_ink, 0.06);
+}
+.sidebar row:selected,
+.sidebar row:selected:backdrop,
+.sidebar list row:selected,
+.sidebar list row:selected:backdrop,
+placessidebar row:selected,
+placessidebar row:selected:backdrop {
+  background-color: @nekoland_ink;
+  color: @nekoland_on_ink;
+}
+.sidebar row:selected label,
+.sidebar row:selected image,
+placessidebar row:selected label,
+placessidebar row:selected image {
+  color: @nekoland_on_ink;
+}
+
+/* A title bar split in two, as beside a sidebar: the window's top corners are its outer
+ * ends'. */
+.csd > .titlebar:not(headerbar) headerbar {
+  border-radius: 0;
+}
+.csd > .titlebar:not(headerbar) headerbar:first-child {
+  border-top-left-radius: 14px;
+}
+.csd > .titlebar:not(headerbar) headerbar:last-child {
+  border-top-right-radius: 14px;
+}
+.maximized > .titlebar:not(headerbar) headerbar,
+.fullscreen > .titlebar:not(headerbar) headerbar,
+.tiled > .titlebar:not(headerbar) headerbar,
+.tiled-top > .titlebar:not(headerbar) headerbar,
+.tiled-left > .titlebar:not(headerbar) headerbar,
+.tiled-right > .titlebar:not(headerbar) headerbar,
+.tiled-bottom > .titlebar:not(headerbar) headerbar {
+  border-radius: 0;
+}
+
+/* The buttons under a list are the GTK 4 look's buttons, on no band of their own. */
+.inline-toolbar,
+.inline-toolbar:backdrop,
+toolbar,
+searchbar > revealer > box,
+.location-bar {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+.inline-toolbar toolbutton > button,
+.inline-toolbar toolbutton > button:backdrop,
+.inline-toolbar toolbutton > button:disabled,
+.inline-toolbar toolbutton > button:backdrop:disabled,
+.inline-toolbar button:not(.destructive-action):not(.suggested-action),
+.inline-toolbar button:not(.destructive-action):not(.suggested-action):backdrop {
+  border-color: transparent;
+  background-image: none;
+  background-color: @nekoland_fill;
+  box-shadow: none;
+  color: @nekoland_ink;
+}
+.inline-toolbar toolbutton > button:hover,
+.inline-toolbar button:not(.destructive-action):not(.suggested-action):hover {
+  background-color: mix(@nekoland_fill, @nekoland_ink, 0.1);
+}
+.inline-toolbar toolbutton > button:disabled,
+.inline-toolbar toolbutton > button:backdrop:disabled,
+.inline-toolbar button:disabled {
+  color: @nekoland_ink_3;
+}
+
+/* libhandy clips its windows to the window's own corners, so one of its windows takes all
+ * four, and its title bars none. */
+window.csd.unified:not(.solid-csd),
+window.csd.unified:not(.solid-csd) > decoration,
+window.csd.unified:not(.solid-csd) > decoration-overlay {
+  border-radius: 14px;
+}
+window.csd.unified:not(.solid-csd) headerbar,
+window.csd.unified:not(.solid-csd) .titlebar {
+  border-radius: 0;
+}
+window.csd.unified.maximized,
+window.csd.unified.fullscreen,
+window.csd.unified.tiled,
+window.csd.unified.tiled-top,
+window.csd.unified.tiled-left,
+window.csd.unified.tiled-right,
+window.csd.unified.tiled-bottom,
+window.csd.unified.maximized > decoration,
+window.csd.unified.fullscreen > decoration,
+window.csd.unified.tiled > decoration,
+window.csd.unified.tiled-top > decoration,
+window.csd.unified.tiled-left > decoration,
+window.csd.unified.tiled-right > decoration,
+window.csd.unified.tiled-bottom > decoration {
+  border-radius: 0;
 }
