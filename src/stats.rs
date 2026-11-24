@@ -1170,9 +1170,10 @@ struct Content {
     rows: Vec<(String, String)>,
     cores: Option<Vec<f64>>,
     processes: Option<(&'static str, Vec<(String, String)>)>,
-    /// The fans that can be set, by their place among the sample's: each one's name, its
-    /// speed, whether it is set by hand, and how fast it is driven.
-    fans: Vec<(usize, String, String, bool, f64, f64)>,
+    /// The fans, where one can be set, by their place among the sample's: each one's name,
+    /// its speed, whether it is set by hand (none where it cannot be set), and how fast it is
+    /// driven.
+    fans: Vec<(usize, String, String, Option<bool>, f64, f64)>,
 }
 
 impl Stats {
@@ -1658,19 +1659,24 @@ impl Stats {
                 let (name, hottest) = sample.hottest()?;
                 let mut rows: Vec<(String, String)> =
                     sample.temperatures.iter().map(|(name, celsius)| (name.clone(), temperature(*celsius))).collect();
-                let settable = |fan: &Fan| self.fan_control && fan.pwm.is_some();
-                rows.extend(sample.fans.iter().filter(|fan| !settable(fan)).map(|fan| (fan.name.clone(), format!("{:.0} RPM", fan.rpm))));
-                let fans = sample
-                    .fans
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, fan)| {
-                        let (_, duty, enable) = fan.pwm.as_ref().filter(|_| settable(fan))?;
-                        let duty = self.fan_drag.filter(|(dragged, _)| *dragged == index).map_or(*duty, |(_, level)| level);
-                        let manual = *enable == 1;
-                        Some((index, fan.name.clone(), format!("{:.0} RPM", fan.rpm), manual, duty, self.fan_reveal(index, manual)))
-                    })
-                    .collect();
+                let settable = self.fan_control && sample.fans.iter().any(|fan| fan.pwm.is_some());
+                let speed = |fan: &Fan| format!("{:.0} RPM", fan.rpm);
+                // With a fan that can be set, they are all kept together in the fans' well.
+                let mut fans = Vec::new();
+                if settable {
+                    for (index, fan) in sample.fans.iter().enumerate() {
+                        fans.push(match &fan.pwm {
+                            Some((_, duty, enable)) => {
+                                let duty = self.fan_drag.filter(|(dragged, _)| *dragged == index).map_or(*duty, |(_, level)| level);
+                                let manual = *enable == 1;
+                                (index, fan.name.clone(), speed(fan), Some(manual), duty, self.fan_reveal(index, manual))
+                            }
+                            None => (index, fan.name.clone(), speed(fan), None, 0.0, 0.0),
+                        });
+                    }
+                } else {
+                    rows.extend(sample.fans.iter().map(|fan| (fan.name.clone(), speed(fan))));
+                }
                 Content {
                     fans,
                     value: temperature(*hottest),
@@ -1848,10 +1854,14 @@ impl Panel {
                     cr.restore().ok();
                     continue;
                 }
-                let color = draw_list_row(&cr, &colors, *area, shown.hovered == Some(*part));
+                let color = draw_list_row(&cr, &colors, *area, manual.is_some() && shown.hovered == Some(*part));
                 show_text(&cr, name, &label, left, center, color);
-                let mode = if *manual { "手動" } else { "自動" };
-                show_right(&cr, &format!("{speed} · {mode}"), &label, (right, center), color);
+                let shown_speed = match manual {
+                    Some(true) => format!("{speed} · 手動"),
+                    Some(false) => format!("{speed} · 自動"),
+                    None => speed.clone(),
+                };
+                show_right(&cr, &shown_speed, &label, (right, center), color);
             }
         }
         if let (Some(well), Some((heading, rows))) = (processes, &content.processes) {

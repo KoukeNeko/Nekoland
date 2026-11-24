@@ -88,7 +88,7 @@ wallpaper and an input method. Every key is optional:
 | `stats_combined` | Whether the readings are one item in the menu bar, opening a panel of them all, each row opening its own. Off unless set |
 | `stats_alert`, `stats_alert_temperature` | The use in percent of the CPU, the GPU, the memory or the disk, and the temperature in °C, past which a notification tells of it, after two readings in a row and again only after it has come back. 0, none, unless set |
 | `stats_text` | Text the readings show as one item in place of their own looks, with `$cpu`, `$gpu`, `$ram`, `$disk`, `$temp`, `$down` and `$up` in it replaced by theirs, such as `CPU $cpu ↓ $down`. None unless set |
-| `stats_fan_control` | Whether the sensors' panel sets the fans that can be set, each given back to its chip or set by hand with a slider, never below 20%. It writes their `pwm` through `nekoland-fan` as root, polkit asking for the password once a while. Off unless set |
+| `stats_fan_control` | Whether the sensors' panel sets the fans that can be set, each given back to its chip or set by hand with a slider, never below 20%. It writes their `pwm` through `nekoland-fan` as root, polkit asking for the password once a while. `install.sh` loads `nct6775` at boot where the board has its chip. Off unless set |
 | `stats_public_ip` | Whether the network's panel shows the public address and its country, asked of `ip.mac-stats.com` every ten minutes. Off unless set |
 | `menu_bar_spacing` | The room between the icons on the menu bar's right, in pixels, up to 32; 8 unless set |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |

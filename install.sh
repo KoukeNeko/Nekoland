@@ -210,6 +210,13 @@ if modinfo ntsync >/dev/null 2>&1; then
     sudo modprobe ntsync
 fi
 
+# The fans of boards whose Super I/O chip nct6775 drives, for the sensors' panel to set; Linux
+# leaves it unloaded until asked, and it declines a board without one.
+if sudo modprobe -q nct6775 2>/dev/null; then
+    say "Loading nct6775 for the fans at boot"
+    echo nct6775 | sudo tee /etc/modules-load.d/nekoland-fan.conf >/dev/null
+fi
+
 # Other apps' icons on Nekoland's tile, for this user; Settings runs it again on request.
 say "Restyling app icons"
 nekoland-conform-icons

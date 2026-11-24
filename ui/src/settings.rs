@@ -1563,7 +1563,7 @@ fn has_fan_control() -> bool {
         .into_iter()
         .flatten()
         .flatten()
-        .any(|chip| chip.path().join("pwm1_enable").exists())
+        .any(|chip| (1..=7).any(|index| chip.path().join(format!("pwm{index}_enable")).exists()))
 }
 
 fn has_temperatures() -> bool {
