@@ -1528,7 +1528,9 @@ impl Nekoland {
                     1.0
                 };
                 let (now, grown) = crate::motion::app_flight(home, f64::from(CELL_WIDTH), from, arrived);
-                let shown = (arrived * 3.0).clamp(0.0, 1.0) as f32;
+                // Solid as they come in, which fading in would show as icons still loading;
+                // faded as they leave, not to be left where the view goes.
+                let shown = if leaving.is_some() { (arrived * 3.0).clamp(0.0, 1.0) as f32 } else { 1.0 };
                 match parted {
                     Some((split, up, _, notch, (past, _))) if home.y < split => {
                         let open = notch.is_some_and(|notch| (home.x - notch).abs() < 1.0)
@@ -1557,7 +1559,8 @@ impl Nekoland {
                     },
                     aimed,
                     shake: apps.shake(),
-                    alpha: fade,
+                    // Flying in, they come in solid rather than with the view's fade.
+                    alpha: if animated && leaving.is_none() { 1.0 } else { fade },
                 },
                 Some(&flight),
                 |entry| apps.wanted(entry),
