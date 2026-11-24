@@ -503,7 +503,13 @@ impl Nekoland {
                 let _ = xwm.raise_window(surface);
             }
         }
-        let window = dialogs.last().unwrap_or(window);
+        // Unmanaged ones that also name it, as the shadow LINE draws around its window, come
+        // forward with it but never take the keyboard, which their program would refuse.
+        let window = dialogs
+            .iter()
+            .rev()
+            .find(|dialog| dialog.x11_surface().is_some_and(|surface| !surface.is_override_redirect()))
+            .unwrap_or(window);
         self.raise_pins();
         // The on-screen keyboard types into the window that has the keyboard, so it never
         // takes it, whatever asks: a click, its own activation, the switcher.
