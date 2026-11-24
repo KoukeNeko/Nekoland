@@ -10,9 +10,10 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    process::Command,
+    io::Write,
+    process::{Child, Command, Stdio},
     sync::{
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, Sender},
         Mutex,
     },
     time::{Duration, Instant},
@@ -1356,10 +1357,49 @@ fn bits_text(bytes: f64) -> String {
     }
 }
 
-/// What runs the helper as root to set the fan at `pwm`: `mode`, its `pwm_enable`, or
-/// `speed`, how fast from 0 to 255.
+/// What the helper is told to set the fan at `pwm`: `mode`, its `pwm_enable`, or `speed`,
+/// how fast from 0 to 255.
 fn fan_command(command: &str, pwm: &str, value: u32) -> String {
-    format!("pkexec {FAN_HELPER} {command} {pwm} {value}")
+    format!("{command} {pwm} {value}\n")
+}
+
+/// Where the fans are set from: a thread handing each command to the helper, started once
+/// as root through pkexec and kept until the compositor exits and its input closes, so the
+/// password is asked once a login. Started again, asking again, if it was refused or ended.
+fn fan_helper() -> Option<Sender<String>> {
+    let (sender, commands) = mpsc::channel::<String>();
+    let spawned = std::thread::Builder::new().name("nekoland-fan".into()).spawn(move || {
+        let mut helper: Option<Child> = None;
+        for command in commands {
+            if let Some(mut ended) = helper.take_if(|child| !matches!(child.try_wait(), Ok(None))) {
+                let _ = ended.wait();
+            }
+            if helper.is_none() {
+                match Command::new("pkexec").args([FAN_HELPER, "serve"]).stdin(Stdio::piped()).spawn() {
+                    Ok(child) => helper = Some(child),
+                    Err(err) => {
+                        tracing::warn!("pkexec {FAN_HELPER} serve: {err}");
+                        continue;
+                    }
+                }
+            }
+            let child = helper.as_mut().expect("started above");
+            let written = child.stdin.as_mut().expect("piped").write_all(command.as_bytes());
+            if let Err(err) = written {
+                tracing::warn!("{FAN_HELPER}: {err}");
+                let _ = child.kill();
+                let _ = child.wait();
+                helper = None;
+            }
+        }
+    });
+    match spawned {
+        Ok(_) => Some(sender),
+        Err(err) => {
+            tracing::warn!("nekoland-fan: {err}");
+            None
+        }
+    }
 }
 
 /// `template` with each reading's name, `$cpu` and the like, replaced by its value, or by – for
@@ -1710,6 +1750,7 @@ pub struct Stats {
     fan_reveal: HashMap<usize, (bool, Instant)>,
     /// Each fan's `pwm_enable` before it was set by hand, to give it back.
     automatic: HashMap<PathBuf, u8>,
+    fan_helper: Option<Sender<String>>,
 }
 
 /// Where the parts of a panel are, and what it says, measured before it is drawn.
@@ -3318,7 +3359,12 @@ impl Nekoland {
         if stats.fan_reveal.get(&index).is_none_or(|(shown, _)| *shown != manual) && fan.pwm.is_some() {
             stats.fan_reveal.insert(index, (manual, Instant::now()));
         }
-        config::spawn(&command);
+        if stats.fan_helper.is_none() {
+            stats.fan_helper = fan_helper();
+        }
+        if stats.fan_helper.as_ref().is_some_and(|helper| helper.send(command).is_err()) {
+            stats.fan_helper = None;
+        }
         // Drawn again at once as asked, the next reading saying whether it took.
         if let Some(panel) = stats.panel.as_mut() {
             panel.shown = None;
@@ -3467,7 +3513,7 @@ mod tests {
         assert_eq!((fans[0].name.as_str(), fans[0].rpm), ("風扇 1", 1200.0));
         assert_eq!(fans[0].pwm, Some((chip.join("pwm1"), 128.0 / 255.0, 5)));
         assert_eq!(fans[1].pwm, None);
-        assert_eq!(fan_command("speed", "/sys/class/hwmon/hwmon3/pwm1", 128), format!("pkexec {FAN_HELPER} speed /sys/class/hwmon/hwmon3/pwm1 128"));
+        assert_eq!(fan_command("speed", "/sys/class/hwmon/hwmon3/pwm1", 128), "speed /sys/class/hwmon/hwmon3/pwm1 128\n");
     }
 
     #[test]

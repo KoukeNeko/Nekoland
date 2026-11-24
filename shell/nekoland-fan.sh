@@ -2,9 +2,20 @@
 # Sets a fan as root, run through pkexec by the menu bar's sensors panel:
 #   nekoland-fan mode  /sys/class/hwmon/hwmonN/pwmM <0-9>    writes pwmM_enable
 #   nekoland-fan speed /sys/class/hwmon/hwmonN/pwmM <0-255>  sets it by hand, at that speed
+#   nekoland-fan serve  reads those commands a line each until its input closes, so the
+#                       password is asked once a login rather than for each fan
 # Only a hwmon pwm file can be written, whatever it is asked.
 set -eu
-[ $# -eq 3 ] || { echo "usage: nekoland-fan mode|speed <pwm> <value>" >&2; exit 2; }
+if [ $# -eq 1 ] && [ "$1" = serve ]; then
+    set -f
+    while IFS= read -r line; do
+        # Each line checked as the command it would be, a bad one leaving the rest served.
+        # shellcheck disable=SC2086
+        "$0" $line || true
+    done
+    exit 0
+fi
+[ $# -eq 3 ] || { echo "usage: nekoland-fan mode|speed <pwm> <value> | serve" >&2; exit 2; }
 command=$1 pwm=$2 value=$3
 case $command in
     mode) most=9 ;;

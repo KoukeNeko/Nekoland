@@ -96,7 +96,7 @@ wallpaper and an input method. Every key is optional:
 | `stats_combined` | Whether the readings are one item in the menu bar, opening a panel of them all, each row opening its own. Off unless set |
 | `stats_fahrenheit` | Whether temperatures are in Fahrenheit. Off unless set |
 | `stats_text` | Text the readings show as one item in place of their own looks, with `$cpu`, `$gpu`, `$ram`, `$disk`, `$temp`, `$down`, `$up` and `$power` in it replaced by theirs, such as `CPU $cpu ↓ $down`. None unless set |
-| `stats_fan_control` | Whether the sensors' panel sets the fans that can be set, each given back to its chip or set by hand with a slider, never below 20%. It writes their `pwm` through `nekoland-fan` as root, polkit asking for the password once a while. `install.sh` loads `nct6775` at boot where the board has its chip. Off unless set |
+| `stats_fan_control` | Whether the sensors' panel sets the fans that can be set, each given back to its chip or set by hand with a slider, never below 20%. It writes their `pwm` through `nekoland-fan`, started as root through polkit at the first change and kept until the compositor exits, so the password is asked once a login. `install.sh` loads `nct6775` at boot where the board has its chip. Off unless set |
 | `stats_network_public_ip` | Whether the network's panel shows the public address and its country, asked of `ip.mac-stats.com` every ten minutes. Off unless set |
 | `menu_bar_spacing` | The room between the icons on the menu bar's right, in pixels, up to 32; 8 unless set |
 | `menu_bar_background` | Whether the menu bar has its glass, or shows the desktop through it, its text dark or light as the wallpaper under it is; on unless set |
