@@ -116,6 +116,9 @@ pub struct Face {
     /// A line too long for the Dock even at its smallest, slid along: by how many quarter
     /// points, and whether it fades at its left and right.
     slide: Option<(u16, bool, bool)>,
+    /// The line shown timed by word: how many of its characters are sung, and how far into
+    /// the next, in quarters.
+    lit: Option<(u16, u8)>,
     pressed: Option<Part>,
 }
 
@@ -368,6 +371,8 @@ pub struct NowPlaying {
     since: Instant,
     /// The pieces a line too long for the Dock is shown in, each in its font size.
     pieces: Option<(String, Vec<(String, f64, f64)>)>,
+    /// The size a line is set in to be whole in the Dock.
+    whole: Option<(String, f64)>,
 }
 
 impl NowPlaying {
@@ -408,6 +413,7 @@ impl NowPlaying {
             press: None,
             since: Instant::now(),
             pieces: None,
+            whole: None,
         })
     }
 
@@ -675,7 +681,12 @@ impl NowPlaying {
             let index = lyrics::row_at(&rows, at);
             let shown = index.map(|index| {
                 let row = &rows[index];
-                (index, row.clone(), lyrics.text(row).map(String::from), at)
+                // Timed by word, as the card lights them, only where the lyrics are as they were
+                // timed.
+                let words = (lyrics.mode() == Mode::Synced)
+                    .then(|| lyrics.candidate().synced[row.line?].words.clone())
+                    .flatten();
+                (index, row.clone(), lyrics.text(row).map(String::from), at, words)
             });
             Some(shown)
         });
@@ -684,11 +695,33 @@ impl NowPlaying {
             (false, true) => a.to_string(),
             _ => b.to_string(),
         };
-        let (upper, row, id, lower, over) = match following {
+        let (upper, row, id, lower, over, lit) = match following {
             Some(shown) => {
                 let upper = by(&player.title, &player.artist);
                 match shown {
-                    Some((index, row, Some(line), at)) => {
+                    // A line timed by word is shown whole, lit as it is sung, and followed along
+                    // where it is too long for the Dock.
+                    Some((index, _, Some(line), at, Some(words))) => {
+                        let size = self.whole_of(&line);
+                        let sung = words.iter().take_while(|(time, _)| *time <= at).count();
+                        let into = match (sung.checked_sub(1).and_then(|i| words.get(i)), words.get(sung)) {
+                            (Some((from, _)), Some((to, _))) => {
+                                ((at - from) / (to - from).max(0.01)).clamp(0.0, 1.0)
+                            }
+                            (Some(_), None) => 1.0,
+                            _ => 0.0,
+                        };
+                        (
+                            upper,
+                            Some(index),
+                            format!("{index}"),
+                            (line, size, None),
+                            // It is followed, not slid, so the swap has nothing to slide.
+                            0.0,
+                            Some((sung as u16, (into * 4.0).round() as u8)),
+                        )
+                    }
+                    Some((index, row, Some(line), at, None)) => {
                         let pieces = self.pieces_of(&line);
                         // Each piece of a long line for its share of the line's time.
                         let span = (row.end - row.start).clamp(0.1, 8.0);
@@ -708,9 +741,10 @@ impl NowPlaying {
                             format!("{index}:{piece}"),
                             (text, size, None),
                             over,
+                            None,
                         )
                     }
-                    Some((index, row, None, at)) => {
+                    Some((index, row, None, at, _)) => {
                         let lit = (((at - row.start) / (row.end - row.start)) * 3.0)
                             .floor()
                             .clamp(0.0, 3.0) as u8;
@@ -720,6 +754,7 @@ impl NowPlaying {
                             format!("{index}"),
                             (String::new(), LINE_FONT, Some(lit)),
                             0.0,
+                            None,
                         )
                     }
                     None => (
@@ -728,6 +763,7 @@ impl NowPlaying {
                         "title".into(),
                         (player.title.clone(), LINE_FONT, None),
                         0.0,
+                        None,
                     ),
                 }
             }
@@ -737,6 +773,7 @@ impl NowPlaying {
                 "title".into(),
                 (player.title.clone(), LINE_FONT, None),
                 0.0,
+                None,
             ),
         };
         match &mut self.swap {
@@ -827,16 +864,10 @@ impl NowPlaying {
             }
         };
         let swap = self.swap.as_ref()?;
-        // Held at its start, slid to its end at 45 points a second, held, and back.
+        // Held at its start, then slid once to its end at 45 points a second, where it stays.
         let slide = (animations && swap.over > 0.0).then(|| {
             let t = (now.duration_since(swap.since).as_secs_f64() - LINE_IN_AFTER - 0.3).max(0.0);
-            let travel = swap.over / 45.0;
-            let at = t % (2.2 + travel);
-            let off = if at < 1.1 {
-                0.0
-            } else {
-                ((at - 1.1) * 45.0).min(swap.over)
-            };
+            let off = ((t - 1.1) * 45.0).clamp(0.0, swap.over);
             ((off * 4.0).round() as u16, off > 0.0, off < swap.over)
         });
         Some(Face {
@@ -858,6 +889,7 @@ impl NowPlaying {
             side: false,
             arrival,
             slide,
+            lit,
             bars: {
                 // Folded with the cover as it shrinks for a pause.
                 let open = ((self.cover_scale.0 - PAUSED_COVER) / (1.0 - PAUSED_COVER)).clamp(0.0, 1.0);
@@ -873,6 +905,34 @@ impl NowPlaying {
             },
             pressed,
         })
+    }
+
+    /// The size a line is set in to be whole in the Dock, no smaller than the least.
+    fn whole_of(&mut self, line: &str) -> f64 {
+        if let Some((was, size)) = &self.whole {
+            if was == line {
+                return *size;
+            }
+        }
+        let size = text::canvas(1, 1)
+            .ok()
+            .and_then(|surface| Context::new(&surface).ok())
+            .map(|cr| {
+                let width = |size: f64| {
+                    let layout = text::new_layout(&cr);
+                    layout.set_font_description(Some(&face(pango::Weight::Semibold, size)));
+                    layout.set_text(line);
+                    f64::from(layout.pixel_size().0)
+                };
+                let mut size = LINE_FONT;
+                while size > LINE_FONT_MIN && width(size) > TEXT_WIDTH {
+                    size -= 0.5;
+                }
+                size
+            })
+            .unwrap_or(LINE_FONT);
+        self.whole = Some((line.to_string(), size));
+        size
     }
 
     /// A line in the pieces that fit the Dock: broken after punctuation or at spaces, the
@@ -1098,7 +1158,8 @@ pub fn draw_tile(
     let shown = |(line, size, dots): &(String, u16, Option<u8>),
                  dy: i16,
                  alpha: u8,
-                 slide: Option<(u16, bool, bool)>| {
+                 slide: Option<(u16, bool, bool)>,
+                 lit: Option<(u16, u8)>| {
         let alpha = f64::from(alpha) / 100.0;
         let top = row.0 + f64::from(dy) / 4.0 * unit;
         if let Some(lit) = dots {
@@ -1120,6 +1181,55 @@ pub fn draw_tile(
         let font = face(pango::Weight::Semibold, f64::from(*size) / 4.0 * unit);
         let layout = layout_line(cr, line, &font);
         let height = f64::from(layout.pixel_size().1);
+        if let Some((sung, into)) = lit {
+            // Lit as far as it is sung, and followed along if it is too wide for its room.
+            let scale = f64::from(pango::SCALE);
+            let said = layout.text();
+            let byte = |chars: usize| said.char_indices().nth(chars).map_or(said.len(), |(i, _)| i) as i32;
+            let x_at = |chars: usize| f64::from(layout.index_to_pos(byte(chars)).x()) / scale;
+            let sung = usize::from(sung);
+            let edge = if sung == 0 {
+                0.0
+            } else {
+                let (from, to) = (x_at(sung - 1), x_at(sung));
+                from + (to - from) * f64::from(into) / 4.0
+            };
+            let over = (f64::from(layout.pixel_size().0) - room).max(0.0);
+            let off = if over > 0.0 {
+                (edge - room * 0.65).clamp(0.0, over)
+            } else {
+                0.0
+            };
+            let y = top + (row.1 - height) / 2.0;
+            cr.push_group();
+            cr.set_source_rgba(ink.0, ink.1, ink.2, alpha * 0.5);
+            cr.move_to(left - off, y);
+            pangocairo::functions::show_layout(cr, &layout);
+            cr.push_group();
+            cr.set_source_rgba(ink.0, ink.1, ink.2, alpha);
+            cr.move_to(left - off, y);
+            pangocairo::functions::show_layout(cr, &layout);
+            if let Ok(bright) = cr.pop_group() {
+                let soft = 5.0 * unit;
+                let reach =
+                    cairo::LinearGradient::new(left - off + edge - soft, 0.0, left - off + edge + soft, 0.0);
+                reach.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 1.0);
+                reach.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
+                let _ = cr.set_source(&bright);
+                let _ = cr.mask(&reach);
+            }
+            if let Ok(both) = cr.pop_group() {
+                let fade = cairo::LinearGradient::new(left, 0.0, left + room, 0.0);
+                let edge = 24.0 * unit / room;
+                fade.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, if off > 0.5 { 0.0 } else { 1.0 });
+                fade.add_color_stop_rgba(edge, 0.0, 0.0, 0.0, 1.0);
+                fade.add_color_stop_rgba(1.0 - edge, 0.0, 0.0, 0.0, 1.0);
+                fade.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, if off < over - 0.5 { 0.0 } else { 1.0 });
+                let _ = cr.set_source(&both);
+                let _ = cr.mask(&fade);
+            }
+            return;
+        }
         let Some((off, left_fade, right_fade)) = slide else {
             show_cut(cr, line, &font, left, top + (row.1 - height) / 2.0, room);
             return;
@@ -1140,9 +1250,9 @@ pub fn draw_tile(
         }
     };
     if let Some(old) = &tile.old {
-        shown(old, tile.moving.2, tile.moving.3, None);
+        shown(old, tile.moving.2, tile.moving.3, None, None);
     }
-    shown(&tile.lower, tile.moving.0, tile.moving.1, tile.slide);
+    shown(&tile.lower, tile.moving.0, tile.moving.1, tile.slide, tile.lit);
     // Lines moving in or out fade at the row's edges rather than being cut there.
     if let Ok(lines) = cr.pop_group() {
         let edge = 4.0 * unit / row.1;
