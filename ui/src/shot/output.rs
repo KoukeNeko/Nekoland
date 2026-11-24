@@ -93,6 +93,23 @@ pub fn save_to(img: &Img, path: &Path) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|err| format!("{}: {err}", path.display()))
 }
 
+/// The freedesktop screen-capture sound, played at three quarters of its speed for a deeper,
+/// heavier shutter: ffmpeg slows it into PipeWire. Without either, the sound as it is,
+/// through libcanberra as the calendar's alarm plays, or PipeWire or PulseAudio. A program
+/// of its own, so it plays on after 截圖 ends.
+pub fn shutter() {
+    const SOUND: &str = "f=/usr/share/sounds/freedesktop/stereo/screen-capture.oga; \
+        command -v ffmpeg >/dev/null \
+        && ffmpeg -loglevel quiet -i $f -af 'aresample=48000,asetrate=36000,aresample=48000' \
+            -f s16le -ac 2 -ar 48000 - | pw-play --raw --rate 48000 --channels 2 - 2>/dev/null \
+        || canberra-gtk-play -i screen-capture 2>/dev/null \
+        || pw-play $f 2>/dev/null \
+        || paplay $f 2>/dev/null";
+    if let Err(err) = Command::new("sh").args(["-c", SOUND]).spawn() {
+        eprintln!("nekoland-shot: {err}");
+    }
+}
+
 /// Puts a picture on the clipboard, through wl-copy, which keeps it there after 截圖 ends.
 pub fn copy_image(img: &Img) -> Result<(), String> {
     pipe("wl-copy", &["--type", "image/png"], &img.png_fast())

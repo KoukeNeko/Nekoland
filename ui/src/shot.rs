@@ -306,6 +306,7 @@ fn countdown(app: &adw::Application, seconds: u32, hold: Hold) {
 
 /// What happens to a picture once it is taken, as the preferences say.
 fn taken(app: &adw::Application, img: Img, scale: f64) {
+    output::shutter();
     let prefs = Prefs::load();
     let entry = output::new_entry(&img);
     let doc = Doc::new(img, scale);
@@ -344,6 +345,7 @@ fn taken(app: &adw::Application, img: Img, scale: f64) {
 
 /// A picture for the clipboard alone, as Control asks: not kept or saved.
 fn copied(img: Img, scale: f64) {
+    output::shutter();
     let flat = output::export(&Doc::new(img, scale), &Prefs::load());
     match output::copy_image(&flat) {
         Ok(()) => output::notify("已複製到剪貼簿", "", Some(&flat), 3000, None),
