@@ -110,6 +110,12 @@ pub struct Face {
     bars: [u8; 3],
     /// On a Dock at a side only the cover shows, the rest being in the card.
     pub(crate) side: bool,
+    /// A new song's cover coming in: how far aside in quarter points, how solid in
+    /// hundredths and how big in thousandths.
+    arrival: (i16, u8, u16),
+    /// A line too long for the Dock even at its smallest, slid along: by how many quarter
+    /// points, and whether it fades at its left and right.
+    slide: Option<(u16, bool, bool)>,
     pressed: Option<Part>,
 }
 
@@ -121,6 +127,10 @@ struct Swap {
     since: Instant,
     /// 1 when the line comes from below, -1 when back from above, as after seeking back.
     way: f64,
+    /// The first line of a song just come, which fades in rather than taking over.
+    fresh: bool,
+    /// How much wider than the Dock's room the line is at its size.
+    over: f64,
 }
 
 /// One set of lyrics, chosen for what plays, and how it is mapped onto it.
@@ -346,10 +356,13 @@ pub struct NowPlaying {
     swap: Option<Swap>,
     last_row: Option<usize>,
     cover_scale: (f64, f64),
+    /// When another song came, and from which way: -1 after going back to the previous.
+    arrived: Option<(Instant, f64)>,
+    went_back: bool,
     pub press: Option<(Part, Instant)>,
     since: Instant,
     /// The pieces a line too long for the Dock is shown in, each in its font size.
-    pieces: Option<(String, Vec<(String, f64)>)>,
+    pieces: Option<(String, Vec<(String, f64, f64)>)>,
 }
 
 impl NowPlaying {
@@ -384,6 +397,8 @@ impl NowPlaying {
             swap: None,
             last_row: None,
             cover_scale: (1.0, 0.0),
+            arrived: None,
+            went_back: false,
             press: None,
             since: Instant::now(),
             pieces: None,
@@ -424,6 +439,10 @@ impl NowPlaying {
                     self.jumps += 1;
                     self.swap = None;
                     self.last_row = None;
+                    if self.player.is_some() && player.is_some() {
+                        self.arrived = Some((now, if self.went_back { -1.0 } else { 1.0 }));
+                    }
+                    self.went_back = false;
                 }
             }
             self.player = player;
@@ -576,6 +595,11 @@ impl NowPlaying {
 
     /// Asks the player to `part`'s action, showing it done at once.
     pub fn command(&mut self, part: Part) {
+        match part {
+            Part::Previous => self.went_back = true,
+            Part::Next => self.went_back = false,
+            _ => {}
+        }
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -643,7 +667,7 @@ impl NowPlaying {
             (false, true) => a.to_string(),
             _ => b.to_string(),
         };
-        let (upper, row, id, lower) = match following {
+        let (upper, row, id, lower, over) = match following {
             Some(shown) => {
                 let upper = by(&player.title, &player.artist);
                 match shown {
@@ -651,7 +675,7 @@ impl NowPlaying {
                         let pieces = self.pieces_of(&line);
                         // Each piece of a long line for its share of the line's time.
                         let span = (row.end - row.start).clamp(0.1, 8.0);
-                        let total: usize = pieces.iter().map(|(piece, _)| piece.chars().count()).sum();
+                        let total: usize = pieces.iter().map(|(piece, ..)| piece.chars().count()).sum();
                         let mut piece = 0;
                         let mut through = pieces[0].0.chars().count();
                         while piece + 1 < pieces.len()
@@ -660,8 +684,14 @@ impl NowPlaying {
                             piece += 1;
                             through += pieces[piece].0.chars().count();
                         }
-                        let (text, size) = pieces[piece].clone();
-                        (upper, Some(index), format!("{index}:{piece}"), (text, size, None))
+                        let (text, size, over) = pieces[piece].clone();
+                        (
+                            upper,
+                            Some(index),
+                            format!("{index}:{piece}"),
+                            (text, size, None),
+                            over,
+                        )
                     }
                     Some((index, row, None, at)) => {
                         let lit = (((at - row.start) / (row.end - row.start)) * 3.0)
@@ -672,6 +702,7 @@ impl NowPlaying {
                             Some(index),
                             format!("{index}"),
                             (String::new(), LINE_FONT, Some(lit)),
+                            0.0,
                         )
                     }
                     None => (
@@ -679,6 +710,7 @@ impl NowPlaying {
                         None,
                         "title".into(),
                         (player.title.clone(), LINE_FONT, None),
+                        0.0,
                     ),
                 }
             }
@@ -687,12 +719,19 @@ impl NowPlaying {
                 None,
                 "title".into(),
                 (player.title.clone(), LINE_FONT, None),
+                0.0,
             ),
         };
         match &mut self.swap {
             Some(swap) if swap.id == id => swap.shown = lower.clone(),
             swap => {
-                let old = swap.take().filter(|_| animations).map(|swap| swap.shown);
+                let fresh = self
+                    .arrived
+                    .is_some_and(|(at, _)| now.duration_since(at).as_secs_f64() < 0.5);
+                let old = swap
+                    .take()
+                    .filter(|_| animations && !fresh)
+                    .map(|swap| swap.shown);
                 // Back to an earlier line, as after seeking back, it comes down from above.
                 let way = match (row, self.last_row) {
                     (Some(row), Some(last)) if row < last => -1.0,
@@ -704,6 +743,8 @@ impl NowPlaying {
                     old,
                     since: now,
                     way,
+                    fresh,
+                    over,
                 });
             }
         }
@@ -718,6 +759,12 @@ impl NowPlaying {
         let rise = LINE_RISE * swap.way;
         let (new_y, new_alpha) = if swap.old.is_none() && t > 1.0 || !animations {
             (0.0, 1.0)
+        } else if swap.fresh {
+            // A new song's first line: in from 30 % and 10 points lower.
+            (
+                10.0 * (1.0 - spring_at(t, spring(260.0, 24.0))),
+                (0.3 + 0.7 * t / 0.2).min(1.0),
+            )
         } else {
             let t = t - LINE_IN_AFTER;
             (
@@ -746,7 +793,35 @@ impl NowPlaying {
             .cover
             .as_ref()
             .is_some_and(|(path, read)| Some(path) == player.art.as_ref() && read.is_some());
+        // A new song's cover comes in from the way it was gone to, growing from 0.82.
+        let arrival = match self.arrived {
+            Some((at, way)) if animations && now.duration_since(at).as_secs_f64() < 1.2 => {
+                let t = now.duration_since(at).as_secs_f64();
+                let p = spring_at(t, spring(260.0, 24.0));
+                (
+                    (way * 12.0 * (1.0 - p) * 4.0).round() as i16,
+                    ((0.35 + 0.65 * t / 0.18).min(1.0) * 100.0).round() as u8,
+                    ((0.82 + 0.18 * p) * 1000.0).round() as u16,
+                )
+            }
+            _ => {
+                self.arrived = None;
+                (0, 100, 1000)
+            }
+        };
         let swap = self.swap.as_ref()?;
+        // Held at its start, slid to its end at 45 points a second, held, and back.
+        let slide = (animations && swap.over > 0.0).then(|| {
+            let t = (now.duration_since(swap.since).as_secs_f64() - LINE_IN_AFTER - 0.3).max(0.0);
+            let travel = swap.over / 45.0;
+            let at = t % (2.2 + travel);
+            let off = if at < 1.1 {
+                0.0
+            } else {
+                ((at - 1.1) * 45.0).min(swap.over)
+            };
+            ((off * 4.0).round() as u16, off > 0.0, off < swap.over)
+        });
         Some(Face {
             upper,
             lower: (swap.shown.0.clone(), quarter(swap.shown.1), swap.shown.2),
@@ -764,6 +839,8 @@ impl NowPlaying {
             playing: player.playing,
             cover: ((self.cover_scale.0 * 1000.0).round() as u16, read),
             side: false,
+            arrival,
+            slide,
             bars: {
                 // Folded with the cover as it shrinks for a pause.
                 let open = ((self.cover_scale.0 - PAUSED_COVER) / (1.0 - PAUSED_COVER)).clamp(0.0, 1.0);
@@ -783,7 +860,7 @@ impl NowPlaying {
 
     /// A line in the pieces that fit the Dock: broken after punctuation or at spaces, the
     /// neighbours joined while they still fit, a piece that still does not fit made smaller.
-    fn pieces_of(&mut self, line: &str) -> Vec<(String, f64)> {
+    fn pieces_of(&mut self, line: &str) -> Vec<(String, f64, f64)> {
         if let Some((was, pieces)) = &self.pieces {
             if was == line {
                 return pieces.clone();
@@ -806,12 +883,13 @@ impl NowPlaying {
                         while size > LINE_FONT_MIN && width(&piece, size) > TEXT_WIDTH {
                             size -= 0.5;
                         }
-                        (piece, size)
+                        let over = (width(&piece, size) - TEXT_WIDTH).max(0.0);
+                        (piece, size, over)
                     })
                     .collect::<Vec<_>>()
             })
             .filter(|pieces| !pieces.is_empty())
-            .unwrap_or_else(|| vec![(line.to_string(), LINE_FONT)]);
+            .unwrap_or_else(|| vec![(line.to_string(), LINE_FONT, 0.0)]);
         self.pieces = Some((line.to_string(), pieces.clone()));
         pieces
     }
@@ -928,9 +1006,11 @@ pub fn draw_tile(
 
     // The cover, smaller while paused or pressed.
     let pressed = |part| if tile.pressed == Some(part) { PRESSED } else { 1.0 };
-    let scale = f64::from(tile.cover.0) / 1000.0 * pressed(Part::Cover);
+    let scale = f64::from(tile.cover.0) / 1000.0 * f64::from(tile.arrival.2) / 1000.0 * pressed(Part::Cover);
     let size = art * scale;
-    let (cx, cy) = (x + (art - size) / 2.0, y + (art - size) / 2.0);
+    let shift = f64::from(tile.arrival.0) / 4.0 * unit;
+    let solid = f64::from(tile.arrival.1) / 100.0;
+    let (cx, cy) = (x + (art - size) / 2.0 + shift, y + (art - size) / 2.0);
     let _ = cr.save();
     text::rounded_rectangle(cr, cx, cy, size, size, 6.0 * unit * scale);
     match cover {
@@ -940,10 +1020,10 @@ pub fn draw_tile(
             cr.translate(cx, cy);
             cr.scale(size / width, size / height);
             let _ = cr.set_source_surface(cover, 0.0, 0.0);
-            let _ = cr.paint();
+            let _ = cr.paint_with_alpha(solid);
         }
         None => {
-            cr.set_source_rgba(ink.0, ink.1, ink.2, 0.08);
+            cr.set_source_rgba(ink.0, ink.1, ink.2, 0.08 * solid);
             let _ = cr.fill();
             if let Some(icon) = text::named_icon("audio-x-generic-symbolic", "", 16, ink_3) {
                 let _ = cr.set_source_surface(&icon, x + (art - 16.0) / 2.0, middle - 8.0);
@@ -998,7 +1078,10 @@ pub fn draw_tile(
     cr.rectangle(left - 2.0, row.0, room + 4.0, row.1);
     cr.clip();
     cr.push_group();
-    let shown = |(line, size, dots): &(String, u16, Option<u8>), dy: i16, alpha: u8| {
+    let shown = |(line, size, dots): &(String, u16, Option<u8>),
+                 dy: i16,
+                 alpha: u8,
+                 slide: Option<(u16, bool, bool)>| {
         let alpha = f64::from(alpha) / 100.0;
         let top = row.0 + f64::from(dy) / 4.0 * unit;
         if let Some(lit) = dots {
@@ -1020,12 +1103,29 @@ pub fn draw_tile(
         let font = face(pango::Weight::Semibold, f64::from(*size) / 4.0 * unit);
         let layout = layout_line(cr, line, &font);
         let height = f64::from(layout.pixel_size().1);
-        show_cut(cr, line, &font, left, top + (row.1 - height) / 2.0, room);
+        let Some((off, left_fade, right_fade)) = slide else {
+            show_cut(cr, line, &font, left, top + (row.1 - height) / 2.0, room);
+            return;
+        };
+        // Slid along whole, fading where more of it is out of sight.
+        cr.push_group();
+        cr.move_to(left - f64::from(off) / 4.0 * unit, top + (row.1 - height) / 2.0);
+        pangocairo::functions::show_layout(cr, &layout);
+        if let Ok(text) = cr.pop_group() {
+            let edge = 24.0 * unit / room;
+            let fade = cairo::LinearGradient::new(left, 0.0, left + room, 0.0);
+            fade.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, if left_fade { 0.0 } else { 1.0 });
+            fade.add_color_stop_rgba(edge, 0.0, 0.0, 0.0, 1.0);
+            fade.add_color_stop_rgba(1.0 - edge, 0.0, 0.0, 0.0, 1.0);
+            fade.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, if right_fade { 0.0 } else { 1.0 });
+            let _ = cr.set_source(&text);
+            let _ = cr.mask(&fade);
+        }
     };
     if let Some(old) = &tile.old {
-        shown(old, tile.moving.2, tile.moving.3);
+        shown(old, tile.moving.2, tile.moving.3, None);
     }
-    shown(&tile.lower, tile.moving.0, tile.moving.1);
+    shown(&tile.lower, tile.moving.0, tile.moving.1, tile.slide);
     // Lines moving in or out fade at the row's edges rather than being cut there.
     if let Ok(lines) = cr.pop_group() {
         let edge = 4.0 * unit / row.1;
@@ -1518,7 +1618,32 @@ impl Card {
             let _ = cr.paint();
         }
 
+        // What it shows comes in after the card, a part at a time.
+        let entered = now.duration_since(self.opened).as_secs_f64();
+        if animations && entered < 0.5 {
+            key.push((entered * 60.0) as i64);
+        }
+        let entering = |part: f64| {
+            if !animations {
+                return (0.0, 1.0);
+            }
+            let t = ((entered - 0.06 - part * 0.04) / 0.22).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            (8.0 * (1.0 - eased), eased)
+        };
+        let begin = |part: f64| {
+            cr.push_group();
+            cr.translate(0.0, entering(part).0);
+        };
+        let end = |part: f64| {
+            if let Ok(drawn) = cr.pop_group() {
+                let _ = cr.set_source(&drawn);
+                let _ = cr.paint_with_alpha(entering(part).1);
+            }
+        };
+
         // What plays, and whether it is a live take.
+        begin(0.0);
         if let Some((surface, _)) = &cover {
             let _ = cr.save();
             let scale = if player.playing { 1.0 } else { 0.8 };
@@ -1580,6 +1705,8 @@ impl Card {
             width - left - PAD,
         );
 
+        end(0.0);
+        begin(1.0);
         if let (Some(lyrics), Some(top)) = (&lyrics, places.lyrics) {
             let mode = lyrics.mode();
             let rows = lyrics.rows();
@@ -1890,6 +2017,8 @@ impl Card {
             }
         }
 
+        end(1.0);
+        begin(2.0);
         // How far it has played, which can be pressed or dragged to play from elsewhere.
         let length = player.length.unwrap_or(0.0);
         let through = if length > 0.0 {
@@ -1933,6 +2062,8 @@ impl Card {
         let total = layout_line(&cr, &clock(length), &times);
         cr.move_to(width - PAD - f64::from(total.pixel_size().0), places.bar + 12.0);
         pangocairo::functions::show_layout(&cr, &total);
+
+        end(2.0);
 
         // The menu of versions, on a solid ground over the lyrics, over where they are from.
         self.menu_drawn = None;
