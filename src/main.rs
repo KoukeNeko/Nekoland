@@ -211,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // others choose X11 then, as XWayland's DISPLAY is there too: drawn through XWayland,
         // Chrome has no window buttons and its menus' shadows take glass.
         std::env::set_var(SESSION_TYPE, SESSION_TYPE_WAYLAND);
+        xsettings::choose_qt_style();
     }
     if headless {
         crate::headless::init_headless(&mut event_loop, &mut data)?;
@@ -274,6 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "LD_PRELOAD",
                     "FREETYPE_PROPERTIES",
                     "NEKOLAND_SOCKET",
+                    "QT_STYLE_OVERRIDE",
                 ])
                 .args(renderer)
                 .status();

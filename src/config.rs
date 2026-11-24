@@ -1274,7 +1274,10 @@ pub fn spawn(command: &str) {
 
 /// Runs `command` with `sh`, as `spawn` does, and gives the shell's process id.
 pub fn spawned(command: &str) -> Option<u32> {
-    match Command::new("sh").arg("-c").arg(command).spawn() {
+    let mut shell = Command::new("sh");
+    shell.arg("-c").arg(command);
+    crate::xsettings::set_qt_style(&mut shell);
+    match shell.spawn() {
         // Waited for off the compositor's thread, or it would stay a zombie, which a check
         // such as dictation's `kill -0` takes for still running.
         Ok(mut child) => {

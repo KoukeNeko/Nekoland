@@ -34,6 +34,13 @@ static WRITING: Mutex<()> = Mutex::new(());
 /// The GTK 3 theme Settings chooses while Nekoland's look is on.
 const NEKOLAND_THEME: &str = "Nekoland";
 static NEKOLAND_LOOK: AtomicBool = AtomicBool::new(true);
+/// Whether Nekoland chooses Qt's style in this session: Kvantum, drawing the look's theme,
+/// while the look is on.
+static QT_STYLE: AtomicBool = AtomicBool::new(false);
+const QT_STYLE_OVERRIDE: &str = "QT_STYLE_OVERRIDE";
+const KVANTUM: &str = "kvantum";
+/// Kvantum's theme of the look, installed with Nekoland; its dark one is this with "Dark".
+const KVANTUM_THEME: &str = "Nekoland";
 
 /// Whether the look Settings gives GTK's programs is on, for what the compositor draws as
 /// they would.
@@ -151,10 +158,88 @@ fn path() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nekoland-xsettings.conf"))
 }
 
+/// Has Qt's programs drawn in the look while it is on, in a session that is Nekoland's and
+/// whose person chose no Qt style of their own. Programs started from now on take it.
+pub fn choose_qt_style() {
+    if std::env::var_os(QT_STYLE_OVERRIDE).is_some() {
+        return;
+    }
+    QT_STYLE.store(true, Ordering::Relaxed);
+    if gsetting(INTERFACE, "gtk-theme") == NEKOLAND_THEME {
+        std::env::set_var(QT_STYLE_OVERRIDE, KVANTUM);
+    }
+}
+
+/// Gives a program started from Nekoland the Qt style of the look as it is now, which may
+/// have been switched since the session started.
+pub fn set_qt_style(command: &mut Command) {
+    if !QT_STYLE.load(Ordering::Relaxed) {
+        return;
+    }
+    if is_nekoland_look() {
+        command.env(QT_STYLE_OVERRIDE, KVANTUM);
+    } else {
+        command.env_remove(QT_STYLE_OVERRIDE);
+    }
+}
+
+/// Points Kvantum at the look's theme, light or dark, unless the person chose a theme of
+/// their own there.
+fn choose_kvantum_theme(dark: bool) {
+    let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".config")))
+    else {
+        return;
+    };
+    let path = config.join("Kvantum/kvantum.kvconfig");
+    let theme = if dark { format!("{KVANTUM_THEME}Dark") } else { KVANTUM_THEME.to_string() };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => match kvantum_config(&text, &theme) {
+            Some(text) => text,
+            None => return,
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => format!("[General]\ntheme={theme}\n"),
+        Err(err) => {
+            tracing::warn!("{}: {err}", path.display());
+            return;
+        }
+    };
+    let written = std::fs::create_dir_all(config.join("Kvantum")).and_then(|()| std::fs::write(&path, text));
+    if let Err(err) = written {
+        tracing::warn!("{}: {err}", path.display());
+    }
+}
+
+/// Kvantum's file `text` with the look's `theme` in place of the look's other one; nothing
+/// when it already names `theme`, or names one that is not the look's.
+fn kvantum_config(text: &str, theme: &str) -> Option<String> {
+    let current = text.lines().find_map(|line| line.trim().strip_prefix("theme="))?.trim();
+    let ours = [KVANTUM_THEME.to_string(), format!("{KVANTUM_THEME}Dark")];
+    if current == theme || !ours.iter().any(|name| name == current) {
+        return None;
+    }
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if line.trim().starts_with("theme=") {
+                format!("theme={theme}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    Some(lines.join("\n") + "\n")
+}
+
 fn write() -> Option<PathBuf> {
     let path = path()?;
     let values = read();
-    NEKOLAND_LOOK.store(values.theme == NEKOLAND_THEME, Ordering::Relaxed);
+    let look = values.theme == NEKOLAND_THEME;
+    NEKOLAND_LOOK.store(look, Ordering::Relaxed);
+    if look && QT_STYLE.load(Ordering::Relaxed) {
+        choose_kvantum_theme(values.dark);
+    }
     let text = render(&values);
     if let Some(resources) = cursor_resources(&values) {
         merge_resources(&resources);
@@ -227,6 +312,23 @@ pub fn sync() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kvantum_takes_the_looks_theme_only_in_place_of_the_look() {
+        assert_eq!(
+            kvantum_config("[General]\ntheme=Nekoland\n\n[Applications]\nKvFlat=vlc\n", "NekolandDark")
+                .as_deref(),
+            Some("[General]\ntheme=NekolandDark\n\n[Applications]\nKvFlat=vlc\n")
+        );
+        assert_eq!(
+            kvantum_config("[General]\ntheme=NekolandDark\n", "Nekoland").as_deref(),
+            Some("[General]\ntheme=Nekoland\n")
+        );
+        assert_eq!(kvantum_config("[General]\ntheme=Nekoland\n", "Nekoland"), None);
+        assert_eq!(kvantum_config("[General]\ntheme=KvFlat\n", "Nekoland"), None);
+        assert_eq!(kvantum_config("[General]\ntheme=NekolandFoo\n", "Nekoland"), None);
+        assert_eq!(kvantum_config("[Applications]\nKvFlat=vlc\n", "Nekoland"), None);
+    }
 
     #[test]
     fn the_file_names_what_is_set_and_leaves_out_the_rest() {

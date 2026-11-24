@@ -26,8 +26,9 @@ build_packages="build-essential pkg-config clang libclang-dev git curl ca-certif
     gcc-mingw-w64-x86-64"
 # What it runs with: Mesa to draw, with Vulkan and video decoding on the GPU, Xwayland, the
 # wallpaper, terminal, portals, the network, sound, printing, languages, clipboard, fonts and
-# icons, the input method, the applications the example configuration keeps in the Dock, and
-# what Files mounts servers with: GVfs, rclone and the keyring their passwords are kept in.
+# icons, Kvantum for Qt programs to take the look, the input method, the applications the
+# example configuration keeps in the Dock, and what Files mounts servers with: GVfs, rclone
+# and the keyring their passwords are kept in.
 run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-drivers
     libseat1 libinput10 xwayland xsettingsd swaylock swaybg foot grim
     wl-clipboard xclip dbus-user-session dconf-gsettings-backend gsettings-desktop-schemas
@@ -35,7 +36,7 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
     network-manager wpasupplicant network-manager-openvpn openvpn bluez cups locales rsync
     pipewire pipewire-pulse wireplumber brightnessctl power-profiles-daemon orca
     grub-common plymouth plymouth-label python3-fonttools fonts-ubuntu fonts-noto-cjk fonts-noto-color-emoji adwaita-icon-theme yaru-theme-icon
-    ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
+    qt-style-kvantum ubuntu-wallpapers fcitx5 fcitx5-chewing nautilus gnome-text-editor gnome-calculator
     file libimage-exiftool-perl ffmpeg poppler-utils libheif-examples libopenjp2-tools imagemagick libarchive-tools sqlite3 desktop-file-utils
     libharfbuzz-bin at-spi2-core python3-gi python3-pil gir1.2-gdkpixbuf-2.0 librsvg2-common
     libvte-2.91-gtk4-0 libpoppler-glib8t64 qpdf sane-utils slurp fonts-jetbrains-mono
@@ -136,6 +137,11 @@ sudo install -Dm 644 -t /usr/local/share/icons/Nekoland "$src/shell/icons/Nekola
 # The look's theme for GTK 3 programs, light and dark.
 sudo install -Dm 644 -t /usr/local/share/themes/Nekoland "$src/shell/gtk3/Nekoland/index.theme"
 sudo install -Dm 644 -t /usr/local/share/themes/Nekoland/gtk-3.0 "$src"/shell/gtk3/Nekoland/gtk-3.0/*.css
+# And for Qt programs, drawn by Kvantum, which looks for themes in /usr/share only.
+kvantum=$(mktemp -d)
+python3 "$src/shell/kvantum/make-theme.py" "$kvantum"
+sudo install -Dm 644 -t /usr/share/Kvantum/Nekoland "$kvantum"/*
+rm -r "$kvantum"
 sudo install -Dm 644 -t /usr/local/share/icons/Nekoland/scalable/apps "$src"/shell/icons/apps/*.svg
 sudo install -m 755 "$src/shell/conform-icons.py" /usr/local/bin/nekoland-conform-icons
 sudo install -m 755 "$src/shell/hand-over-network.sh" /usr/local/bin/nekoland-hand-over-network
