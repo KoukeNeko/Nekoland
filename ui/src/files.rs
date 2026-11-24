@@ -127,6 +127,8 @@ button.nf-chip { padding: 0 8px; font-weight: 500; }
 .nf-tag-button { min-width: 18px; min-height: 18px; padding: 0; border-radius: 9px; }
 .nf-tag-button.on, .nf-tag-button:checked { box-shadow: 0 0 0 2px var(--popover-bg-color), 0 0 0 3.5px var(--window-fg-color); }
 @keyframes nf-blink { 50% { outline-color: transparent; } }
+.navigation-sidebar > row.nf-insert-above { box-shadow: inset 0 2px var(--accent-bg-color); }
+.navigation-sidebar > row.nf-insert-below { box-shadow: inset 0 -2px var(--accent-bg-color); }
 .nf-spring { outline: 2px solid currentColor; outline-offset: -2px; border-radius: 8px; animation: nf-blink 120ms steps(1) 2; }
 .nf-quick-look { background-color: var(--view-bg-color); }
 .nf-drag-count { min-width: 20px; min-height: 20px; padding: 0 6px; border-radius: 10px; background-color: var(--window-fg-color); color: var(--window-bg-color); font-size: 12px; font-weight: 600; }

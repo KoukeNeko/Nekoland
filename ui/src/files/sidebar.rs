@@ -17,6 +17,17 @@ use crate::{
     tags, Window,
 };
 
+/// Where between two bookmarks a drop over one goes.
+#[derive(Clone, Copy)]
+enum Edge {
+    Above,
+    Below,
+}
+
+/// How much of a bookmark's height, at its top and at its bottom, a drop goes between
+/// bookmarks rather than into it.
+const EDGE_SHARE: f64 = 0.3;
+
 #[derive(Clone)]
 enum Target {
     Go(Where),
@@ -101,6 +112,12 @@ impl Sidebar {
             monitor.connect_changed(on!(&sidebar, |s, _m, _a, _b, _e| s.fill()));
             sidebar.monitors.borrow_mut().push(monitor);
         }
+        // Dropped on no folder of the sidebar: kept last among its bookmarks.
+        let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+        drop.set_types(&[gdk::FileList::static_type(), String::static_type()]);
+        let weak = Rc::downgrade(&sidebar);
+        drop.connect_drop(move |_, value, _, _| weak.upgrade().is_some_and(|s| s.place(value, None)));
+        sidebar.root.add_controller(drop);
         let weak = Rc::downgrade(&sidebar);
         ops::watch_transfers(move || weak.upgrade().map(|s| s.show_transfers()).is_some());
         sidebar.fill();
@@ -316,24 +333,99 @@ impl Sidebar {
         let Some(row) = line.parent() else { return };
         if let Where::Folder(folder) = to {
             if folder.path().is_some() {
-                let drop = gtk::DropTarget::new(
-                    gdk::FileList::static_type(),
-                    gdk::DragAction::COPY | gdk::DragAction::MOVE,
-                );
-                ops::prefer_move(&drop);
-                let into = folder.clone();
-                drop.connect_drop(move |target, value, _, _| {
-                    let Ok(list) = value.get::<gdk::FileList>() else {
-                        return false;
-                    };
-                    ops::drop_into(&list.files(), &into, target);
-                    true
-                });
-                let (to, win) = (to.clone(), self.win.clone());
+                let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY | gdk::DragAction::MOVE);
+                // Files, and a bookmark's own drag, which says only where it goes.
+                drop.set_types(&[gdk::FileList::static_type(), String::static_type()]);
+                let edge: Rc<Cell<Option<Edge>>> = Rc::default();
+                {
+                    let (weak, folder, edge, row) = (Rc::downgrade(self), folder.clone(), edge.clone(), row.downgrade());
+                    drop.connect_motion(move |target, _, y| {
+                        let (Some(sidebar), Some(row)) = (weak.upgrade(), row.upgrade()) else {
+                            return gdk::DragAction::empty();
+                        };
+                        let is_bookmark = sidebar.bookmarks.borrow().iter().any(|b| b.equal(&folder));
+                        let reordering = target.current_drop().is_some_and(|drop| ops::is_bookmark_drag(&drop));
+                        let height = f64::from(row.height().max(1));
+                        // Over a bookmark's top or bottom, or anywhere on it for a bookmark
+                        // being moved, goes between bookmarks; the rest of it, into the folder.
+                        let near = match y / height {
+                            at if at < EDGE_SHARE || (reordering && at < 0.5) => Some(Edge::Above),
+                            _ if reordering => Some(Edge::Below),
+                            at if at > 1.0 - EDGE_SHARE => Some(Edge::Below),
+                            _ => None,
+                        }
+                        .filter(|_| is_bookmark);
+                        edge.set(near);
+                        row.remove_css_class("nf-insert-above");
+                        row.remove_css_class("nf-insert-below");
+                        match near {
+                            Some(Edge::Above) => row.add_css_class("nf-insert-above"),
+                            Some(Edge::Below) => row.add_css_class("nf-insert-below"),
+                            None => {}
+                        }
+                        match (near, reordering) {
+                            (Some(_), _) => gdk::DragAction::COPY,
+                            (None, true) => gdk::DragAction::empty(),
+                            (None, false) => ops::drop_action(target),
+                        }
+                    });
+                }
+                {
+                    let (edge, row) = (edge.clone(), row.downgrade());
+                    drop.connect_leave(move |_| {
+                        edge.set(None);
+                        if let Some(row) = row.upgrade() {
+                            row.remove_css_class("nf-insert-above");
+                            row.remove_css_class("nf-insert-below");
+                        }
+                    });
+                }
+                {
+                    let (weak, into, edge) = (Rc::downgrade(self), folder.clone(), edge.clone());
+                    drop.connect_drop(move |target, value, _, _| {
+                        let Some(sidebar) = weak.upgrade() else { return false };
+                        match edge.take() {
+                            Some(at) => {
+                                // The bookmark after where it goes, as a bookmark goes before one.
+                                let before = match at {
+                                    Edge::Above => Some(into.clone()),
+                                    Edge::Below => {
+                                        let bookmarks = sidebar.bookmarks.borrow();
+                                        let here = bookmarks.iter().position(|b| b.equal(&into));
+                                        here.and_then(|i| bookmarks.get(i + 1)).cloned()
+                                    }
+                                };
+                                sidebar.place(value, before.as_ref())
+                            }
+                            None => {
+                                let Ok(list) = value.get::<gdk::FileList>() else {
+                                    return false;
+                                };
+                                ops::drop_into(&list.files(), &into, target);
+                                true
+                            }
+                        }
+                    });
+                }
+                // A bookmark: dragged to another place among them.
+                let source = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
+                {
+                    let (weak, folder, row) = (Rc::downgrade(self), folder.clone(), row.downgrade());
+                    source.connect_prepare(move |source, x, y| {
+                        let (sidebar, row) = (weak.upgrade()?, row.upgrade()?);
+                        if !sidebar.bookmarks.borrow().iter().any(|b| b.equal(&folder)) {
+                            return None;
+                        }
+                        source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), x as i32, y as i32);
+                        Some(gdk::ContentProvider::for_value(&format!("{}{}", ops::BOOKMARK_PREFIX, folder.uri()).to_value()))
+                    });
+                }
+                row.add_controller(source);
+                let (to, win, near) = (to.clone(), self.win.clone(), edge);
                 crate::pane::spring(
                     &drop,
                     &row,
-                    move || Some(to.clone()),
+                    move || Some(to.clone()).filter(|_| near.get().is_none()),
                     move |to| {
                         if let Some(pane) = win.upgrade().and_then(|w| w.pane()) {
                             pane.go(to, true);
@@ -356,6 +448,32 @@ impl Sidebar {
             });
             row.add_controller(click);
         }
+    }
+
+    /// Puts what a drop between bookmarks brought before `before`: a bookmark moved, or the
+    /// folders dropped added there.
+    fn place(&self, value: &glib::Value, before: Option<&gio::File>) -> bool {
+        let Some(win) = self.win.upgrade() else { return false };
+        if let Ok(list) = value.get::<gdk::FileList>() {
+            let folders: Vec<gio::File> = list
+                .files()
+                .into_iter()
+                .filter(|file| file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) == gio::FileType::Directory)
+                .collect();
+            for folder in &folders {
+                ops::place_bookmark(&win, folder, before);
+            }
+            return !folders.is_empty();
+        }
+        let Some(uri) = value.get::<String>().ok().and_then(|text| text.strip_prefix(ops::BOOKMARK_PREFIX).map(str::to_owned)) else {
+            return false;
+        };
+        let moved = gio::File::for_uri(&uri);
+        if !self.bookmarks.borrow().iter().any(|b| b.equal(&moved)) {
+            return false;
+        }
+        ops::place_bookmark(&win, &moved, before);
+        true
     }
 
     fn add_plain_row(&self, icon: &gio::Icon, label: &str) -> gtk::Box {

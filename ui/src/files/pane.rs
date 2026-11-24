@@ -2572,7 +2572,9 @@ pub fn spring(
     let springs = {
         let drop = drop.downgrade();
         move |to: &Where| {
-            let Some(drop) = drop.upgrade().filter(|drop| drop.current_drop().is_some()) else {
+            let Some(drop) = drop.upgrade().filter(|drop| {
+                drop.current_drop().is_some_and(|current| !ops::is_bookmark_drag(&current))
+            }) else {
                 return false;
             };
             let Where::Folder(folder) = to else { return true };

@@ -637,8 +637,26 @@ pub fn prefer_move(target: &gtk::DropTarget) {
     target.connect_motion(|target, _, _| drop_action(target));
 }
 
-/// The action `prefer_move` asks for.
+/// What a sidebar bookmark's drag says before where it goes: only where it goes, so that
+/// dropped on a folder, the folder itself is not moved there.
+pub const BOOKMARK_PREFIX: &str = "nekoland-bookmark:";
+
+/// Whether a drop is a sidebar bookmark being moved, which only the sidebar takes: a drag of
+/// Files' own, read as it comes. GTK would read its text as files for any other folder.
+pub fn is_bookmark_drag(drop: &gdk::Drop) -> bool {
+    drop.drag()
+        .map(|drag| drag.content())
+        .filter(|content| content.formats().contains_type(String::static_type()))
+        .and_then(|content| content.value(String::static_type()).ok())
+        .and_then(|value| value.get::<String>().ok())
+        .is_some_and(|text| text.starts_with(BOOKMARK_PREFIX))
+}
+
+/// The action `prefer_move` asks for; none for a bookmark being moved.
 pub fn drop_action(target: &gtk::DropTarget) -> gdk::DragAction {
+    if target.current_drop().is_some_and(|drop| is_bookmark_drag(&drop)) {
+        return gdk::DragAction::empty();
+    }
     let offered = target.current_drop().map_or(gdk::DragAction::empty(), |drop| drop.actions()) & target.actions();
     [gdk::DragAction::MOVE, gdk::DragAction::COPY]
         .into_iter()
@@ -1507,6 +1525,30 @@ pub fn remove_bookmark(win: &Rc<Window>, folder: &gio::File) {
     write_bookmarks(win, &path, &kept);
 }
 
+/// Puts `folder` among the bookmarks just before `before`, or last without it: added, or
+/// moved there with its name when it is one already.
+pub fn place_bookmark(win: &Rc<Window>, folder: &gio::File, before: Option<&gio::File>) {
+    let path = bookmarks_path();
+    let Some(text) = read_bookmarks(win, &path) else { return };
+    let before = before.map(|b| b.uri());
+    write_bookmarks(win, &path, &bookmarks_placed(&text, &folder.uri(), before.as_deref()));
+}
+
+/// The bookmarks file's `text` with `uri`'s line, or a new one, just before `before`'s.
+fn bookmarks_placed(text: &str, uri: &str, before: Option<&str>) -> String {
+    let is_of = |line: &str, uri: &str| line.split(' ').next() == Some(uri);
+    if before == Some(uri) {
+        return text.to_owned();
+    }
+    let line = text.lines().find(|line| is_of(line, uri)).unwrap_or(uri);
+    let mut lines: Vec<&str> = text.lines().filter(|l| !is_of(l, uri)).collect();
+    let at = before
+        .and_then(|before| lines.iter().position(|l| is_of(l, before)))
+        .unwrap_or(lines.len());
+    lines.insert(at, line);
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
 /// The bookmarks file's text, empty when there is none yet. One that cannot be read is not
 /// written over either.
 fn read_bookmarks(win: &Rc<Window>, path: &Path) -> Option<String> {
@@ -1551,6 +1593,15 @@ pub fn display_name(file: &gio::File) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bookmarks_are_placed_before_another_with_their_names() {
+        let text = "file:///a\nfile:///b Bee\nsftp://host/c\n";
+        assert_eq!(bookmarks_placed(text, "file:///b", Some("file:///a")), "file:///b Bee\nfile:///a\nsftp://host/c\n");
+        assert_eq!(bookmarks_placed(text, "file:///a", None), "file:///b Bee\nsftp://host/c\nfile:///a\n");
+        assert_eq!(bookmarks_placed(text, "file:///d", Some("sftp://host/c")), "file:///a\nfile:///b Bee\nfile:///d\nsftp://host/c\n");
+        assert_eq!(bookmarks_placed(text, "file:///a", Some("file:///a")), text);
+    }
 
     #[test]
     fn cut_files_are_told_from_copied_ones() {
