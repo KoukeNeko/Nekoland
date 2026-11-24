@@ -66,6 +66,8 @@ const LINE_WINDOW_CLASS: &str = "line.exe";
 /// The folder in a bottle with what its DLLs are signed with, which has them signed again
 /// whenever Wine writes them anew.
 const SIGNING_DIR: &str = "nekoland-signing";
+/// The file in LINE's bottle held while it is being made.
+const INSTALLING_LOCK: &str = "nekoland-installing";
 /// `nekoland-settings --wine FILE` opens a Windows program from Files in Wine's own bottle,
 /// which is given Nekoland's look first.
 pub const WINE_FLAG: &str = "--wine";
@@ -729,6 +731,15 @@ fn is_line_installer(file: &Path) -> bool {
 /// Makes LINE's bottle as LINE needs it, runs its installer there, and makes a launcher for
 /// what it installed.
 fn install_line(installer: &Path) -> Result<(), String> {
+    let prefix = bottles_dir().join(LINE_BOTTLE);
+    let failed = |err: std::io::Error| err.to_string();
+    std::fs::create_dir_all(&prefix).map_err(failed)?;
+    // The installer opened again while the bottle is being made is left to the first, which
+    // shows it; two at once would sign the DLLs as the other's Wine writes them.
+    let installing = std::fs::File::create(prefix.join(INSTALLING_LOCK)).map_err(failed)?;
+    if installing.try_lock().is_err() {
+        return Ok(());
+    }
     notify("正在準備 LINE 的執行環境", "");
     let missing: Vec<&'static str> = LINE_PACKAGES
         .into_iter()
@@ -741,18 +752,10 @@ fn install_line(installer: &Path) -> Result<(), String> {
         Some(runner) => runner,
         None => download_runner()?,
     };
-    let prefix = bottles_dir().join(LINE_BOTTLE);
-    let failed = |err: std::io::Error| err.to_string();
-    std::fs::create_dir_all(&prefix).map_err(failed)?;
     if runner_of(&prefix).is_none_or(|had| runner_version(&had)[..] < LINE_WINE[..]) {
         set_runner(&prefix, Some(&runner)).map_err(failed)?;
     }
-    said(
-        Command::new(wine_of(&prefix))
-            .args(["wineboot", "-u"])
-            .env("WINEPREFIX", &prefix)
-            .env("WINEDLLOVERRIDES", "mscoree,mshtml="),
-    )?;
+    bring_up_to_date(&prefix)?;
     let installed = installed_components(&prefix);
     let verbs: Vec<&str> = std::iter::once("win10")
         .chain(
@@ -783,15 +786,49 @@ fn install_line(installer: &Path) -> Result<(), String> {
     add_line_launcher(&prefix)
 }
 
+/// Has a bottle's Wine fill it in, or bring it up to itself after another Wine, as Wine does
+/// by itself as the first program starts when the bottle notes another Wine's `wine.inf`
+/// than its own. It writes Wine's DLLs anew, unsigned, so it is done here, before they are
+/// signed, and only then: done when not needed, it writes them anew all the same.
+fn bring_up_to_date(prefix: &Path) -> Result<(), String> {
+    let inf = runner_of(prefix).map_or_else(
+        || PathBuf::from("/usr/share/wine/wine.inf"),
+        |runner| runners_dir().join(runner).join("share/wine/wine.inf"),
+    );
+    let made = std::fs::metadata(&inf)
+        .and_then(|inf| inf.modified())
+        .ok()
+        .and_then(|made| made.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|made| made.as_secs());
+    let noted = std::fs::read_to_string(prefix.join(".update-timestamp"))
+        .ok()
+        .and_then(|noted| noted.trim().parse::<u64>().ok());
+    if made.is_some() && made == noted {
+        return Ok(());
+    }
+    said(
+        Command::new(wine_of(prefix))
+            .args(["wineboot", "-u"])
+            .env("WINEPREFIX", prefix)
+            .env("WINEDLLOVERRIDES", "mscoree,mshtml="),
+    )
+    .map(drop)
+}
+
 /// Signs the DLLs Wine has put in a bottle since they were last signed, with a certificate
-/// made on this computer for it. LINE loads none that are not signed by a signer named
-/// Microsoft Windows; the certificate is in no store of trusted ones, here or in Wine.
+/// made on this computer for it, once the bottle is up to its Wine. LINE loads none that are
+/// not signed by a signer named Microsoft Windows; the certificate is in no store of trusted
+/// ones, here or in Wine.
 fn sign_dlls(prefix: &Path) -> Result<(), String> {
     let failed = |err: std::io::Error| err.to_string();
     let dir = prefix.join(SIGNING_DIR);
+    std::fs::create_dir_all(&dir).map_err(failed)?;
+    // One at a time, as LINE opened twice would sign the same DLLs at once.
+    let signing = std::fs::File::create(dir.join("lock")).map_err(failed)?;
+    signing.lock().map_err(failed)?;
+    bring_up_to_date(prefix)?;
     let (key, cert, signed) = (dir.join("key.pem"), dir.join("cert.pem"), dir.join("signed"));
     if !cert.exists() {
-        std::fs::create_dir_all(&dir).map_err(failed)?;
         said(
             Command::new("openssl")
                 .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "36500"])
