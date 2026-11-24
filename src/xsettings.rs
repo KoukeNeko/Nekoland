@@ -111,8 +111,10 @@ fn render(values: &Values) -> String {
     lines.push("Xft/RGBA \"none\"".into());
     let dpi = BASE_DPI * DPI_UNIT * values.text_scale * scale;
     lines.push(format!("Xft/DPI {}", dpi.round() as i64));
-    // GTK 3 enlarges its widgets by whole times only, and its text by the rest.
-    let times = scale.floor();
+    // GTK 3 enlarges its widgets by whole times only, and its text by the rest. The nearest
+    // whole times, not the one below: at 1.5, Unity's editor, which takes only these, is
+    // otherwise drawn at two thirds of its size.
+    let times = scale.round().max(1.0);
     lines.push(format!("Gdk/WindowScalingFactor {times}"));
     lines.push(format!("Gdk/UnscaledDPI {}", (dpi / times).round() as i64));
     lines.join("\n") + "\n"
@@ -372,6 +374,17 @@ mod tests {
         assert!(text.contains(&format!("Xft/DPI {}\n", 240 * 1024)));
         assert!(text.contains("Gdk/WindowScalingFactor 2\n"));
         assert!(text.contains(&format!("Gdk/UnscaledDPI {}\n", 120 * 1024)));
+    }
+
+    #[test]
+    fn gtk_enlarges_its_widgets_by_the_nearest_whole_times() {
+        let values = Values { text_scale: 1.0, scale: 1.5, ..Default::default() };
+        let text = render(&values);
+        assert!(text.contains(&format!("Xft/DPI {}\n", 144 * 1024)));
+        assert!(text.contains("Gdk/WindowScalingFactor 2\n"));
+        assert!(text.contains(&format!("Gdk/UnscaledDPI {}\n", 72 * 1024)));
+        let values = Values { text_scale: 1.0, scale: 1.25, ..Default::default() };
+        assert!(render(&values).contains("Gdk/WindowScalingFactor 1\n"));
     }
 
     #[test]
