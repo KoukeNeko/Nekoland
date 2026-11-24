@@ -1,10 +1,10 @@
 //! The system's readings in the menu bar, after Stats on the Mac: the CPU, the GPU, the
-//! memory, the disk, the network's speed and the sensors' temperatures, each as a number, a
-//! line of its last readings or a bar, and each opening a panel in the control center's
-//! glass with its history, what makes it up and the processes that use the most of it.
+//! memory, the disk, the network's speed and the sensors' temperatures and power, each as the
+//! widgets its settings list, and each opening a panel in the control center's glass with its
+//! history, what makes it up and the processes that use the most of it.
 //!
-//! A thread reads /proc and sysfs every `stats_interval` seconds while any is shown, so that
-//! nothing is read on the compositor's thread. A new reading slides into the lines, the bars
+//! A thread reads /proc and sysfs while any is shown, each reading as often as its settings
+//! ask, so that nothing is read on the compositor's thread. A new reading slides into the lines, the bars
 //! grow to it, and a panel fades in, out, and into another's as the pointer moves along.
 
 use std::{
@@ -12,7 +12,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver},
         Mutex,
     },
@@ -27,7 +26,7 @@ use smithay::{
 
 use crate::{
     clockmenu::show_right,
-    config::{self, Config, StatsStyle},
+    config::{self, Config, StatsColor, StatsFrame, StatsRows, StatsScale, StatsSymbols, StatsWidget, StatsWidgetKind},
     control::{draw_chevron, draw_list_row, draw_panel, draw_slider, draw_well, ease_out, rect, show_line, to_f64, OPEN_TIME},
     fileinfo::{RED, YELLOW},
     glass::Tier,
@@ -42,10 +41,8 @@ mod proc;
 
 type Rgb = (f64, f64, f64);
 
-/// The readings a panel's line holds, a minute of them at the fastest.
-const HISTORY: usize = 60;
-/// The readings the bar's line holds.
-const BAR_HISTORY: usize = 24;
+/// The most readings a panel's line holds, as its setting may ask.
+const HISTORY: usize = 300;
 /// How long a new reading takes to slide in and the bars to grow to it.
 const SETTLE: f64 = 0.4;
 const MAX_PROCESSES: usize = 10;
@@ -83,6 +80,10 @@ const MOST_BARS: usize = 16;
 const SETTINGS_PAGE: &str = "系統監控";
 /// The room between the readings when they are one item, and a row of the panel listing them.
 const COMBINED_GAP: i32 = 6;
+/// Between the widgets of one reading in the bar.
+const WIDGET_GAP: i32 = 4;
+const BAR_ICON: i32 = 14;
+const STATE_DOT: f64 = 3.5;
 const SUMMARY_ROW: i32 = 44;
 const SUMMARY_CHART: (i32, i32) = (96, 24);
 /// The ring's and the gauge's size in the bar, and the width of their arcs.
@@ -104,13 +105,11 @@ pub enum Module {
     Disk,
     Network,
     Sensors,
-    Power,
 }
 
 impl Module {
     /// Left to right, as Stats puts them.
-    pub const ALL: [Module; 7] =
-        [Module::Cpu, Module::Gpu, Module::Ram, Module::Disk, Module::Network, Module::Sensors, Module::Power];
+    pub const ALL: [Module; 6] = [Module::Cpu, Module::Gpu, Module::Ram, Module::Disk, Module::Network, Module::Sensors];
 
     fn bit(self) -> u32 {
         1 << self as u32
@@ -124,8 +123,54 @@ impl Module {
             Module::Disk => config.stats_disk,
             Module::Network => config.stats_network,
             Module::Sensors => config.stats_sensors,
-            Module::Power => config.stats_power,
         }
+    }
+
+    /// What it shows in the bar, left to right.
+    fn widgets(self, config: &Config) -> &[StatsWidget] {
+        match self {
+            Module::Cpu => &config.stats_cpu_widgets,
+            Module::Gpu => &config.stats_gpu_widgets,
+            Module::Ram => &config.stats_ram_widgets,
+            Module::Disk => &config.stats_disk_widgets,
+            Module::Network => &config.stats_network_widgets,
+            Module::Sensors => &config.stats_sensors_widgets,
+        }
+    }
+
+    fn interval(self, config: &Config) -> u32 {
+        match self {
+            Module::Cpu => config.stats_cpu_interval,
+            Module::Gpu => config.stats_gpu_interval,
+            Module::Ram => config.stats_ram_interval,
+            Module::Disk => config.stats_disk_interval,
+            Module::Network => config.stats_network_interval,
+            Module::Sensors => config.stats_sensors_interval,
+        }
+    }
+
+    /// How many of its busiest processes its panel lists; the GPU's and the sensors' none.
+    fn processes(self, config: &Config) -> u32 {
+        match self {
+            Module::Cpu => config.stats_cpu_processes,
+            Module::Ram => config.stats_ram_processes,
+            Module::Disk => config.stats_disk_processes,
+            Module::Network => config.stats_network_processes,
+            Module::Gpu | Module::Sensors => 0,
+        }
+    }
+
+    /// How many readings its panel's line holds.
+    fn history(self, config: &Config) -> usize {
+        let count = match self {
+            Module::Cpu => config.stats_cpu_history,
+            Module::Gpu => config.stats_gpu_history,
+            Module::Ram => config.stats_ram_history,
+            Module::Disk => config.stats_disk_history,
+            Module::Network => config.stats_network_history,
+            Module::Sensors => config.stats_sensors_history,
+        };
+        (count as usize).clamp(2, HISTORY)
     }
 
     /// What the order of the bar's icons calls it.
@@ -137,11 +182,10 @@ impl Module {
             Module::Disk => "stats:disk",
             Module::Network => "stats:network",
             Module::Sensors => "stats:sensors",
-            Module::Power => "stats:power",
         }
     }
 
-    /// Its name in the bar, as Stats writes it there.
+    /// Its name in the bar, as Stats writes it there; the sensors' is their reading's.
     fn label(self) -> &'static str {
         match self {
             Module::Cpu => "CPU",
@@ -150,18 +194,18 @@ impl Module {
             Module::Disk => "SSD",
             Module::Network => "NET",
             Module::Sensors => "TMP",
-            Module::Power => "PWR",
         }
     }
 
-    /// What a notification calls its use.
-    fn usage_name(self) -> &'static str {
+    /// Its icon, drawn for Nekoland.
+    fn icon(self) -> &'static str {
         match self {
-            Module::Cpu => "CPU 使用率",
-            Module::Gpu => "GPU 使用率",
-            Module::Ram => "記憶體使用量",
-            Module::Disk => "磁碟使用量",
-            Module::Network | Module::Sensors | Module::Power => "",
+            Module::Cpu => "nekoland-stats-cpu-symbolic",
+            Module::Gpu => "nekoland-stats-gpu-symbolic",
+            Module::Ram => "nekoland-stats-memory-symbolic",
+            Module::Disk => "nekoland-stats-disk-symbolic",
+            Module::Network => "nekoland-stats-network-symbolic",
+            Module::Sensors => "nekoland-stats-sensors-symbolic",
         }
     }
 
@@ -173,16 +217,36 @@ impl Module {
             Module::Disk => "磁碟",
             Module::Network => "網路",
             Module::Sensors => "感應器",
-            Module::Power => "功耗",
         }
     }
 }
 
-// What the reading thread is asked for, set from the compositor's settings.
-static WANTED: AtomicU32 = AtomicU32::new(0);
-static INTERVAL: AtomicU32 = AtomicU32::new(2);
-static PROCESSES: AtomicU32 = AtomicU32::new(5);
-static PUBLIC_IP: AtomicBool = AtomicBool::new(false);
+/// What the reading thread is asked for, set from the compositor's settings: the modules,
+/// and by `Module as usize` each one's seconds between readings and how many of its busiest
+/// processes; then the network's public address and interface, the GPU, the disk's mount and
+/// the sensor the bar shows, by name.
+#[derive(Clone, Default, PartialEq)]
+struct Asked {
+    wanted: u32,
+    intervals: [u32; 6],
+    processes: [usize; 6],
+    public_ip: bool,
+    interface: String,
+    gpu: String,
+    mount: String,
+    sensor: String,
+}
+
+static ASKED: Mutex<Asked> = Mutex::new(Asked {
+    wanted: 0,
+    intervals: [2; 6],
+    processes: [0; 6],
+    public_ip: false,
+    interface: String::new(),
+    gpu: String::new(),
+    mount: String::new(),
+    sensor: String::new(),
+});
 /// The windows' processes and their applications' IDs, which a process run under one is
 /// counted with, as the task manager counts it.
 static WINDOWS: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
@@ -334,6 +398,64 @@ pub struct Sample {
     pub other_gpus: Vec<Gpu>,
     /// The address the internet sees, with its country's code, when asked for.
     pub public_ip: Option<(String, String)>,
+    /// The modules this reading read, the others kept from the readings before; and the
+    /// sensor the bar shows, by name.
+    pub fresh: u32,
+    pub sensor: String,
+}
+
+/// What a sensor's reading is in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Unit {
+    Celsius,
+    Watts,
+    Rpm,
+    Volts,
+}
+
+/// One of the sensors' readings, with the most it may be where that is known.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Reading {
+    unit: Unit,
+    value: f64,
+    limit: Option<f64>,
+}
+
+impl Reading {
+    fn fraction(self) -> Option<f64> {
+        Some((self.value / self.limit?).clamp(0.0, 1.0))
+    }
+
+    /// `value` as this reading's are written: spaced from its unit in the panels, close in the bar.
+    fn text(self, value: f64, fahrenheit: bool, spaced: bool) -> String {
+        let space = if spaced { " " } else { "" };
+        match self.unit {
+            Unit::Celsius => temperature_text(value, fahrenheit, spaced),
+            Unit::Watts => format!("{value:.0}{space}W"),
+            Unit::Rpm => format!("{value:.0}{space}RPM"),
+            Unit::Volts => format!("{value:.2}{space}V"),
+        }
+    }
+
+    /// The widest the bar writes one of its kind.
+    fn widest(self) -> &'static str {
+        match self.unit {
+            Unit::Celsius => "100°",
+            Unit::Watts => "999W",
+            Unit::Rpm => "9999RPM",
+            Unit::Volts => "12.00V",
+        }
+    }
+
+    /// Its name in the bar, as Stats writes it there.
+    fn label(self) -> &'static str {
+        match self.unit {
+            Unit::Celsius => "TMP",
+            Unit::Watts => "PWR",
+            Unit::Rpm => "FAN",
+            Unit::Volts => "VLT",
+        }
+    }
 }
 
 impl Sample {
@@ -344,8 +466,7 @@ impl Sample {
             Module::Gpu => self.gpu.as_ref().map(|gpu| gpu.usage),
             Module::Ram => self.ram.as_ref().map(|ram| ram.used / ram.total.max(1.0)),
             Module::Disk => self.disk.as_ref().map(|disk| 1.0 - disk.free / disk.total.max(1.0)),
-            Module::Sensors => self.hottest().map(|(_, celsius)| celsius / 100.0),
-            Module::Power => self.power.as_ref().map(|power| power.total / power.limit.unwrap_or(POWER_SCALE)),
+            Module::Sensors => self.reading(&self.sensor).and_then(|(_, reading)| reading.fraction()),
             Module::Network => None,
         }
         .map(|value| value.clamp(0.0, 1.0))
@@ -365,10 +486,42 @@ impl Sample {
         self.temperatures.iter().max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    fn critical(&self, name: &str) -> Option<f64> {
+        self.critical.iter().find(|(found, _)| found == name).map(|(_, celsius)| *celsius)
+    }
+
+    /// A sensor's reading by its setting's name, `hottest`, `power` or its own, with what it
+    /// is called; a temperature is measured to the point its chip says it must not pass.
+    fn reading(&self, name: &str) -> Option<(String, Reading)> {
+        let temperature = |(name, celsius): &(String, f64)| {
+            (name.clone(), Reading { unit: Unit::Celsius, value: *celsius, limit: Some(self.critical(name).unwrap_or(100.0)) })
+        };
+        match name {
+            "hottest" => self.hottest().map(temperature),
+            "power" => self.power.as_ref().map(|power| {
+                ("功耗".to_string(), Reading { unit: Unit::Watts, value: power.total, limit: Some(power.limit.unwrap_or(POWER_SCALE)) })
+            }),
+            _ => self
+                .temperatures
+                .iter()
+                .find(|(found, _)| found == name)
+                .map(temperature)
+                .or_else(|| {
+                    let fan = self.fans.iter().find(|fan| fan.name == name)?;
+                    Some((name.to_string(), Reading { unit: Unit::Rpm, value: fan.rpm, limit: None }))
+                })
+                .or_else(|| {
+                    let (_, volts) = self.voltages.iter().find(|(found, _)| found == name)?;
+                    Some((name.to_string(), Reading { unit: Unit::Volts, value: *volts, limit: None }))
+                }),
+        }
+    }
+
     /// Whether the bar has anything to show for it.
     fn has(&self, module: Module) -> bool {
         match module {
             Module::Network => self.network.is_some(),
+            Module::Sensors => self.reading(&self.sensor).is_some(),
             _ => self.fraction(module).is_some(),
         }
     }
@@ -390,7 +543,15 @@ struct Before {
     /// Each Intel GPU client's busy time on each engine, in nanoseconds.
     engines: HashMap<(String, String), u64>,
     public_ip: Option<(Instant, String, Option<(String, String)>)>,
-    at: Option<Instant>,
+    /// When each module, and the processes, were read last.
+    at: HashMap<Module, Option<Instant>>,
+    processes_at: Option<Instant>,
+}
+
+/// The seconds since `at`, which becomes now.
+fn lap(at: &mut Option<Instant>) -> Option<f64> {
+    let now = Instant::now();
+    at.replace(now).map(|then| now.duration_since(then).as_secs_f64())
 }
 
 fn read(path: impl AsRef<Path>) -> String {
@@ -506,11 +667,14 @@ fn parse_disk_sectors(diskstats: &str, is_disk: impl Fn(&str) -> bool) -> (u64, 
         .fold((0, 0), |(read, written), (r, w)| (read + r, written + w))
 }
 
-fn read_disk(before: &mut Before, elapsed: Option<f64>) -> Option<Disk> {
+/// The room of the filesystem mounted at `mount`, the root's when empty, and all the disks'
+/// reading and writing.
+fn read_disk(before: &mut Before, elapsed: Option<f64>, mount: &str) -> Option<Disk> {
+    let mount = std::ffi::CString::new(if mount.is_empty() { "/" } else { mount }).ok()?;
     // SAFETY: statvfs fills the struct it is given, which lives through the call.
     let (total, free) = unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
-        if libc::statvfs(c"/".as_ptr(), &mut stat) != 0 {
+        if libc::statvfs(mount.as_ptr(), &mut stat) != 0 {
             return None;
         }
         let block = stat.f_frsize as f64;
@@ -623,8 +787,9 @@ fn default_interface(route: &str) -> Option<String> {
     })
 }
 
-fn read_network(before: &mut Before, elapsed: Option<f64>) -> Option<Net> {
-    let interface = default_interface(&read("/proc/net/route"))?;
+/// The interface named, or the default route's without one.
+fn read_network(before: &mut Before, elapsed: Option<f64>, named: &str) -> Option<Net> {
+    let interface = if named.is_empty() { default_interface(&read("/proc/net/route"))? } else { named.to_string() };
     let statistics = PathBuf::from("/sys/class/net").join(&interface).join("statistics");
     let received = read_number(statistics.join("rx_bytes"))? as u64;
     let sent = read_number(statistics.join("tx_bytes"))? as u64;
@@ -1004,85 +1169,140 @@ fn read_public_ip(before: &mut Before, interface: &str) -> Option<(String, Strin
     before.public_ip.as_ref().and_then(|(_, _, found)| found.clone())
 }
 
-fn read_sample(before: &mut Before, wanted: u32) -> Sample {
-    let now = Instant::now();
-    let elapsed = before.at.replace(now).map(|at| now.duration_since(at).as_secs_f64());
-    let wants = |module: Module| wanted & module.bit() != 0;
-    let mut sample = Sample::default();
-    if wants(Module::Sensors) || wants(Module::Cpu) {
-        (sample.temperatures, sample.fans, sample.voltages, sample.critical) = read_sensors(Path::new(HWMON));
+/// Reads into `sample` the modules `due` names, and drops what is no longer asked for.
+fn read_sample(before: &mut Before, sample: &mut Sample, due: u32, asked: &Asked) {
+    let reads = |module: Module| due & module.bit() != 0;
+    let wants = |module: Module| asked.wanted & module.bit() != 0;
+    let count = |module: Module| asked.processes[module as usize].min(MAX_PROCESSES);
+    sample.fresh = due;
+    sample.sensor.clone_from(&asked.sensor);
+    if reads(Module::Sensors) || reads(Module::Cpu) {
+        let (temperatures, fans, voltages, critical) = read_sensors(Path::new(HWMON));
+        if reads(Module::Cpu) {
+            sample.cpu = read_cpu(before, &temperatures);
+        }
+        if reads(Module::Sensors) {
+            (sample.temperatures, sample.fans, sample.voltages, sample.critical) = (temperatures, fans, voltages, critical);
+        }
     }
-    if wants(Module::Cpu) {
-        sample.cpu = read_cpu(before, &sample.temperatures);
-    }
-    if wants(Module::Gpu) {
-        let mut gpus = read_gpus(before, elapsed).into_iter();
+    if reads(Module::Gpu) {
+        let elapsed = lap(before.at.entry(Module::Gpu).or_default());
+        let mut gpus = read_gpus(before, elapsed);
+        // The one asked for first.
+        if let Some(at) = gpus.iter().position(|gpu| gpu.name == asked.gpu) {
+            let asked = gpus.remove(at);
+            gpus.insert(0, asked);
+        }
+        let mut gpus = gpus.into_iter();
         sample.gpu = gpus.next();
         sample.other_gpus = gpus.collect();
     }
-    if wants(Module::Power) {
+    if reads(Module::Sensors) {
         // The GPU's own reading where it is shown, else one for its power alone.
         let discrete = if wants(Module::Gpu) { None } else { read_discrete() };
-        let gpu = sample.gpu.as_ref().or(discrete.as_ref());
+        let gpu = sample.gpu.iter().chain(&sample.other_gpus).find(|gpu| gpu.power.is_some()).or(discrete.as_ref());
         let cpu_limit = read_number(Path::new(RAPL).join("constraint_0_power_limit_uw")).map(|micro| micro / 1e6);
         sample.power = power_of(&parse_rapl(&read(Path::new(SENSORS).join("power"))), battery_power(), cpu_limit, gpu);
     }
-    if wants(Module::Ram) {
+    if reads(Module::Ram) {
         sample.ram = read_ram();
     }
-    if wants(Module::Disk) {
-        sample.disk = read_disk(before, elapsed);
+    if reads(Module::Disk) {
+        let elapsed = lap(before.at.entry(Module::Disk).or_default());
+        sample.disk = read_disk(before, elapsed, &asked.mount);
     }
-    if wants(Module::Network) {
-        sample.network = read_network(before, elapsed);
-        if let Some(net) = sample.network.as_ref().filter(|_| PUBLIC_IP.load(Ordering::Relaxed)) {
-            sample.public_ip = read_public_ip(before, &net.interface);
-        }
+    let mut network_elapsed = None;
+    if reads(Module::Network) {
+        network_elapsed = lap(before.at.entry(Module::Network).or_default());
+        sample.network = read_network(before, network_elapsed, &asked.interface);
+        sample.public_ip = match sample.network.as_ref().filter(|_| asked.public_ip) {
+            Some(net) => read_public_ip(before, &net.interface),
+            None => None,
+        };
     }
-    let count = (PROCESSES.load(Ordering::Relaxed) as usize).min(MAX_PROCESSES);
-    let by_process = wants(Module::Cpu) || wants(Module::Ram) || wants(Module::Disk);
-    if count > 0 && (by_process || wants(Module::Network)) {
+    let by_process = [Module::Cpu, Module::Ram, Module::Disk].into_iter().any(|module| reads(module) && count(module) > 0);
+    let by_network = reads(Module::Network) && count(Module::Network) > 0;
+    if by_process || by_network {
         let procs = proc::read_procs();
         let windows: HashMap<i32, String> = WINDOWS.lock().map(|windows| windows.iter().cloned().collect()).unwrap_or_default();
         let owners = proc::owners(&procs, &windows);
         sample.apps = owners.values().map(|app| app.to_string()).collect();
         if by_process {
-            [sample.top_cpu, sample.top_ram, sample.top_disk] = read_processes(before, elapsed, count, (&procs, &owners));
+            let most = [Module::Cpu, Module::Ram, Module::Disk].map(count).into_iter().max().unwrap_or(0);
+            let elapsed = lap(&mut before.processes_at);
+            let [mut cpu, mut ram, mut disk] = read_processes(before, elapsed, most, (&procs, &owners));
+            cpu.truncate(count(Module::Cpu));
+            ram.truncate(count(Module::Ram));
+            disk.truncate(count(Module::Disk));
+            [sample.top_cpu, sample.top_ram, sample.top_disk] = [cpu, ram, disk];
         }
-        if wants(Module::Network) {
+        if by_network {
             let apps = procs.iter().filter_map(|proc| Some((proc.name.as_str(), *owners.get(&proc.pid)?))).collect();
-            sample.top_network = read_network_processes(before, elapsed, count, &apps);
+            sample.top_network = read_network_processes(before, network_elapsed, count(Module::Network), &apps);
         }
     }
-    if !wants(Module::Sensors) {
-        sample.temperatures.clear();
-        sample.fans.clear();
-        sample.voltages.clear();
-        sample.critical.clear();
+    // What is no longer asked for goes.
+    for module in Module::ALL.into_iter().filter(|module| count(*module) == 0) {
+        match module {
+            Module::Cpu => sample.top_cpu.clear(),
+            Module::Ram => sample.top_ram.clear(),
+            Module::Disk => sample.top_disk.clear(),
+            Module::Network => sample.top_network.clear(),
+            Module::Gpu | Module::Sensors => {}
+        }
     }
-    sample
+    for module in Module::ALL.into_iter().filter(|module| !wants(*module)) {
+        before.at.remove(&module);
+        match module {
+            Module::Cpu => sample.cpu = None,
+            Module::Gpu => (sample.gpu, sample.other_gpus) = (None, Vec::new()),
+            Module::Ram => sample.ram = None,
+            Module::Disk => sample.disk = None,
+            Module::Network => (sample.network, sample.public_ip) = (None, None),
+            Module::Sensors => {
+                sample.temperatures.clear();
+                sample.fans.clear();
+                sample.voltages.clear();
+                sample.critical.clear();
+                sample.power = None;
+            }
+        }
+    }
 }
 
-/// Reads every `INTERVAL` seconds what `WANTED` asks for, until nobody takes the readings.
+/// Reads each module `ASKED` wants every its seconds, until nobody takes the readings.
 fn spawn_reader() -> Option<Receiver<Sample>> {
     let (send, found) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("nekoland-stats".into()).spawn(move || {
         let mut before = Before::default();
-        let mut wanted = 0;
+        let mut sample = Sample::default();
+        // When each module is read next.
+        let mut next: HashMap<Module, Instant> = HashMap::new();
         loop {
-            let now = WANTED.load(Ordering::Relaxed);
-            if now == 0 {
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
+            let asked = ASKED.lock().map(|asked| asked.clone()).unwrap_or_default();
+            next.retain(|module, _| asked.wanted & module.bit() != 0);
+            let now = Instant::now();
+            let due = Module::ALL
+                .into_iter()
+                .filter(|module| asked.wanted & module.bit() != 0 && next.get(module).is_none_or(|at| *at <= now))
+                .fold(0, |bits, module| bits | module.bit());
+            if due != 0 {
+                for module in Module::ALL.into_iter().filter(|module| due & module.bit() != 0) {
+                    // What was just asked for has nothing to count from; it is read again soon.
+                    let wait = match next.contains_key(&module) {
+                        true => Duration::from_secs(asked.intervals[module as usize].clamp(1, 10).into()),
+                        false => Duration::from_millis(500),
+                    };
+                    next.insert(module, now + wait);
+                }
+                read_sample(&mut before, &mut sample, due, &asked);
+                if send.send(sample.clone()).is_err() {
+                    return;
+                }
             }
-            // What was just asked for has nothing to count from; it is read again soon.
-            let fresh = now & !wanted != 0;
-            wanted = now;
-            if send.send(read_sample(&mut before, wanted)).is_err() {
-                return;
-            }
-            let seconds = INTERVAL.load(Ordering::Relaxed).clamp(1, 10);
-            std::thread::sleep(if fresh { Duration::from_millis(500) } else { Duration::from_secs(seconds.into()) });
+            // Asked again at least each second, for what the settings change.
+            let soonest = next.values().min().map_or(Duration::from_secs(1), |at| at.saturating_duration_since(Instant::now()));
+            std::thread::sleep(soonest.clamp(Duration::from_millis(100), Duration::from_secs(1)));
         }
     });
     match spawned {
@@ -1118,6 +1338,22 @@ fn size_text(bytes: f64) -> String {
 
 fn speed_text(bytes: f64) -> String {
     format!("{}/s", size_text(bytes))
+}
+
+/// Bytes a second as bits, in the decimal units networks are sold in.
+fn bits_text(bytes: f64) -> String {
+    const UNITS: [&str; 4] = ["b/s", "Kb/s", "Mb/s", "Gb/s"];
+    let mut value = (bytes * 8.0).max(0.0);
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 || value >= 10.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// What runs the helper as root to set the fan at `pwm`: `mode`, its `pwm_enable`, or
@@ -1323,10 +1559,17 @@ fn grouped_cores(cores: &[f64], most: usize) -> Vec<f64> {
     cores.chunks(size).map(|chunk| chunk.iter().sum::<f64>() / chunk.len() as f64).collect()
 }
 
-/// Speeds as fractions of the most of them, or of `LEAST_SPEED`.
-fn scaled(pairs: &[(f64, f64)]) -> (Vec<f64>, Vec<f64>) {
+/// Speeds as fractions of the most of them, or of `LEAST_SPEED`, the slower drawn taller
+/// as `scale` asks.
+fn scaled(pairs: &[(f64, f64)], scale: StatsScale) -> (Vec<f64>, Vec<f64>) {
     let most = pairs.iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
-    (pairs.iter().map(|(a, _)| a / most).collect(), pairs.iter().map(|(_, b)| b / most).collect())
+    let shown = |speed: f64| match scale {
+        StatsScale::Linear => speed / most,
+        StatsScale::Square => (speed / most).sqrt(),
+        StatsScale::Cube => (speed / most).cbrt(),
+        StatsScale::Log => speed.ln_1p() / most.ln_1p(),
+    };
+    (pairs.iter().map(|(a, _)| shown(*a)).collect(), pairs.iter().map(|(_, b)| shown(*b)).collect())
 }
 
 // The compositor's side.
@@ -1381,16 +1624,17 @@ impl View {
 /// Tells of a reading once when it has stayed past its threshold `ALERT_AFTER` times, and
 /// again only after it has come back.
 #[derive(Default)]
-struct Alerts(HashMap<Module, (u32, bool)>);
+struct Alerts(HashMap<String, (u32, bool)>);
 
 impl Alerts {
-    /// Whether to tell of `module` now, it being `past` its threshold, or None without one.
-    fn check(&mut self, module: Module, past: Option<bool>) -> bool {
+    /// Whether to tell of the reading called `name` now, it being `past` its threshold, or
+    /// None without one.
+    fn check(&mut self, name: &str, past: Option<bool>) -> bool {
         if past != Some(true) {
-            self.0.remove(&module);
+            self.0.remove(name);
             return false;
         }
-        let (count, told) = self.0.entry(module).or_default();
+        let (count, told) = self.0.entry(name.to_string()).or_default();
         *count += 1;
         if *count >= ALERT_AFTER && !*told {
             *told = true;
@@ -1456,6 +1700,9 @@ pub struct Stats {
     /// The panel fading out as another opens or it closes.
     closing: Option<Panel>,
     alerts: Alerts,
+    /// The network's interface, local address and public address last read, which a
+    /// notification tells a change of.
+    network_seen: Option<(Option<String>, Option<String>, Option<String>)>,
     fan_control: bool,
     animations: bool,
     fan_drag: Option<(usize, f64)>,
@@ -1562,43 +1809,72 @@ impl Stats {
         self.panel.as_ref().map(|panel| panel.view)
     }
 
-    /// What to tell of the newest reading: each title and body past its threshold.
-    fn alerts(&mut self, config: &Config) -> Vec<(String, String)> {
+    /// What to tell of the newest reading: each title and body past its threshold, and of the
+    /// network what changed, `address` being the local one.
+    fn alerts(&mut self, config: &Config, address: Option<&str>) -> Vec<(String, String)> {
         let Some(sample) = self.sample.clone() else {
             return Vec::new();
         };
         let mut told = Vec::new();
-        for module in Module::ALL {
-            let enabled = module.enabled(config);
-            if module == Module::Sensors {
-                let limit = f64::from(config.stats_alert_temperature);
-                let hottest = sample.hottest().filter(|_| enabled && limit > 0.0);
-                if self.alerts.check(module, hottest.map(|(_, celsius)| *celsius >= limit)) {
-                    if let Some((name, celsius)) = hottest {
-                        let shown = |celsius| temperature_text(celsius, config.stats_fahrenheit, true);
-                        told.push((format!("{name} 溫度 {}", shown(*celsius)), format!("超過 {}", shown(limit))));
-                    }
-                }
-                continue;
+        let (cpu, ram) = (sample.cpu.as_ref(), sample.ram.as_ref());
+        // Each one's name, its module, its value from 0 to 1, its limit in percent, and
+        // whether it is passed going down.
+        let percents = [
+            ("CPU 使用率", Module::Cpu, cpu.map(|cpu| cpu.usage), config.stats_cpu_alert, false),
+            ("CPU 系統使用率", Module::Cpu, cpu.map(|cpu| cpu.system), config.stats_cpu_alert_system, false),
+            ("CPU 使用者使用率", Module::Cpu, cpu.map(|cpu| cpu.user), config.stats_cpu_alert_user, false),
+            ("GPU 使用率", Module::Gpu, sample.fraction(Module::Gpu), config.stats_gpu_alert, false),
+            ("記憶體使用量", Module::Ram, sample.fraction(Module::Ram), config.stats_ram_alert, false),
+            ("可用記憶體", Module::Ram, sample.fraction(Module::Ram).map(|used| 1.0 - used), config.stats_ram_alert_free, true),
+            ("置換空間", Module::Ram, ram.filter(|ram| ram.swap.1 > 0.0).map(|ram| ram.swap.0 / ram.swap.1), config.stats_ram_alert_swap, false),
+            ("記憶體壓力", Module::Ram, ram.and_then(|ram| ram.pressure), config.stats_ram_alert_pressure, false),
+            ("磁碟使用量", Module::Disk, sample.fraction(Module::Disk), config.stats_disk_alert, false),
+        ];
+        for (name, module, value, limit, below) in percents {
+            let limit = f64::from(limit) / 100.0;
+            let value = value.filter(|_| module.enabled(config) && limit > 0.0);
+            let passed = value.map(|value| if below { value <= limit } else { value >= limit });
+            if let Some(value) = value.filter(|_| self.alerts.check(name, passed)) {
+                told.push((format!("{name} {}", percent(value)), format!("{} {}", if below { "低於" } else { "超過" }, percent(limit))));
             }
-            let limit = f64::from(config.stats_alert) / 100.0;
-            let value = sample.fraction(module).filter(|_| enabled && limit > 0.0 && !matches!(module, Module::Network | Module::Power));
-            if self.alerts.check(module, value.map(|value| value >= limit)) {
-                if let Some(value) = value {
-                    told.push((format!("{} {}", module.usage_name(), percent(value)), format!("超過 {}", percent(limit))));
-                }
+        }
+        for (name, limit) in config.stats_sensors_alerts.iter().filter(|_| Module::Sensors.enabled(config)) {
+            let reading = sample.reading(name).filter(|_| *limit > 0);
+            let limit = f64::from(*limit);
+            let passed = reading.as_ref().map(|(_, reading)| reading.value >= limit);
+            if let Some((called, reading)) = reading.filter(|_| self.alerts.check(name, passed)) {
+                let text = |value| reading.text(value, config.stats_fahrenheit, true);
+                let what = if reading.unit == Unit::Celsius { format!("{called} 溫度") } else { called };
+                told.push((format!("{what} {}", text(reading.value)), format!("超過 {}", text(limit))));
             }
+        }
+        if !Module::Network.enabled(config) {
+            self.network_seen = None;
+            return told;
+        }
+        let interface = sample.network.as_ref().map(|net| net.interface.clone());
+        let now = (interface, address.map(str::to_string), sample.public_ip.as_ref().map(|(public, _)| public.clone()));
+        // Told only of a change from what was seen before.
+        let Some((was, was_address, was_public)) = self.network_seen.replace(now.clone()) else {
+            return told;
+        };
+        let (interface, address, public) = now;
+        match (&was, &interface) {
+            (Some(was), None) if config.stats_network_alert_connection => told.push(("網路已中斷".into(), was.clone())),
+            (None, Some(now)) if config.stats_network_alert_connection => told.push(("網路已連線".into(), now.clone())),
+            (Some(was), Some(now)) if was != now && config.stats_network_alert_interface => {
+                told.push(("網路介面已變更".into(), format!("{was} → {now}")));
+            }
+            _ => {}
+        }
+        let changed = |was: Option<String>, now: Option<String>| now.filter(|now| was.is_some_and(|was| was != *now));
+        if let Some(address) = changed(was_address, address).filter(|_| config.stats_network_alert_address) {
+            told.push(("本機 IP 已變更".into(), address));
+        }
+        if let Some(public) = changed(was_public, public).filter(|_| config.stats_network_alert_public_ip) {
+            told.push(("公用 IP 已變更".into(), public));
         }
         told
-    }
-
-    /// How a module is drawn: as the settings ask, but the network's speeds always as numbers
-    /// where its two would not fit one ring or gauge.
-    fn style(module: Module, config: &Config) -> StatsStyle {
-        match config.stats_style {
-            StatsStyle::Ring | StatsStyle::Gauge | StatsStyle::Pie if module == Module::Network => StatsStyle::Value,
-            style => style,
-        }
     }
 
     /// How wide all the shown readings are as one item.
@@ -1684,7 +1960,10 @@ impl Stats {
         let Some(sample) = &self.sample else {
             return Vec::new();
         };
-        Module::ALL.into_iter().filter(|module| module.enabled(config) && sample.has(*module)).collect()
+        Module::ALL
+            .into_iter()
+            .filter(|module| module.enabled(config) && !module.widgets(config).is_empty() && sample.has(*module))
+            .collect()
     }
 
     fn fraction(&self, module: Module, progress: f64) -> f64 {
@@ -1714,6 +1993,8 @@ impl Stats {
             };
             let history = self.history.entry(module).or_default();
             match point {
+                // A module this reading did not read keeps the line it had.
+                Some(_) if sample.fresh & module.bit() == 0 => {}
                 Some(point) => {
                     history.push_back(point);
                     while history.len() > HISTORY + 1 {
@@ -1728,75 +2009,262 @@ impl Stats {
         self.count += 1;
     }
 
-    /// How wide the module is in the bar.
+    /// How far the module's line has slid to its newest reading: all the way for one the
+    /// newest reading did not read.
+    fn slide(&self, module: Module, progress: f64) -> f64 {
+        if self.sample.as_ref().is_some_and(|sample| sample.fresh & module.bit() != 0) { progress } else { 1.0 }
+    }
+
+    /// The module's name in the bar: the sensors' that of the reading they show.
+    fn bar_label(&self, module: Module) -> &'static str {
+        match self.sample.as_ref().filter(|_| module == Module::Sensors).and_then(|sample| sample.reading(&sample.sensor)) {
+            Some((_, reading)) => reading.label(),
+            None => module.label(),
+        }
+    }
+
+    /// The sensors' readings `stats_sensors_shown` names that there are.
+    fn sensor_readings(&self, config: &Config) -> Vec<Reading> {
+        let Some(sample) = &self.sample else {
+            return Vec::new();
+        };
+        config.stats_sensors_shown.iter().filter_map(|name| Some(sample.reading(name)?.1)).collect()
+    }
+
+    /// The two speeds, the network's under its threshold as none, and in the order asked.
+    fn speeds_shown(&self, module: Module, widget: &StatsWidget, config: &Config, progress: f64) -> (f64, f64) {
+        let now = self.sample.as_ref().and_then(|sample| sample.speeds(module)).unwrap_or_default();
+        let before = self.previous.as_ref().and_then(|sample| sample.speeds(module)).unwrap_or(now);
+        let least = if module == Module::Network { f64::from(config.stats_network_threshold) * 1024.0 } else { 0.0 };
+        let shown = |from: f64, to: f64| Some(lerp(from, to, progress)).filter(|speed| *speed >= least).unwrap_or(0.0);
+        let (down, up) = (shown(before.0, now.0), shown(before.1, now.1));
+        if widget.reverse { (up, down) } else { (down, up) }
+    }
+
+    /// How wide the module is in the bar: its widgets side by side.
     pub(crate) fn item_width(&self, module: Module, config: &Config) -> i32 {
-        let value_font = font("Medium", if config.stats_labels { 9.0 } else { 10.0 });
-        let labelled = config.stats_labels && module != Module::Network;
-        let label_column = if config.stats_labels { text_size("W", &standing_font()).0 as f64 + BAR_LABEL_GAP } else { 0.0 };
-        match Self::style(module, config) {
-            StatsStyle::Ring | StatsStyle::Pie => (label_column + RING) as i32,
-            StatsStyle::Gauge => (label_column + GAUGE.0) as i32,
-            StatsStyle::Value if module == Module::Network => text_size("↓ 999 KB/s", &font("Medium", 8.0)).0,
-            StatsStyle::Value => {
+        let widths: Vec<i32> = module.widgets(config).iter().map(|widget| self.widget_width(module, widget, config)).collect();
+        widths.iter().sum::<i32>() + WIDGET_GAP * (widths.len() as i32 - 1).max(0)
+    }
+
+    fn widget_width(&self, module: Module, widget: &StatsWidget, config: &Config) -> i32 {
+        let standing = if widget.label { f64::from(text_size("W", &standing_font()).0) + BAR_LABEL_GAP } else { 0.0 };
+        let small = font("Medium", 8.0);
+        let width = |text: &str, font: &pango::FontDescription| f64::from(text_size(text, font).0);
+        let speed = if config.stats_network_bits && module == Module::Network { "999 Kb/s" } else { "999 KB/s" };
+        let symbol = match widget.symbols {
+            StatsSymbols::Arrows => width("↓ ", &small),
+            StatsSymbols::Letters => width("O ", &small),
+            StatsSymbols::Dots => STATE_DOT * 2.0 + 3.0,
+            StatsSymbols::None => 0.0,
+        };
+        let shown = match widget.kind {
+            StatsWidgetKind::Label => width(self.bar_label(module), &font("Bold", 8.0)),
+            StatsWidgetKind::Mini => {
                 let widest = match module {
-                    Module::Sensors => "100°",
-                    Module::Power => "999W",
+                    Module::Sensors => self.sensor_readings(config).first().map_or("100°", |reading| reading.widest()),
+                    Module::Network => speed,
                     _ => "100%",
                 };
-                let value = text_size(widest, &value_font).0;
-                if labelled { value.max(text_size(module.label(), &label_font()).0) } else { value }
+                let value = width(widest, &font("Medium", if widget.label { 9.0 } else { 10.0 }));
+                if widget.label { value.max(width(self.bar_label(module), &label_font())) } else { value }
             }
-            StatsStyle::Chart => (label_column + BAR_CHART.0) as i32,
-            StatsStyle::Bars => {
-                let bars = match module {
-                    Module::Cpu => {
-                        let count = grouped_cores(&self.cores(1.0), MOST_BARS).len() as f64;
-                        count * 3.0 + (count - 1.0).max(0.0)
+            StatsWidgetKind::LineChart | StatsWidgetKind::NetworkChart => standing + BAR_CHART.0,
+            StatsWidgetKind::BarChart if module == Module::Network => standing + 13.0,
+            StatsWidgetKind::Cores if module == Module::Cpu => {
+                let count = grouped_cores(&self.cores(1.0), MOST_BARS).len() as f64;
+                standing + count * 3.0 + (count - 1.0).max(0.0)
+            }
+            StatsWidgetKind::BarChart | StatsWidgetKind::Cores => standing + 6.0,
+            StatsWidgetKind::PieChart | StatsWidgetKind::Ring => standing + RING,
+            StatsWidgetKind::Tachometer => standing + GAUGE.0,
+            StatsWidgetKind::Memory => width("99.9 GB", &small),
+            StatsWidgetKind::Speed => match widget.rows {
+                StatsRows::Two => symbol + width(speed, &small),
+                StatsRows::One => (symbol + width(speed, &font("Medium", 9.0))) * 2.0 + 6.0,
+            },
+            StatsWidgetKind::Sensors => {
+                let readings = self.sensor_readings(config);
+                match widget.rows {
+                    // Two to a column.
+                    StatsRows::Two => readings
+                        .chunks(2)
+                        .map(|column| column.iter().map(|reading| width(reading.widest(), &small)).fold(0.0, f64::max))
+                        .sum::<f64>()
+                        + 6.0 * (readings.len().div_ceil(2) as f64 - 1.0).max(0.0),
+                    StatsRows::One => {
+                        readings.iter().map(|reading| width(reading.widest(), &font("Medium", 10.0))).sum::<f64>()
+                            + 6.0 * (readings.len() as f64 - 1.0).max(0.0)
                     }
-                    Module::Network => 13.0,
-                    _ => 6.0,
-                };
-                (label_column + bars) as i32
+                }
             }
-        }
+            StatsWidgetKind::Text => match &self.sample {
+                Some(sample) => width(&fill_text(&widget.text, sample, config.stats_fahrenheit), &font("Medium", 10.0)),
+                None => 0.0,
+            },
+            StatsWidgetKind::State => STATE_DOT * 2.0,
+            StatsWidgetKind::Icon => f64::from(BAR_ICON),
+        };
+        shown.ceil() as i32
     }
 
     /// Draws the module in the bar, in `area`, its text in `ink`.
     pub(crate) fn draw_item(&self, cr: &Context, module: Module, area: Rectangle<i32, Logical>, ink: Rgb, config: &Config) {
-        let progress = self.progress(config.animations);
-        let width = f64::from(self.item_width(module, config));
-        let (x, center) = (f64::from(area.loc.x) + (f64::from(area.size.w) - width) / 2.0, f64::from(MENU_BAR_HEIGHT) / 2.0);
+        let mut x = area.loc.x + (area.size.w - self.item_width(module, config)) / 2;
+        for widget in module.widgets(config) {
+            let width = self.widget_width(module, widget, config);
+            self.draw_widget(cr, module, widget, (f64::from(x), f64::from(width)), ink, config);
+            x += width + WIDGET_GAP;
+        }
+    }
+
+    fn draw_widget(&self, cr: &Context, module: Module, widget: &StatsWidget, (x, width): (f64, f64), ink: Rgb, config: &Config) {
         let Some(sample) = &self.sample else {
             return;
         };
+        let progress = self.progress(config.animations);
+        let slide = self.slide(module, progress);
+        let center = f64::from(MENU_BAR_HEIGHT) / 2.0;
         let fraction = self.fraction(module, progress);
-        let value_text = match module {
-            Module::Sensors => sample.hottest().map(|(_, celsius)| temperature_text(*celsius, config.stats_fahrenheit, false)).unwrap_or_default(),
-            Module::Power => sample.power.as_ref().map(|power| format!("{:.0}W", power.total)).unwrap_or_default(),
-            _ => percent(fraction),
-        };
-        let style = Self::style(module, config);
-        if style == StatsStyle::Value {
-            if let Some(net) = sample.network.as_ref().filter(|_| module == Module::Network) {
-                let small = font("Medium", 8.0);
-                show_text(cr, &format!("↑ {}", speed_text(net.sent)), &small, x, center - 5.5, ink);
-                show_text(cr, &format!("↓ {}", speed_text(net.received)), &small, x, center + 5.5, ink);
+        let colored = |value: f64| if widget.color == StatsColor::Alert { level_color(value, ink) } else { ink };
+        let small = font("Medium", 8.0);
+        let bits = config.stats_network_bits && module == Module::Network;
+        let rate = |bytes: f64| if bits { bits_text(bytes) } else { speed_text(bytes) };
+        let reading_text = |reading: &Reading| reading.text(reading.value, config.stats_fahrenheit, false);
+        // A reading's color: by how near its limit it is, where it has one.
+        let reading_color = |reading: &Reading| reading.fraction().map_or(ink, colored);
+        match widget.kind {
+            StatsWidgetKind::Label => {
+                show_text(cr, self.bar_label(module), &font("Bold", 8.0), x, center, ink);
                 return;
             }
-            let color = if matches!(module, Module::Sensors | Module::Power) { ink } else { level_color(fraction, ink) };
-            if config.stats_labels {
-                let label = label_font();
-                show_text(cr, module.label(), &label, x, center - 6.0, ink);
-                show_text(cr, &value_text, &font("Medium", 9.0), x, center + 4.5, color);
-            } else {
-                show_text(cr, &value_text, &font("Medium", 10.0), x, center, color);
+            StatsWidgetKind::Mini => {
+                let first = self.sensor_readings(config).first().copied();
+                let (value, color) = match module {
+                    Module::Sensors => (first.as_ref().map(reading_text).unwrap_or_default(), first.as_ref().map_or(ink, reading_color)),
+                    Module::Network => (rate(self.speeds_shown(module, widget, config, progress).0), ink),
+                    _ => (percent(fraction), colored(fraction)),
+                };
+                if widget.label {
+                    show_text(cr, self.bar_label(module), &label_font(), x, center - 6.0, ink);
+                    show_text(cr, &value, &font("Medium", 9.0), x, center + 4.5, color);
+                } else {
+                    show_text(cr, &value, &font("Medium", 10.0), x, center, color);
+                }
+                return;
             }
-            return;
+            StatsWidgetKind::Memory => {
+                let used_total = match module {
+                    Module::Ram => sample.ram.as_ref().map(|ram| (ram.used, ram.total)),
+                    Module::Disk => sample.disk.as_ref().map(|disk| (disk.total - disk.free, disk.total)),
+                    _ => None,
+                };
+                if let Some((used, total)) = used_total {
+                    let shown = if widget.reverse { total - used } else { used };
+                    show_text(cr, &size_text(shown), &small, x, center - 5.5, colored(fraction));
+                    show_text(cr, &size_text(total), &small, x, center + 5.5, ink);
+                }
+                return;
+            }
+            StatsWidgetKind::Speed => {
+                let (down, up) = self.speeds_shown(module, widget, config, progress);
+                let (first, second) = if widget.reverse { ("↑", "↓") } else { ("↓", "↑") };
+                let (first_letter, second_letter) = if widget.reverse { ("O", "I") } else { ("I", "O") };
+                let symbol_width = |font: &pango::FontDescription| match widget.symbols {
+                    StatsSymbols::Arrows => f64::from(text_size("↓ ", font).0),
+                    StatsSymbols::Letters => f64::from(text_size("O ", font).0),
+                    StatsSymbols::Dots => STATE_DOT * 2.0 + 3.0,
+                    StatsSymbols::None => 0.0,
+                };
+                // A dot is full while it moves.
+                let symbol = |(left, y): (f64, f64), font: &pango::FontDescription, (arrow, letter): (&str, &str), speed: f64| match widget.symbols {
+                    StatsSymbols::Arrows => show_text(cr, arrow, font, left, y, ink),
+                    StatsSymbols::Letters => show_text(cr, letter, font, left, y, ink),
+                    StatsSymbols::Dots => {
+                        cr.arc(left + STATE_DOT, y, STATE_DOT - 0.5, 0.0, std::f64::consts::TAU);
+                        cr.set_source_rgba(ink.0, ink.1, ink.2, if speed > 0.0 { 1.0 } else { 0.3 });
+                        let _ = cr.fill();
+                    }
+                    StatsSymbols::None => {}
+                };
+                match widget.rows {
+                    StatsRows::Two => {
+                        let offset = symbol_width(&small);
+                        // The upload over the download, as Stats has them.
+                        for ((arrow, letter, speed), y) in [(second, second_letter, up), (first, first_letter, down)].into_iter().zip([center - 5.5, center + 5.5]) {
+                            symbol((x, y), &small, (arrow, letter), speed);
+                            show_text(cr, &rate(speed), &small, x + offset, y, ink);
+                        }
+                    }
+                    StatsRows::One => {
+                        let one = font("Medium", 9.0);
+                        let offset = symbol_width(&one);
+                        let half = (width - 6.0) / 2.0;
+                        for ((arrow, letter, speed), left) in [(first, first_letter, down), (second, second_letter, up)].into_iter().zip([x, x + half + 6.0]) {
+                            symbol((left, center), &one, (arrow, letter), speed);
+                            show_text(cr, &rate(speed), &one, left + offset, center, ink);
+                        }
+                    }
+                }
+                return;
+            }
+            StatsWidgetKind::Sensors => {
+                let readings = self.sensor_readings(config);
+                let mut left = x;
+                match widget.rows {
+                    StatsRows::Two => {
+                        for column in readings.chunks(2) {
+                            let rows: &[f64] = if column.len() == 2 { &[center - 5.5, center + 5.5] } else { &[center] };
+                            for (reading, y) in column.iter().zip(rows) {
+                                show_text(cr, &reading_text(reading), &small, left, *y, reading_color(reading));
+                            }
+                            left += column.iter().map(|reading| f64::from(text_size(reading.widest(), &small).0)).fold(0.0, f64::max) + 6.0;
+                        }
+                    }
+                    StatsRows::One => {
+                        let one = font("Medium", 10.0);
+                        for reading in &readings {
+                            show_text(cr, &reading_text(reading), &one, left, center, reading_color(reading));
+                            left += f64::from(text_size(reading.widest(), &one).0) + 6.0;
+                        }
+                    }
+                }
+                return;
+            }
+            StatsWidgetKind::Text => {
+                show_text(cr, &fill_text(&widget.text, sample, config.stats_fahrenheit), &font("Medium", 10.0), x, center, ink);
+                return;
+            }
+            StatsWidgetKind::State => {
+                // The memory's pressure; the network, connected.
+                let color = match module {
+                    Module::Ram => match sample.ram.as_ref().and_then(|ram| ram.pressure).unwrap_or(0.0) {
+                        pressure if pressure >= 0.3 => RED,
+                        pressure if pressure >= 0.1 => YELLOW,
+                        _ => ink,
+                    },
+                    Module::Network => ink,
+                    _ => colored(fraction),
+                };
+                cr.arc(x + STATE_DOT, center, STATE_DOT, 0.0, std::f64::consts::TAU);
+                cr.set_source_rgb(color.0, color.1, color.2);
+                let _ = cr.fill();
+                return;
+            }
+            StatsWidgetKind::Icon => {
+                if let Some(icon) = text::named_icon(module.icon(), "", BAR_ICON, ink) {
+                    let _ = cr.set_source_surface(&icon, x, center - f64::from(BAR_ICON) / 2.0);
+                    let _ = cr.paint();
+                }
+                return;
+            }
+            _ => {}
         }
+        // The charts, with the name stood on end before them.
         let mut left = x;
-        if config.stats_labels {
+        if widget.label {
             let label = standing_font();
-            let letters: Vec<String> = module.label().chars().map(String::from).collect();
+            let letters: Vec<String> = self.bar_label(module).chars().map(String::from).collect();
             let top = center - STANDING_LINE * (letters.len() as f64 - 1.0) / 2.0;
             let column = f64::from(text_size("W", &label).0);
             for (index, letter) in letters.iter().enumerate() {
@@ -1815,9 +2283,25 @@ impl Stats {
             cr.set_line_cap(cairo::LineCap::Round);
             let _ = cr.stroke();
         };
+        // What a chart is drawn on.
+        let backing = |cr: &Context| match widget.frame {
+            StatsFrame::None => {}
+            StatsFrame::Box => {
+                text::rounded_rectangle(cr, left, top, w, h, 3.0);
+                cr.set_source_rgba(ink.0, ink.1, ink.2, 0.12);
+                let _ = cr.fill();
+            }
+            StatsFrame::Frame => {
+                text::rounded_rectangle(cr, left + 0.5, top + 0.5, w - 1.0, h - 1.0, 3.0);
+                cr.set_source_rgba(ink.0, ink.1, ink.2, 0.35);
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+            }
+        };
         use std::f64::consts::{FRAC_PI_2, PI, TAU};
-        match style {
-            StatsStyle::Pie => {
+        let dual = matches!(module, Module::Network | Module::Disk);
+        match widget.kind {
+            StatsWidgetKind::PieChart => {
                 // A thick ring, its parts one after another from the top, the first colored by
                 // the whole's level and the rest fainter.
                 let thickness = RING * 0.3;
@@ -1834,7 +2318,7 @@ impl Stats {
                     if sweep <= 0.0 {
                         continue;
                     }
-                    let (color, alpha) = if index == 0 { (level_color(fraction, ink), 1.0) } else { (ink, 0.55) };
+                    let (color, alpha) = if index == 0 { (colored(fraction), 1.0) } else { (ink, 0.55) };
                     cr.new_sub_path();
                     cr.arc(cx, center, radius, angle, angle + sweep);
                     cr.set_source_rgba(color.0, color.1, color.2, alpha);
@@ -1842,20 +2326,19 @@ impl Stats {
                     angle += sweep;
                 }
             }
-            StatsStyle::Ring => {
+            StatsWidgetKind::Ring => {
                 let circle = (left + RING / 2.0, center, (RING - ARC_WIDTH) / 2.0);
                 arc(cr, circle, (0.0, TAU), ink, 0.15);
                 if fraction > 0.0 {
-                    arc(cr, circle, (-FRAC_PI_2, -FRAC_PI_2 + TAU * fraction), level_color(fraction, ink), 1.0);
+                    arc(cr, circle, (-FRAC_PI_2, -FRAC_PI_2 + TAU * fraction), colored(fraction), 1.0);
                 }
             }
-            StatsStyle::Gauge => {
+            StatsWidgetKind::Tachometer => {
                 let radius = GAUGE.0 / 2.0 - ARC_WIDTH / 2.0;
                 let (cx, cy) = (left + GAUGE.0 / 2.0, center + GAUGE.1 / 2.0 - ARC_WIDTH / 2.0);
                 arc(cr, (cx, cy, radius), (PI, TAU), ink, 0.15);
-                let color = level_color(fraction, ink);
                 if fraction > 0.0 {
-                    arc(cr, (cx, cy, radius), (PI, PI + PI * fraction), color, 1.0);
+                    arc(cr, (cx, cy, radius), (PI, PI + PI * fraction), colored(fraction), 1.0);
                 }
                 // The needle points at the value.
                 let angle = PI + PI * fraction;
@@ -1867,48 +2350,109 @@ impl Stats {
                 cr.arc(cx, cy, 1.75, 0.0, TAU);
                 let _ = cr.fill();
             }
-            StatsStyle::Chart => {
-                text::rounded_rectangle(cr, left, top, w, h, 3.0);
-                cr.set_source_rgba(ink.0, ink.1, ink.2, 0.12);
-                let _ = cr.fill();
+            StatsWidgetKind::LineChart | StatsWidgetKind::NetworkChart => {
+                backing(cr);
                 let history = self.history(module);
+                let count = (widget.history as usize).clamp(2, HISTORY);
                 let inner = (left + 1.0, top + 1.0, w - 2.0, h - 2.0);
-                match module {
-                    Module::Network | Module::Disk => {
-                        let (first, second) = scaled(&history[history.len().saturating_sub(BAR_HISTORY + 1)..]);
-                        // The second speed is the fainter line.
-                        cr.push_group();
-                        draw_line(cr, inner, &second, BAR_HISTORY, progress, ink, 1.0, false);
-                        let _ = cr.pop_group_to_source();
-                        let _ = cr.paint_with_alpha(0.5);
-                        draw_line(cr, inner, &first, BAR_HISTORY, progress, ink, 1.0, true);
+                if dual {
+                    let recent = &history[history.len().saturating_sub(count + 1)..];
+                    let (mut first, mut second) = scaled(recent, widget.scale);
+                    if widget.reverse {
+                        std::mem::swap(&mut first, &mut second);
                     }
-                    _ => {
-                        let values: Vec<f64> = history.iter().map(|(value, _)| *value).collect();
-                        draw_line(cr, inner, &values, BAR_HISTORY, progress, ink, 1.0, true);
+                    // The second speed is the fainter line.
+                    cr.push_group();
+                    draw_line(cr, inner, &second, count, slide, ink, 1.0, false);
+                    let _ = cr.pop_group_to_source();
+                    let _ = cr.paint_with_alpha(0.5);
+                    draw_line(cr, inner, &first, count, slide, ink, 1.0, true);
+                } else {
+                    let values: Vec<f64> = history.iter().map(|(value, _)| *value).collect();
+                    draw_line(cr, inner, &values, count, slide, colored(fraction), 1.0, true);
+                    if widget.value {
+                        show_text(cr, &percent(fraction), &font("Bold", 6.0), left + 2.0, top + 4.5, ink);
                     }
                 }
             }
             _ => {
                 let area = (left, top, w, h);
+                let alert = widget.color == StatsColor::Alert;
                 match module {
-                    Module::Cpu => draw_columns(cr, area, &grouped_cores(&self.cores(progress), MOST_BARS), 1.0, ink, true),
-                    Module::Network => {
-                        let now = sample.speeds(module).unwrap_or_default();
-                        let before = self.previous.as_ref().and_then(|sample| sample.speeds(module)).unwrap_or(now);
-                        let most = self.history(module).iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
-                        let pair = [lerp(before.0, now.0, progress) / most, lerp(before.1, now.1, progress) / most];
-                        draw_columns(cr, area, &pair, 1.0, ink, false);
+                    Module::Cpu if widget.kind == StatsWidgetKind::Cores => {
+                        draw_columns(cr, area, &grouped_cores(&self.cores(progress), MOST_BARS), 1.0, ink, alert);
                     }
-                    _ => draw_columns(cr, area, &[fraction], 0.0, ink, true),
+                    Module::Network => {
+                        let (down, up) = self.speeds_shown(module, widget, config, progress);
+                        let most = self.history(module).iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
+                        draw_columns(cr, area, &[down / most, up / most], 1.0, ink, false);
+                    }
+                    _ => draw_columns(cr, area, &[fraction], 0.0, ink, alert),
                 }
             }
         }
     }
 
+    /// The names the settings choose readings by, a line each, after its kind and a tab:
+    /// `gpu`, and `temperature`, `fan`, `voltage` and `power` for the sensors, read now where
+    /// they are not shown.
+    pub(crate) fn names(&self) -> String {
+        let read;
+        let sample = match self.sample.as_ref().filter(|sample| !sample.temperatures.is_empty() || !sample.fans.is_empty()) {
+            Some(sample) => sample,
+            None => {
+                let (temperatures, fans, voltages, _) = read_sensors(Path::new(HWMON));
+                read = Sample { temperatures, fans, voltages, ..self.sample.clone().unwrap_or_default() };
+                &read
+            }
+        };
+        let gpus = sample.gpu.iter().chain(&sample.other_gpus).map(|gpu| ("gpu", gpu.name.as_str()));
+        let temperatures = sample.temperatures.iter().map(|(name, _)| ("temperature", name.as_str()));
+        let fans = sample.fans.iter().map(|fan| ("fan", fan.name.as_str()));
+        let voltages = sample.voltages.iter().map(|(name, _)| ("voltage", name.as_str()));
+        let power = sample.power.iter().map(|_| ("power", "power"));
+        gpus.chain(temperatures).chain(fans).chain(voltages).chain(power).map(|(kind, name)| format!("{kind}\t{name}\n")).collect()
+    }
+
+    /// The sensors' block of the power drawn: in all, its parts one after another, and each
+    /// part against the most it may draw.
+    fn power_block(&self, power: &Power, progress: f64) -> Block {
+        let eased = |read: &dyn Fn(&Power) -> Option<f64>| {
+            let power_of = |sample: &Sample| sample.power.as_ref().and_then(read);
+            let now = self.sample.as_ref().and_then(power_of).unwrap_or(0.0);
+            let before = self.previous.as_ref().and_then(power_of).unwrap_or(now);
+            (lerp(before, now, progress), (before, now))
+        };
+        let whole = power.limit.unwrap_or(POWER_SCALE);
+        let watts = |value: f64, limit: f64| (String::new(), format!("{value:.0}"), format!(" / {}", watts_text(limit)));
+        // The parts that make up the sum: the packages and the GPU; the rest are in them.
+        let summed: Vec<&(String, f64, Option<f64>)> =
+            power.parts.iter().filter(|(name, ..)| name.starts_with("CPU") && name != "CPU 核心" || name == "GPU").collect();
+        let (total, level) = eased(&|power| Some(power.total / whole));
+        let mut sum = Rail::new(if power.whole { "整機" } else { "合計" }, watts(power.total, whole));
+        sum.level = level;
+        if power.whole {
+            sum.parts = vec![total];
+        } else {
+            sum.parts = summed.iter().map(|(name, ..)| eased(&|power| Some(power.parts.iter().find(|part| part.0 == *name)?.1 / whole)).0).collect();
+            sum.legend = summed.iter().map(|(name, watts, _)| format!("{name} {}", watts_text(*watts))).collect();
+        }
+        let mut rails = vec![sum];
+        rails.extend(power.parts.iter().filter_map(|(name, value, limit)| {
+            let limit = (*limit)?;
+            let (shown, levels) = eased(&|power| Some(power.parts.iter().find(|part| &part.0 == name)?.1 / limit));
+            Some(Rail::new(name, watts(*value, limit)).filled(shown, levels))
+        }));
+        let facts = power.parts.iter().filter(|(.., limit)| limit.is_none()).map(|(name, value, _)| (name.clone(), watts_text(*value))).collect();
+        Block { title: Some(("功耗", "")), rails, facts }
+    }
+
     /// What the module's panel says.
-    fn content(&self, module: Module, fahrenheit: bool, progress: f64, address: Option<String>) -> Option<Content> {
+    fn content(&self, module: Module, config: &Config, progress: f64, address: Option<String>) -> Option<Content> {
         let sample = self.sample.as_ref()?;
+        let fahrenheit = config.stats_fahrenheit;
+        let bits = config.stats_network_bits && module == Module::Network;
+        let rate = |bytes: f64| if bits { bits_text(bytes) } else { speed_text(bytes) };
         let temperature = |celsius: f64| temperature_text(celsius, fahrenheit, true);
         // A share as it eases from the reading before to this one, and the two it eases between.
         let eased = |read: &dyn Fn(&Sample) -> Option<f64>| {
@@ -1918,11 +2462,13 @@ impl Stats {
         };
         let fractions = || self.history(module).iter().map(|(value, _)| *value).collect::<Vec<_>>();
         // The two speeds' lines, and the peak their top stands for.
-        let speeds = || {
+        let speeds = |scale: StatsScale, reverse: bool| {
             let history = self.history(module);
-            let peak = history.iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
-            let (first, second) = scaled(&history);
-            ((first, Some(second)), format!("峰值 {}", speed_text(peak)))
+            let recent = &history[history.len().saturating_sub(module.history(config) + 1)..];
+            let peak = recent.iter().fold(LEAST_SPEED, |most, (a, b)| most.max(*a).max(*b));
+            let (first, second) = scaled(recent, scale);
+            let (first, second) = if reverse { (second, first) } else { (first, second) };
+            ((first, Some(second)), format!("峰值 {}", rate(peak)))
         };
         let level = || {
             let now = sample.fraction(module).unwrap_or(0.0);
@@ -1977,7 +2523,7 @@ impl Stats {
                     limit: "100%".into(),
                     rails,
                     blocks: vec![Block::facts(None, facts)],
-                    cores: Some(self.cores(progress)),
+                    cores: config.stats_cpu_cores.then(|| self.cores(progress)),
                     processes: processes("CPU", &sample.top_cpu, |amount| format!("{amount:.1}%"), 100.0),
                     fans: Vec::new(),
                 }
@@ -2070,9 +2616,13 @@ impl Stats {
             }
             Module::Disk => {
                 let disk = sample.disk.as_ref()?;
-                let (chart, limit) = speeds();
+                let (chart, limit) = speeds(config.stats_disk_chart_scale, false);
                 let (shown, levels) = eased(&|sample| sample.fraction(Module::Disk));
-                let root = Rail::new("根目錄", ("可用 ".into(), size_text(disk.free), String::new())).filled(shown, levels);
+                let mount = match config.stats_disk_mount.as_str() {
+                    "" | "/" => "根目錄",
+                    mount => mount,
+                };
+                let root = Rail::new(mount, ("可用 ".into(), size_text(disk.free), String::new())).filled(shown, levels);
                 let smart = disk
                     .smart
                     .iter()
@@ -2099,7 +2649,7 @@ impl Stats {
                     rails: vec![root],
                     blocks: vec![
                         Block::facts(None, vec![("讀取", speed_text(disk.read)), ("寫入", speed_text(disk.write))]),
-                        Block { title: Some(("SMART", "健康")), rails: smart, facts: Vec::new() },
+                        Block { title: Some(("SMART", "健康")), rails: if config.stats_disk_smart { smart } else { Vec::new() }, facts: Vec::new() },
                     ],
                     cores: None,
                     processes: processes("讀寫", &sample.top_disk, speed_text, most.max(1.0)),
@@ -2108,7 +2658,10 @@ impl Stats {
             }
             Module::Network => {
                 let net = sample.network.as_ref()?;
-                let (chart, limit) = speeds();
+                let reverse = config.stats_network_reverse;
+                let (chart, limit) = speeds(config.stats_network_chart_scale, reverse);
+                let (down, up) = (format!("↓ {}", rate(net.received)), format!("↑ {}", rate(net.sent)));
+                let (value, second) = if reverse { (up, down) } else { (down, up) };
                 let link = net.link.map(|megabits| if megabits >= 1000.0 { format!("{} Gbps", megabits / 1000.0) } else { format!("{megabits:.0} Mbps") });
                 let facts = [
                     address.map(|address| ("本機 IP", address)),
@@ -2120,9 +2673,9 @@ impl Stats {
                     (!net.mac.is_empty()).then(|| ("實體位址", net.mac.clone())),
                 ];
                 Content {
-                    value: format!("↓ {}", speed_text(net.received)),
+                    value,
                     value_level: None,
-                    second: Some(format!("↑ {}", speed_text(net.sent))),
+                    second: Some(second),
                     meta: [Some(net.interface.clone()), link].into_iter().flatten().collect::<Vec<_>>().join(" · "),
                     chart,
                     limit,
@@ -2135,7 +2688,7 @@ impl Stats {
                             .top_network
                             .iter()
                             .map(|(name, down, up)| {
-                                let shown = if up > down { format!("↑ {}", speed_text(*up)) } else { format!("↓ {}", speed_text(*down)) };
+                                let shown = if up > down { format!("↑ {}", rate(*up)) } else { format!("↓ {}", rate(*down)) };
                                 ProcessRow { name: name.clone(), amount: shown, share: 0.0, icon: None }
                             })
                             .collect();
@@ -2144,49 +2697,9 @@ impl Stats {
                     fans: Vec::new(),
                 }
             }
-            Module::Power => {
-                let power = sample.power.as_ref()?;
-                let whole = power.limit.unwrap_or(POWER_SCALE);
-                let share = |name: &str| eased(&|sample| Some(sample.power.as_ref()?.parts.iter().find(|part| part.0 == name)?.1 / whole));
-                // The parts that make up the sum: the packages and the GPU; the rest are in them.
-                let summed: Vec<&(String, f64, Option<f64>)> =
-                    power.parts.iter().filter(|(name, ..)| name.starts_with("CPU") && name != "CPU 核心" || name == "GPU").collect();
-                let mut sum = Rail::new("合計", ("上限 ".into(), watts_text(whole), String::new()));
-                sum.level = eased(&|sample| Some(sample.power.as_ref()?.total / whole)).1;
-                if power.whole {
-                    sum.parts = vec![eased(&|sample| Some(sample.power.as_ref()?.total / whole)).0];
-                } else {
-                    sum.parts = summed.iter().map(|(name, ..)| share(name).0).collect();
-                    sum.legend = summed.iter().map(|(name, watts, _)| format!("{name} {}", watts_text(*watts))).collect();
-                }
-                let rails = power
-                    .parts
-                    .iter()
-                    .filter_map(|(name, watts, limit)| {
-                        let limit = (*limit)?;
-                        let (shown, levels) = eased(&|sample| Some(sample.power.as_ref()?.parts.iter().find(|part| &part.0 == name)?.1 / limit));
-                        Some(Rail::new(name, of(format!("{watts:.0}"), format!(" / {}", watts_text(limit)))).filled(shown, levels))
-                    })
-                    .collect();
-                let facts = power.parts.iter().filter(|(.., limit)| limit.is_none()).map(|(name, watts, _)| (name.clone(), watts_text(*watts))).collect();
-                let meta = if power.whole { "整機".to_string() } else { summed.iter().map(|(name, ..)| name.as_str()).collect::<Vec<_>>().join(" + ") };
-                Content {
-                    value: watts_text(power.total),
-                    value_level: level(),
-                    second: None,
-                    meta,
-                    chart: (fractions(), None),
-                    limit: watts_text(whole),
-                    rails: vec![sum],
-                    blocks: vec![Block { title: None, rails, facts }],
-                    cores: None,
-                    processes: None,
-                    fans: Vec::new(),
-                }
-            }
             Module::Sensors => {
-                let (name, hottest) = sample.hottest()?;
-                let critical = |name: &str| sample.critical.iter().find(|(found, _)| found == name).map(|(_, celsius)| *celsius);
+                let (name, shown) = sample.reading(&sample.sensor)?;
+                let critical = |name: &str| sample.critical(name);
                 // The two hottest that have a point they must not pass are measured to it.
                 let mut measured: Vec<&(String, f64)> = sample.temperatures.iter().filter(|(name, _)| critical(name).is_some()).collect();
                 measured.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -2206,11 +2719,13 @@ impl Stats {
                     .map(|(name, celsius)| (name.clone(), temperature(*celsius)))
                     .collect();
                 let voltages = sample.voltages.iter().map(|(name, volts)| (name.clone(), format!("{volts:.3} V"))).collect();
+                let power = sample.power.as_ref().map(|power| self.power_block(power, progress));
                 let settable = self.fan_control && sample.fans.iter().any(|fan| fan.pwm.is_some());
                 let speed = |fan: &Fan| format!("{:.0} RPM", fan.rpm);
                 // With a fan that can be set, they are all kept together in the fans' list.
                 let mut fans = Vec::new();
-                let mut blocks = vec![Block::facts(None, others), Block::facts(Some(("電壓", "")), voltages)];
+                let mut blocks: Vec<Block> = [Block::facts(None, others)].into_iter().chain(power).collect();
+                blocks.push(Block::facts(Some(("電壓", "")), voltages));
                 if settable {
                     for (index, fan) in sample.fans.iter().enumerate() {
                         fans.push(match &fan.pwm {
@@ -2225,13 +2740,14 @@ impl Stats {
                 } else {
                     blocks.push(Block::facts(Some(("風扇", "")), sample.fans.iter().map(|fan| (fan.name.clone(), speed(fan))).collect()));
                 }
+                let text = |value| shown.text(value, fahrenheit, true);
                 Content {
-                    value: temperature(*hottest),
+                    value: text(shown.value),
                     value_level: level(),
                     second: None,
-                    meta: name.clone(),
+                    meta: name,
                     chart: (fractions(), None),
-                    limit: temperature(100.0),
+                    limit: shown.limit.map(text).unwrap_or_default(),
                     rails,
                     blocks,
                     cores: None,
@@ -2273,7 +2789,9 @@ impl Panel {
         }
     }
 
-    fn draw(&mut self, module: Module, content: &Content, shown: &Shown, slide: f64) {
+    /// Draws the module's panel, its line sliding as far as `slide` and holding `capacity`
+    /// readings.
+    fn draw(&mut self, module: Module, content: &Content, shown: &Shown, (slide, capacity): (f64, usize)) {
         let colors = colors(shown.dark);
         let inner = WIDTH - PADDING * 2;
         let small = font("", 9.0);
@@ -2362,9 +2880,9 @@ impl Panel {
         cr.set_dash(&[], 0.0);
         let area = (x, cy + 2.0, w, h - 2.0);
         if let Some(second) = &content.chart.1 {
-            draw_line(&cr, area, second, HISTORY, slide, colors.ink_3, 1.5, false);
+            draw_line(&cr, area, second, capacity, slide, colors.ink_3, 1.5, false);
         }
-        draw_line(&cr, area, &content.chart.0, HISTORY, slide, colors.ink, 1.5, true);
+        draw_line(&cr, area, &content.chart.0, capacity, slide, colors.ink, 1.5, true);
         let mut rail_y = cy + h + f64::from(GAP);
         for rail in &content.rails {
             draw_rail(&cr, &colors, rail, (x, rail_y, w), slide);
@@ -2502,7 +3020,8 @@ impl Panel {
 
     /// The panel of all the readings: a row each, with its value and its last minute, which
     /// opens its own panel.
-    fn draw_summary(&mut self, stats: &Stats, modules: &[Module], shown: &Shown, (progress, fahrenheit): (f64, bool)) {
+    fn draw_summary(&mut self, stats: &Stats, modules: &[Module], shown: &Shown, (progress, config): (f64, &Config)) {
+        let fahrenheit = config.stats_fahrenheit;
         let colors = colors(shown.dark);
         let inner = WIDTH - PADDING * 2;
         let value_font = font("Medium", 11.0);
@@ -2534,15 +3053,13 @@ impl Panel {
             let _ = cr.pop_group_to_source();
             let _ = cr.paint_with_alpha(0.6);
             let value = match (module, stats.sample.as_ref()) {
-                (Module::Network, Some(sample)) => sample
-                    .network
-                    .as_ref()
-                    .map(|net| format!("↓ {} ↑ {}", speed_text(net.received), speed_text(net.sent)))
-                    .unwrap_or_default(),
-                (Module::Sensors, Some(sample)) => {
-                    sample.hottest().map(|(_, celsius)| temperature_text(*celsius, fahrenheit, true)).unwrap_or_default()
+                (Module::Network, Some(sample)) => {
+                    let rate = |bytes: f64| if config.stats_network_bits { bits_text(bytes) } else { speed_text(bytes) };
+                    sample.network.as_ref().map(|net| format!("↓ {} ↑ {}", rate(net.received), rate(net.sent))).unwrap_or_default()
                 }
-                (Module::Power, Some(sample)) => sample.power.as_ref().map(|power| watts_text(power.total)).unwrap_or_default(),
+                (Module::Sensors, Some(sample)) => {
+                    sample.reading(&sample.sensor).map(|(_, reading)| reading.text(reading.value, fahrenheit, true)).unwrap_or_default()
+                }
                 _ => percent(stats.fraction(module, progress)),
             };
             show_text(&cr, &value, &value_font, text_x, center + 8.0, color);
@@ -2551,18 +3068,20 @@ impl Panel {
             let (chart_w, chart_h) = (f64::from(SUMMARY_CHART.0), f64::from(SUMMARY_CHART.1));
             let chart = (chevron - 10.0 - chart_w, center - chart_h / 2.0, chart_w, chart_h);
             let history = stats.history(module);
+            let (capacity, slide) = (module.history(config), stats.slide(module, progress));
             match module {
                 Module::Network | Module::Disk => {
-                    let (first, second) = scaled(&history);
+                    let scale = if module == Module::Disk { config.stats_disk_chart_scale } else { config.stats_network_chart_scale };
+                    let (first, second) = scaled(&history[history.len().saturating_sub(capacity + 1)..], scale);
                     cr.push_group();
-                    draw_line(&cr, chart, &second, HISTORY, progress, color, 1.0, false);
+                    draw_line(&cr, chart, &second, capacity, slide, color, 1.0, false);
                     let _ = cr.pop_group_to_source();
                     let _ = cr.paint_with_alpha(0.5);
-                    draw_line(&cr, chart, &first, HISTORY, progress, color, 1.0, true);
+                    draw_line(&cr, chart, &first, capacity, slide, color, 1.0, true);
                 }
                 _ => {
                     let values: Vec<f64> = history.iter().map(|(value, _)| *value).collect();
-                    draw_line(&cr, chart, &values, HISTORY, progress, color, 1.0, true);
+                    draw_line(&cr, chart, &values, capacity, slide, color, 1.0, true);
                 }
             }
         }
@@ -2578,10 +3097,21 @@ impl Nekoland {
     pub(crate) fn refresh_stats(&mut self) {
         let config = &self.config;
         let wanted = Module::ALL.into_iter().filter(|module| module.enabled(config)).fold(0, |bits, module| bits | module.bit());
-        WANTED.store(wanted, Ordering::Relaxed);
-        INTERVAL.store(config.stats_interval, Ordering::Relaxed);
-        PROCESSES.store(config.stats_processes, Ordering::Relaxed);
-        PUBLIC_IP.store(config.stats_public_ip, Ordering::Relaxed);
+        let asked = Asked {
+            wanted,
+            intervals: Module::ALL.map(|module| module.interval(config)),
+            processes: Module::ALL.map(|module| module.processes(config) as usize),
+            public_ip: config.stats_network_public_ip,
+            interface: config.stats_network_interface.clone(),
+            gpu: config.stats_gpu_shown.clone(),
+            mount: config.stats_disk_mount.clone(),
+            sensor: config.stats_sensors_shown.first().cloned().unwrap_or_else(|| "hottest".into()),
+        };
+        if let Ok(mut shared) = ASKED.lock() {
+            if *shared != asked {
+                *shared = asked;
+            }
+        }
         let combined = config.stats_combined || !config.stats_text.is_empty();
         let animations = config.animations;
         let fahrenheit = config.stats_fahrenheit;
@@ -2598,7 +3128,7 @@ impl Nekoland {
             stats.wanted = wanted;
         }
         let found: Vec<Sample> = stats.found.as_ref().map(|found| found.try_iter().collect()).unwrap_or_default();
-        if !found.is_empty() && config.stats_processes > 0 {
+        if !found.is_empty() && Module::ALL.into_iter().any(|module| module.processes(config) > 0) {
             let windows = self
                 .all_windows()
                 .filter(|window| crate::windows::is_managed(window))
@@ -2608,11 +3138,12 @@ impl Nekoland {
                 *shared = windows;
             }
         }
+        let address = self.menu_bar.network.as_ref().and_then(|network| network.address).map(|address| address.to_string());
         let stats = &mut self.menu_bar.stats;
         let mut told = Vec::new();
         for sample in found {
             stats.take(sample);
-            told.extend(stats.alerts(&self.config));
+            told.extend(stats.alerts(&self.config, address.as_deref()));
         }
         for (title, body) in told {
             crate::clockbar::notify(ALERT_APP, ALERT_ICON, &title, &body);
@@ -2629,7 +3160,6 @@ impl Nekoland {
             self.dismiss_stats_panel();
         }
         let modules = self.menu_bar.stats.shown(&self.config);
-        let address = self.menu_bar.network.as_ref().and_then(|network| network.address).map(|address| address.to_string());
         let dark = self.menu_bar.dark;
         let stats = &mut self.menu_bar.stats;
         let progress = stats.progress(animations);
@@ -2654,7 +3184,8 @@ impl Nekoland {
         match panel.view {
             View::Module(module) => {
                 let apps = stats.sample.as_ref().map(|sample| sample.apps.clone()).unwrap_or_default();
-                if let Some(mut content) = stats.content(module, fahrenheit, progress, address) {
+                let line = (stats.slide(module, progress), module.history(&self.config));
+                if let Some(mut content) = stats.content(module, &self.config, progress, address) {
                     for row in content.processes.iter_mut().flat_map(|(_, rows)| rows).filter(|row| apps.contains(&row.name)) {
                         let info = self.apps.info(&row.name).clone();
                         row.icon = info.icon_name.as_deref().and_then(|icon| self.dock_icon(icon, PROCESS_ICON, dark));
@@ -2662,10 +3193,10 @@ impl Nekoland {
                             row.name = name;
                         }
                     }
-                    panel.draw(module, &content, &shown, progress);
+                    panel.draw(module, &content, &shown, line);
                 }
             }
-            View::Summary => panel.draw_summary(stats, &modules, &shown, (progress, fahrenheit)),
+            View::Summary => panel.draw_summary(stats, &modules, &shown, (progress, &self.config)),
         }
         panel.shown = Some(shown);
         self.menu_bar.stats.panel = Some(panel);
@@ -2884,16 +3415,16 @@ mod tests {
     #[test]
     fn an_alert_is_told_once_after_two_readings_past_it() {
         let mut alerts = Alerts::default();
-        assert!(!alerts.check(Module::Cpu, Some(true)));
-        assert!(alerts.check(Module::Cpu, Some(true)));
-        assert!(!alerts.check(Module::Cpu, Some(true)));
+        assert!(!alerts.check("CPU 使用率", Some(true)));
+        assert!(alerts.check("CPU 使用率", Some(true)));
+        assert!(!alerts.check("CPU 使用率", Some(true)));
         // Back under, then past again: told again.
-        assert!(!alerts.check(Module::Cpu, Some(false)));
-        assert!(!alerts.check(Module::Cpu, Some(true)));
-        assert!(alerts.check(Module::Cpu, Some(true)));
+        assert!(!alerts.check("CPU 使用率", Some(false)));
+        assert!(!alerts.check("CPU 使用率", Some(true)));
+        assert!(alerts.check("CPU 使用率", Some(true)));
         // Without a threshold, never.
-        assert!(!alerts.check(Module::Ram, None));
-        assert!(!alerts.check(Module::Ram, None));
+        assert!(!alerts.check("記憶體使用量", None));
+        assert!(!alerts.check("記憶體使用量", None));
     }
 
     #[test]
@@ -2999,13 +3530,55 @@ mod tests {
     }
 
     #[test]
+    fn each_reading_notifies_as_its_settings_ask() {
+        let mut config = Config::default();
+        (config.stats_ram, config.stats_ram_alert_free) = (true, 10);
+        config.stats_sensors = true;
+        config.stats_sensors_alerts.insert("power".into(), 100);
+        (config.stats_network, config.stats_network_alert_interface) = (true, true);
+        let sample = |interface: &str| Sample {
+            ram: Some(Ram { total: 100.0, used: 95.0, ..Default::default() }),
+            power: Some(Power { total: 150.0, ..Default::default() }),
+            network: Some(Net { interface: interface.into(), ..Default::default() }),
+            ..Default::default()
+        };
+        let mut stats = Stats::default();
+        stats.take(sample("eth0"));
+        assert!(stats.alerts(&config, None).is_empty());
+        stats.take(sample("wlan0"));
+        let told = stats.alerts(&config, None);
+        assert!(told.contains(&("可用記憶體 5%".into(), "低於 10%".into())));
+        assert!(told.contains(&("功耗 150 W".into(), "超過 100 W".into())));
+        assert!(told.contains(&("網路介面已變更".into(), "eth0 → wlan0".into())));
+    }
+
+    #[test]
+    fn a_sensor_is_read_by_its_name_and_the_power_with_its_limit() {
+        let sample = Sample {
+            temperatures: vec![("CPU".into(), 60.0), ("SSD".into(), 40.0)],
+            critical: vec![("SSD".into(), 80.0)],
+            fans: vec![Fan { name: "Fan 1".into(), rpm: 1200.0, pwm: None }],
+            power: Some(Power { total: 125.0, whole: false, parts: Vec::new(), limit: Some(250.0) }),
+            ..Default::default()
+        };
+        assert_eq!(sample.reading("hottest").map(|(name, reading)| (name, reading.fraction())), Some(("CPU".into(), Some(0.6))));
+        assert_eq!(sample.reading("SSD").and_then(|(_, reading)| reading.fraction()), Some(0.5));
+        assert_eq!(sample.reading("power").and_then(|(_, reading)| reading.fraction()), Some(0.5));
+        assert_eq!(sample.reading("Fan 1").map(|(_, reading)| (reading.unit, reading.fraction())), Some((Unit::Rpm, None)));
+        assert!(sample.reading("Fan 2").is_none());
+    }
+
+    #[test]
     fn a_new_reading_joins_the_history() {
         let mut stats = Stats::default();
-        let sample = |usage| Sample { cpu: Some(Cpu { usage, ..Default::default() }), ..Default::default() };
+        let sample = |usage| Sample { cpu: Some(Cpu { usage, ..Default::default() }), fresh: Module::Cpu.bit(), ..Default::default() };
         stats.take(sample(0.2));
         stats.take(sample(0.6));
         assert_eq!(stats.history(Module::Cpu), vec![(0.2, 0.0), (0.6, 0.0)]);
         assert!((stats.fraction(Module::Cpu, 0.5) - 0.4).abs() < 1e-9);
+        // A reading of the others keeps the CPU's line as it was.
+        stats.take(Sample { fresh: Module::Ram.bit(), ..sample(0.6) });
+        assert_eq!(stats.history(Module::Cpu).len(), 2);
         assert!(stats.history(Module::Gpu).is_empty());
         for _ in 0..HISTORY * 2 {
             stats.take(sample(0.1));

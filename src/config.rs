@@ -226,29 +226,83 @@ pub struct Config {
     /// The room between the menu bar's icons on its right, in pixels; up to 32.
     pub menu_bar_spacing: u32,
     /// Which of the system's readings the menu bar shows, each opening its panel: the CPU, the
-    /// GPU, the memory, the disk, the network's speed, the sensors' temperatures and the power.
+    /// GPU, the memory, the disk, the network's speed, and the sensors' temperatures and power.
     pub stats_cpu: bool,
     pub stats_gpu: bool,
     pub stats_ram: bool,
     pub stats_disk: bool,
     pub stats_network: bool,
     pub stats_sensors: bool,
-    pub stats_power: bool,
-    /// How the readings look in the bar, whether each has its name beside it, how many
-    /// seconds apart they are read (1 to 10), how many of the busiest processes their panels
-    /// list, and whether temperatures are in Fahrenheit.
-    pub stats_style: StatsStyle,
-    pub stats_labels: bool,
-    pub stats_interval: u32,
-    pub stats_processes: u32,
-    pub stats_fahrenheit: bool,
-    /// Whether the readings are one item, opening a panel of them all; the use in percent and
-    /// the temperature in °C past which a notification tells of it, 0 for none; and whether the
-    /// network's panel shows the public address, which asks a service for it.
+    /// What each reading shows in the bar, left to right, each with its own options.
+    pub stats_cpu_widgets: Vec<StatsWidget>,
+    pub stats_gpu_widgets: Vec<StatsWidget>,
+    pub stats_ram_widgets: Vec<StatsWidget>,
+    pub stats_disk_widgets: Vec<StatsWidget>,
+    pub stats_network_widgets: Vec<StatsWidget>,
+    pub stats_sensors_widgets: Vec<StatsWidget>,
+    /// How many seconds apart each reading is read, 1 to 10.
+    pub stats_cpu_interval: u32,
+    pub stats_gpu_interval: u32,
+    pub stats_ram_interval: u32,
+    pub stats_disk_interval: u32,
+    pub stats_network_interval: u32,
+    pub stats_sensors_interval: u32,
+    /// How many of the busiest processes the panels list, none for 0.
+    pub stats_cpu_processes: u32,
+    pub stats_ram_processes: u32,
+    pub stats_disk_processes: u32,
+    pub stats_network_processes: u32,
+    /// How many readings each panel's chart shows.
+    pub stats_cpu_history: u32,
+    pub stats_gpu_history: u32,
+    pub stats_ram_history: u32,
+    pub stats_disk_history: u32,
+    pub stats_network_history: u32,
+    pub stats_sensors_history: u32,
+    /// The percent of use past which a notification tells of it, 0 for none: in all, and the
+    /// CPU's by the kernel and by programs; the memory's free below its percent, its swap used
+    /// and its pressure past theirs.
+    pub stats_cpu_alert: u32,
+    pub stats_cpu_alert_system: u32,
+    pub stats_cpu_alert_user: u32,
+    pub stats_gpu_alert: u32,
+    pub stats_ram_alert: u32,
+    pub stats_ram_alert_free: u32,
+    pub stats_ram_alert_swap: u32,
+    pub stats_ram_alert_pressure: u32,
+    pub stats_disk_alert: u32,
+    /// Whether the CPU's panel has a bar a core.
+    pub stats_cpu_cores: bool,
+    /// The GPU shown, by its name, the first found when empty or not found.
+    pub stats_gpu_shown: String,
+    /// The disk shown, by where it is mounted, and whether its panel shows the disks' SMART.
+    pub stats_disk_mount: String,
+    pub stats_disk_smart: bool,
+    /// How the disk's and the network's panels scale their two speeds' lines to their peak.
+    pub stats_disk_chart_scale: StatsScale,
+    pub stats_network_chart_scale: StatsScale,
+    /// The network's interface, the default route's when empty; its speeds in bits rather
+    /// than bytes; the public address, which asks a service for it; the speed in KB/s under
+    /// which the bar shows none; and whether its panel puts the upload first.
+    pub stats_network_interface: String,
+    pub stats_network_bits: bool,
+    pub stats_network_public_ip: bool,
+    pub stats_network_threshold: u32,
+    pub stats_network_reverse: bool,
+    /// Whether a notification tells of the network lost or back, of another interface, and of
+    /// a new local or public address.
+    pub stats_network_alert_connection: bool,
+    pub stats_network_alert_interface: bool,
+    pub stats_network_alert_address: bool,
+    pub stats_network_alert_public_ip: bool,
+    /// The sensors' readings the bar shows, by name: `hottest`, `power`, or a temperature's, a
+    /// fan's or a voltage's; and past what each tells of it, in °C, or in W for `power`.
+    pub stats_sensors_shown: Vec<String>,
+    pub stats_sensors_alerts: std::collections::BTreeMap<String, u32>,
+    /// Whether the readings are one item, opening a panel of them all, and whether
+    /// temperatures are in Fahrenheit.
     pub stats_combined: bool,
-    pub stats_alert: u32,
-    pub stats_alert_temperature: u32,
-    pub stats_public_ip: bool,
+    pub stats_fahrenheit: bool,
     /// Text the readings show as one item in place of their own looks, `$cpu`, `$gpu`, `$ram`,
     /// `$disk`, `$temp`, `$down`, `$up` and `$power` in it replaced by theirs; none unless set.
     pub stats_text: String,
@@ -505,24 +559,134 @@ pub enum HoverStyle {
     Tooltip,
 }
 
-/// How a reading of the system looks in the menu bar.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum StatsStyle {
+/// One thing a reading shows in the menu bar, with its options; which of them a kind uses is
+/// as GNOME-Stats has them.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct StatsWidget {
+    pub kind: StatsWidgetKind,
+    /// The reading's name beside it.
+    pub label: bool,
+    pub color: StatsColor,
+    /// What a chart is drawn on.
+    pub frame: StatsFrame,
+    /// A line chart's value over it.
+    pub value: bool,
+    /// How many readings a chart shows.
+    pub history: u32,
+    /// How a chart of two speeds scales them to their peak.
+    pub scale: StatsScale,
+    /// Two speeds the other way round; the memory's free in place of its use.
+    pub reverse: bool,
+    /// Speeds and the sensors' readings on two rows or one.
+    pub rows: StatsRows,
+    /// What tells two speeds apart.
+    pub symbols: StatsSymbols,
+    /// A text widget's text, filled in as `stats_text` is.
+    pub text: String,
+}
+
+impl Default for StatsWidget {
+    fn default() -> Self {
+        Self {
+            kind: StatsWidgetKind::Mini,
+            label: true,
+            color: StatsColor::Alert,
+            frame: StatsFrame::Box,
+            value: false,
+            history: 24,
+            scale: StatsScale::Linear,
+            reverse: false,
+            rows: StatsRows::Two,
+            symbols: StatsSymbols::Arrows,
+            text: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsWidgetKind {
+    /// The reading's name alone.
+    Label,
     /// Its value as a number.
     #[default]
-    Value,
-    /// Its last readings as a line.
-    Chart,
-    /// Its value as a bar, the CPU's a bar a core.
-    Bars,
-    /// Its value as a ring.
-    Ring,
-    /// Its value as a half circle with a needle.
-    Gauge,
+    Mini,
+    /// Its last readings as a line; the disk's and the network's two speeds as two.
+    LineChart,
+    /// Its value as a bar; the network's two speeds as two.
+    BarChart,
+    /// The CPU's use, a bar a core.
+    Cores,
     /// Its parts as a filled donut: the CPU's by the kernel and by programs, the memory's in
     /// use and cached.
-    Pie,
+    PieChart,
+    /// Its value as a half circle with a needle.
+    Tachometer,
+    /// Its value as a ring.
+    Ring,
+    /// The memory's or the disk's use over its size.
+    Memory,
+    /// The network's or the disk's two speeds as numbers.
+    Speed,
+    /// Two speeds as two lines.
+    NetworkChart,
+    /// The sensors' readings `stats_sensors_shown` names.
+    Sensors,
+    /// Text with the readings in it.
+    Text,
+    /// A dot: the memory's pressure, the network connected.
+    State,
+    /// The reading's icon.
+    Icon,
+}
+
+/// Ink, yellow and red past 80% and 90% as the bar's other readings; or ink alone.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatsColor {
+    #[default]
+    Alert,
+    Mono,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatsFrame {
+    None,
+    /// A faint fill.
+    #[default]
+    Box,
+    /// A faint outline.
+    Frame,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatsScale {
+    #[default]
+    Linear,
+    Square,
+    Cube,
+    Log,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatsRows {
+    One,
+    #[default]
+    Two,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatsSymbols {
+    #[default]
+    Arrows,
+    Dots,
+    Letters,
+    None,
 }
 
 /// What the clock's place in the bar looks like.
@@ -909,16 +1073,56 @@ impl Default for Config {
             stats_disk: false,
             stats_network: false,
             stats_sensors: false,
-            stats_power: false,
-            stats_style: StatsStyle::Value,
-            stats_labels: true,
-            stats_interval: 2,
-            stats_processes: 5,
-            stats_fahrenheit: false,
+            stats_cpu_widgets: vec![StatsWidget::default()],
+            stats_gpu_widgets: vec![StatsWidget::default()],
+            stats_ram_widgets: vec![StatsWidget::default()],
+            stats_disk_widgets: vec![StatsWidget::default()],
+            stats_network_widgets: vec![StatsWidget { kind: StatsWidgetKind::Speed, ..StatsWidget::default() }],
+            stats_sensors_widgets: vec![StatsWidget::default()],
+            stats_cpu_interval: 2,
+            stats_gpu_interval: 2,
+            stats_ram_interval: 2,
+            stats_disk_interval: 2,
+            stats_network_interval: 2,
+            stats_sensors_interval: 2,
+            stats_cpu_processes: 5,
+            stats_ram_processes: 5,
+            stats_disk_processes: 5,
+            stats_network_processes: 5,
+            stats_cpu_history: 60,
+            stats_gpu_history: 60,
+            stats_ram_history: 60,
+            stats_disk_history: 60,
+            stats_network_history: 60,
+            stats_sensors_history: 60,
+            stats_cpu_alert: 0,
+            stats_cpu_alert_system: 0,
+            stats_cpu_alert_user: 0,
+            stats_gpu_alert: 0,
+            stats_ram_alert: 0,
+            stats_ram_alert_free: 0,
+            stats_ram_alert_swap: 0,
+            stats_ram_alert_pressure: 0,
+            stats_disk_alert: 0,
+            stats_cpu_cores: true,
+            stats_gpu_shown: String::new(),
+            stats_disk_mount: "/".into(),
+            stats_disk_smart: true,
+            stats_disk_chart_scale: StatsScale::Linear,
+            stats_network_chart_scale: StatsScale::Linear,
+            stats_network_interface: String::new(),
+            stats_network_bits: false,
+            stats_network_public_ip: false,
+            stats_network_threshold: 0,
+            stats_network_reverse: false,
+            stats_network_alert_connection: false,
+            stats_network_alert_interface: false,
+            stats_network_alert_address: false,
+            stats_network_alert_public_ip: false,
+            stats_sensors_shown: vec!["hottest".into()],
+            stats_sensors_alerts: std::collections::BTreeMap::new(),
             stats_combined: false,
-            stats_alert: 0,
-            stats_alert_temperature: 0,
-            stats_public_ip: false,
+            stats_fahrenheit: false,
             stats_text: String::new(),
             stats_fan_control: false,
             clock_date: true,
