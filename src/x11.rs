@@ -166,16 +166,20 @@ impl XwmHandler for Nekoland {
             return;
         }
         let size = surface.geometry().size;
-        // A window with a title bar of ours is centred with it, and below the top.
+        // A window with a title bar of ours is centred with it, and below the top. One that
+        // belongs to another and draws no bar, as Wine's menus that are windows, is placed by
+        // its program: moved, it lands away from what opened it, and the program closes it.
         let bar = frame::title_room(&surface);
-        let location = state
-            .usable_area()
-            .map(|area| {
-                (
-                    area.loc.x + (area.size.w - size.w).max(0) / 2,
-                    area.loc.y + (area.size.h - size.h - bar).max(0) / 2 + bar,
-                )
-                    .into()
+        let placed = (surface.is_transient_for().is_some() && bar == 0).then(|| surface.geometry().loc);
+        let location = placed
+            .or_else(|| {
+                state.usable_area().map(|area| {
+                    (
+                        area.loc.x + (area.size.w - size.w).max(0) / 2,
+                        area.loc.y + (area.size.h - size.h - bar).max(0) / 2 + bar,
+                    )
+                        .into()
+                })
             })
             .unwrap_or_default();
         let _ = surface.configure(Rectangle::new(location, size));
