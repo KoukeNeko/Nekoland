@@ -294,6 +294,12 @@ pub fn app_id(window: &Window) -> String {
 }
 
 /// Menus and tooltips of X11 programs are windows too, but not ones to list, switch to or arrange.
+/// Whether `piece` touches `body` from outside, at an edge or a corner.
+fn is_beside(piece: Rectangle<i32, Logical>, body: Rectangle<i32, Logical>) -> bool {
+    let around = Rectangle::new(piece.loc - Point::from((1, 1)), piece.size + Size::from((2, 2)));
+    !piece.overlaps(body) && around.overlaps(body)
+}
+
 pub fn is_managed(window: &Window) -> bool {
     !window
         .x11_surface()
@@ -602,12 +608,25 @@ impl Nekoland {
 
     /// Whether the compositor cuts a window's corners, round or square, its program drawing
     /// them square: an X11 program's own window, framed by itself or by the compositor's bar,
-    /// and Chromium's.
+    /// unless it draws its shadow itself, and Chromium's.
     pub fn cuts_corners(&self, window: &Window) -> bool {
         match window.underlying_surface() {
-            WindowSurface::X11(surface) => crate::frame::is_own_window(surface),
+            WindowSurface::X11(surface) => {
+                crate::frame::is_own_window(surface) && !self.has_shadow_windows(surface)
+            }
             WindowSurface::Wayland(_) => self.is_chromium(window),
         }
+    }
+
+    /// Whether an X11 program draws a window's shadow in windows of its own around it, as
+    /// LINE does through Wine: unmanaged ones, said to be for it, just outside its edges and
+    /// none over it, as a menu would be.
+    fn has_shadow_windows(&self, surface: &smithay::xwayland::X11Surface) -> bool {
+        self.space.elements().filter_map(Window::x11_surface).any(|other| {
+            other.is_override_redirect()
+                && other.is_transient_for() == Some(surface.window_id())
+                && is_beside(other.geometry(), surface.geometry())
+        })
     }
 
     /// The corners of the shadow the compositor draws around a window, as libadwaita draws
@@ -1363,6 +1382,19 @@ mod tests {
         assert_eq!(keep_inside(rect(100, 100, 2400, 1300), portrait), rect(0, 100, 1440, 1300));
         assert_eq!(keep_inside(rect(100, 100, 400, 300), portrait), rect(100, 100, 400, 300));
         assert_eq!(keep_inside(rect(-50, 0, 400, 300), portrait), rect(0, 30, 400, 300));
+    }
+
+    #[test]
+    fn line_s_shadow_windows_are_beside_it_and_a_menu_over_it_is_not() {
+        let rect = |x, y, width, height| Rectangle::<i32, Logical>::new((x, y).into(), (width, height).into());
+        // Where LINE puts its window and the shadow around it, in X11's dots.
+        let body = rect(2328, 588, 1112, 720);
+        assert!(is_beside(rect(2328, 572, 1112, 16), body));
+        assert!(is_beside(rect(2312, 572, 16, 16), body));
+        assert!(is_beside(rect(3440, 588, 16, 720), body));
+        assert!(!is_beside(rect(2400, 600, 200, 300), body));
+        assert!(!is_beside(rect(2400, 1300, 200, 300), body));
+        assert!(!is_beside(rect(100, 100, 16, 16), body));
     }
 }
 
