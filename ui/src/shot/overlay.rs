@@ -10,6 +10,7 @@
 use std::{
     cell::RefCell,
     f64::consts::TAU,
+    path::Path,
     process::{Child, Command, Stdio},
     rc::Rc,
 };
@@ -245,6 +246,60 @@ fn whole(mode: Mode, frozen: &Frozen) -> Choice {
     }
 }
 
+/// Where pictures are saved, as the Mac's 選項 has it: 桌面, 文件, Pictures' 截圖 folder,
+/// and the folder chosen in Settings when it is none of these.
+fn save_menu() -> gtk::MenuButton {
+    use super::prefs::Prefs;
+    let current = Prefs::load().folder;
+    let special = |dir| glib::user_special_dir(dir).map(|path| path.display().to_string());
+    let mut places: Vec<(String, String)> = [
+        ("桌面", special(glib::UserDirectory::Desktop)),
+        ("文件", special(glib::UserDirectory::Documents)),
+    ]
+    .into_iter()
+    .filter_map(|(label, folder)| Some((label.to_string(), folder?)))
+    .chain([("圖片 › 截圖".to_string(), String::new())])
+    .collect();
+    if !places.iter().any(|(_, folder)| *folder == current) {
+        let name = Path::new(&current)
+            .file_name()
+            .map_or(current.clone(), |name| name.to_string_lossy().into_owned());
+        places.push((name, current.clone()));
+    }
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let mut first: Option<gtk::CheckButton> = None;
+    for (label, folder) in places {
+        let path = match folder.as_str() {
+            "" => Prefs::default().folder(),
+            folder => folder.into(),
+        };
+        let item = gtk::CheckButton::builder()
+            .label(label)
+            .tooltip_text(path.display().to_string())
+            .active(folder == current)
+            .build();
+        item.set_group(first.as_ref());
+        first.get_or_insert(item.clone());
+        item.connect_toggled(move |item| {
+            if item.is_active() {
+                // Read again, for what Settings changed since the strip opened.
+                let mut prefs = Prefs::load();
+                prefs.folder = folder.clone();
+                prefs.auto_save = true;
+                prefs.save();
+            }
+        });
+        list.append(&item);
+    }
+    let button = gtk::MenuButton::builder()
+        .icon_name("document-save-symbolic")
+        .tooltip_text("儲存位置")
+        .css_classes(["flat"])
+        .build();
+    button.set_popover(Some(&gtk::Popover::builder().child(&list).build()));
+    button
+}
+
 /// Shows the screen to choose from; `done` is told what was chosen once, as the window goes.
 pub fn choose(
     app: &gtk::Application,
@@ -376,6 +431,7 @@ pub fn choose(
     }
     delay_button.set_popover(Some(&gtk::Popover::builder().child(&delay_box).build()));
     strip.append(&delay_button);
+    strip.append(&save_menu());
     let repeat = tool("media-playlist-repeat-symbolic", "重複上次區域");
     {
         let finish = finish.clone();

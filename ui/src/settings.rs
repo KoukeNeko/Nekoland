@@ -61,6 +61,10 @@ mod removal;
 #[allow(dead_code)]
 #[path = "launcher/apps.rs"]
 mod apps;
+// 截圖's preferences, of which Settings changes where pictures are saved.
+#[allow(dead_code)]
+#[path = "shot/prefs.rs"]
+mod shot_prefs;
 
 use lock_screen::*;
 use stats::*;
@@ -2058,12 +2062,50 @@ fn general_page(config: &Config, autostart: &Rc<RefCell<Vec<String>>>) -> adw::P
         ("語言與地區", "preferences-desktop-locale-symbolic", region::region_page()),
         ("預設應用程式", "preferences-desktop-apps-symbolic", default_apps_page(config)),
         ("啟動項目", "system-run-symbolic", startup_page(autostart)),
+        ("截圖", "applets-screenshooter-symbolic", screenshot_page()),
     ] {
         let row = subpage_row(title, String::new, subpage);
         row.add_prefix(&gtk::Image::from_icon_name(icon));
         pages.add(&row);
     }
     page.add(&pages);
+    page
+}
+
+fn screenshot_page() -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    let files = group("檔案");
+    let folder = adw::ActionRow::builder()
+        .title("儲存位置")
+        .subtitle(shot_prefs::Prefs::load().folder().display().to_string())
+        .build();
+    let choose = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .tooltip_text("選擇資料夾")
+        .build();
+    folder.add_suffix(&choose);
+    let row = folder.clone();
+    choose.connect_clicked(move |button| {
+        let dialog = gtk::FileDialog::builder()
+            .title("選擇資料夾")
+            .initial_folder(&gio::File::for_path(shot_prefs::Prefs::load().folder()))
+            .build();
+        let row = row.clone();
+        let parent = button.root().and_downcast::<gtk::Window>();
+        dialog.select_folder(parent.as_ref(), gio::Cancellable::NONE, move |file| {
+            if let Some(path) = file.ok().and_then(|f| f.path()) {
+                // Read again, for what 截圖 changed since this page opened.
+                let mut prefs = shot_prefs::Prefs::load();
+                prefs.folder = path.display().to_string();
+                prefs.save();
+                row.set_subtitle(&path.display().to_string());
+            }
+        });
+    });
+    files.add(&folder);
+    page.add(&files);
     page
 }
 

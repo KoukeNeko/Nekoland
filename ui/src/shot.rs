@@ -26,6 +26,8 @@ mod ipc;
 mod marks;
 #[path = "shot/output.rs"]
 mod output;
+#[path = "shot/prefs.rs"]
+mod prefs;
 #[path = "shot/overlay.rs"]
 mod overlay;
 #[path = "shot/record.rs"]
