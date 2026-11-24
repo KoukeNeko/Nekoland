@@ -538,6 +538,28 @@ pub(crate) struct Drawn {
     day: i32,
 }
 
+/// Whether two sets of tiles draw the same icons: the media tile has its own picture, so
+/// what it shows is not the icons', only whether it shows a cover or the cover and its text.
+fn same_for_icons(a: &[Tile], b: &[Tile]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Tile::Media(a), Tile::Media(b)) => a.side == b.side,
+            (a, b) => a == b,
+        })
+}
+
+/// How far the media picture reaches out on each side of the tile, for a cover coming in.
+fn media_pad(art: i32) -> i32 {
+    (f64::from(art) * 0.4).round() as i32
+}
+
+/// The media tile's own picture, and what it was drawn from.
+struct MediaLayer {
+    picture: Picture,
+    /// None when it was drawn while a picture was still being read, to be drawn again.
+    drawn: Option<(media::Face, i32, bool, Option<String>)>,
+}
+
 struct Ids {
     dock: Id,
     icons: Id,
@@ -548,6 +570,7 @@ struct Ids {
     held: Id,
     tag: Id,
     card: Id,
+    media: Id,
 }
 
 /// What an application said its Dock icon shows, from the bus name it said it from.
@@ -636,6 +659,9 @@ pub struct Dock {
     /// The Dock's pane, and its icons over it, which grow out of it under the pointer.
     picture: Option<Picture>,
     icons_picture: Option<Picture>,
+    /// The media tile, drawn apart from the icons: it changes many times a second, and the
+    /// icons, which are many, would be drawn and sent to the screen again each time.
+    media_layer: Option<MediaLayer>,
     label: Option<(Key, bool, Picture, Instant)>,
     held: Option<Picture>,
     /// An icon let go off the Dock, fading away where it was let go.
@@ -1725,6 +1751,63 @@ impl Nekoland {
         (1.0, 1.0)
     }
 
+    /// Draws the media tile in a picture of its own, where it changed.
+    fn draw_media(&mut self, dark: bool) {
+        let Some(index) = self
+            .dock
+            .tiles
+            .iter()
+            .position(|tile| matches!(tile, Tile::Media(_)))
+        else {
+            self.dock.media_layer = None;
+            return;
+        };
+        let Tile::Media(face) = &self.dock.tiles[index] else {
+            return;
+        };
+        let art = self.dock_sizes().art;
+        let cover_of = self
+            .dock
+            .media
+            .as_ref()
+            .and_then(|media| media.player.as_ref())
+            .and_then(|player| player.art.clone());
+        let drawn = (face.clone(), art, dark, cover_of);
+        if self
+            .dock
+            .media_layer
+            .as_ref()
+            .is_some_and(|layer| layer.drawn.as_ref() == Some(&drawn))
+        {
+            return;
+        }
+        let face = face.clone();
+        let width = self.dock.tiles[index].width(art);
+        let pad = media_pad(art);
+        let Ok(surface) = text::canvas(width + 2 * pad, art) else {
+            return;
+        };
+        let waits = text::icon_waits();
+        let cover = self.dock.media.as_mut().and_then(|media| {
+            media
+                .cover(64 * text::picture_scale())
+                .map(|(cover, _)| cover.clone())
+        });
+        if let Ok(cr) = Context::new(&surface) {
+            media::draw_tile(
+                &cr,
+                (f64::from(pad), 0.0, f64::from(art)),
+                &face,
+                cover.as_ref(),
+                dark,
+            );
+        }
+        self.dock.media_layer = text::picture(surface).map(|picture| MediaLayer {
+            picture,
+            drawn: (text::icon_waits() == waits).then_some(drawn),
+        });
+    }
+
     fn draw_dock(&mut self, dark: bool, now: Instant) {
         if self
             .dock
@@ -1801,8 +1884,9 @@ impl Nekoland {
                 })
                 .collect(),
         };
+        self.draw_media(dark);
         if self.dock.drawn.as_ref() == Some(&drawn)
-            && self.dock.drawn_tiles == self.dock.tiles
+            && same_for_icons(&self.dock.drawn_tiles, &self.dock.tiles)
             && self.dock.picture.is_some()
         {
             return;
@@ -1997,17 +2081,8 @@ impl Nekoland {
                         }
                         let _ = cr.restore();
                     }
-                    Tile::Media(face) => {
-                        let cover = self.dock.media.as_mut().and_then(|media| {
-                            media
-                                .cover(64 * text::picture_scale())
-                                .map(|(cover, _)| cover.clone())
-                        });
-                        let _ = cr.save();
-                        stand_upright(&cr, side, x + art / 2.0, y + art / 2.0);
-                        media::draw_tile(&cr, (x, y, art), face, cover.as_ref(), dark);
-                        let _ = cr.restore();
-                    }
+                    // Drawn apart, in its own picture.
+                    Tile::Media(_) => {}
                     Tile::Trash { full } => {
                         let name = if *full { "user-trash-full" } else { "user-trash" };
                         if let Some(icon) = self.dock_icon(name, big, dark) {
@@ -2410,6 +2485,25 @@ impl Nekoland {
                 picture,
             });
         }
+        if let (Some(layer), Some(index)) = (
+            &self.dock.media_layer,
+            self.dock
+                .tiles
+                .iter()
+                .position(|tile| matches!(tile, Tile::Media(_))),
+        ) {
+            if let Some(tile) = self.tile_rect(index) {
+                let pad = media_pad(self.dock_sizes().art);
+                overlays.push(Overlay {
+                    fade: 1.0,
+                    id: &ids.media,
+                    rect: Rectangle::new((tile.loc.x - pad, tile.loc.y).into(), layer.picture.size),
+                    glass: None,
+                    alpha: 1.0,
+                    picture: &layer.picture,
+                });
+            }
+        }
         if let Some(icons) = &self.dock.icons_picture {
             overlays.push(Overlay {
                 fade: 1.0,
@@ -2577,6 +2671,7 @@ impl Nekoland {
                 held: Id::new(),
                 tag: Id::new(),
                 card: Id::new(),
+                media: Id::new(),
             });
         }
     }
