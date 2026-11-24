@@ -73,6 +73,7 @@ const NOTE_ROW: i32 = 16;
 const FACT_ROW: i32 = 38;
 const LIMIT_ROW: i32 = 14;
 const PROCESS_ICON: i32 = 16;
+const PROCESS_SYMBOL: &str = "application-x-executable-symbolic";
 /// The bar's line and bars, and the gap after a name stood on end beside them.
 const BAR_CHART: (f64, f64) = (32.0, 18.0);
 const BAR_LABEL_GAP: f64 = 3.0;
@@ -2453,22 +2454,14 @@ impl Panel {
                 }
                 let center = top + h / 2.0;
                 let icon_size = f64::from(PROCESS_ICON);
-                // An application's icon, as the Dock draws it; a process of none, a small
-                // ring, as the task manager has it.
-                match icon {
-                    Some(icon) => {
-                        cr.save().ok();
-                        cr.translate(text_left(well), center - icon_size / 2.0);
-                        crate::stacks::paint_fitted(&cr, icon, icon_size, 1.0);
-                        cr.restore().ok();
-                    }
-                    None => {
-                        cr.new_sub_path();
-                        cr.arc(text_left(well) + icon_size / 2.0, center, 2.5, 0.0, std::f64::consts::TAU);
-                        cr.set_source_rgb(colors.ink_3.0, colors.ink_3.1, colors.ink_3.2);
-                        cr.set_line_width(1.0);
-                        let _ = cr.stroke();
-                    }
+                // An application's icon, as the Dock draws it; a process of none, the task
+                // manager's icon for a process.
+                let process = || text::named_icon(PROCESS_SYMBOL, "", PROCESS_ICON, colors.ink_3);
+                if let Some(icon) = icon.clone().or_else(process) {
+                    cr.save().ok();
+                    cr.translate(text_left(well), center - icon_size / 2.0);
+                    crate::stacks::paint_fitted(&cr, &icon, icon_size, 1.0);
+                    cr.restore().ok();
                 }
                 let name_left = text_left(well) + icon_size + 8.0;
                 let value_width = f64::from(text_size(value, &label).0);
