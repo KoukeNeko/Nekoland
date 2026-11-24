@@ -74,6 +74,9 @@ const FLY_BACK_TIME: f64 = 0.3;
 /// How long, in seconds, what a folder, the Trash or an application took takes to shrink
 /// into it.
 const SINK_TIME: f64 = 0.2;
+/// What a program's drag offers when what it drags comes off where nothing takes it, as
+/// a bookmark dragged out of Files' sidebar: let go there, its icon goes, not back.
+const VANISHES: &str = "application/x-nekoland-vanishes";
 /// Where the items were put, beside the configuration.
 const PLACES: &str = "desktop-places.toml";
 /// Quick Look's panel: its title strip, corners, the icon of what it has no picture of,
@@ -169,6 +172,8 @@ pub struct Desktop {
     /// The icon of what something on the desktop or the Dock took, shrinking into it at
     /// the pointer: the picture, the pointer, the picture's offset from it, and since when.
     sinking: Option<(Dragged, Point<f64, Logical>, Point<i32, Logical>, Instant)>,
+    /// Whether the program's drag going on offers `VANISHES`.
+    vanishes: bool,
 }
 
 /// What is shown of something dragged: drawn by Nekoland, or a program's drag icon as the
@@ -860,16 +865,21 @@ impl Nekoland {
         self.dock_drag_ended();
     }
 
-    /// A program started a drag at `from`.
-    pub fn desktop_drag_started_at(&mut self, from: Point<f64, Logical>) {
+    /// A program started a drag at `from`, offering `mimes`.
+    pub fn desktop_drag_started_at(&mut self, from: Point<f64, Logical>, mimes: &[String]) {
         self.desktop.drag_start = from;
+        self.desktop.vanishes = mimes.iter().any(|mime| mime == VANISHES);
         self.desktop.flying_back = None;
         self.desktop.sinking = None;
     }
 
-    /// A program's drag ended, its icon as it was: shown going into what takes it, or back.
-    pub fn desktop_program_dropped(&mut self, picture: Option<(Dragged, Point<i32, Logical>)>) {
+    /// A program's drag ended, its icon as it was: shown going into what takes it, or back;
+    /// what comes off where nothing takes it goes where it was let go.
+    pub fn desktop_program_dropped(&mut self, picture: Option<(Dragged, Point<i32, Logical>)>, validated: bool) {
         self.desktop.drag_picture = picture;
+        if !validated && self.desktop.vanishes {
+            self.sink();
+        }
     }
 
     /// No window took what Nekoland dragged: on the Dock, it goes where the Dock puts

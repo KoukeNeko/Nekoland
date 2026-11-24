@@ -38,6 +38,10 @@ struct BookmarkDrag(gio::File);
 /// drag needs a type of its own there too.
 const BOOKMARK_MIME: &str = "application/x-nekoland-bookmark";
 
+/// What tells Nekoland that a drag comes off where nothing takes it, so that its icon goes
+/// there rather than back.
+const VANISHES_MIME: &str = "application/x-nekoland-vanishes";
+
 /// Lets the sidebar's drop targets take `BOOKMARK_MIME`. The drag is read from its source in
 /// this process, so nothing is ever read from another.
 pub fn register_bookmark_drag() {
@@ -443,6 +447,7 @@ impl Sidebar {
                         Some(gdk::ContentProvider::new_union(&[
                             gdk::ContentProvider::for_value(&BookmarkDrag(folder.clone()).to_value()),
                             gdk::ContentProvider::for_bytes(BOOKMARK_MIME, &glib::Bytes::from_static(b"")),
+                            gdk::ContentProvider::for_bytes(VANISHES_MIME, &glib::Bytes::from_static(b"")),
                         ]))
                     });
                 }

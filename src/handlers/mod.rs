@@ -166,7 +166,8 @@ impl WaylandDndGrabHandler for Nekoland {
         self.dnd_icon = icon.map(|icon| (icon, Default::default()));
         // Where what nothing takes goes back to.
         if let Some(start) = seat.get_pointer().and_then(|pointer| pointer.grab_start_data()) {
-            self.desktop_drag_started_at(start.location);
+            let mimes = source.metadata().map(|meta| meta.mime_types).unwrap_or_default();
+            self.desktop_drag_started_at(start.location, &mimes);
         }
         self.dock_drag_started(&source);
         let display = self.display_handle.clone();
@@ -204,7 +205,7 @@ impl DndGrabHandler for Nekoland {
             // A program's icon, which it takes away as it lets go, is shown going on as
             // Nekoland's own does.
             let picture = icon.and_then(|(surface, offset)| Some((dragged_picture(&surface)?, offset)));
-            self.desktop_program_dropped(picture);
+            self.desktop_program_dropped(picture, validated);
             self.dock_dropped(validated);
         }
         self.desktop_drag_ended();
