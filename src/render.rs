@@ -55,12 +55,13 @@ pub(crate) const OUTLINE_COLOR: [f32; 4] = [0.04, 0.52, 1.0, 1.0];
 /// A layer surface at the top edge no taller than this is a panel.
 const TOP_PANEL_MAX_HEIGHT: i32 = 96;
 
-type SurfaceElement = WaylandSurfaceRenderElement<GlesRenderer>;
+pub(crate) type SurfaceElement = WaylandSurfaceRenderElement<GlesRenderer>;
 type Snapshot = TextureRenderElement<GlesTexture>;
 
 render_elements! {
     pub SceneElement<=GlesRenderer>;
     Surface=SurfaceElement,
+    Cursor=RescaleRenderElement<SurfaceElement>,
     Rounded=crate::rounded::RoundedSurface,
     Shadow=PixelShaderElement,
     Glass=Pane,

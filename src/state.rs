@@ -501,6 +501,11 @@ impl Nekoland {
         if let Some((icon, _)) = &self.dnd_icon {
             send_frames_surface_tree(icon, output, time, throttle, |_, _| Some(output.clone()));
         }
+        // XWayland sends its next cursor only once told this one was shown: without it, the
+        // first picture an X11 program set stays for every X11 window after it.
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status {
+            send_frames_surface_tree(surface, output, time, throttle, |_, _| Some(output.clone()));
+        }
 
         self.space.refresh();
         self.popups.cleanup();

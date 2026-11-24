@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     input::pointer::CursorIcon,
-    utils::{Logical, Point, Transform},
+    utils::{Logical, Point, Size, Transform},
 };
 use xcursor::{parser::parse_xcursor, CursorTheme};
 
@@ -15,6 +15,7 @@ const FALLBACK_THEMES: [&str; 3] = ["default", "Adwaita", "Yaru"];
 pub struct CursorImage {
     pub buffer: MemoryRenderBuffer,
     pub hotspot: Point<f64, Logical>,
+    pub size: Size<i32, Logical>,
 }
 
 pub struct Cursors {
@@ -90,5 +91,6 @@ fn load_icon(theme: &CursorTheme, icon: CursorIcon, scale: i32, size: i32) -> Op
             f64::from(image.yhot) / f64::from(scale),
         )
             .into(),
+        size: (image.width as i32 / scale, image.height as i32 / scale).into(),
     })
 }

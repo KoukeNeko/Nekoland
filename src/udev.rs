@@ -27,9 +27,11 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             element::{
-                memory::MemoryRenderBufferRenderElement, surface::render_elements_from_surface_tree, Kind,
+                memory::MemoryRenderBufferRenderElement, surface::render_elements_from_surface_tree,
+                utils::RescaleRenderElement, Kind,
             },
             gles::GlesRenderer,
+            utils::with_renderer_surface_state,
             ImportDma, ImportMemWl,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
@@ -37,6 +39,7 @@ use smithay::{
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     output::{Mode, Output, PhysicalProperties, Scale},
+    reexports::wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface, Resource},
     reexports::{
         calloop::{
             ping::make_ping,
@@ -47,13 +50,13 @@ use smithay::{
         input::{Libinput, SendEventsMode},
         rustix::fs::OFlags,
     },
-    reexports::wayland_server::backend::GlobalId,
     utils::{DeviceFd, IsAlive, Logical, Physical, Point, Size},
     wayland::{
         compositor::with_states,
         dmabuf::DmabufFeedbackBuilder,
         drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
     },
+    xwayland::XWaylandClientData,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{info, warn};
@@ -62,7 +65,9 @@ use crate::{
     config::{Config, Projection, Rotation},
     cursor::Cursors,
     glass::Glass,
-    render::{dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, CLEAR_COLOR},
+    render::{
+        dnd_icon_elements, scene_elements, zoomed, OutputElement, SceneElement, SurfaceElement, CLEAR_COLOR,
+    },
     Nekoland,
 };
 
@@ -1177,6 +1182,9 @@ pub(crate) fn cursor_elements(
     pointer: Point<i32, Physical>,
     scale: f64,
 ) -> Vec<SceneElement> {
+    if cursors.asked != state.config.cursor_theme {
+        *cursors = Cursors::load(&state.config.cursor_theme);
+    }
     let icon = match &state.cursor_status {
         CursorImageStatus::Hidden => return Vec::new(),
         CursorImageStatus::Surface(surface) if surface.alive() => {
@@ -1188,16 +1196,20 @@ pub(crate) fn cursor_elements(
                     .unwrap_or_default()
             });
             let location = pointer - hotspot.to_physical_precise_round(scale);
-            return render_elements_from_surface_tree(renderer, surface, location, scale, 1.0, Kind::Cursor);
+            let larger = x11_picture_scale(state, cursors, surface);
+            let elements: Vec<SurfaceElement> =
+                render_elements_from_surface_tree(renderer, surface, location, scale, 1.0, Kind::Cursor);
+            return elements
+                .into_iter()
+                .map(|element| {
+                    SceneElement::Cursor(RescaleRenderElement::from_element(element, pointer, larger))
+                })
+                .collect();
         }
         // A client that went away leaves its cursor behind; fall back to the arrow.
         CursorImageStatus::Surface(_) => CursorIcon::Default,
         CursorImageStatus::Named(icon) => *icon,
     };
-
-    if cursors.asked != state.config.cursor_theme {
-        *cursors = Cursors::load(&state.config.cursor_theme);
-    }
     let Some(image) = cursors.get(icon, scale, state.config.cursor_size) else {
         return Vec::new();
     };
@@ -1216,6 +1228,36 @@ pub(crate) fn cursor_elements(
         warn!("cursor: {err}");
         Vec::new()
     })
+}
+
+/// How many times larger than its windows an X11 program's cursor is drawn. X11 programs
+/// draw at the display's density, and the theme's cursors are given to them at it, so their
+/// pixels are shrunk with the windows'. A picture of a program's own no bigger than the
+/// theme's arrow at one pixel a point (Wine's and games' 32-pixel cursors, X's 16-pixel ones)
+/// was drawn for a display without scaling, and shrunk would be two thirds of the arrow at 1.5.
+fn x11_picture_scale(state: &Nekoland, cursors: &mut Cursors, surface: &WlSurface) -> f64 {
+    let Some(data) = state
+        .xwayland_client
+        .as_ref()
+        .filter(|xwayland| {
+            surface
+                .client()
+                .is_some_and(|client| client.id() == xwayland.id())
+        })
+        .and_then(|xwayland| xwayland.get_data::<XWaylandClientData>())
+    else {
+        return 1.0;
+    };
+    let picture = with_renderer_surface_state(surface, |surface| surface.buffer_size()).flatten();
+    let arrow = cursors
+        .get(CursorIcon::Default, 1.0, state.config.cursor_size)
+        .map(|arrow| arrow.size);
+    match (picture, arrow) {
+        (Some(picture), Some(arrow)) if picture.w <= arrow.w && picture.h <= arrow.h => {
+            data.compositor_state.client_scale()
+        }
+        _ => 1.0,
+    }
 }
 
 /// The scale the Mac would give a display: twice for one dense enough to be Retina,
