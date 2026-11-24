@@ -31,7 +31,7 @@ use crate::{
     control::{draw_chevron, draw_list_row, draw_panel, draw_slider, draw_well, ease_out, rect, show_line, to_f64, OPEN_TIME},
     fileinfo::{RED, YELLOW},
     glass::Tier,
-    menubar::{colors, font, show_text, Colors, text_size, Overlay, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS},
+    menubar::{colors, font, show_text, Colors, text_size, MenuBar, Overlay, Popup, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS},
     text::{self, Picture},
     Nekoland,
 };
@@ -1685,12 +1685,9 @@ impl Alerts {
 }
 
 pub struct Panel {
-    view: View,
+    pub(crate) view: View,
     /// Its left edge, from the output's.
     x: i32,
-    opened: Instant,
-    /// When it began to fade out, once it was closed.
-    closed: Option<Instant>,
     hovered: Option<Part>,
     pressed: Option<Part>,
     parts: Vec<(Part, Rectangle<i32, Logical>)>,
@@ -1700,14 +1697,6 @@ pub struct Panel {
 }
 
 impl Panel {
-    fn fade(&self) -> f64 {
-        let opening = ease_out(self.opened.elapsed().as_secs_f64() / OPEN_TIME);
-        match self.closed {
-            Some(closed) => opening.min(1.0 - ease_out(closed.elapsed().as_secs_f64() / OPEN_TIME)),
-            None => opening,
-        }
-    }
-
     /// How fast the fan's slider asks at `at`, kept from stopping it.
     fn fan_level(&self, index: usize, at: Point<i32, Logical>) -> f64 {
         let Some((_, area)) = self.parts.iter().find(|(part, _)| *part == Part::FanSpeed(index)) else {
@@ -1736,9 +1725,6 @@ pub struct Stats {
     /// How many readings came, which the bar and the panels are drawn again for.
     pub(crate) count: u64,
     wanted: u32,
-    pub(crate) panel: Option<Panel>,
-    /// The panel fading out as another opens or it closes.
-    closing: Option<Panel>,
     alerts: Alerts,
     /// The network's interface, local address and public address last read, which a
     /// notification tells a change of.
@@ -1846,8 +1832,9 @@ impl Block {
 }
 
 impl Stats {
-    pub(crate) fn panel_view(&self) -> Option<View> {
-        self.panel.as_ref().map(|panel| panel.view)
+    /// Whether a fan's slider is being dragged.
+    pub(crate) fn dragging(&self) -> bool {
+        self.fan_drag.is_some()
     }
 
     /// What to tell of the newest reading: each title and body past its threshold, and of the
@@ -2819,8 +2806,6 @@ impl Panel {
         Self {
             view,
             x,
-            opened: Instant::now(),
-            closed: None,
             hovered: None,
             pressed: None,
             parts: Vec::new(),
@@ -3189,39 +3174,37 @@ impl Nekoland {
         for (title, body) in told {
             crate::clockbar::notify(ALERT_APP, ALERT_ICON, &title, &body);
         }
-        let stats = &mut self.menu_bar.stats;
-        if stats.closing.as_ref().is_some_and(|panel| panel.fade() <= 0.0) {
-            stats.closing = None;
-        }
-        let gone = stats.panel.as_ref().is_some_and(|panel| match panel.view {
+        let gone = self.menu_bar.stats_panel().is_some_and(|panel| match panel.view {
             View::Module(module) => wanted & module.bit() == 0,
             View::Summary => !combined || wanted == 0,
         });
         if gone {
-            self.dismiss_stats_panel();
+            self.close_menu();
         }
         let modules = self.menu_bar.stats.shown(&self.config);
         let dark = self.menu_bar.dark;
-        let stats = &mut self.menu_bar.stats;
-        let progress = stats.progress(animations);
-        let Some(panel) = stats.panel.as_ref() else {
+        let Some(hovered) = self.menu_bar.stats_panel().map(|panel| panel.hovered) else {
             return;
         };
+        let stats = &mut self.menu_bar.stats;
+        let progress = stats.progress(animations);
         let shown = Shown {
             count: stats.count,
             slide: stats.settling(animations),
             dark,
-            hovered: panel.hovered,
+            hovered,
             fahrenheit,
             fan_drag: stats.fan_drag.map(|(index, level)| (index, (level * 1000.0) as u32)),
             fan_reveal: stats.fan_reveals(),
         };
-        if panel.shown.as_ref() == Some(&shown) && panel.picture.is_some() {
+        if self.menu_bar.stats_panel().is_some_and(|panel| panel.shown.as_ref() == Some(&shown) && panel.picture.is_some()) {
             return;
         }
-        let Some(mut panel) = stats.panel.take() else {
+        // Taken out to be drawn, the bar's other parts lending it what it shows.
+        let Some(Popup::Stats(mut panel)) = self.menu_bar.popup.take() else {
             return;
         };
+        let stats = &mut self.menu_bar.stats;
         let waits = text::icon_waits();
         match panel.view {
             View::Module(module) => {
@@ -3241,62 +3224,43 @@ impl Nekoland {
             View::Summary => panel.draw_summary(stats, &modules, &shown, (progress, &self.config)),
         }
         panel.shown = (text::icon_waits() == waits).then_some(shown);
-        self.menu_bar.stats.panel = Some(panel);
+        self.menu_bar.popup = Some(Popup::Stats(panel));
     }
 
-    /// Opens a panel under its place in the bar, or closes it if it is open; the one open
-    /// fades out as the other fades in.
+    /// Opens a panel under its place in the bar, or closes it if it is open.
     pub(crate) fn toggle_stats_panel(&mut self, view: View, anchor: Rectangle<i32, Logical>) {
-        let same = self.menu_bar.stats.panel_view() == Some(view);
-        self.dismiss_stats_panel();
-        if same {
+        if self.stats_panel_view() == Some(view) {
+            self.close_menu();
             return;
         }
         let width = self.bar_area().map_or(0, |area| area.size.w);
-        self.menu_bar.stats.panel = Some(Panel::new(view, Panel::under(anchor, width)));
+        self.menu_bar.show(Popup::Stats(Panel::new(view, Panel::under(anchor, width))));
         self.refresh_stats();
-    }
-
-    /// Fades the open panel out.
-    pub(crate) fn dismiss_stats_panel(&mut self) {
-        if let Some(mut panel) = self.menu_bar.stats.panel.take() {
-            panel.closed = Some(Instant::now());
-            panel.hovered = None;
-            self.menu_bar.stats.closing = Some(panel);
-        }
     }
 
     /// What the open panel shows.
     pub(crate) fn stats_panel_view(&self) -> Option<View> {
-        self.menu_bar.stats.panel_view()
+        self.menu_bar.stats_panel().map(|panel| panel.view)
     }
 
-    /// The panels on screen, the one open over the one fading out.
-    pub(crate) fn stats_overlays(&self) -> Vec<Overlay<'_>> {
-        let Some(output) = self.bar_area() else {
-            return Vec::new();
-        };
-        let stats = &self.menu_bar.stats;
-        [stats.panel.as_ref(), stats.closing.as_ref()]
-            .into_iter()
-            .flatten()
-            .filter_map(|panel| {
-                let picture = panel.picture.as_ref()?;
-                Some(Overlay {
-                    id: &panel.id,
-                    rect: Rectangle::new(output.loc + Point::from((panel.x, MENU_BAR_HEIGHT + GAP_BELOW_BAR)), picture.size),
-                    glass: Some((Tier::Menu, MENU_RADIUS)),
-                    alpha: 1.0,
-                    fade: panel.fade() as f32,
-                    picture,
-                })
-            })
-            .collect()
+    /// The open panel on screen.
+    pub(crate) fn stats_overlay(&self) -> Option<Overlay<'_>> {
+        let output = self.bar_area()?;
+        let panel = self.menu_bar.stats_panel()?;
+        let picture = panel.picture.as_ref()?;
+        Some(Overlay {
+            id: &panel.id,
+            rect: Rectangle::new(output.loc + Point::from((panel.x, MENU_BAR_HEIGHT + GAP_BELOW_BAR)), picture.size),
+            glass: Some((Tier::Menu, MENU_RADIUS)),
+            alpha: 1.0,
+            fade: self.menu_bar.popup_fade(self.config.animations),
+            picture,
+        })
     }
 
     /// Where a point of the output is on the open panel, if it is on it.
     fn stats_local(&self, local: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
-        let panel = self.menu_bar.stats.panel.as_ref()?;
+        let panel = self.menu_bar.stats_panel()?;
         let at = local - Point::from((panel.x, MENU_BAR_HEIGHT + GAP_BELOW_BAR));
         Rectangle::new((0, 0).into(), panel.picture.as_ref()?.size).contains(at).then_some(at)
     }
@@ -3306,8 +3270,8 @@ impl Nekoland {
         let Some(at) = self.stats_local(local) else {
             return false;
         };
-        let stats = &mut self.menu_bar.stats;
-        if let Some(panel) = stats.panel.as_mut() {
+        let MenuBar { stats, popup, .. } = &mut self.menu_bar;
+        if let Some(Popup::Stats(panel)) = popup {
             panel.pressed = panel.part_at(at);
             if let Some(Part::FanSpeed(index)) = panel.pressed {
                 stats.fan_drag = Some((index, panel.fan_level(index, at)));
@@ -3318,8 +3282,8 @@ impl Nekoland {
 
     pub(crate) fn stats_motion(&mut self, local: Point<i32, Logical>) {
         let at = self.stats_local(local);
-        let stats = &mut self.menu_bar.stats;
-        if let Some(panel) = stats.panel.as_mut() {
+        let MenuBar { stats, popup, .. } = &mut self.menu_bar;
+        if let Some(Popup::Stats(panel)) = popup {
             panel.hovered = at.and_then(|at| panel.part_at(at));
             if let (Some(Part::FanSpeed(index)), Some(at)) = (panel.pressed, at) {
                 stats.fan_drag = Some((index, panel.fan_level(index, at)));
@@ -3366,14 +3330,14 @@ impl Nekoland {
             stats.fan_helper = None;
         }
         // Drawn again at once as asked, the next reading saying whether it took.
-        if let Some(panel) = stats.panel.as_mut() {
+        if let Some(panel) = self.menu_bar.stats_panel_mut() {
             panel.shown = None;
         }
     }
 
     pub(crate) fn stats_release(&mut self, local: Point<i32, Logical>) {
         let under = self.stats_local(local);
-        let Some(panel) = self.menu_bar.stats.panel.as_mut() else {
+        let Some(panel) = self.menu_bar.stats_panel_mut() else {
             return;
         };
         let pressed = panel.pressed.take();
@@ -3389,11 +3353,10 @@ impl Nekoland {
                 return;
             }
             Some(Part::FanSpeed(_)) => return,
-            // The reading's own panel takes the place of them all's, fading in over it.
+            // The reading's own panel takes the place of them all's.
             Some(Part::Row(module)) => {
                 let x = panel.x;
-                self.dismiss_stats_panel();
-                self.menu_bar.stats.panel = Some(Panel::new(View::Module(module), x));
+                self.menu_bar.show(Popup::Stats(Panel::new(View::Module(module), x)));
                 self.refresh_stats();
                 return;
             }
@@ -3401,7 +3364,7 @@ impl Nekoland {
             Some(Part::Settings) => config::spawn(&format!("NEKOLAND_SETTINGS_PAGE={SETTINGS_PAGE} nekoland-settings")),
             None => return,
         }
-        self.dismiss_stats_panel();
+        self.close_menu();
     }
 }
 

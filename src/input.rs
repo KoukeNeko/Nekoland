@@ -592,7 +592,7 @@ impl Nekoland {
             self.dismiss_alert();
             return true;
         }
-        if (self.menu_bar_panel_open() || self.menu_bar.clock_panel.is_some()) && sym == Keysym::Escape {
+        if (self.menu_bar_panel_open() || self.menu_bar.clock_panel().is_some()) && sym == Keysym::Escape {
             self.close_menu();
             return true;
         }
@@ -600,7 +600,7 @@ impl Nekoland {
         if !(ctrl || alt || logo) && !self.clock_panel_pinned() && self.clock_panel_key(sym, typed, shift) {
             return true;
         }
-        if self.menu_bar.open.is_some() {
+        if self.menu_bar.menu().is_some() {
             self.menu_bar_key(sym, typed);
             return true;
         }

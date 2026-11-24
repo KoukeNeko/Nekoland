@@ -663,7 +663,7 @@ impl Nekoland {
     /// Whether banners are there to see: not over a fullscreen window, nor while the
     /// Notification Center, where they stand, is open.
     fn banners_shown(&self) -> bool {
-        self.fullscreen_window().is_none() && self.menu_bar.notification_center.is_none()
+        self.fullscreen_window().is_none() && self.menu_bar.notification_center().is_none()
     }
 
     fn notice_at(&self, pos: Point<f64, Logical>) -> Option<u32> {

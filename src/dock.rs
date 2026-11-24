@@ -1185,8 +1185,7 @@ impl Nekoland {
         }
         let dock_menu = self
             .menu_bar
-            .open
-            .as_ref()
+            .menu()
             .is_some_and(|open| open.title.is_none());
         let in_use = dock_menu
             || self.dock.drag.is_some()
@@ -1461,7 +1460,7 @@ impl Nekoland {
             .zip(self.dock_frame())
             .map(|(pos, frame)| frame.point(pos));
         let dark = self.menu_bar_dark();
-        let menu_open = self.menu_bar.open.is_some();
+        let menu_open = self.menu_bar.menu().is_some();
 
         let mut tiles = self.dock_tiles();
         let running = |tiles: &[Tile], app_id: &str| {
@@ -1598,8 +1597,7 @@ impl Nekoland {
         let held = self.dock.stack.is_some()
             || self
                 .menu_bar
-                .open
-                .as_ref()
+                .menu()
                 .is_some_and(|open| open.title.is_none());
         let follow = if held {
             0.0
@@ -2606,7 +2604,7 @@ impl Nekoland {
             self.config.dock_size = (start + grown.round() as i32).clamp(MIN_ART, MAX_ART);
             return;
         }
-        let on_divider = self.dock_shown() && self.menu_bar.open.is_none() && self.dock_divider_at(pos);
+        let on_divider = self.dock_shown() && self.menu_bar.menu().is_none() && self.dock_divider_at(pos);
         if on_divider != self.dock.on_divider {
             self.dock.on_divider = on_divider;
             self.cursor_status = if on_divider && self.config.dock_position == DockPosition::Bottom {
@@ -2617,7 +2615,7 @@ impl Nekoland {
                 CursorImageStatus::default_named()
             };
         }
-        let hovered = if self.dock_shown() && self.menu_bar.open.is_none() {
+        let hovered = if self.dock_shown() && self.menu_bar.menu().is_none() {
             self.dock_tile_at(pos)
         } else {
             None
@@ -3180,7 +3178,7 @@ impl Nekoland {
     /// Option pressed or let go while an application's menu is open: 結束 and 強制結束
     /// trade places, as on the Mac.
     pub fn dock_menu_alt(&mut self, alt: bool) {
-        if !self.menu_bar.open.as_ref().is_some_and(|open| open.title.is_none()) {
+        if !self.menu_bar.menu().is_some_and(|open| open.title.is_none()) {
             return;
         }
         self.change_open_menu(|command| match command {

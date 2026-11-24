@@ -19,7 +19,7 @@ use crate::{
     config,
     glass::Tier,
     menubar::{
-        colors, font, network_icon, show_text, sound_icon, Colors, Overlay, MENU_BAR_HEIGHT, MENU_RADIUS,
+        colors, font, network_icon, show_text, sound_icon, Colors, Overlay, Popup, MENU_BAR_HEIGHT, MENU_RADIUS,
     },
     privacy::{self, InUse},
     system::{self, AudioDevice, Network, Player, Volume, Wifi},
@@ -140,7 +140,6 @@ struct Shown {
 pub struct ControlCenter {
     /// Its left edge, from the output's.
     x: i32,
-    opened: Instant,
     found: Option<Receiver<Found>>,
     // What decides where everything is, as of the last refresh.
     in_use: InUse,
@@ -241,7 +240,6 @@ impl ControlCenter {
             x: (anchor.loc.x + anchor.size.w / 2 - WIDTH / 2)
                 .min(output_width - WIDTH - 6)
                 .max(6),
-            opened: Instant::now(),
             found: spawned.is_ok().then_some(found),
             in_use: InUse::default(),
             night_available: false,
@@ -973,16 +971,12 @@ const SCREENSHOT: &str = "sleep 0.2; nekoland-shot full";
 impl Nekoland {
     /// Opens the control center under its icon in the bar, or closes it.
     pub(crate) fn toggle_control_center(&mut self, anchor: Rectangle<i32, Logical>) {
-        self.menu_bar.open = None;
-        self.dismiss_stats_panel();
-        self.menu_bar.notification_center = None;
-        self.menu_bar.control = match self.menu_bar.control {
-            Some(_) => None,
-            None => {
-                let width = self.bar_area().map_or(0, |area| area.size.w);
-                Some(ControlCenter::new(anchor, width))
-            }
-        };
+        if self.menu_bar.control().is_some() {
+            self.close_menu();
+        } else {
+            let width = self.bar_area().map_or(0, |area| area.size.w);
+            self.menu_bar.show(Popup::Control(ControlCenter::new(anchor, width)));
+        }
     }
 
     /// Takes in what was read for it, and draws it again when anything it shows changed.
@@ -993,7 +987,7 @@ impl Nekoland {
         let in_use = self.menu_bar.in_use;
         let quiet = self.notices.quiet;
         let (night, night_available) = (self.night_shift, self.night_shift_available);
-        let Some(control) = self.menu_bar.control.as_mut() else {
+        let Some(control) = self.menu_bar.control_mut() else {
             return;
         };
         if let Some(found) = control.found.as_ref().and_then(|found| found.try_iter().last()) {
@@ -1042,7 +1036,7 @@ impl Nekoland {
 
     pub(crate) fn control_center_overlay(&self) -> Option<Overlay<'_>> {
         let output = self.bar_area()?;
-        let control = self.menu_bar.control.as_ref()?;
+        let control = self.menu_bar.control()?;
         let picture = control.picture.as_ref()?;
         let size = picture.size;
         Some(Overlay {
@@ -1050,14 +1044,14 @@ impl Nekoland {
             rect: Rectangle::new(output.loc + Point::from((control.x, MENU_BAR_HEIGHT + 4)), size),
             glass: Some((Tier::Menu, MENU_RADIUS)),
             alpha: 1.0,
-            fade: ease_out(control.opened.elapsed().as_secs_f64() / OPEN_TIME) as f32,
+            fade: self.menu_bar.popup_fade(self.config.animations),
             picture,
         })
     }
 
     /// Where a point of the output is on the panel, if it is on it.
     fn control_local(&self, local: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
-        let control = self.menu_bar.control.as_ref()?;
+        let control = self.menu_bar.control()?;
         let size = control.picture.as_ref()?.size;
         let at = local - Point::from((control.x, MENU_BAR_HEIGHT + 4));
         Rectangle::new((0, 0).into(), size).contains(at).then_some(at)
@@ -1068,7 +1062,7 @@ impl Nekoland {
         let Some(at) = self.control_local(local) else {
             return false;
         };
-        let Some(control) = self.menu_bar.control.as_mut() else {
+        let Some(control) = self.menu_bar.control_mut() else {
             return false;
         };
         let part = control.part_at(at);
@@ -1090,34 +1084,32 @@ impl Nekoland {
         let at = local
             - self
                 .menu_bar
-                .control
-                .as_ref()
+                .control()
                 .map_or_else(Point::default, |control| {
                     Point::from((control.x, MENU_BAR_HEIGHT + 4))
                 });
         if self
             .menu_bar
-            .control
-            .as_ref()
+            .control()
             .is_some_and(|control| control.dragging.is_some())
         {
             self.control_drag(at, false);
             return;
         }
         let inside = self.control_local(local).is_some();
-        if let Some(control) = self.menu_bar.control.as_mut() {
+        if let Some(control) = self.menu_bar.control_mut() {
             control.hovered = inside.then(|| control.part_at(at)).flatten();
         }
     }
 
     pub(crate) fn control_release(&mut self, local: Point<i32, Logical>) {
-        let Some(control) = self.menu_bar.control.as_ref() else {
+        let Some(control) = self.menu_bar.control() else {
             return;
         };
         let at = local - Point::from((control.x, MENU_BAR_HEIGHT + 4));
         if control.dragging.is_some() {
             self.control_drag(at, true);
-            if let Some(control) = self.menu_bar.control.as_mut() {
+            if let Some(control) = self.menu_bar.control_mut() {
                 control.dragging = None;
             }
             return;
@@ -1125,8 +1117,7 @@ impl Nekoland {
         let under = self.control_local(local).and_then(|at| control.part_at(at));
         let pressed = self
             .menu_bar
-            .control
-            .as_mut()
+            .control_mut()
             .and_then(|control| control.pressed.take());
         if let Some(part) = pressed.filter(|&part| Some(part) == under) {
             self.control_activate(part);
@@ -1137,7 +1128,7 @@ impl Nekoland {
     /// when it is let go, `last`.
     fn control_drag(&mut self, at: Point<i32, Logical>, last: bool) {
         let volume = self.menu_bar.sound;
-        let Some(control) = self.menu_bar.control.as_mut() else {
+        let Some(control) = self.menu_bar.control_mut() else {
             return;
         };
         let Some((slider, told)) = control.dragging else {
@@ -1197,7 +1188,7 @@ impl Nekoland {
     }
 
     fn control_activate(&mut self, part: Part) {
-        let Some(control) = self.menu_bar.control.as_mut() else {
+        let Some(control) = self.menu_bar.control_mut() else {
             return;
         };
         match part {
@@ -1244,7 +1235,7 @@ impl Nekoland {
             }
             Part::Night => self.night_shift = !self.night_shift,
             Part::Screenshot => {
-                self.menu_bar.control = None;
+                self.menu_bar.popup = None;
                 config::spawn(SCREENSHOT);
             }
             Part::Mute => {

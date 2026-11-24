@@ -43,7 +43,7 @@ use crate::{
     dbus::{AppMenuAddress, Bus, Event, MenuAction, MenuEntry, Request, StatusItem},
     clockbar::{Face, GLYPH_GAP, GLYPH_WIDTH},
     clockmenu::ClockPanel,
-    control::{self, ControlCenter},
+    control::{self, ease_out, ControlCenter, OPEN_TIME},
     desktop::DesktopCommand,
     dock::DockCommand,
     glass::Tier,
@@ -311,6 +311,59 @@ pub struct OpenMenu {
     last_pointer: Option<Point<i32, Logical>>,
 }
 
+/// What the bar has open.
+pub(crate) enum Popup {
+    Menu(OpenMenu),
+    Control(ControlCenter),
+    Notifications(NotificationCenter),
+    Clock(ClockPanel),
+    Stats(crate::stats::Panel),
+}
+
+/// The open popup as one kind, or none if another is open.
+macro_rules! popup_as {
+    ($name:ident, $name_mut:ident, $variant:ident, $ty:ty) => {
+        pub(crate) fn $name(&self) -> Option<&$ty> {
+            match &self.popup {
+                Some(Popup::$variant(popup)) => Some(popup),
+                _ => None,
+            }
+        }
+
+        pub(crate) fn $name_mut(&mut self) -> Option<&mut $ty> {
+            match &mut self.popup {
+                Some(Popup::$variant(popup)) => Some(popup),
+                _ => None,
+            }
+        }
+    };
+}
+
+impl MenuBar {
+    popup_as!(menu, menu_mut, Menu, OpenMenu);
+    popup_as!(control, control_mut, Control, ControlCenter);
+    popup_as!(notification_center, notification_center_mut, Notifications, NotificationCenter);
+    popup_as!(clock_panel, clock_panel_mut, Clock, ClockPanel);
+    popup_as!(stats_panel, stats_panel_mut, Stats, crate::stats::Panel);
+
+    /// Opens `popup` in the place of the one open. One opened from nothing fades in; going
+    /// from one to the next, as the pointer goes along the bar, it is there at once.
+    pub(crate) fn show(&mut self, popup: Popup) {
+        if self.popup.is_none() {
+            self.popup_opened = Instant::now();
+        }
+        self.popup = Some(popup);
+    }
+
+    /// How far the open popup has faded in, from 0 to 1.
+    pub(crate) fn popup_fade(&self, animations: bool) -> f32 {
+        if !animations {
+            return 1.0;
+        }
+        ease_out(self.popup_opened.elapsed().as_secs_f64() / OPEN_TIME) as f32
+    }
+}
+
 /// An icon of the bar being dragged with Ctrl held to another place among those that move.
 struct Reorder {
     name: String,
@@ -364,10 +417,11 @@ pub struct MenuBar {
     recording_read: Option<Instant>,
     icons: HashMap<String, Option<ImageSurface>>,
     titles: Vec<Title>,
-    pub open: Option<OpenMenu>,
-    pub(crate) control: Option<ControlCenter>,
-    pub(crate) notification_center: Option<NotificationCenter>,
-    pub(crate) clock_panel: Option<ClockPanel>,
+    /// The one menu or panel open, from the bar or elsewhere: opening one puts it in the
+    /// place of the one before, so they never stand together.
+    pub(crate) popup: Option<Popup>,
+    /// When one opened with none open before it, which it fades in from.
+    popup_opened: Instant,
     /// The day the panel had picked when it was last open, for it to open on again.
     pub(crate) clock_picked: Option<calendar_data::Date>,
     pub(crate) agenda: crate::agenda::Agenda,
@@ -421,10 +475,8 @@ impl Default for MenuBar {
             recording_read: None,
             icons: HashMap::new(),
             titles: Vec::new(),
-            open: None,
-            control: None,
-            notification_center: None,
-            clock_panel: None,
+            popup: None,
+            popup_opened: Instant::now(),
             clock_picked: None,
             agenda: Default::default(),
             clock_bar: Default::default(),
@@ -734,7 +786,7 @@ impl MenuBar {
         config: &config::Config,
     ) {
         let colors = colors(dark);
-        let open = self.open.as_ref().and_then(|open| open.title);
+        let open = self.menu().and_then(|open| open.title);
         let title_font = font("Medium", 10.0);
         let app_font = font("Bold", 10.0);
 
@@ -799,7 +851,7 @@ impl MenuBar {
         let icon_at = |side| f64::from(side - STATUS_ICON) / 2.0;
         // The bell is what lights while the Notification Center is open, not the clock.
         let bell_rect = Rectangle::new((width - CLOCK_PADDING - slot, 0).into(), (slot, MENU_BAR_HEIGHT).into());
-        let bell_lit = self.notification_center.is_some();
+        let bell_lit = self.notification_center().is_some();
         if bell_lit {
             highlight(&cr, bell_rect);
         }
@@ -823,7 +875,7 @@ impl MenuBar {
             (clock_width + CLOCK_PADDING * 2, MENU_BAR_HEIGHT).into(),
         );
         // The flash lights the clock as an open menu's title is lit.
-        let clock_lit = open == Some(self.titles.len()) || self.clock_panel.is_some() || clock.flash;
+        let clock_lit = open == Some(self.titles.len()) || self.clock_panel().is_some() || clock.flash;
         if clock_lit {
             highlight(&cr, clock_rect);
         } else if config.clock_style != config::ClockStyle::Plain {
@@ -976,8 +1028,8 @@ impl MenuBar {
             cr.translate(shift, 0.0);
             let base = slot;
             let lit = open == Some(first + index)
-                || (source == Source::Control && self.control.is_some())
-                || matches!(source, Source::Stats(view) if self.stats.panel_view().is_some_and(|open| view.owns(open)));
+                || (source == Source::Control && self.control().is_some())
+                || matches!(source, Source::Stats(view) if self.stats_panel().is_some_and(|open| view.owns(open.view)));
             if lit {
                 highlight(&cr, rect);
             }
@@ -1384,11 +1436,11 @@ impl Nekoland {
             return false;
         };
         // A pinned panel only takes what is on it, so the windows under it keep working.
-        let panel_takes_all = self.menu_bar.clock_panel.is_some() && !self.clock_panel_pinned();
+        let panel_takes_all = self.menu_bar.clock_panel().is_some() && !self.clock_panel_pinned();
         let on_pinned_panel = self.clock_panel_pinned()
             && self.local(pos).is_some_and(|local| self.clock_panel_holds(local));
         self.alert_shown()
-            || self.menu_bar.open.is_some()
+            || self.menu_bar.menu().is_some()
             || (self.menu_bar_shown()
                 && (self.menu_bar_panel_open()
                     || panel_takes_all
@@ -1398,15 +1450,14 @@ impl Nekoland {
 
     /// Whether the control center, the Notification Center or a reading's panel is open.
     pub(crate) fn menu_bar_panel_open(&self) -> bool {
-        self.menu_bar.control.is_some()
-            || self.menu_bar.notification_center.is_some()
+        self.menu_bar.control().is_some()
+            || self.menu_bar.notification_center().is_some()
             || self.stats_panel_view().is_some()
     }
 
     /// Opens the clock's panel when the pointer comes to the clock, if the settings ask for it.
     fn open_clock_on_hover(&mut self, pos: Point<f64, Logical>) {
-        let idle = self.menu_bar.clock_panel.is_none() && self.menu_bar.control.is_none();
-        if !(self.config.clock_open_on_hover && idle && self.menu_bar_shown()) {
+        if !(self.config.clock_open_on_hover && self.menu_bar.popup.is_none() && self.menu_bar_shown()) {
             return;
         }
         let Some(local) = self.local(pos) else {
@@ -1574,10 +1625,10 @@ impl Nekoland {
             width: output.size.w,
             app: app.clone(),
             menus: self.menu_bar.menus_revision,
-            open: self.menu_bar.open.as_ref().and_then(|open| open.title),
-            control: self.menu_bar.control.is_some(),
-            notification_center: self.menu_bar.notification_center.is_some(),
-            clock_panel: self.menu_bar.clock_panel.is_some(),
+            open: self.menu_bar.menu().and_then(|open| open.title),
+            control: self.menu_bar.control().is_some(),
+            notification_center: self.menu_bar.notification_center().is_some(),
+            clock_panel: self.menu_bar.clock_panel().is_some(),
             stats: (
                 self.menu_bar.stats.count,
                 self.menu_bar.stats.settling(self.config.animations),
@@ -1600,13 +1651,14 @@ impl Nekoland {
                 .drawn
                 .as_ref()
                 .is_some_and(|before| before.app != drawn.app)
+                && self.menu_bar.menu().is_some()
             {
-                self.menu_bar.open = None;
+                self.menu_bar.popup = None;
             }
             let titles = self.left_titles();
             // Drawn first, as drawing the bar keeps where its titles are, and without the
             // open menu's title lit, which is the bar in use's.
-            let open = self.menu_bar.open.take();
+            let open = self.menu_bar.popup.take();
             let waits = text::icon_waits();
             let mut others = Vec::new();
             for &width in &drawn.others {
@@ -1619,10 +1671,10 @@ impl Nekoland {
                 }
             }
             self.menu_bar.other_pictures = others;
-            self.menu_bar.open = open;
+            self.menu_bar.popup = open;
             self.menu_bar.draw_bar(output.size.w, titles, &clock, (dark, false), &self.config);
             self.menu_bar.drawn = (text::icon_waits() == waits).then(|| Drawn {
-                open: self.menu_bar.open.as_ref().and_then(|open| open.title),
+                open: self.menu_bar.menu().and_then(|open| open.title),
                 ..drawn
             });
         }
@@ -1640,11 +1692,11 @@ impl Nekoland {
         }
 
         let dark = self.menu_bar.dark;
-        let levels = self.menu_bar.open.as_ref().map_or(0, |open| open.levels.len());
+        let levels = self.menu_bar.menu().map_or(0, |open| open.levels.len());
         while self.menu_bar.menu_ids.len() < levels {
             self.menu_bar.menu_ids.push(Id::new());
         }
-        if let Some(open) = self.menu_bar.open.as_mut() {
+        if let Some(open) = self.menu_bar.menu_mut() {
             for level in &mut open.levels {
                 MenuBar::draw_menu(dark, level);
             }
@@ -1668,11 +1720,11 @@ impl Nekoland {
         };
         let bar = &self.menu_bar;
         let mut overlays = Vec::new();
-        if let Some(open) = &bar.open {
+        if let Some(open) = bar.menu() {
             for (level, id) in open.levels.iter().zip(&bar.menu_ids).rev() {
                 if let Some(picture) = &level.picture {
                     overlays.push(Overlay {
-                        fade: 1.0,
+                        fade: bar.popup_fade(self.config.animations),
                         id,
                         rect: Rectangle::new(level.rect.loc + output.loc, level.rect.size),
                         glass: Some((Tier::Menu, MENU_RADIUS)),
@@ -1694,7 +1746,7 @@ impl Nekoland {
             return overlays;
         }
         overlays.extend(self.control_center_overlay());
-        overlays.extend(self.stats_overlays());
+        overlays.extend(self.stats_overlay());
         overlays.extend(self.notification_center_overlay());
         overlays.extend(self.clock_panel_overlay());
         // An alert is over everything, so it is first.
@@ -1806,7 +1858,9 @@ impl Nekoland {
             Event::ItemGone(key) => {
                 bar.items.retain(|item| item.key != key);
                 bar.items_revision += 1;
-                bar.open = None;
+                if bar.menu().is_some() {
+                    bar.popup = None;
+                }
             }
             Event::Dark(dark) => {
                 bar.dark = dark;
@@ -1855,8 +1909,7 @@ impl Nekoland {
     fn reopen_app_menu(&mut self) {
         let Some((open, title)) = self
             .menu_bar
-            .open
-            .as_ref()
+            .menu()
             .and_then(|open| Some((open, open.title?)))
         else {
             return;
@@ -1866,7 +1919,7 @@ impl Nekoland {
             let highlighted = open.levels[0].highlighted;
             let search = open.search.as_ref().map(|(query, _)| query.clone());
             self.open_menu(title, false);
-            if let Some(open) = self.menu_bar.open.as_mut() {
+            if let Some(open) = self.menu_bar.menu_mut() {
                 if let Some(query) = search {
                     if let Some((typed, _)) = open.search.as_mut() {
                         *typed = query;
@@ -1898,7 +1951,7 @@ impl Nekoland {
 
     /// The deepest open menu at a position, and the entry there if one can be landed on.
     fn level_at(&self, local: Point<i32, Logical>) -> Option<(usize, Option<usize>)> {
-        let open = self.menu_bar.open.as_ref()?;
+        let open = self.menu_bar.menu()?;
         open.levels.iter().enumerate().rev().find_map(|(index, level)| {
             level.rect.contains(local).then(|| {
                 let row = level
@@ -1911,12 +1964,10 @@ impl Nekoland {
         })
     }
 
+    /// Closes whatever menu or panel the bar has open, the one place each of them is closed
+    /// from, so one opening closes all the others.
     pub fn close_menu(&mut self) {
-        self.menu_bar.open = None;
-        self.menu_bar.control = None;
-        self.menu_bar.notification_center = None;
-        self.menu_bar.clock_panel = None;
-        self.dismiss_stats_panel();
+        self.menu_bar.popup = None;
     }
 
     /// The main display's size.
@@ -1940,12 +1991,6 @@ impl Nekoland {
         let Some(source) = self.menu_bar.titles.get(title).map(|title| title.source.clone()) else {
             return;
         };
-        self.menu_bar.control = None;
-        self.menu_bar.notification_center = None;
-        self.menu_bar.clock_panel = None;
-        if !matches!(source, Source::Stats(_)) {
-            self.dismiss_stats_panel();
-        }
         match source {
             Source::Stats(view) => {
                 self.toggle_stats_panel(view, self.menu_bar.titles[title].rect);
@@ -1960,6 +2005,7 @@ impl Nekoland {
                 return;
             }
             Source::Recording => {
+                self.close_menu();
                 config::spawn("nekoland-shot record-stop");
                 return;
             }
@@ -1980,7 +2026,7 @@ impl Nekoland {
         let mut entries = self.menu_entries(&source);
         // Help holds the search of every menu, so it opens even with nothing else in it.
         if entries.is_empty() && !help {
-            self.menu_bar.open = None;
+            self.close_menu();
             if let (Source::Status(item), Some(bus)) = (&source, &self.menu_bar.bus) {
                 let rect = self.menu_bar.titles[title].rect;
                 bus.send(Request::ItemActivate {
@@ -2007,7 +2053,7 @@ impl Nekoland {
         let highlighted = highlight_first
             .then(|| entries.iter().position(Entry::reachable))
             .flatten();
-        self.menu_bar.open = Some(OpenMenu {
+        self.menu_bar.show(Popup::Menu(OpenMenu {
             title: Some(title),
             levels: vec![Level {
                 entries,
@@ -2019,7 +2065,7 @@ impl Nekoland {
             }],
             search,
             last_pointer: None,
-        });
+        }));
     }
 
     /// Opens a menu of these entries beside `anchor`, the strip across the Dock at an icon,
@@ -2035,7 +2081,7 @@ impl Nekoland {
             gap,
         );
         let shift = loc - rect.loc;
-        self.menu_bar.open = Some(OpenMenu {
+        self.menu_bar.show(Popup::Menu(OpenMenu {
             title: None,
             levels: vec![Level {
                 entries,
@@ -2050,7 +2096,7 @@ impl Nekoland {
             }],
             search: None,
             last_pointer: None,
-        });
+        }));
     }
 
     /// Opens the 視窗 menu at the top left of the window in front, with moving, resizing and
@@ -2074,7 +2120,7 @@ impl Nekoland {
     /// Highlights the first entry that can be chosen in a menu opened from the keyboard,
     /// for the arrow keys to go on from.
     pub(crate) fn highlight_first_entry(&mut self) {
-        if let Some(level) = self.menu_bar.open.as_mut().and_then(|open| open.levels.first_mut()) {
+        if let Some(level) = self.menu_bar.menu_mut().and_then(|open| open.levels.first_mut()) {
             level.highlighted = level
                 .entries
                 .iter()
@@ -2094,7 +2140,7 @@ impl Nekoland {
             menu_side(point.y, rect.size.h, MENU_BAR_HEIGHT, output.h - 6),
         ));
         let shift = loc - rect.loc;
-        self.menu_bar.open = Some(OpenMenu {
+        self.menu_bar.show(Popup::Menu(OpenMenu {
             title: None,
             levels: vec![Level {
                 entries,
@@ -2109,13 +2155,13 @@ impl Nekoland {
             }],
             search: None,
             last_pointer: None,
-        });
+        }));
     }
 
     /// Opens the submenu of a row of a level beside it, closing any deeper one.
     fn open_submenu(&mut self, level: usize, row: usize, highlight_first: bool) {
         let size = self.bar_size();
-        let Some(open) = self.menu_bar.open.as_mut() else {
+        let Some(open) = self.menu_bar.menu_mut() else {
             return;
         };
         open.levels.truncate(level + 1);
@@ -2157,7 +2203,7 @@ impl Nekoland {
 
     /// Shows what the Help menu's search finds for what was typed.
     fn update_search(&mut self) {
-        let Some((query, base)) = self.menu_bar.open.as_ref().and_then(|open| open.search.clone()) else {
+        let Some((query, base)) = self.menu_bar.menu().and_then(|open| open.search.clone()) else {
             return;
         };
         let mut entries = vec![Entry::search_field(&query)];
@@ -2177,11 +2223,8 @@ impl Nekoland {
             }
         }
         let size = self.bar_size();
-        let Some(open) = self.menu_bar.open.as_mut() else {
-            return;
-        };
-        let Some(anchor) = open
-            .title
+        let Some(anchor) = (self.menu_bar.menu())
+            .and_then(|open| open.title)
             .and_then(|title| self.menu_bar.titles.get(title))
             .map(|title| title.rect)
         else {
@@ -2191,14 +2234,16 @@ impl Nekoland {
         let highlighted = (!query.is_empty())
             .then(|| entries.iter().position(Entry::reachable))
             .flatten();
-        open.levels = vec![Level {
-            entries,
-            rect,
-            rows,
-            highlighted,
-            picture: None,
-            drawn: None,
-        }];
+        if let Some(open) = self.menu_bar.menu_mut() {
+            open.levels = vec![Level {
+                entries,
+                rect,
+                rows,
+                highlighted,
+                picture: None,
+                drawn: None,
+            }];
+        }
     }
 
     fn menu_entries(&mut self, source: &Source) -> Vec<Entry> {
@@ -2447,6 +2492,33 @@ impl Nekoland {
         }
     }
 
+    /// Whether the open popup is the one of the bar's title at `title`.
+    fn popup_is_of(&self, title: usize) -> bool {
+        let Some(source) = self.menu_bar.titles.get(title).map(|title| &title.source) else {
+            return false;
+        };
+        match &self.menu_bar.popup {
+            Some(Popup::Menu(open)) => open.title == Some(title),
+            Some(Popup::Control(_)) => *source == Source::Control,
+            Some(Popup::Notifications(_)) => source.opens_notifications(),
+            Some(Popup::Clock(_)) => *source == Source::Clock,
+            Some(Popup::Stats(panel)) => matches!(source, Source::Stats(view) if view.owns(panel.view)),
+            None => false,
+        }
+    }
+
+    /// Whether the open popup gives way to the title the pointer comes to: not one opened
+    /// away from the bar, as the Dock's menus, nor while something on it is dragged.
+    fn popup_follows_pointer(&self) -> bool {
+        match &self.menu_bar.popup {
+            Some(Popup::Menu(open)) => open.title.is_some(),
+            Some(Popup::Control(control)) => !control.dragging(),
+            Some(Popup::Stats(_)) => !self.menu_bar.stats.dragging(),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
     /// A button went down, `secondary` for the right one. Returns whether the bar took it.
     pub fn menu_bar_press(&mut self, pos: Point<f64, Logical>, secondary: bool) -> bool {
         if !self.menu_bar_covers(pos) {
@@ -2492,52 +2564,22 @@ impl Nekoland {
                     return true;
                 }
             }
-            let panel_open = self.menu_bar.titles.get(title).is_some_and(|title| match title.source {
-                Source::Control => self.menu_bar.control.is_some(),
-                Source::Notifications => self.menu_bar.notification_center.is_some(),
-                Source::Clock => self.menu_bar.clock_panel.is_some(),
-                Source::Stats(view) => self.stats_panel_view().is_some_and(|open| view.owns(open)),
-                _ => false,
-            });
-            if panel_open
-                || self
-                    .menu_bar
-                    .open
-                    .as_ref()
-                    .is_some_and(|open| open.title == Some(title))
-            {
+            if self.popup_is_of(title) {
                 self.close_menu();
             } else {
                 self.open_menu(title, false);
             }
             return true;
         }
-        if self.menu_bar.control.is_some() {
-            if !self.control_press(local) {
-                self.close_menu();
-            }
-            return true;
-        }
-        if self.stats_panel_view().is_some() {
-            if !self.stats_press(local) {
-                self.close_menu();
-            }
-            return true;
-        }
-        if self.menu_bar.notification_center.is_some() {
-            if !self.notification_center_press(local) {
-                self.close_menu();
-            }
-            return true;
-        }
-        if self.menu_bar.clock_panel.is_some() {
-            if !self.clock_panel_press(local) && !self.clock_panel_pinned() {
-                self.close_menu();
-            }
-            return true;
-        }
-        // A click anywhere else only dismisses the menus; it does not reach a window.
-        if self.level_at(local).is_none() {
+        let taken = match &self.menu_bar.popup {
+            Some(Popup::Control(_)) => self.control_press(local),
+            Some(Popup::Stats(_)) => self.stats_press(local),
+            Some(Popup::Notifications(_)) => self.notification_center_press(local),
+            Some(Popup::Clock(_)) => self.clock_panel_press(local) || self.clock_panel_pinned(),
+            // A click anywhere else only dismisses the menus; it does not reach a window.
+            Some(Popup::Menu(_)) | None => self.level_at(local).is_some(),
+        };
+        if !taken {
             self.close_menu();
         }
         true
@@ -2552,68 +2594,38 @@ impl Nekoland {
             }
             return;
         }
-        if (self.menu_bar.control.is_some() || self.menu_bar.clock_panel.is_some()) && self.menu_bar_shown() {
-            let Some(local) = self.local(pos) else {
-                return;
-            };
-            let dragging = self.menu_bar.control.as_ref().is_some_and(|control| control.dragging());
-            let own = if self.menu_bar.control.is_some() { Source::Control } else { Source::Clock };
-            // As from one menu to the next, the pointer goes from the panel to another menu.
-            match self.title_at(local) {
-                Some(title) if !dragging && self.menu_bar.titles[title].source != own => {
-                    self.open_menu(title, false)
-                }
-                _ if self.menu_bar.control.is_some() => self.control_motion(local),
-                _ => self.clock_panel_motion(local),
-            }
-            return;
-        }
-        if let Some(open) = self.stats_panel_view().filter(|_| self.menu_bar_shown()) {
-            let Some(local) = self.local(pos) else {
-                return;
-            };
-            match self.title_at(local) {
-                Some(title) if !matches!(self.menu_bar.titles[title].source, Source::Stats(view) if view.owns(open)) => {
-                    self.open_menu(title, false)
-                }
-                _ => self.stats_motion(local),
-            }
-            return;
-        }
-        if self.menu_bar.notification_center.is_some() && self.menu_bar_shown() {
-            let Some(local) = self.local(pos) else {
-                return;
-            };
-            match self.title_at(local) {
-                Some(title) if !self.menu_bar.titles[title].source.opens_notifications() => {
-                    self.open_menu(title, false)
-                }
-                _ => self.notification_center_motion(local),
-            }
-            return;
-        }
-        if self.menu_bar.open.is_none() {
+        if self.menu_bar.popup.is_none() {
             self.open_clock_on_hover(pos);
+            return;
+        }
+        let menu = self.menu_bar.menu().is_some();
+        if !menu && !self.menu_bar_shown() {
             return;
         }
         let Some(local) = self.local(pos) else {
             return;
         };
-        if let Some(title) = self.title_at(local) {
-            if self
-                .menu_bar
-                .open
-                .as_ref()
-                .is_some_and(|open| open.title.is_some_and(|open_title| open_title != title))
-            {
-                self.open_menu(title, false);
-            }
+        // As from one menu to the next on the Mac, the pointer going along the bar opens what
+        // is under it in the place of what was open.
+        let over = self.title_at(local);
+        if let Some(title) = over.filter(|&title| self.popup_follows_pointer() && !self.popup_is_of(title)) {
+            self.open_menu(title, false);
+            return;
+        }
+        match &self.menu_bar.popup {
+            Some(Popup::Control(_)) => return self.control_motion(local),
+            Some(Popup::Stats(_)) => return self.stats_motion(local),
+            Some(Popup::Notifications(_)) => return self.notification_center_motion(local),
+            Some(Popup::Clock(_)) => return self.clock_panel_motion(local),
+            Some(Popup::Menu(_)) | None => {}
+        }
+        if over.is_some() {
             return;
         }
         let Some((level, row)) = self.level_at(local) else {
             return;
         };
-        let Some(open) = self.menu_bar.open.as_mut() else {
+        let Some(open) = self.menu_bar.menu_mut() else {
             return;
         };
         let previous = open.last_pointer.replace(local);
@@ -2655,36 +2667,17 @@ impl Nekoland {
             }
             return;
         }
-        if self.menu_bar.control.is_some() {
-            if let Some(local) = self.local(pos) {
-                self.control_release(local);
-            }
-            return;
-        }
-        if self.stats_panel_view().is_some() {
-            if let Some(local) = self.local(pos) {
-                self.stats_release(local);
-            }
-            return;
-        }
-        if self.menu_bar.notification_center.is_some() {
-            if let Some(local) = self.local(pos) {
-                self.notification_center_release(local);
-            }
-            return;
-        }
-        if self.menu_bar.clock_panel.is_some() {
-            if let Some(local) = self.local(pos) {
-                self.clock_panel_release(local);
-            }
-            return;
-        }
-        if self.menu_bar.open.is_none() {
-            return;
-        }
         let Some(local) = self.local(pos) else {
             return;
         };
+        match &self.menu_bar.popup {
+            Some(Popup::Control(_)) => return self.control_release(local),
+            Some(Popup::Stats(_)) => return self.stats_release(local),
+            Some(Popup::Notifications(_)) => return self.notification_center_release(local),
+            Some(Popup::Clock(_)) => return self.clock_panel_release(local),
+            Some(Popup::Menu(_)) => {}
+            None => return,
+        }
         if let Some((level, Some(row))) = self.level_at(local) {
             self.choose(level, row);
         }
@@ -2693,7 +2686,7 @@ impl Nekoland {
     /// A key while a menu is open. Every key goes to the menus then; in a Help menu,
     /// typing searches.
     pub fn menu_bar_key(&mut self, sym: Keysym, typed: Option<char>) {
-        let Some(open) = self.menu_bar.open.as_ref() else {
+        let Some(open) = self.menu_bar.menu() else {
             return;
         };
         let title = open.title;
@@ -2709,7 +2702,7 @@ impl Nekoland {
                 _ => None,
             };
             if let Some(edit) = edit {
-                if let Some((query, _)) = self.menu_bar.open.as_mut().and_then(|open| open.search.as_mut()) {
+                if let Some((query, _)) = self.menu_bar.menu_mut().and_then(|open| open.search.as_mut()) {
                     match edit {
                         Some(character) => query.push(character),
                         None => {
@@ -2745,13 +2738,13 @@ impl Nekoland {
 
         match sym {
             Keysym::Escape if depth > 0 => {
-                if let Some(open) = self.menu_bar.open.as_mut() {
+                if let Some(open) = self.menu_bar.menu_mut() {
                     open.levels.truncate(depth);
                 }
             }
             Keysym::Escape => self.close_menu(),
             Keysym::Left if depth > 0 => {
-                if let Some(open) = self.menu_bar.open.as_mut() {
+                if let Some(open) = self.menu_bar.menu_mut() {
                     open.levels.truncate(depth);
                 }
             }
@@ -2771,7 +2764,7 @@ impl Nekoland {
                 }
             }
             Keysym::Down | Keysym::Up => {
-                if let Some(open) = self.menu_bar.open.as_mut() {
+                if let Some(open) = self.menu_bar.menu_mut() {
                     let level = &mut open.levels[depth];
                     level.highlighted = step(level, sym == Keysym::Down);
                 }
@@ -2792,7 +2785,7 @@ impl Nekoland {
     /// Puts what `change` gives in place of entries of the open menu, by their commands,
     /// without closing it. The menu keeps the width it opened with.
     pub fn change_open_menu(&mut self, change: impl Fn(Option<&Command>) -> Option<Entry>) {
-        let Some(level) = self.menu_bar.open.as_mut().and_then(|open| open.levels.first_mut()) else {
+        let Some(level) = self.menu_bar.menu_mut().and_then(|open| open.levels.first_mut()) else {
             return;
         };
         for entry in &mut level.entries {
@@ -2813,8 +2806,7 @@ impl Nekoland {
     fn choose(&mut self, level: usize, row: usize) {
         let command = self
             .menu_bar
-            .open
-            .as_ref()
+            .menu()
             .and_then(|open| open.levels.get(level))
             .and_then(|level| level.entries.get(row))
             .filter(|entry| entry.children.is_empty())
@@ -2847,7 +2839,7 @@ impl Nekoland {
             return;
         };
         self.open_menu(help, false);
-        if let Some((typed, _)) = self.menu_bar.open.as_mut().and_then(|open| open.search.as_mut()) {
+        if let Some((typed, _)) = self.menu_bar.menu_mut().and_then(|open| open.search.as_mut()) {
             *typed = query.to_string();
         }
         self.update_search();

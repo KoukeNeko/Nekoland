@@ -232,7 +232,7 @@ impl crate::state::Nekoland {
         let naming_desktop = self.overview.as_ref().is_some_and(|overview| overview.renaming.is_some());
         let renaming = self.desktop.renaming.is_some() || self.hover.note_mut().is_some() || naming_desktop;
         let typing = (self.overview.is_some() || renaming)
-            && self.menu_bar.open.is_none()
+            && self.menu_bar.menu().is_none()
             && !(modifiers.alt || modifiers.logo)
             && (!modifiers.ctrl || sym == Keysym::space);
         if !typing {

@@ -5,7 +5,7 @@
 //! a notification or a stack under the pointer, 清除 over a program's spread out and
 //! 清除全部 at the top clear them.
 
-use std::{f64::consts::TAU, time::Instant};
+use std::f64::consts::TAU;
 
 use cairo::Context;
 use smithay::{
@@ -14,10 +14,10 @@ use smithay::{
 };
 
 use crate::{
-    control::{draw_panel, draw_well, ease_out, show_line, to_f64, OPEN_TIME},
+    control::{draw_panel, draw_well, show_line, to_f64},
     glass::Tier,
     menubar::{
-        colors, font, show_text, text_size, Colors, Overlay, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS,
+        colors, font, show_text, text_size, Colors, Overlay, Popup, GAP_BELOW_BAR, MENU_BAR_HEIGHT, MENU_RADIUS,
     },
     notices::{self, card_height, draw_card, relative_time, Face, Kept, DISMISSED},
     text::{self, Picture},
@@ -130,7 +130,6 @@ struct Shown {
 }
 
 pub struct NotificationCenter {
-    opened: Instant,
     /// The programs whose notifications are spread out.
     expanded: Vec<String>,
     /// How far down what it holds is scrolled, in points.
@@ -292,7 +291,6 @@ impl Layout {
 impl NotificationCenter {
     fn new() -> Self {
         Self {
-            opened: Instant::now(),
             expanded: Vec::new(),
             scroll: 0,
             hovered: None,
@@ -439,18 +437,16 @@ fn draw_clear_button(cr: &Context, colors: &Colors, card: Rectangle<i32, Logical
 impl Nekoland {
     /// Opens the Notification Center under the clock, or closes it.
     pub(crate) fn toggle_notification_center(&mut self) {
-        self.menu_bar.open = None;
-        self.dismiss_stats_panel();
-        self.menu_bar.control = None;
-        self.menu_bar.notification_center = match self.menu_bar.notification_center {
-            Some(_) => None,
-            None => Some(NotificationCenter::new()),
-        };
+        if self.menu_bar.notification_center().is_some() {
+            self.close_menu();
+        } else {
+            self.menu_bar.show(Popup::Notifications(NotificationCenter::new()));
+        }
     }
 
     /// Draws the panel again when anything it shows changed.
     pub(crate) fn refresh_notification_center(&mut self) {
-        if self.menu_bar.notification_center.is_none() {
+        if self.menu_bar.notification_center().is_none() {
             return;
         }
         let dark = self.menu_bar.dark;
@@ -460,7 +456,7 @@ impl Nekoland {
         let previews = self.config.notification_previews;
         let revision = self.notices.kept_revision;
         let kept = &self.notices.kept;
-        let Some(center) = self.menu_bar.notification_center.as_mut() else {
+        let Some(center) = self.menu_bar.notification_center_mut() else {
             return;
         };
         let layout_key = LayoutKey {
@@ -489,19 +485,15 @@ impl Nekoland {
 
     pub(crate) fn notification_center_overlay(&self) -> Option<Overlay<'_>> {
         let output = self.bar_area()?;
-        let center = self.menu_bar.notification_center.as_ref()?;
+        let center = self.menu_bar.notification_center()?;
         let picture = center.picture.as_ref()?;
-        let fade = if self.config.animations {
-            ease_out(center.opened.elapsed().as_secs_f64() / OPEN_TIME)
-        } else {
-            1.0
-        };
+        let fade = self.menu_bar.popup_fade(self.config.animations);
         Some(Overlay {
             id: &center.id,
             rect: Rectangle::new(output.loc + panel_origin(output.size.w), picture.size),
             glass: Some((Tier::Menu, MENU_RADIUS)),
             alpha: 1.0,
-            fade: fade as f32,
+            fade,
             picture,
         })
     }
@@ -509,7 +501,7 @@ impl Nekoland {
     /// Where a point of the output is in what the panel holds, scrolled as it is, if it is
     /// on the panel.
     fn notification_center_at(&self, local: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
-        let center = self.menu_bar.notification_center.as_ref()?;
+        let center = self.menu_bar.notification_center()?;
         let size = center.picture.as_ref()?.size;
         let at = local - panel_origin(self.bar_size().w);
         Rectangle::new((0, 0).into(), size)
@@ -522,7 +514,7 @@ impl Nekoland {
         let Some(at) = self.notification_center_at(local) else {
             return false;
         };
-        if let Some(center) = self.menu_bar.notification_center.as_mut() {
+        if let Some(center) = self.menu_bar.notification_center_mut() {
             center.pressed = center.layout.part_at(at);
         }
         true
@@ -530,14 +522,14 @@ impl Nekoland {
 
     pub(crate) fn notification_center_motion(&mut self, local: Point<i32, Logical>) {
         let at = self.notification_center_at(local);
-        if let Some(center) = self.menu_bar.notification_center.as_mut() {
+        if let Some(center) = self.menu_bar.notification_center_mut() {
             center.hovered = at.and_then(|at| center.layout.part_at(at));
         }
     }
 
     pub(crate) fn notification_center_release(&mut self, local: Point<i32, Logical>) {
         let at = self.notification_center_at(local);
-        let Some(center) = self.menu_bar.notification_center.as_mut() else {
+        let Some(center) = self.menu_bar.notification_center_mut() else {
             return;
         };
         let under = at.and_then(|at| center.layout.part_at(at));
@@ -555,7 +547,7 @@ impl Nekoland {
             return false;
         }
         // It is kept within what there is to scroll when the panel is drawn next.
-        if let Some(center) = self.menu_bar.notification_center.as_mut() {
+        if let Some(center) = self.menu_bar.notification_center_mut() {
             center.scroll += amount.round() as i32;
         }
         true
@@ -576,7 +568,7 @@ impl Nekoland {
         match part {
             // As on the Mac, the panel goes as the program comes forward.
             Part::Notice(id) => {
-                self.menu_bar.notification_center = None;
+                self.menu_bar.popup = None;
                 self.activate_notice(id);
                 return;
             }
@@ -593,7 +585,7 @@ impl Nekoland {
             }
             Part::Stack(_) | Part::Collapse(_) => {}
         }
-        let Some(center) = self.menu_bar.notification_center.as_mut() else {
+        let Some(center) = self.menu_bar.notification_center_mut() else {
             return;
         };
         match part {

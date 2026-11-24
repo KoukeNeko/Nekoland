@@ -328,7 +328,7 @@ impl Nekoland {
     }
 
     fn hover_blocked(&self) -> bool {
-        !self.config.hover_info || self.menu_bar.open.is_some() || self.overview.is_some()
+        !self.config.hover_info || self.menu_bar.menu().is_some() || self.overview.is_some()
     }
 
     /// Whether the panel goes when the pointer is on no file: always unless auto-hide is

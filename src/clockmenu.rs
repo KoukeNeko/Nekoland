@@ -7,7 +7,7 @@
 //! well's edge to its text, `GAP` between wells and inside them, `INSET` between a row and
 //! the well it is in.
 
-use std::{process::Command, time::Instant};
+use std::process::Command;
 
 use cairo::Context;
 use calendar_data::{
@@ -27,10 +27,10 @@ use crate::{
     agenda::Agenda,
     config::{self, EventDots},
     control::{
-        draw_chevron, draw_icon, draw_list_row, draw_panel, draw_well, ease_out, rect, show_line, to_f64, OPEN_TIME,
+        draw_chevron, draw_icon, draw_list_row, draw_panel, draw_well, rect, show_line, to_f64,
     },
     glass::Tier,
-    menubar::{colors, font, show_text, Colors, Overlay, MENU_BAR_HEIGHT, MENU_RADIUS},
+    menubar::{colors, font, show_text, Colors, MenuBar, Overlay, Popup, MENU_BAR_HEIGHT, MENU_RADIUS},
     text::{self, Picture},
     Nekoland,
 };
@@ -214,7 +214,6 @@ pub struct ClockPanel {
     x: i32,
     /// How tall it may be, for the screen it is on.
     max_height: i32,
-    opened: Instant,
     today: Date,
     month: Month,
     picked: Date,
@@ -304,7 +303,6 @@ impl ClockPanel {
             x: (anchor.loc.x + anchor.size.w / 2 - WIDTH / 2)
                 .min(output.w - WIDTH - 6)
                 .max(6),
-            opened: Instant::now(),
             today,
             month: picked.month_of(),
             picked,
@@ -1017,10 +1015,8 @@ fn open_url(url: &str) {
 impl Nekoland {
     /// Opens the clock's panel under the clock in the bar, or closes it.
     pub(crate) fn toggle_clock_panel(&mut self, anchor: Rectangle<i32, Logical>) {
-        self.menu_bar.open = None;
-        self.dismiss_stats_panel();
-        self.menu_bar.control = None;
-        if self.menu_bar.clock_panel.take().is_some() {
+        if self.menu_bar.clock_panel().is_some() {
+            self.close_menu();
             return;
         }
         let Some(output) = self.bar_area() else {
@@ -1028,7 +1024,7 @@ impl Nekoland {
         };
         let options = Options::from_config(&self.config);
         let picked = self.config.calendar_preserve_date.then_some(self.menu_bar.clock_picked).flatten();
-        self.menu_bar.clock_panel = Some(ClockPanel::new(anchor, output.size, options, picked));
+        self.menu_bar.show(Popup::Clock(ClockPanel::new(anchor, output.size, options, picked)));
     }
 
     /// Opens the panel on `day`, as a link to a date does.
@@ -1036,9 +1032,11 @@ impl Nekoland {
         let Some(title) = self.clock_title_rect() else {
             return;
         };
-        self.menu_bar.clock_panel = None;
+        if self.menu_bar.clock_panel().is_some() {
+            self.menu_bar.popup = None;
+        }
         self.toggle_clock_panel(title);
-        if let Some(panel) = self.menu_bar.clock_panel.as_mut() {
+        if let Some(panel) = self.menu_bar.clock_panel_mut() {
             panel.pick(day);
         }
     }
@@ -1054,8 +1052,8 @@ impl Nekoland {
         let (_, second_of_day) = calendar_data::date::local_parts(calendar_data::date::now());
         let minute_of_day = second_of_day / SECONDS_IN_MINUTE;
         let revision = self.menu_bar.agenda.revision;
-        let agenda = &self.menu_bar.agenda;
-        let Some(panel) = self.menu_bar.clock_panel.as_mut() else {
+        let MenuBar { agenda, popup, .. } = &mut self.menu_bar;
+        let Some(Popup::Clock(panel)) = popup else {
             return;
         };
         panel.today = Date::today();
@@ -1087,21 +1085,21 @@ impl Nekoland {
 
     pub(crate) fn clock_panel_overlay(&self) -> Option<Overlay<'_>> {
         let output = self.bar_area()?;
-        let panel = self.menu_bar.clock_panel.as_ref()?;
+        let panel = self.menu_bar.clock_panel()?;
         let picture = panel.picture.as_ref()?;
         Some(Overlay {
             id: &panel.id,
             rect: Rectangle::new(output.loc + Point::from((panel.x, MENU_BAR_HEIGHT + 4)), picture.size),
             glass: Some((Tier::Menu, MENU_RADIUS)),
             alpha: 1.0,
-            fade: ease_out(panel.opened.elapsed().as_secs_f64() / OPEN_TIME) as f32,
+            fade: self.menu_bar.popup_fade(self.config.animations),
             picture,
         })
     }
 
     /// Where a point of the output is on the panel, if it is on it.
     fn clock_panel_local(&self, local: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
-        let panel = self.menu_bar.clock_panel.as_ref()?;
+        let panel = self.menu_bar.clock_panel()?;
         let size = panel.picture.as_ref()?.size;
         let at = local - Point::from((panel.x, MENU_BAR_HEIGHT + 4));
         Rectangle::new((0, 0).into(), size).contains(at).then_some(at)
@@ -1112,8 +1110,8 @@ impl Nekoland {
         let Some(at) = self.clock_panel_local(local) else {
             return false;
         };
-        let agenda = &self.menu_bar.agenda;
-        if let Some(panel) = self.menu_bar.clock_panel.as_mut() {
+        let MenuBar { agenda, popup, .. } = &mut self.menu_bar;
+        if let Some(Popup::Clock(panel)) = popup {
             panel.pressed = panel.part_at(agenda, at);
         }
         true
@@ -1121,8 +1119,8 @@ impl Nekoland {
 
     pub(crate) fn clock_panel_motion(&mut self, local: Point<i32, Logical>) {
         let at = self.clock_panel_local(local);
-        let agenda = &self.menu_bar.agenda;
-        let Some(panel) = self.menu_bar.clock_panel.as_mut() else {
+        let MenuBar { agenda, popup, .. } = &mut self.menu_bar;
+        let Some(Popup::Clock(panel)) = popup else {
             return;
         };
         panel.hovered = at.and_then(|at| panel.part_at(agenda, at));
@@ -1134,8 +1132,8 @@ impl Nekoland {
 
     pub(crate) fn clock_panel_release(&mut self, local: Point<i32, Logical>) {
         let under = self.clock_panel_local(local);
-        let agenda = &self.menu_bar.agenda;
-        let Some(panel) = self.menu_bar.clock_panel.as_mut() else {
+        let MenuBar { agenda, popup, .. } = &mut self.menu_bar;
+        let Some(Popup::Clock(panel)) = popup else {
             return;
         };
         let under = under.and_then(|at| panel.part_at(agenda, at));
@@ -1147,7 +1145,7 @@ impl Nekoland {
 
     /// The entry of the list a part belongs to, as the event it is.
     fn clock_panel_event(&self, at: usize) -> Option<Event> {
-        let panel = self.menu_bar.clock_panel.as_ref()?;
+        let panel = self.menu_bar.clock_panel()?;
         let agenda = &self.menu_bar.agenda;
         match panel.entries(agenda, panel.shown_day()).get(at)? {
             Entry::Event { index, .. } => agenda.events().get(*index).cloned(),
@@ -1162,7 +1160,7 @@ impl Nekoland {
             }
             _ => None,
         };
-        let Some(panel) = self.menu_bar.clock_panel.as_mut() else {
+        let Some(panel) = self.menu_bar.clock_panel_mut() else {
             return;
         };
         let day = panel.shown_day();
@@ -1196,7 +1194,7 @@ impl Nekoland {
             }
             Part::Edit(_) => {
                 if let Some(event) = event {
-                    self.menu_bar.clock_panel = None;
+                    self.menu_bar.popup = None;
                     config::spawn(&format!("{CALENDAR_COMMAND} --event {}", event.id));
                 }
             }
@@ -1216,15 +1214,15 @@ impl Nekoland {
                 }
             }
             Part::New => {
-                self.menu_bar.clock_panel = None;
+                self.menu_bar.popup = None;
                 config::spawn(&format!("{CALENDAR_COMMAND} --new {}", day.key()));
             }
             Part::Calendar => {
-                self.menu_bar.clock_panel = None;
+                self.menu_bar.popup = None;
                 config::spawn(&format!("{CALENDAR_COMMAND} --date {}", day.key()));
             }
             Part::DateTime => {
-                self.menu_bar.clock_panel = None;
+                self.menu_bar.popup = None;
                 config::spawn(DATE_TIME_COMMAND);
             }
         }
@@ -1232,7 +1230,7 @@ impl Nekoland {
 
     /// A key while the panel is open. Returns whether the panel took it.
     pub(crate) fn clock_panel_key(&mut self, sym: Keysym, typed: Option<char>, shift: bool) -> bool {
-        let Some(panel) = self.menu_bar.clock_panel.as_mut() else {
+        let Some(panel) = self.menu_bar.clock_panel_mut() else {
             return false;
         };
         let picked = panel.picked;
@@ -1253,7 +1251,7 @@ impl Nekoland {
         }
         match (sym, typed) {
             (Keysym::Return | Keysym::KP_Enter, _) => {
-                self.menu_bar.clock_panel = None;
+                self.menu_bar.popup = None;
                 config::spawn(&format!("{CALENDAR_COMMAND} --date {}", picked.key()));
                 true
             }
@@ -1262,7 +1260,7 @@ impl Nekoland {
                 true
             }
             (_, Some('n' | 'N')) => {
-                self.menu_bar.clock_panel = None;
+                self.menu_bar.popup = None;
                 config::spawn(&format!("{CALENDAR_COMMAND} --new {}", picked.key()));
                 true
             }
@@ -1271,12 +1269,12 @@ impl Nekoland {
     }
 
     pub(crate) fn clock_panel_pinned(&self) -> bool {
-        self.menu_bar.clock_panel.as_ref().is_some_and(|panel| panel.pinned)
+        self.menu_bar.clock_panel().is_some_and(|panel| panel.pinned)
     }
 
     /// Whether the point is where the panel is, from the panel's own height.
     pub(crate) fn clock_panel_holds(&self, local: Point<i32, Logical>) -> bool {
-        let Some(panel) = self.menu_bar.clock_panel.as_ref() else {
+        let Some(panel) = self.menu_bar.clock_panel() else {
             return false;
         };
         panel.in_rect(local, panel.height(&self.menu_bar.agenda))
