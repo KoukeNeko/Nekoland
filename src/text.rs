@@ -757,6 +757,7 @@ pub fn watch_applications() {
             }
             seen = changed();
             *ENTRIES.write().unwrap() = Some(Arc::new(read_entries()));
+            crate::appgrid::forget_listed();
             match std::process::Command::new("nekoland-conform-icons").arg("--refresh").status() {
                 Ok(status) if status.success() => {
                     if let Err(err) = crate::ipc::send("reload") {

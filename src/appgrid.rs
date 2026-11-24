@@ -20,7 +20,7 @@
 //! or shaking them all draws nothing again. The long page of the other two styles is
 //! still drawn whole, in `list`.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Mutex, time::Instant};
 
 use cairo::{Context, Format, ImageSurface};
 use gio::prelude::*;
@@ -100,6 +100,7 @@ const FOLDER_SPLIT: i32 = NAME_END + FOLDER_PADDING;
 const FOLDER_NOTCH: i32 = 12;
 const ARRANGEMENT: &str = "app-grid.toml";
 
+#[derive(Clone)]
 struct GridApp {
     /// The desktop entry's name without `.desktop`, as the Dock keeps it.
     id: String,
@@ -112,7 +113,6 @@ struct GridApp {
     category: &'static str,
     /// Whether it came with the system, as Nekoland's own programs do.
     built_in: bool,
-    info: gio::DesktopAppInfo,
 }
 
 /// A place on the grid: an application, or a folder of them.
@@ -565,6 +565,23 @@ pub(crate) fn is_built_in(id: &str, in_terminal: bool) -> bool {
     id.starts_with(OWN_APPS) || in_terminal
 }
 
+/// The applications as last listed on a thread, for the grid to open with at once: listing
+/// them reads every desktop entry, a few milliseconds. None until they are, or since they
+/// changed.
+static LISTED: Mutex<Option<Vec<GridApp>>> = Mutex::new(None);
+
+/// Has the applications listed again when the grid next opens: one was installed or removed.
+pub(crate) fn forget_listed() {
+    *LISTED.lock().unwrap() = None;
+}
+
+/// `installed`, kept for the grid to open with; for a thread of its own.
+fn list_installed() -> Vec<GridApp> {
+    let apps = installed();
+    *LISTED.lock().unwrap() = Some(apps.clone());
+    apps
+}
+
 /// Every application the desktop shows, A to Z by name.
 fn installed() -> Vec<GridApp> {
     let mut apps: Vec<GridApp> = gio::AppInfo::all()
@@ -599,7 +616,6 @@ fn installed() -> Vec<GridApp> {
                 icon_key: tiles::icon_key(std::slice::from_ref(&icons), false),
                 icons,
                 category: category(&info),
-                info,
             })
         })
         .collect();
@@ -672,7 +688,8 @@ impl AppGrid {
     }
 
     fn new(query: &str, style: AppsView) -> Self {
-        let apps = installed();
+        let listed = LISTED.lock().unwrap().clone();
+        let apps = listed.unwrap_or_else(installed);
         let kept: Arrangement = config::config_file(ARRANGEMENT)
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| {
@@ -2012,7 +2029,7 @@ impl Nekoland {
         let Some(app) = apps.apps.get(index) else {
             return;
         };
-        let (info, id) = (app.info.clone(), app.id.clone());
+        let id = app.id.clone();
         if let Some(apps) = self.overview.as_mut().and_then(|overview| overview.apps.as_mut()) {
             apps.recent.retain(|recent| *recent != id);
             apps.recent.insert(0, id.clone());
@@ -2022,14 +2039,7 @@ impl Nekoland {
         if let Some(desktop) = desktop {
             self.switch_workspace(desktop);
         }
-        match info.id() {
-            Some(desktop_id) => crate::config::launch(&desktop_id, Vec::new()),
-            None => {
-                if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
-                    tracing::warn!("{id}: {err}");
-                }
-            }
-        }
+        crate::config::launch(&format!("{id}.desktop"), Vec::new());
         self.dock_launching(&id);
         // From an open folder, the folder shuts first, and the view leaves after it.
         let apps = self.overview.as_mut().and_then(|overview| overview.apps.as_mut());

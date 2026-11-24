@@ -456,7 +456,7 @@ impl Nekoland {
 fn list_on_a_thread() -> mpsc::Receiver<Vec<Wanted>> {
     let (send, listed) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("nekoland-app-list".into()).spawn(move || {
-        let wanted = super::installed()
+        let wanted = super::list_installed()
             .into_iter()
             .map(|app| Wanted {
                 name: app.name,
