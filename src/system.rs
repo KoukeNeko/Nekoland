@@ -394,6 +394,11 @@ pub struct Player {
     /// A local picture of what plays, as its cover.
     pub art: Option<String>,
     pub playing: bool,
+    pub album: String,
+    /// How long what plays is, in seconds, when the player says.
+    pub length: Option<f64>,
+    /// The player's name for what plays, which seeking to a time needs.
+    pub trackid: Option<String>,
 }
 
 const MPRIS: &str = "org.mpris.MediaPlayer2";
@@ -454,6 +459,17 @@ pub fn read_player() -> Option<Player> {
                 .get("mpris:artUrl")
                 .and_then(text)
                 .and_then(|url| url.strip_prefix("file://").map(String::from));
+            let album = metadata.get("xesam:album").and_then(text).unwrap_or_default();
+            // Players send it as a signed or an unsigned number of microseconds.
+            let length = metadata.get("mpris:length").and_then(|value| {
+                i64::try_from(value.clone())
+                    .ok()
+                    .or_else(|| u64::try_from(value.clone()).ok().map(|n| n as i64))
+            });
+            let trackid = metadata
+                .get("mpris:trackid")
+                .and_then(|value| zbus::zvariant::OwnedObjectPath::try_from(value.clone()).ok())
+                .map(|path| path.to_string());
             let app = all(bus, MPRIS)
                 .and_then(|root| root.get("Identity").and_then(text))
                 .unwrap_or_default();
@@ -464,6 +480,9 @@ pub fn read_player() -> Option<Player> {
                 artist,
                 art,
                 playing: player.get("PlaybackStatus").and_then(text).as_deref() == Some("Playing"),
+                album,
+                length: length.filter(|&n| n > 0).map(|n| n as f64 / 1e6),
+                trackid,
             })
         })
         .collect();
@@ -485,6 +504,42 @@ pub fn player_command(bus: &str, method: &str) {
         &(),
     ) {
         tracing::warn!("{bus}: {method}: {err}");
+    }
+}
+
+/// Where a player is in what it plays, in seconds. Not part of `Player`, which is compared
+/// to see whether to draw again, and this changes all the time.
+pub fn read_position(bus: &str) -> Option<f64> {
+    let connection = zbus::blocking::Connection::session().ok()?;
+    let reply = connection
+        .call_method(
+            Some(bus),
+            MPRIS_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(format!("{MPRIS}.Player"), "Position"),
+        )
+        .ok()?;
+    let (value,) = reply.body().deserialize::<(zbus::zvariant::OwnedValue,)>().ok()?;
+    Some(i64::try_from(value).ok()? as f64 / 1e6)
+}
+
+/// Asks a player to play what it plays from `seconds` in.
+pub fn player_seek(bus: &str, trackid: &str, seconds: f64) {
+    let (Ok(connection), Ok(track)) = (
+        zbus::blocking::Connection::session(),
+        zbus::zvariant::ObjectPath::try_from(trackid),
+    ) else {
+        return tracing::warn!("{bus}: cannot seek {trackid}");
+    };
+    if let Err(err) = connection.call_method(
+        Some(bus),
+        MPRIS_PATH,
+        Some(&*format!("{MPRIS}.Player")),
+        "SetPosition",
+        &(track, (seconds.max(0.0) * 1e6) as i64),
+    ) {
+        tracing::warn!("{bus}: SetPosition: {err}");
     }
 }
 

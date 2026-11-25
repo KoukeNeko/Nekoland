@@ -1051,6 +1051,7 @@ fn floating_elements(
         let zoom = state
             .apps_zoom_of(overlay.id)
             .or_else(|| state.notice_zoom_of(overlay.id))
+            .or_else(|| state.dock_zoom_of(overlay.id))
             .map(|zoom| (rect.loc + Point::from((rect.size.w / 2, rect.size.h / 2)), zoom));
         elements.extend(picture.map(|picture| match zoom {
             Some((pivot, zoom)) => {
