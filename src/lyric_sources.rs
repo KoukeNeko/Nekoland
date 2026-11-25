@@ -11,7 +11,8 @@ use std::io::Read;
 use base64::Engine;
 
 use crate::lyrics::{
-    clean_title, get, get_from, get_headed, get_text, parse_lrc, post_form, post_json, Candidate, Line, MATCH,
+    clean_artist, clean_title, get, get_from, get_headed, get_text, parse_lrc, post_form, post_json,
+    song_title, Candidate, Line, MATCH,
 };
 
 const NETEASE: &str = "https://music.163.com/api";
@@ -95,9 +96,9 @@ impl Want {
     fn new(title: &str, artist: &str, duration: f64) -> Self {
         Self {
             title: title.to_string(),
-            cleaned: clean_title(title),
+            cleaned: song_title(title, artist),
             aliases: Vec::new(),
-            artist: artist.to_string(),
+            artist: clean_artist(artist),
             duration,
         }
     }
@@ -105,19 +106,19 @@ impl Want {
     /// Whether a take, named `name` by `by` and `seconds` long, is this song: by this artist
     /// and either named alike or as long, or, the artist's name being in another script, both.
     fn is(&self, name: &str, by: &[String], seconds: f64) -> bool {
-        let name = name.to_lowercase();
-        let named = !name.is_empty()
-            && self.all_titles().any(|title| {
-                let title = title.to_lowercase();
-                name.contains(&title) || title.contains(&name)
-            });
-        let long = self.duration > 0.0 && (seconds - self.duration).abs() <= MATCH;
+        // Named alike is the same name, not one that holds the other: "雨晴るる" is not "晴る".
+        let name = alike(name);
+        let named = !name.is_empty() && self.all_titles().any(|title| alike(title) == name);
+        let gap = (seconds - self.duration).abs();
+        let long = self.duration > 0.0 && gap <= MATCH;
         let artist = self.artist.to_lowercase();
         let by_artist = artist.is_empty() || by.iter().any(|by| same_artist(&artist, &by.to_lowercase()));
         // An artist whose name is in another script than the one asked for may be the same, as
         // "スイ" is of "suis", but one in the same script that is not alike is another's.
         let other_script = by.iter().any(|by| non_latin(by) != non_latin(&artist));
-        (by_artist && (named || long)) || (named && long && other_script)
+        // By an artist and as long to the second, a name in another language is the song.
+        let exact = self.duration > 0.0 && gap <= 1.0;
+        (named && (by_artist || (long && other_script))) || (by_artist && exact)
     }
 
     /// The same song also known by the names in `name`, a title that may hold several, as
@@ -168,7 +169,7 @@ impl Want {
     fn clone_for(&self, title: &str) -> Self {
         Self {
             title: title.to_string(),
-            cleaned: clean_title(title),
+            cleaned: song_title(title, &self.artist),
             aliases: Vec::new(),
             artist: self.artist.clone(),
             duration: self.duration,
@@ -200,6 +201,16 @@ impl Want {
         }
         titles
     }
+}
+
+/// A song's name as it is compared: without version words, brackets and punctuation, in
+/// lower case.
+fn alike(name: &str) -> String {
+    clean_title(name)
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
 }
 
 fn non_latin(name: &str) -> bool {
@@ -754,7 +765,10 @@ fn listed_video(found: &serde_json::Value, want: &Want) -> Option<(String, f64, 
             let (minutes, secs) = run.split_once(':')?;
             Some(minutes.parse::<f64>().ok()? * 60.0 + secs.parse::<f64>().ok()?)
         })?;
-        want.is(&name, &runs[1..], seconds).then_some((id, seconds, name))
+        // A title may name the song twice, in two languages, as "逃亡 - Escape" does.
+        let named = want.is(&name, &runs[1..], seconds)
+            || name.split(" - ").any(|part| want.is(part, &runs[1..], seconds));
+        named.then_some((id, seconds, name))
     })
 }
 
@@ -1121,6 +1135,7 @@ mod tests {
             ("Finale.", "eill", 242.0),
             ("Shape of You", "Ed Sheeran", 233.7),
             ("Escape", "Yorushika", 287.0),
+            ("ヨルシカ - LIVE「晴る」", "ヨルシカ / n-buna Official", 278.8),
             // Nobody has this, whatever it is as long as.
             ("夜行列車", "月台樂團", 252.0),
         ] {
@@ -1172,6 +1187,11 @@ mod tests {
         let by = ["suis from ヨルシカ".to_string()];
         assert!(want.is("星めぐる詩", &by, 201.8));
         assert!(!want.is("星めぐる詩", &by, 230.0));
+        // A song whose name holds the one asked for is another.
+        let live = Want::new("ヨルシカ - LIVE「晴る」", "ヨルシカ / n-buna Official", 278.8);
+        assert_eq!(live.cleaned, "晴る");
+        assert!(!live.is("雨晴るる", &["ヨルシカ".to_string()], 277.0));
+        assert!(live.is("晴る", &["ヨルシカ".to_string()], 259.0));
         // Another artist's song of the same name is not it.
         assert!(!want.is("Around the Stars", &["Brank".to_string()], 266.0));
         // The artist in another script is the song only if its name and length also fit.

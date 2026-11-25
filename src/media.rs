@@ -486,16 +486,29 @@ impl NowPlaying {
 
     fn ask_for_lyrics(&mut self, now: Instant) {
         if let Some((asked, answer)) = &self.asking {
-            // Asked again for a source it was not asked of, the user's choices are kept: the new
-            // takes come after the ones they point at.
+            // Asked again for a source it was not asked of, what the user set is kept if the
+            // takes it was set on are the same; they may not be, and are not mended to fit.
             let kept = self.songs.get(asked).cloned().unwrap_or_default();
-            let song = |found, release_live| Song {
-                found,
-                release_live,
-                sources: lyrics::SOURCES,
-                asked: seconds_now(),
-                alignment: kept.alignment.clone(),
-                choice: kept.choice.clone(),
+            let song = |found: Option<Vec<Candidate>>, release_live| {
+                let same = match (&kept.choice, &kept.found, &found) {
+                    (Some(Choice::Candidate(index)), Some(was), Some(now)) => {
+                        was.get(*index) == now.get(*index)
+                    }
+                    (Some(Choice::Plain), ..) => true,
+                    _ => false,
+                };
+                Song {
+                    found,
+                    release_live,
+                    sources: lyrics::SOURCES,
+                    asked: seconds_now(),
+                    alignment: if same {
+                        kept.alignment.clone()
+                    } else {
+                        Alignment::default()
+                    },
+                    choice: if same { kept.choice.clone() } else { None },
+                }
             };
             match answer.try_recv() {
                 Ok(Ok((found, live))) => {
@@ -504,9 +517,7 @@ impl NowPlaying {
                     self.save();
                 }
                 Ok(Err(Missing::NotFound)) => {
-                    // Asked again for a new source, what was kept stays.
-                    let (found, live) = (kept.found.clone(), kept.release_live);
-                    self.songs.insert(asked.clone(), song(found, live));
+                    self.songs.insert(asked.clone(), song(None, None));
                     self.revision += 1;
                     self.save();
                 }

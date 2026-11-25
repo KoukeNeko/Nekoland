@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 const LRCLIB: &str = "https://lrclib.net/api";
 /// How many sources a song's lyrics were asked of; a song kept from fewer is asked again.
-pub const SOURCES: u8 = 4;
+pub const SOURCES: u8 = 5;
 /// Seconds: lyrics this close to the track's length are of the same recording.
 pub const MATCH: f64 = 2.0;
 /// Playback seconds per lyric second a live take can plausibly run at.
@@ -372,7 +372,7 @@ pub fn fetch(title: &str, artist: &str, album: &str, duration: f64) -> Result<Ve
 }
 
 fn fetch_lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result<Vec<Candidate>, Missing> {
-    let title = clean_title(title);
+    let title = song_title(title, artist);
     let mut exact = vec![
         ("track_name", title.clone()),
         ("artist_name", artist.to_string()),
@@ -407,6 +407,43 @@ fn fetch_lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result
 }
 
 /// "(Live)", "- Live at …" and the like do not name the song.
+/// The song a player's title names, which a video's is "Artist - Song", "Artist - LIVE「Song」"
+/// and the like: what is in quotes, else what is not the artist's, without version words.
+pub(crate) fn song_title(title: &str, artist: &str) -> String {
+    for (open, close) in [('「', '」'), ('『', '』'), ('“', '”')] {
+        let quoted = title
+            .split_once(open)
+            .and_then(|(_, rest)| rest.split_once(close))
+            .map(|(inside, _)| inside.trim());
+        if let Some(inside) = quoted.filter(|inside| !inside.is_empty()) {
+            return clean_title(inside);
+        }
+    }
+    let artist = clean_artist(artist).to_lowercase();
+    let parts: Vec<&str> = title.split(" - ").collect();
+    let kept: Vec<&str> = parts
+        .iter()
+        .copied()
+        .filter(|part| {
+            let part = part.trim().to_lowercase();
+            artist.is_empty() || part.is_empty() || !(artist.contains(&part) || part.contains(&artist))
+        })
+        .collect();
+    match kept.as_slice() {
+        [only] if parts.len() > 1 => clean_title(only),
+        _ => clean_title(title),
+    }
+}
+
+/// An artist as a channel names it ("ヨルシカ / n-buna Official", "Yorushika - Topic"), as
+/// the artist's name.
+pub(crate) fn clean_artist(artist: &str) -> String {
+    let name = artist.split(" / ").next().unwrap_or(artist);
+    let name = name.trim().trim_end_matches(" - Topic");
+    let name = name.trim_end_matches("VEVO").trim_end_matches(" Official").trim();
+    name.to_string()
+}
+
 pub(crate) fn clean_title(title: &str) -> String {
     let mut out = String::new();
     let mut depth = 0;
@@ -643,5 +680,16 @@ mod tests {
     fn cleans_version_words_from_titles() {
         assert_eq!(clean_title("夜行列車 (Live)"), "夜行列車");
         assert_eq!(clean_title("Song - Live at Budokan"), "Song");
+        // A video is named by its artist and its song, the song in quotes where it is live.
+        assert_eq!(
+            song_title("ヨルシカ - LIVE「晴る」", "ヨルシカ / n-buna Official"),
+            "晴る"
+        );
+        assert_eq!(
+            song_title("Yorushika - Escape (Live)", "Yorushika - Topic"),
+            "Escape"
+        );
+        assert_eq!(song_title("Song - Live at Budokan", "Someone"), "Song");
+        assert_eq!(clean_artist("ヨルシカ / n-buna Official"), "ヨルシカ");
     }
 }
