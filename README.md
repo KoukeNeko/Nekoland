@@ -44,6 +44,14 @@ it at once could cut the connection. Run it again to update. Without a checkout 
 `~/.local/src/nekoland`, or `$NEKOLAND_SRC`; with a Rust older than Cargo.toml's
 `rust-version`, as on Ubuntu 24.04, it installs a newer one with rustup.
 
+It also runs in [unkernel](https://github.com/pithings/unkernel), Linux built to WebAssembly,
+on its Debian with a GPU (`npx unkernel --distro debian --display=1280x720 --gpu`, or in a
+browser `createKernel({ gpu: true, … })`), built for Debian 13 on arm64. That system has no
+udev, and so no logind or seatd to ask for the devices, nor anything libinput would take:
+where `/run/udev/control` is missing Nekoland opens `/dev/dri/card0` itself, as a user in
+the groups video and input may, and reads the keyboard, mouse and tablet straight from
+`/dev/input`. There are no VTs to switch to there.
+
 ## Configuration
 
 `~/.config/nekoland/config.toml`; see `shell/config.toml` for one that adds a

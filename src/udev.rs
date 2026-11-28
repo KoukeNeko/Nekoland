@@ -34,7 +34,7 @@ use smithay::{
             utils::with_renderer_surface_state,
             ImportDma, ImportMemWl,
         },
-        session::{libseat::LibSeatSession, Event as SessionEvent, Session},
+        session::{libseat::{LibSeatSession, LibSeatSessionNotifier}, Event as SessionEvent, Session},
         udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
@@ -153,19 +153,15 @@ pub fn init_udev(
     let handle = event_loop.handle();
     let state = &mut *data;
 
-    let (mut session, session_notifier) = LibSeatSession::new()?;
-    let seat = session.seat();
+    let mut access = DeviceAccess::new()?;
+    let seat = access.seat();
 
     let gpu_path = primary_gpu(&seat)?
         .or_else(|| all_gpus(&seat).ok()?.into_iter().next())
         .ok_or("no GPU found")?;
     info!("Using {}", gpu_path.display());
 
-    let fd = session.open(
-        &gpu_path,
-        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-    )?;
-    let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    let fd = DrmDeviceFd::new(DeviceFd::from(access.open(&gpu_path)?));
     if supports_syncobj_eventfd(&fd) {
         state.syncobj_state = Some(DrmSyncobjState::new::<Nekoland>(&state.display_handle, fd.clone()));
     }
@@ -246,24 +242,13 @@ pub fn init_udev(
         }));
     }
 
-    let mut libinput =
-        Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
-    libinput
-        .udev_assign_seat(&seat)
-        .map_err(|()| "libinput could not take the seat")?;
-    handle.insert_source(LibinputInputBackend::new(libinput.clone()), |event, _, data| {
-        if let InputEvent::DeviceAdded { device } = &event {
-            // Sunshine's mouse and keyboard belong to the session it streams.
-            if crate::headless::is_sunshine_device(&device.name()) && crate::headless::streams_own_session() {
-                if let Err(err) = device.clone().config_send_events_set_mode(SendEventsMode::DISABLED) {
-                    warn!("could not leave {} to the remote session: {err:?}", device.name());
-                }
-                return;
-            }
-            data.add_pointer_device(device.clone());
+    match access {
+        DeviceAccess::Seat(session, session_notifier) => {
+            watch_seat(&handle, session, session_notifier, &seat, &udev, data)?;
         }
-        data.process_input_event(event)
-    })?;
+        DeviceAccess::Direct => crate::evdev::watch(&handle)?,
+    }
+    let state = &mut *data;
 
     {
         let udev = udev.clone();
@@ -304,32 +289,6 @@ pub fn init_udev(
         })?;
     }
 
-    {
-        let udev = udev.clone();
-        let loop_handle = handle.clone();
-        handle.insert_source(session_notifier, move |event, _, data| match event {
-            SessionEvent::PauseSession => {
-                libinput.suspend();
-                udev.borrow_mut().manager.pause();
-            }
-            SessionEvent::ActivateSession => {
-                if libinput.resume().is_err() {
-                    warn!("libinput did not resume");
-                }
-                let mut backend = udev.borrow_mut();
-                if let Err(err) = backend.manager.lock().activate(false) {
-                    warn!("could not take the display back: {err}");
-                }
-                // Whoever had the display meanwhile may have left ramps of their own.
-                backend.ramps.clear();
-                backend.filters.clear();
-                backend.pending.clear();
-                drop(backend);
-                render_all(&udev, data, &loop_handle);
-            }
-        })?;
-    }
-
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
 
     // Input and clients' new frames draw at once, rather than when the output is next looked
@@ -346,13 +305,111 @@ pub fn init_udev(
     let loop_handle = handle.clone();
     handle.insert_idle(move |data| render_all(&udev, data, &loop_handle));
 
+    Ok(())
+}
+
+/// Where udev runs, its daemon listens here.
+const UDEV_CONTROL_SOCKET: &str = "/run/udev/control";
+const SEATLESS_SEAT: &str = "seat0";
+const DEVICE_FLAGS: OFlags = OFlags::RDWR
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NOCTTY)
+    .union(OFlags::NONBLOCK);
+
+/// How the GPU and the input devices are opened.
+enum DeviceAccess {
+    /// Through logind or seatd, which pause the session for another on a VT switch.
+    Seat(LibSeatSession, LibSeatSessionNotifier),
+    /// Straight, as the user may (its groups video and input), where udev does not run and
+    /// so neither does a seat manager, nor anything libinput would take: unkernel's guest,
+    /// Linux built to WebAssembly, which has no VTs either.
+    Direct,
+}
+
+impl DeviceAccess {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        if !std::path::Path::new(UDEV_CONTROL_SOCKET).exists() {
+            info!("no udev: opening the devices directly");
+            return Ok(Self::Direct);
+        }
+        let (session, notifier) = LibSeatSession::new()?;
+        Ok(Self::Seat(session, notifier))
+    }
+
+    fn seat(&self) -> String {
+        match self {
+            Self::Seat(session, _) => session.seat(),
+            Self::Direct => SEATLESS_SEAT.into(),
+        }
+    }
+
+    fn open(&mut self, path: &std::path::Path) -> Result<std::os::fd::OwnedFd, Box<dyn std::error::Error>> {
+        match self {
+            Self::Seat(session, _) => Ok(session.open(path, DEVICE_FLAGS)?),
+            Self::Direct => Ok(smithay::reexports::rustix::fs::open(path, DEVICE_FLAGS, smithay::reexports::rustix::fs::Mode::empty())?),
+        }
+    }
+}
+
+/// Takes input from libinput on the seat, and gives the displays and input up while another
+/// session has the seat.
+fn watch_seat(
+    handle: &LoopHandle<'static, Nekoland>,
+    mut session: LibSeatSession,
+    notifier: LibSeatSessionNotifier,
+    seat: &str,
+    udev: &SharedUdev,
+    data: &mut Nekoland,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut libinput =
+        Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
+    libinput
+        .udev_assign_seat(seat)
+        .map_err(|()| "libinput could not take the seat")?;
+    handle.insert_source(LibinputInputBackend::new(libinput.clone()), |event, _, data| {
+        if let InputEvent::DeviceAdded { device } = &event {
+            // Sunshine's mouse and keyboard belong to the session it streams.
+            if crate::headless::is_sunshine_device(&device.name()) && crate::headless::streams_own_session() {
+                if let Err(err) = device.clone().config_send_events_set_mode(SendEventsMode::DISABLED) {
+                    warn!("could not leave {} to the remote session: {err:?}", device.name());
+                }
+                return;
+            }
+            data.add_pointer_device(device.clone());
+        }
+        data.process_input_event(event)
+    })?;
+
+    let udev = udev.clone();
+    let loop_handle = handle.clone();
+    handle.insert_source(notifier, move |event, _, data| match event {
+        SessionEvent::PauseSession => {
+            libinput.suspend();
+            udev.borrow_mut().manager.pause();
+        }
+        SessionEvent::ActivateSession => {
+            if libinput.resume().is_err() {
+                warn!("libinput did not resume");
+            }
+            let mut backend = udev.borrow_mut();
+            if let Err(err) = backend.manager.lock().activate(false) {
+                warn!("could not take the display back: {err}");
+            }
+            // Whoever had the display meanwhile may have left ramps of their own.
+            backend.ramps.clear();
+            backend.filters.clear();
+            backend.pending.clear();
+            drop(backend);
+            render_all(&udev, data, &loop_handle);
+        }
+    })?;
+
     // The state keeps the session alive, which has to outlive everything opened through it.
     data.switch_vt = Some(Box::new(move |vt| {
         if let Err(err) = session.change_vt(vt) {
             warn!("could not switch to VT {vt}: {err}");
         }
     }));
-
     Ok(())
 }
 

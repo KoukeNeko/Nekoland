@@ -12,6 +12,7 @@ mod cursor;
 mod dbus;
 mod desktop;
 mod dock;
+mod evdev;
 mod fileinfo;
 mod focus;
 mod frame;
