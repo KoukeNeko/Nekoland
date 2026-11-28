@@ -37,6 +37,26 @@ use crate::{
     Nekoland,
 };
 
+/// Where X servers listen, made at boot by systemd-tmpfiles or the X server run as root.
+const X11_SOCKET_DIRECTORY: &str = "/tmp/.X11-unix";
+/// Anyone's X server may put its socket there, and only remove its own.
+const X11_SOCKET_DIRECTORY_MODE: u32 = 0o1777;
+
+/// Makes the directory where it is missing, as on unkernel's guest, which runs no
+/// systemd: without it XWayland has nowhere to listen.
+fn make_socket_directory() -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(X11_SOCKET_DIRECTORY_MODE).create(X11_SOCKET_DIRECTORY) {
+        // The umask narrows the mode asked for, so it is set again.
+        Ok(()) => std::fs::set_permissions(
+            X11_SOCKET_DIRECTORY,
+            std::fs::Permissions::from_mode(X11_SOCKET_DIRECTORY_MODE),
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /// Starts XWayland, and calls `then` once programs can be told where it is, or once
 /// it is clear that it will not come up.
 pub fn start(
@@ -44,6 +64,9 @@ pub fn start(
     data: &mut Nekoland,
     then: impl FnOnce(&mut Nekoland) + 'static,
 ) {
+    if let Err(err) = make_socket_directory() {
+        tracing::warn!("{X11_SOCKET_DIRECTORY}: {err}");
+    }
     let spawned = XWayland::spawn(
         &data.display_handle,
         None,

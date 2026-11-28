@@ -93,8 +93,12 @@ struct Udev {
     surfaces: HashMap<crtc::Handle, (Surface, Output)>,
     cursors: Cursors,
     /// Each output's, as what it blurs is what that output shows; none when the GPU could
-    /// not build the glass shaders.
+    /// not build the glass shaders, or draws too slowly with them.
     glass: HashMap<crtc::Handle, Glass>,
+    /// How many frames in a row took longer than `SLOW_GLASS_FRAME` to draw with glass, and
+    /// whether that went on long enough to draw without it from then on.
+    slow_glass_frames: u32,
+    glass_too_slow: bool,
     /// The outputs turned off while the screens are, to be drawn afresh when they come back.
     dark: HashSet<crtc::Handle>,
     /// The outputs with a frame on its way to the display, drawn next at its vblank.
@@ -202,6 +206,8 @@ pub fn init_udev(
         profile: (None, None),
         _power_keys: power_keys,
         glass: HashMap::new(),
+        slow_glass_frames: 0,
+        glass_too_slow: false,
         renderer,
         manager,
         surfaces: HashMap::new(),
@@ -245,8 +251,12 @@ pub fn init_udev(
     match access {
         DeviceAccess::Seat(session, session_notifier) => {
             watch_seat(&handle, session, session_notifier, &seat, &udev, data)?;
+            watch_udev_displays(&handle, &seat, &udev, &gpu_path)?;
         }
-        DeviceAccess::Direct => crate::evdev::watch(&handle)?,
+        DeviceAccess::Direct => {
+            crate::evdev::watch(&handle)?;
+            watch_kernel_uevents(&handle, &udev, &gpu_path)?;
+        }
     }
     let state = &mut *data;
 
@@ -270,22 +280,6 @@ pub fn init_udev(
                 render(&udev, crtc, data, &loop_handle);
             }
             DrmEvent::Error(err) => warn!("drm: {err}"),
-        })?;
-    }
-
-    // Displays are plugged in and out, and their modes change under them: QEMU's follow
-    // the size of its window.
-    {
-        let udev = udev.clone();
-        let device = DrmNode::from_path(&gpu_path)?.dev_id();
-        handle.insert_source(UdevBackend::new(&seat)?, move |event, _, data| {
-            if matches!(event, UdevEvent::Changed { device_id } if device_id == device) {
-                let mut backend = udev.borrow_mut();
-                if let Err(err) = rescan(&mut backend, &mut *data) {
-                    warn!("could not look for displays: {err}");
-                }
-                reprobe_modes(&mut backend, &mut *data);
-            }
         })?;
     }
 
@@ -349,6 +343,59 @@ impl DeviceAccess {
             Self::Direct => Ok(smithay::reexports::rustix::fs::open(path, DEVICE_FLAGS, smithay::reexports::rustix::fs::Mode::empty())?),
         }
     }
+}
+
+/// Looks again at the displays and their modes once the GPU says they changed: displays are
+/// plugged in and out, and their modes change under them, as QEMU's and unkernel's follow the
+/// size of their window.
+fn displays_changed(udev: &SharedUdev, data: &mut Nekoland) {
+    let mut backend = udev.borrow_mut();
+    if let Err(err) = rescan(&mut backend, data) {
+        warn!("could not look for displays: {err}");
+    }
+    reprobe_modes(&mut backend, data);
+}
+
+/// Hears of the GPU's changes from udevd.
+fn watch_udev_displays(
+    handle: &LoopHandle<'static, Nekoland>,
+    seat: &str,
+    udev: &SharedUdev,
+    gpu_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let udev = udev.clone();
+    let device = DrmNode::from_path(gpu_path)?.dev_id();
+    handle.insert_source(UdevBackend::new(seat)?, move |event, _, data| {
+        if matches!(event, UdevEvent::Changed { device_id } if device_id == device) {
+            displays_changed(&udev, data);
+        }
+    })?;
+    Ok(())
+}
+
+/// Hears of the GPU's changes and input devices plugged in from the kernel itself, where no
+/// udevd passes them on.
+fn watch_kernel_uevents(
+    handle: &LoopHandle<'static, Nekoland>,
+    udev: &SharedUdev,
+    gpu_path: &std::path::Path,
+) -> std::io::Result<()> {
+    const DRM_SUBSYSTEM: &str = "drm";
+    const INPUT_SUBSYSTEM: &str = "input";
+    const ADDED: &str = "add";
+    const CHANGED: &str = "change";
+    let udev = udev.clone();
+    // Uevents name a device by its node under /dev.
+    const DEVICE_DIRECTORY: &str = "/dev";
+    let gpu_devname = gpu_path.strip_prefix(DEVICE_DIRECTORY).unwrap_or(gpu_path).display().to_string();
+    let loop_handle = handle.clone();
+    crate::uevent::watch(handle, move |event, data| match (event.subsystem.as_str(), event.action.as_str()) {
+        (DRM_SUBSYSTEM, CHANGED) if event.hotplug && event.devname == gpu_devname => {
+            displays_changed(&udev, data);
+        }
+        (INPUT_SUBSYSTEM, ADDED) => crate::evdev::watch_devname(&loop_handle, &event.devname),
+        _ => {}
+    })
 }
 
 /// Takes input from libinput on the seat, and gives the displays and input up while another
@@ -464,6 +511,8 @@ fn render(
         surfaces,
         cursors,
         glass,
+        slow_glass_frames,
+        glass_too_slow,
         dark,
         gamma,
         ramps,
@@ -542,10 +591,15 @@ fn render(
             surface.reset_buffers();
         }
         let frames = state.take_screencopy(output);
+        let started = Instant::now();
+        let with_glass = glass.contains_key(&crtc);
         let queued = draw(state, renderer, surface, output, cursors, glass.get_mut(&crtc), frames, readings).unwrap_or_else(|err| {
             warn!("render: {err}");
             false
         });
+        if queued && with_glass {
+            judge_glass_speed(glass, slow_glass_frames, glass_too_slow, started.elapsed());
+        }
         readings.extend(state.capture_windows(renderer));
         queued
     };
@@ -596,6 +650,33 @@ fn render(
 
     state.finish_frame(&output);
     let _ = data.display_handle.flush_clients();
+}
+
+/// A frame drawn with glass slower than this, under seven a second, is too slow for it.
+const SLOW_GLASS_FRAME: Duration = Duration::from_millis(150);
+/// How many such frames in a row turn the glass off; one alone may be the first, which
+/// builds the shaders.
+const SLOW_GLASS_FRAMES: u32 = 3;
+
+/// Turns the glass off for good once frames drawn with it keep being too slow, as where Mesa
+/// draws on a slow CPU: unkernel's guest takes half a second over its blur, holding back the
+/// input read after it, so that a key let go is seen long after it was and repeats.
+fn judge_glass_speed(
+    glass: &mut HashMap<crtc::Handle, Glass>,
+    slow_frames: &mut u32,
+    too_slow: &mut bool,
+    took: Duration,
+) {
+    if took <= SLOW_GLASS_FRAME {
+        *slow_frames = 0;
+        return;
+    }
+    *slow_frames += 1;
+    if *slow_frames >= SLOW_GLASS_FRAMES {
+        warn!("frames take {} ms with glass: drawing without it", took.as_millis());
+        glass.clear();
+        *too_slow = true;
+    }
 }
 
 /// How long a draw of `crtc` waits, when its last frame had nothing new and a refresh has not
@@ -700,11 +781,13 @@ fn connect(udev: &mut Udev, state: &mut Nekoland, connector: &connector::Info, c
         Ok(_) => {}
         Err(err) => warn!("{name}: no gamma: {err}"),
     }
-    match Glass::new(&mut udev.renderer) {
-        Ok(glass) => {
-            udev.glass.insert(crtc, glass);
+    if !udev.glass_too_slow {
+        match Glass::new(&mut udev.renderer) {
+            Ok(glass) => {
+                udev.glass.insert(crtc, glass);
+            }
+            Err(err) => warn!("no glass: {err}"),
         }
-        Err(err) => warn!("no glass: {err}"),
     }
     let render_formats = udev.renderer.egl_context().dmabuf_render_formats();
     let ten_bit = surface.with_compositor(|compositor| {

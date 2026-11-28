@@ -3,8 +3,11 @@
 //! WebAssembly, https://github.com/pithings/unkernel) has no udev: its keyboard, mouse and
 //! tablet would otherwise do nothing.
 //!
-//! shortcut: the devices there at start, none plugged in later; no pointer acceleration, touch
-//! or tablet tools, which unkernel's devices do not have.
+//! Devices plugged in later are heard of through the kernel's uevents (`crate::uevent`); with
+//! no udev to give their nodes the group input, only root may open those.
+//!
+//! shortcut: no pointer acceleration, touch or tablet tools, which unkernel's devices do not
+//! have.
 
 use std::{
     fs::File,
@@ -25,6 +28,7 @@ use tracing::{info, warn};
 
 use crate::Nekoland;
 
+const DEVICE_DIRECTORY: &str = "/dev";
 const INPUT_DIRECTORY: &str = "/dev/input";
 const EVENT_DEVICE_PREFIX: &str = "event";
 
@@ -67,21 +71,10 @@ const EVIOCGABS: u64 = 0x40;
 
 /// Starts reading every event device in `/dev/input`. Fails only when none could be opened.
 pub fn watch(handle: &LoopHandle<'static, Nekoland>) -> io::Result<()> {
-    let mut watched = 0;
-    for path in event_device_paths()? {
-        match open_device(&path) {
-            Ok((file, reader)) => {
-                info!(
-                    "reading {} ({}) without libinput",
-                    reader.device.name,
-                    path.display()
-                );
-                watch_device(handle, file, reader)?;
-                watched += 1;
-            }
-            Err(err) => warn!("could not read {}: {err}", path.display()),
-        }
-    }
+    let watched = event_device_paths()?
+        .iter()
+        .filter(|path| watch_path(handle, path).is_ok())
+        .count();
     if watched == 0 {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -89,6 +82,32 @@ pub fn watch(handle: &LoopHandle<'static, Nekoland>) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Starts reading one event device, as one plugged in after the start, named by the kernel's
+/// uevent as `input/eventN` under `/dev`. Other input nodes, as the old mouse interface's, are
+/// left alone.
+pub fn watch_devname(handle: &LoopHandle<'static, Nekoland>, devname: &str) {
+    let path = Path::new(DEVICE_DIRECTORY).join(devname);
+    let is_event_device = path.parent() == Some(Path::new(INPUT_DIRECTORY))
+        && path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(EVENT_DEVICE_PREFIX));
+    if is_event_device {
+        // Already said why it failed.
+        let _ = watch_path(handle, &path);
+    }
+}
+
+fn watch_path(handle: &LoopHandle<'static, Nekoland>, path: &Path) -> io::Result<()> {
+    let (file, reader) =
+        open_device(path).inspect_err(|err| warn!("could not read {}: {err}", path.display()))?;
+    info!(
+        "reading {} ({}) without libinput",
+        reader.device.name,
+        path.display()
+    );
+    watch_device(handle, file, reader).inspect_err(|err| warn!("could not watch {}: {err}", path.display()))
 }
 
 fn event_device_paths() -> io::Result<Vec<PathBuf>> {
@@ -137,7 +156,15 @@ fn watch_device(
     let source = Generic::new(file, Interest::READ, Mode::Level);
     handle
         .insert_source(source, move |_, file, data| {
-            for event in read_events(file)? {
+            let events = match read_events(file) {
+                Ok(events) => events,
+                Err(err) if err.raw_os_error() == Some(libc::ENODEV) => {
+                    info!("{} was unplugged", reader.device.name);
+                    return Ok(PostAction::Remove);
+                }
+                Err(err) => return Err(err),
+            };
+            for event in events {
                 reader.translate(event, |input| data.process_input_event(input));
             }
             Ok(PostAction::Continue)

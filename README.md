@@ -46,11 +46,22 @@ it at once could cut the connection. Run it again to update. Without a checkout 
 
 It also runs in [unkernel](https://github.com/pithings/unkernel), Linux built to WebAssembly,
 on its Debian with a GPU (`npx unkernel --distro debian --display=1280x720 --gpu`, or in a
-browser `createKernel({ gpu: true, … })`), built for Debian 13 on arm64. That system has no
-udev, and so no logind or seatd to ask for the devices, nor anything libinput would take:
-where `/run/udev/control` is missing Nekoland opens `/dev/dri/card0` itself, as a user in
-the groups video and input may, and reads the keyboard, mouse and tablet straight from
-`/dev/input`. There are no VTs to switch to there.
+browser `createKernel({ gpu: true, … })`), built for Debian 13 on arm64, with what it runs
+with installed there:
+
+```
+sudo apt-get install -y --no-install-recommends libseat1 libinput10 libgbm1 libegl-mesa0 \
+    libgles2 libgl1-mesa-dri libcairo2 libcairo-gobject2 libpangocairo-1.0-0 \
+    libgdk-pixbuf-2.0-0 libxkbcommon0 fonts-noto-cjk adwaita-icon-theme xwayland foot
+```
+
+That system has no udev, and so no logind or seatd to ask for the devices, nor anything
+libinput would take: where `/run/udev/control` is missing Nekoland opens `/dev/dri/card0`
+itself, as a user in the groups video and input may, reads the keyboard, mouse and tablet
+straight from `/dev/input`, and hears of the display's size changing from the kernel. There
+are no VTs to switch to there. Mesa draws on the guest's emulated CPU, where a frame with glass
+takes most of a second; as on any computer that slow, after a few such frames Nekoland draws
+without glass, so that a key let go is seen when it is, and does not repeat.
 
 ## Configuration
 

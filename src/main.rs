@@ -59,6 +59,7 @@ mod stats;
 mod system;
 mod text;
 mod udev;
+mod uevent;
 mod windows;
 mod winit;
 mod workspaces;
