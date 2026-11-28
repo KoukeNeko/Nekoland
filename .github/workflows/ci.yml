@@ -12,13 +12,20 @@ jobs:
     strategy:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
+        # The Ubuntu Nekoland is made and tested on, and Debian, which unkernel's guest
+        # runs, built for install.sh to download.
+        system: [ubuntu, debian]
+        include:
+          - system: ubuntu
+            image: ubuntu:26.10
+          - system: debian
+            image: debian:13
     runs-on: ${{ matrix.runner }}
-    # The Ubuntu Nekoland is made on and install.sh is tried on.
     # Unconfined, as on a computer: under Docker's AppArmor profile, writing a
     # datagram to an abstract socket, as Plaitway's systemd notification test does,
     # blocks for good.
     container:
-      image: ubuntu:26.10
+      image: ${{ matrix.image }}
       options: --security-opt apparmor=unconfined
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -33,11 +40,20 @@ jobs:
         run: |
           packages=$(sed -n '/^build_packages="/,/"$/p' install.sh | sed 's/^build_packages=//; s/"//g')
           apt-get update -q
-          apt-get install -y -q --no-install-recommends $packages fonts-ubuntu rsync parted e2fsprogs zstd
+          [ "${{ matrix.system }}" != ubuntu ] || packages="$packages fonts-ubuntu rsync parted e2fsprogs zstd"
+          apt-get install -y -q --no-install-recommends $packages
+
+      - name: Install Rust
+        # Debian's is older than Cargo.toml's rust-version, as install.sh finds too.
+        if: matrix.system == 'debian'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Test
+        if: matrix.system == 'ubuntu'
         run: |
           cargo test --workspace --locked
           (cd third_party/plaitway && go test ./...)
@@ -49,11 +65,11 @@ jobs:
           sh shell/build-vpn.sh target/release
 
       - name: Package
-        # What install.sh installs from target/release, named for this Ubuntu and processor,
+        # What install.sh installs from target/release, named for this system and processor,
         # with the commit it was built from: install.sh takes it only for that commit.
         run: |
           . /etc/os-release
-          name=nekoland-ubuntu-$VERSION_ID-$(dpkg --print-architecture).tar.gz
+          name=nekoland-$ID-$VERSION_ID-$(dpkg --print-architecture).tar.gz
           mkdir -p package/release
           for program in target/release/nekoland target/release/nekoland-*; do
             case $program in *.d) continue ;; esac
@@ -66,8 +82,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.runner }}
-          path: nekoland-ubuntu-*.tar.gz*
+          name: build-${{ matrix.system }}-${{ matrix.runner }}
+          path: nekoland-*.tar.gz*
           retention-days: 3
 
   publish:
@@ -91,4 +107,4 @@ jobs:
           gh release create continuous --target "$GITHUB_SHA" --prerelease \
             --title "Latest build of main" \
             --notes "Built by CI from $GITHUB_SHA. install.sh downloads these." \
-            nekoland-ubuntu-*.tar.gz*
+            nekoland-*.tar.gz*

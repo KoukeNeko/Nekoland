@@ -35,12 +35,6 @@ extern "C" {
     fn poppler_annot_free_text_set_font_color(annot: *mut ffi::PopplerAnnot, color: *mut ffi::PopplerColor);
     fn poppler_font_description_new(name: *const c_char) -> *mut FontDescription;
     fn poppler_font_description_free(desc: *mut FontDescription);
-    fn poppler_annot_ink_new(doc: *mut ffi::PopplerDocument, rect: *mut ffi::PopplerRectangle) -> *mut ffi::PopplerAnnot;
-    fn poppler_annot_ink_set_ink_list(annot: *mut ffi::PopplerAnnot, paths: *mut *mut PopplerPath, n: usize);
-    fn poppler_annot_ink_get_ink_list(annot: *mut ffi::PopplerAnnot, n: *mut usize) -> *mut *mut PopplerPath;
-    fn poppler_path_new_from_array(points: *mut ffi::PopplerPoint, n: usize) -> *mut PopplerPath;
-    fn poppler_path_get_points(path: *mut PopplerPath, n: *mut usize) -> *mut ffi::PopplerPoint;
-    fn poppler_path_free(path: *mut PopplerPath);
     fn poppler_annot_get_border_width(annot: *mut ffi::PopplerAnnot, width: *mut c_double) -> glib::ffi::gboolean;
     fn poppler_annot_set_border_width(annot: *mut ffi::PopplerAnnot, width: c_double);
     fn poppler_annot_stamp_new(doc: *mut ffi::PopplerDocument, rect: *mut ffi::PopplerRectangle) -> *mut ffi::PopplerAnnot;
@@ -49,6 +43,43 @@ extern "C" {
         image: *mut gtk::cairo::ffi::cairo_surface_t,
         error: *mut *mut glib::ffi::GError,
     ) -> glib::ffi::gboolean;
+}
+
+/// Poppler's ink annotations, which an older poppler, as Debian 13's 25.03, lacks; they are
+/// looked up as Preview runs, so that it builds and starts there, without sketches.
+struct InkFunctions {
+    new: unsafe extern "C" fn(*mut ffi::PopplerDocument, *mut ffi::PopplerRectangle) -> *mut ffi::PopplerAnnot,
+    set_ink_list: unsafe extern "C" fn(*mut ffi::PopplerAnnot, *mut *mut PopplerPath, usize),
+    get_ink_list: unsafe extern "C" fn(*mut ffi::PopplerAnnot, *mut usize) -> *mut *mut PopplerPath,
+    path_new_from_array: unsafe extern "C" fn(*mut ffi::PopplerPoint, usize) -> *mut PopplerPath,
+    path_get_points: unsafe extern "C" fn(*mut PopplerPath, *mut usize) -> *mut ffi::PopplerPoint,
+    path_free: unsafe extern "C" fn(*mut PopplerPath),
+}
+
+fn ink_functions() -> Option<&'static InkFunctions> {
+    static FUNCTIONS: std::sync::OnceLock<Option<InkFunctions>> = std::sync::OnceLock::new();
+    FUNCTIONS.get_or_init(load_ink_functions).as_ref()
+}
+
+fn load_ink_functions() -> Option<InkFunctions> {
+    // Safety: each name is looked up in the poppler-glib this program links to, and has there
+    // the signature given for it in poppler-annot.h.
+    unsafe {
+        Some(InkFunctions {
+            new: std::mem::transmute(poppler_symbol(c"poppler_annot_ink_new")?),
+            set_ink_list: std::mem::transmute(poppler_symbol(c"poppler_annot_ink_set_ink_list")?),
+            get_ink_list: std::mem::transmute(poppler_symbol(c"poppler_annot_ink_get_ink_list")?),
+            path_new_from_array: std::mem::transmute(poppler_symbol(c"poppler_path_new_from_array")?),
+            path_get_points: std::mem::transmute(poppler_symbol(c"poppler_path_get_points")?),
+            path_free: std::mem::transmute(poppler_symbol(c"poppler_path_free")?),
+        })
+    }
+}
+
+fn poppler_symbol(name: &std::ffi::CStr) -> Option<*mut std::ffi::c_void> {
+    // Safety: dlsym only reads the name, which is NUL-terminated.
+    let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    (!address.is_null()).then_some(address)
 }
 
 /// The kinds the window draws, writes and lists.
@@ -255,21 +286,22 @@ pub fn ink(document: &poppler::Document, page: &poppler::Page, strokes: &[Vec<(f
     let pad = width.max(1.0) * 2.0;
     let (x1, y1, x2, y2) = all.iter().fold((first.0, first.1, first.0, first.1), |(a, b, c, d), &(x, y)| (a.min(x), b.min(y), c.max(x), d.max(y)));
     let mut rect = up((x1 - pad, y1 - pad, x2 + pad, y2 + pad), height);
+    let functions = ink_functions()?;
     let raw = unsafe {
-        let raw = poppler_annot_ink_new(document_ptr(document), &mut rect);
+        let raw = (functions.new)(document_ptr(document), &mut rect);
         if !raw.is_null() {
             let mut paths: Vec<*mut PopplerPath> = strokes
                 .iter()
                 .filter(|stroke| !stroke.is_empty())
                 .map(|stroke| {
                     let mut points: Vec<ffi::PopplerPoint> = stroke.iter().map(|&(x, y)| point(x, y, height)).collect();
-                    poppler_path_new_from_array(points.as_mut_ptr(), points.len())
+                    (functions.path_new_from_array)(points.as_mut_ptr(), points.len())
                 })
                 .collect();
             poppler_annot_set_border_width(raw, width);
-            poppler_annot_ink_set_ink_list(raw, paths.as_mut_ptr(), paths.len());
+            (functions.set_ink_list)(raw, paths.as_mut_ptr(), paths.len());
             for path in paths {
-                poppler_path_free(path);
+                (functions.path_free)(path);
             }
         }
         raw
@@ -431,18 +463,21 @@ pub fn place_of(page: &poppler::Page, annot: &poppler::Annot) -> Place {
 pub fn ink_strokes(page: &poppler::Page, annot: &poppler::Annot) -> Vec<Vec<(f64, f64)>> {
     let height = page.size().1;
     let mut strokes = Vec::new();
+    let Some(functions) = ink_functions() else {
+        return strokes;
+    };
     unsafe {
         let mut count = 0;
-        let paths = poppler_annot_ink_get_ink_list(annot_ptr(annot), &mut count);
+        let paths = (functions.get_ink_list)(annot_ptr(annot), &mut count);
         if paths.is_null() {
             return strokes;
         }
         for index in 0..count {
             let path = *paths.add(index);
             let mut n = 0;
-            let points = poppler_path_get_points(path, &mut n);
+            let points = (functions.path_get_points)(path, &mut n);
             strokes.push((0..n).map(|i| ((*points.add(i)).x, height - (*points.add(i)).y)).collect());
-            poppler_path_free(path);
+            (functions.path_free)(path);
         }
         glib::ffi::g_free(paths.cast());
     }

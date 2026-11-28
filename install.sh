@@ -16,7 +16,11 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" != 0 ] || die "run it as the user who will use Nekoland, not as root; it asks sudo when it needs to"
-command -v apt-get >/dev/null || die "it needs Ubuntu's apt-get"
+command -v apt-get >/dev/null || die "it needs apt-get, as Ubuntu and Debian have"
+# The system's name and release, as ubuntu-26.10 or debian-13, which CI's builds are named for.
+system=$(. /etc/os-release && echo "$ID-$VERSION_ID")
+# Without systemd running, as in unkernel's guest, there are no services to start.
+booted_with_systemd() { [ -d /run/systemd/system ]; }
 
 # Build tools and the development files of what the compositor and ui/ link to.
 build_packages="build-essential pkg-config clang libclang-dev git curl ca-certificates cargo rustc golang-go
@@ -47,10 +51,26 @@ run_packages="libgl1-mesa-dri libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-va-d
 # Intel's video decoding, for the GPUs Intel makes, which are on amd64 only; Mesa's covers the rest.
 [ "$(dpkg --print-architecture)" != amd64 ] || run_packages="$run_packages intel-media-va-driver"
 
+# dbus-user-session needs systemd to be what boots, which starts the session's bus; without
+# it the bus is started with Nekoland by dbus-run-session, which dbus-daemon has.
+if ! booted_with_systemd; then
+    # shellcheck disable=SC2086
+    run_packages="$(printf '%s\n' $run_packages | grep -vx dbus-user-session | tr '\n' ' ') dbus-daemon"
+fi
+
 say "Installing packages"
 sudo true
 sudo apt-get update -q
+# What this system's apt does not have, as Ubuntu's font and wallpapers on Debian, is left out.
+known=$(mktemp)
+apt-cache pkgnames >"$known"
 # shellcheck disable=SC2086 # the lists are meant to split into words
+unavailable=$(printf '%s\n' $run_packages | grep -Fxv -f "$known" | tr '\n' ' ' || true)
+# shellcheck disable=SC2086
+run_packages=$(printf '%s\n' $run_packages | grep -Fx -f "$known" | tr '\n' ' ')
+rm "$known"
+[ -z "$unavailable" ] || say "Leaving out what this system does not have: $unavailable"
+# shellcheck disable=SC2086
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
     git curl ca-certificates $run_packages
 
@@ -70,12 +90,12 @@ if [ -z "$src" ] || ! grep -q '^name = "nekoland"' "$src/Cargo.toml" 2>/dev/null
     fi
 fi
 
-# What CI built of this very commit for this Ubuntu and processor, as $target, if it published
+# What CI built of this very commit for this system and processor, as $target, if it published
 # one and the checkout is unchanged; NEKOLAND_BUILD=1 builds here regardless.
 prebuilt() {
     [ -z "${NEKOLAND_BUILD:-}" ] || return 1
     [ -z "$(git -C "$src" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 1
-    name=nekoland-ubuntu-$(. /etc/os-release && echo "$VERSION_ID")-$(dpkg --print-architecture).tar.gz
+    name=nekoland-$system-$(dpkg --print-architecture).tar.gz
     url=https://github.com/KoukeNeko/Nekoland/releases/download/continuous/$name
     download=$(mktemp -d)
     trap 'rm -rf "$download"' EXIT
@@ -121,7 +141,7 @@ done
 sudo install -m 644 "$target/release/libnekoland_menus.so" /usr/local/bin/
 # What is shared from Settings is let through the firewall from the LAN, and kept so as it
 # and its ports change, by hand too.
-sudo /usr/local/bin/nekoland-settings --firewall-sync "$USER"
+! booted_with_systemd || sudo /usr/local/bin/nekoland-settings --firewall-sync "$USER"
 # The commit installed and the checkout it came from, which Settings and Market update from.
 sudo install -d /usr/local/share/nekoland
 git -C "$src" rev-parse HEAD | sudo tee /usr/local/share/nekoland/COMMIT >/dev/null
@@ -174,8 +194,10 @@ sudo install -Dm 644 -t /usr/share/glib-2.0/schemas "$src/shell/90_nekoland.gsch
 sudo glib-compile-schemas /usr/share/glib-2.0/schemas
 
 # The boot menu and splash in Nekoland's look, where GRUB is what boots the computer; a board that boots
-# some other way has no /etc/default/grub and is left as it is.
-if [ -f /etc/default/grub ]; then
+# some other way has no /etc/default/grub and is left as it is, as is one without Ubuntu's
+# font, which the menu is drawn in.
+case " $unavailable " in *" fonts-ubuntu "*) has_ubuntu_font=false ;; *) has_ubuntu_font=true ;; esac
+if [ -f /etc/default/grub ] && $has_ubuntu_font; then
     say "Installing the GRUB theme and boot splash"
     sh "$src/shell/grub/install-theme.sh"
 fi
@@ -183,31 +205,33 @@ fi
 # Waiting for the network to come up holds the boot back by up to two minutes on Ubuntu Server
 # where a port is unplugged or has no address. It waits ten seconds at most instead; not at all,
 # as masking the waits did before, would start what needs the network before it is there.
-say "Waiting at most 10 seconds for the network at boot"
-sudo systemctl unmask systemd-networkd-wait-online.service NetworkManager-wait-online.service
-sudo install -d /etc/systemd/system/systemd-networkd-wait-online.service.d \
-    /etc/systemd/system/NetworkManager-wait-online.service.d
-printf '[Service]\nExecStart=\nExecStart=/usr/lib/systemd/systemd-networkd-wait-online --timeout=10 --any\n' |
-    sudo tee /etc/systemd/system/systemd-networkd-wait-online.service.d/nekoland.conf >/dev/null
-printf '[Service]\nExecStart=\nExecStart=/usr/bin/nm-online -s -q --timeout=10\n' |
-    sudo tee /etc/systemd/system/NetworkManager-wait-online.service.d/nekoland.conf >/dev/null
-sudo systemctl daemon-reload
+if booted_with_systemd; then
+    say "Waiting at most 10 seconds for the network at boot"
+    sudo systemctl unmask systemd-networkd-wait-online.service NetworkManager-wait-online.service
+    sudo install -d /etc/systemd/system/systemd-networkd-wait-online.service.d \
+        /etc/systemd/system/NetworkManager-wait-online.service.d
+    printf '[Service]\nExecStart=\nExecStart=/usr/lib/systemd/systemd-networkd-wait-online --timeout=10 --any\n' |
+        sudo tee /etc/systemd/system/systemd-networkd-wait-online.service.d/nekoland.conf >/dev/null
+    printf '[Service]\nExecStart=\nExecStart=/usr/bin/nm-online -s -q --timeout=10\n' |
+        sudo tee /etc/systemd/system/NetworkManager-wait-online.service.d/nekoland.conf >/dev/null
+    sudo systemctl daemon-reload
 
-# The VPN page's helper, restarted so that an update runs the new one. Plaitway's own helper,
-# where it was installed, hands its profiles over once and is turned off: the two cannot both
-# own the routes, and the logins kept in the keyring go with the profiles' ids.
-say "Starting the VPN helper"
-sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-vpnd.service"
-sudo systemctl daemon-reload
-if ! sudo test -e /var/lib/nekoland-vpn && sudo test -d /var/lib/plaitway; then
-    say "Moving Plaitway's VPN profiles to Nekoland"
-    if systemctl cat plaitwayd.service >/dev/null 2>&1; then
-        sudo systemctl disable --now plaitwayd.service
+    # The VPN page's helper, restarted so that an update runs the new one. Plaitway's own helper,
+    # where it was installed, hands its profiles over once and is turned off: the two cannot both
+    # own the routes, and the logins kept in the keyring go with the profiles' ids.
+    say "Starting the VPN helper"
+    sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-vpnd.service"
+    sudo systemctl daemon-reload
+    if ! sudo test -e /var/lib/nekoland-vpn && sudo test -d /var/lib/plaitway; then
+        say "Moving Plaitway's VPN profiles to Nekoland"
+        if systemctl cat plaitwayd.service >/dev/null 2>&1; then
+            sudo systemctl disable --now plaitwayd.service
+        fi
+        sudo cp -a /var/lib/plaitway /var/lib/nekoland-vpn
     fi
-    sudo cp -a /var/lib/plaitway /var/lib/nekoland-vpn
+    sudo systemctl enable nekoland-vpnd.service
+    sudo systemctl restart nekoland-vpnd.service
 fi
-sudo systemctl enable nekoland-vpnd.service
-sudo systemctl restart nekoland-vpnd.service
 
 # Wine 10.16 and later wait on Windows programs' locks in the kernel, much faster, where its
 # ntsync module is loaded; Linux leaves it unloaded until asked.
@@ -221,9 +245,11 @@ fi
 say "Starting the sensor readings"
 sudo install -Dm 755 "$src/shell/nekoland-sensors.sh" /usr/local/libexec/nekoland-sensors
 sudo install -Dm 644 -t /usr/local/lib/systemd/system "$src/shell/nekoland-sensors.service"
-sudo systemctl daemon-reload
-sudo systemctl enable nekoland-sensors.service
-sudo systemctl restart nekoland-sensors.service
+if booted_with_systemd; then
+    sudo systemctl daemon-reload
+    sudo systemctl enable nekoland-sensors.service
+    sudo systemctl restart nekoland-sensors.service
+fi
 
 # The fans of boards whose Super I/O chip nct6775 drives, for the sensors' panel to set; Linux
 # leaves it unloaded until asked, and it declines a board without one.
@@ -286,7 +312,13 @@ if command -v netplan >/dev/null && [ "$(sudo netplan get renderer)" != NetworkM
     fi
 fi
 
-say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there.$network_note"
+if [ -e /dev/tty1 ]; then
+    say "Done. Log in on the first console (Ctrl+Alt+F1) to start Nekoland, or run nekoland there.$network_note"
+else
+    # As in unkernel's guest, which has no consoles to switch to, and whose shells name the
+    # page's own Wayland display, which nekoland would open a window on.
+    say "Done. Start Nekoland with: env -u WAYLAND_DISPLAY -u DISPLAY dbus-run-session nekoland"
+fi
 }
 
 main "$@"
